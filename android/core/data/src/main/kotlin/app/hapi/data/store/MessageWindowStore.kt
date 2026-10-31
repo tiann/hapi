@@ -9,6 +9,7 @@ import app.hapi.protocol.window.MessageWindowLogic
 import app.hapi.protocol.window.HISTORY_WINDOW_SIZE
 import app.hapi.protocol.window.MessageWindowState
 import app.hapi.protocol.window.OlderLoadOutcome
+import app.hapi.protocol.window.INITIAL_PAGE_SIZE
 import app.hapi.protocol.window.PAGE_SIZE
 import app.hapi.protocol.window.WindowMessage
 import app.hapi.protocol.window.asWindowMessage
@@ -206,7 +207,12 @@ class MessageWindowStore(
 
             if (!canIncrement) {
                 val requestBaseline = baseline()
-                val response = api.getMessages(sessionId, MessagesQuery.Latest(limit = PAGE_SIZE))
+                val latestPageSize = if (initial.requiresLatestReset || initialCursor != null) {
+                    PAGE_SIZE
+                } else {
+                    INITIAL_PAGE_SIZE
+                }
+                val response = api.getMessages(sessionId, MessagesQuery.Latest(limit = latestPageSize))
                 if (!isCurrentTailSync(generation)) return
                 update { previous ->
                     if (previous.syncGeneration != generation) return@update previous

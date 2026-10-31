@@ -63,6 +63,61 @@ private fun TestScope.harness(
 class SseEngineTest {
 
     @Test
+    fun `route changes reconnect once preserve cursor and defer while backgrounded`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        val wifi = NetworkRoute(1, "wlan0", addresses = setOf("10.0.0.2/24"))
+        h.engine.networkChanged(wifi)
+        h.engine.events(key).test {
+            h.engine.subscribe(key)
+            val first = h.awaitOpen()
+            first.handshake()
+            awaitItem()
+            first.event("cursor-1", SESSION_REMOVED)
+            awaitItem()
+            runCurrent()
+            h.engine.networkChanged(wifi)
+            runCurrent()
+            h.assertNoOpen()
+            // DHCP can change the socket's source IP without changing the
+            // default network, interface, or gateway route.
+            h.engine.networkChanged(wifi.copy(addresses = setOf("10.0.0.3/24")))
+            val second = h.awaitOpen()
+            assertTrue(first.closed)
+            assertEquals("cursor-1", second.lastEventId)
+            second.handshake()
+            awaitItem()
+            h.engine.setLifecycleForeground(false)
+            h.engine.networkChanged(NetworkRoute(3))
+            runCurrent()
+            assertTrue(second.closed)
+            h.assertNoOpen()
+            h.engine.setLifecycleForeground(true)
+            val third = h.awaitOpen()
+            assertEquals("cursor-1", third.lastEventId)
+            h.engine.unsubscribe(key)
+            runCurrent()
+            assertTrue(third.closed)
+            assertEquals(ConnectionState.Phase.Idle, h.engine.connectionState(key).value.phase)
+        }
+    }
+
+    @Test
+    fun `manual reconnect interrupts backoff without clearing ongoing outage`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(503)
+        h.awaitOpen().fail(503)
+        runCurrent()
+        val outage = h.engine.connectionState(key).value.outageStartedAtMs
+        assertEquals(0L, outage)
+        h.engine.requestReconnect(key)
+        h.awaitOpen()
+        assertEquals(outage, h.engine.connectionState(key).value.outageStartedAtMs)
+    }
+
+    @Test
     fun `handshake emits resume verdict and subscription id after connection-changed`() = runTest {
         val h = harness()
         h.engine.events(SseSubscriptionKey.Global).test {

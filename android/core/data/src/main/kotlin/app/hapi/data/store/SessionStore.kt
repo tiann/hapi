@@ -37,7 +37,7 @@ import kotlinx.serialization.json.JsonElement
  * the production implementation; ViewModel tests substitute fakes).
  */
 interface SessionListStore {
-    /** Sorted with `sortSessionSummaries` (globalPinned > pinned > active > pending > recency). */
+    /** Sorted with `sortSessionSummaries` (manual pins, then user-input recency). */
     val sessions: StateFlow<List<SessionSummary>>
 
     /** `GET /api/sessions` — replaces the list wholesale. Throws on failure. */
@@ -190,7 +190,16 @@ class SessionStore(
     override suspend fun refresh() {
         refreshMutex.withLock {
             val response = api.getSessions()
-            updateSummaries { sortSessionSummaries(response.sessions) }
+            updateSummaries { current ->
+                // A user-input SSE patch can overtake an in-flight REST snapshot.
+                val clocks = current.associate { it.id to it.lastUserMessageAt }
+                sortSessionSummaries(response.sessions.map { row ->
+                    val cached = clocks[row.id]
+                    if (cached != null && cached > (row.lastUserMessageAt ?: Long.MIN_VALUE)) {
+                        row.copy(lastUserMessageAt = cached)
+                    } else row
+                })
+            }
         }
     }
 
@@ -413,6 +422,7 @@ class SessionStore(
             // fields — carry them over from the previous row (web
             // `upsertSessionSummary`).
             val summary = SummaryPatching.toSessionSummary(session).copy(
+                lastUserMessageAt = session.lastUserMessageAt?.let { maxOf(existing?.lastUserMessageAt ?: 0, it) } ?: existing?.lastUserMessageAt,
                 futureScheduledMessageCount = existing?.futureScheduledMessageCount ?: 0,
                 nextScheduledAt = existing?.nextScheduledAt,
             )

@@ -11,20 +11,70 @@ struct SessionRowUI: Identifiable, Equatable {
     let summary: SessionSummary
     /// `getSessionTitle` port: name → summary text → path tail → id prefix.
     let title: String
-    /// Secondary line: summary text, only when it is not already the title.
-    let subtitle: String?
-    /// Single meta line, `project · worktree · machine`: project is the last
-    /// two segments of the worktree base path (session path fallback, the web
-    /// sidebar's group-name rule); the machine label is disambiguation only —
-    /// present only when several machines are known and no machine filter is
-    /// active. Full paths never render in the list (the session detail owns
-    /// them).
-    let meta: String?
+    /// Short project name only. Paths, machine/worktree details and the
+    /// conversation summary stay out of the compact home row.
+    let project: String?
     /// Raw flavor id (`claude`, `codex`, …); labels resolve via the catalog.
     let flavor: String?
     let unread: Bool
 
     var id: String { summary.id }
+    var status: SessionRowStatus? { SessionRowStatus(summary: summary) }
+}
+
+/// Presentation only: request totals/kinds come from the hub, independently
+/// of the capped request slice and the local read watermark.
+enum SessionRowStatus: Equatable {
+    case needsReply(Int)
+    case needsApproval(Int)
+    case needsAttention(Int)
+    case running
+
+    init?(summary: SessionSummary) {
+        let count = summary.pendingRequestsCount
+        if count > 0 {
+            let kinds = Set(summary.pendingRequestKinds)
+            if kinds == [.input] {
+                self = .needsReply(count)
+            } else if kinds == [.permission] {
+                self = .needsApproval(count)
+            } else {
+                self = .needsAttention(count)
+            }
+        } else if summary.active && summary.thinking {
+            self = .running
+        } else {
+            return nil
+        }
+    }
+
+    /// Localize in the view so its locale also governs previews/specimens.
+    var titleKey: String {
+        switch self {
+        case .needsReply: return "Needs reply"
+        case .needsApproval: return "Needs approval"
+        case .needsAttention: return "Needs attention"
+        case .running: return "Running"
+        }
+    }
+
+    var count: Int? {
+        switch self {
+        case .needsReply(let count), .needsApproval(let count), .needsAttention(let count): return count
+        case .running: return nil
+        }
+    }
+
+    /// Unfilled attention symbols; running uses the native loading indicator.
+    /// Status wording/count remain available to VoiceOver in either case.
+    var symbolName: String? {
+        switch self {
+        case .needsReply: return "bubble.left"
+        case .needsApproval: return "hand.raised"
+        case .needsAttention: return "exclamationmark.bubble"
+        case .running: return nil
+        }
+    }
 }
 
 struct MachineFilterUI: Identifiable, Equatable {
@@ -37,14 +87,17 @@ struct MachineFilterUI: Identifiable, Equatable {
 /// Transient, per-home filters. Add future dimensions here, not to navigation.
 struct SessionListFilters: Equatable, Hashable {
     var machineId: String?
+    /// Web "unread only" lens: hide sessions already seen on this device.
+    var unreadOnly = false
 
-    var isActive: Bool { machineId != nil }
+    var isActive: Bool { machineId != nil || unreadOnly }
 }
 
 /// Session-list presentation state over the `HubSession` stores — the iOS
 /// counterpart of the Android reference's `SessionListViewModel`: row/filter
 /// derivation, refresh + offline/loaded flags, last-seen stamping, and
-/// pin/archive forwarding (optimism lives in the store). The SSE
+/// pin/archive/rename/delete/reopen forwarding (optimism lives in the
+/// store). The SSE
 /// subscription itself is owned by `HubSession`, not this model.
 @MainActor @Observable
 final class SessionListModel {
@@ -52,20 +105,29 @@ final class SessionListModel {
     private let machineStore: any MachineListStoring
     private let lastSeenStore: LastSeenStore
     private let hubUrl: String
+    /// Reopen follows a superseding id with the composer draft (web
+    /// `transferComposerDraftThenNavigate`).
+    private let drafts: (any ChatDrafts)?
 
     /// Not persisted: a new home / hub starts with all sessions.
     private(set) var filters = SessionListFilters()
+    /// Text search (`.searchable`); ranks by relevance while non-blank.
+    var searchQuery = ""
+    /// The split detail's session stays listed under the unread lens.
+    var selectedSessionId: String?
     private(set) var isRefreshing = false
     /// Last refresh failed — show the offline state over snapshot data.
     private(set) var isOffline = false
     private(set) var hasRefreshedOnce = false
-    /// Transient pin/archive failure for an alert.
+    @ObservationIgnored private var hasAttemptedRefresh = false
+    /// Transient row-action failure for an alert.
     var actionError: String?
 
     convenience init(session: HubSession) {
         self.init(
             sessionStore: session.sessionStore, machineStore: session.machineStore,
-            lastSeenStore: session.lastSeenStore, hubUrl: session.hubUrl
+            lastSeenStore: session.lastSeenStore, hubUrl: session.hubUrl,
+            drafts: UserDefaultsChatDrafts(scope: session.hubUrl)
         )
     }
 
@@ -73,12 +135,14 @@ final class SessionListModel {
         sessionStore: any SessionListStoring,
         machineStore: any MachineListStoring,
         lastSeenStore: LastSeenStore,
-        hubUrl: String
+        hubUrl: String,
+        drafts: (any ChatDrafts)? = nil
     ) {
         self.sessionStore = sessionStore
         self.machineStore = machineStore
         self.lastSeenStore = lastSeenStore
         self.hubUrl = hubUrl
+        self.drafts = drafts
     }
 
     // MARK: - Derived state
@@ -134,8 +198,21 @@ final class SessionListModel {
             }
     }
 
+    /// The menu also holds the unread lens and Mark All as Read.
     var showsFilterMenu: Bool {
+        !sessionStore.sessions.isEmpty || filters.unreadOnly
+    }
+
+    var showsMachineFilter: Bool {
         machineFilterIds.count >= 2
+    }
+
+    var hasActiveFilters: Bool {
+        activeMachineFilter != nil || filters.unreadOnly
+    }
+
+    var isSearching: Bool {
+        !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Never render an invalid filter, even before the view reconciles it.
@@ -149,9 +226,36 @@ final class SessionListModel {
     }
 
     var filterSummary: String? {
-        guard let id = activeMachineFilter,
-              let machine = machineFilters.first(where: { $0.id == id }) else { return nil }
-        return String(format: String(localized: "Machine: %@"), machine.label)
+        var parts: [String] = []
+        if filters.unreadOnly {
+            parts.append(String(localized: "Unread only"))
+        }
+        if let id = activeMachineFilter,
+           let machine = machineFilters.first(where: { $0.id == id }) {
+            parts.append(String(format: String(localized: "Machine: %@"), machine.label))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    func setUnreadOnly(_ enabled: Bool) {
+        filters.unreadOnly = enabled
+    }
+
+    /// Unread sessions this device has not opened since their last update.
+    var unreadCount: Int {
+        let lastSeen = lastSeenStore.state.lastSeen
+        return sessionStore.sessions.filter {
+            LastSeenStore.isUnread($0, lastSeenAt: lastSeen[$0.id] ?? 0)
+        }.count
+    }
+
+    /// Web `markAllSessionsSeen`: local watermarks only, nothing hub-side.
+    func markAllRead() {
+        let lastSeen = lastSeenStore.state.lastSeen
+        for summary in sessionStore.sessions
+        where LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0) {
+            lastSeenStore.markSeen(sessionId: summary.id, seenAt: summary.updatedAt)
+        }
     }
 
     func selectMachine(_ id: String?) {
@@ -170,39 +274,34 @@ final class SessionListModel {
         }
     }
 
+    /// Machine filter → unread lens → text search (relevance order, pin
+    /// sections kept so the Pinned header still applies).
     var rows: [SessionRowUI] {
         let lastSeen = lastSeenStore.state.lastSeen
         let activeFilter = activeMachineFilter
-        let visible = sessionStore.sessions.filter { summary in
+        var visible = sessionStore.sessions.filter { summary in
             guard let activeFilter else { return true }
             return (summary.metadata?.machineId ?? unknownMachineFilterId) == activeFilter
         }
-        // With one machine — or a machine filter active — every visible row
-        // shares the machine, so repeating it per row is noise.
-        let machines = machineFilters
-        let showMachine = machines.count >= 2 && activeFilter == nil
-        let labels = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, $0.label) })
+        if filters.unreadOnly {
+            visible = visible.filter { summary in
+                summary.id == selectedSessionId
+                    || LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
+            }
+        }
+        if isSearching {
+            let labels = Dictionary(uniqueKeysWithValues: machineFilters.map { ($0.id, $0.label) })
+            if let index = SessionListSearch.scoreIndex(sessions: visible, query: searchQuery, machineLabel: { id in
+                labels[id ?? unknownMachineFilterId] ?? ""
+            }) {
+                visible = SessionListSearch.rank(visible, by: index)
+            }
+        }
         return visible.map { summary in
-            let title = Self.sessionTitle(summary)
-            let rawSummaryText = summary.metadata?.summary?.text
-            let isBlank = rawSummaryText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
-            let summaryText = isBlank ? nil : rawSummaryText
-            var metaParts: [String] = []
-            if let project = Self.projectLabel(summary) {
-                metaParts.append(project)
-            }
-            if let tree = summary.metadata?.worktree {
-                let name = tree.name.trimmingCharacters(in: .whitespaces)
-                metaParts.append(name.isEmpty ? tree.branch : tree.name)
-            }
-            if showMachine, let machine = labels[summary.metadata?.machineId ?? unknownMachineFilterId] {
-                metaParts.append(machine)
-            }
-            return SessionRowUI(
+            SessionRowUI(
                 summary: summary,
-                title: title,
-                subtitle: (summaryText != nil && summaryText != title) ? summaryText : nil,
-                meta: metaParts.isEmpty ? nil : metaParts.joined(separator: " · "),
+                title: Self.sessionTitle(summary),
+                project: Self.projectLabel(summary),
                 flavor: summary.metadata?.flavor,
                 unread: LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
             )
@@ -215,25 +314,32 @@ final class SessionListModel {
         rows.prefix { $0.summary.globalPinned == true || $0.summary.pinned == true }.count
     }
 
-    /// Project identity for the meta line: last two segments of the worktree
-    /// base path, session path fallback — mirrors the web sidebar's
-    /// `getGroupDisplayName` rule (`SessionList.tsx`).
+    /// Use the worktree's owning project, not its temporary checkout name.
+    /// The home needs a scan key, not a repeated path or machine inventory.
     static func projectLabel(_ summary: SessionSummary) -> String? {
-        guard let path = summary.metadata?.worktree?.basePath ?? summary.metadata?.path,
-              !path.isEmpty else { return nil }
-        let parts = path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).map(String.init)
-        if parts.isEmpty { return path }
-        if parts.count == 1 { return parts[0] }
-        return "\(parts[parts.count - 2])/\(parts[parts.count - 1])"
+        guard let path = summary.metadata?.worktree?.basePath ?? summary.metadata?.path else { return nil }
+        return path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init)
     }
 
     // MARK: - Actions
+
+    /// A split sidebar can disappear/reappear just because the window
+    /// collapses. Fetch once per home, not once per layout transition;
+    /// global SSE recovery and explicit pull-to-refresh still fetch normally.
+    func refreshOnFirstAppearance() async {
+        guard !hasAttemptedRefresh else { return }
+        hasAttemptedRefresh = true
+        // The sidebar's SwiftUI task is cancelled when it collapses. The
+        // initial fetch belongs to the model, not that transient presentation.
+        await Task { await self.refresh() }.value
+    }
 
     /// Pull-to-refresh / initial load. Coalesces concurrent calls; the first
     /// successful list seeds the unread baseline so historical sessions do
     /// not all light up as unread.
     func refresh() async {
         guard !isRefreshing else { return }
+        hasAttemptedRefresh = true
         isRefreshing = true
         defer { isRefreshing = false }
         do {
@@ -291,22 +397,62 @@ final class SessionListModel {
         }
     }
 
+    /// `PATCH /sessions/:id` with a store-side optimistic name.
+    func renameSession(sessionId: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let store = sessionStore
+        Task {
+            do {
+                try await store.renameSession(sessionId: sessionId, name: trimmed)
+            } catch {
+                self.actionError = String(
+                    format: String(localized: "Rename failed: %@"),
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// `DELETE /sessions/:id` (inactive sessions only) with store-side
+    /// optimistic removal; a 409 means it became active again.
+    func deleteSession(sessionId: String) {
+        let store = sessionStore
+        Task {
+            do {
+                try await store.deleteSession(sessionId: sessionId)
+            } catch {
+                self.actionError = isActiveSessionConflict(error)
+                    ? String(localized: "Active sessions can't be deleted — archive first")
+                    : String(format: String(localized: "Delete failed: %@"), error.localizedDescription)
+            }
+        }
+    }
+
+    /// `POST /sessions/:id/reopen`, then open the (possibly superseding)
+    /// session, carrying its composer draft along.
+    func reopenSession(sessionId: String, onReopened: @escaping @MainActor (String) -> Void) {
+        let store = sessionStore
+        Task {
+            do {
+                let response = try await store.reopenSession(sessionId: sessionId)
+                if response.sessionId != sessionId {
+                    self.drafts?.move(fromSessionId: sessionId, toSessionId: response.sessionId)
+                }
+                onReopened(response.sessionId)
+            } catch {
+                self.actionError = formatReopenError(error)
+                    ?? String(localized: "Failed to reopen session")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// `getSessionTitle` (`web/src/lib/sessionTitle.ts`): name → summary
     /// text → path tail → id prefix.
     static func sessionTitle(_ summary: SessionSummary) -> String {
-        if let name = summary.metadata?.name, !name.isEmpty {
-            return name
-        }
-        if let text = summary.metadata?.summary?.text, !text.isEmpty {
-            return text
-        }
-        if let path = summary.metadata?.path,
-           let tail = path.split(separator: "/").last(where: { !$0.isEmpty }) {
-            return String(tail)
-        }
-        return String(summary.id.prefix(8))
+        SessionListSearch.sessionTitle(summary)
     }
 }
 

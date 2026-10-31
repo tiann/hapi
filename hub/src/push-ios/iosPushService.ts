@@ -1,6 +1,6 @@
 import type { Store } from '../store'
-import { PUSH_KEY_LENGTH, canonicalJson, encryptEnvelope } from './envelope'
-import type { IosPushSendOutcome, IosPushTransport } from './transport'
+import { PUSH_KEY_LENGTH, canonicalJson, encryptEnvelope } from '../push-native/envelope'
+import type { NativePushSendOutcome, EncryptedPushTransport } from '../push-native/transport'
 
 /**
  * Notification plaintext (PUSH SPEC v1): exactly the FCM data-contract
@@ -66,7 +66,7 @@ export class IosPushService {
     private static readonly HEALTH_FAILURE_THRESHOLD = 5
 
     constructor(
-        private readonly transport: IosPushTransport,
+        private readonly transport: EncryptedPushTransport,
         private readonly store: Store
     ) {}
 
@@ -125,7 +125,7 @@ export class IosPushService {
         pushKeyB64: string | null,
         plaintext: string,
         collapseId: string
-    ): Promise<IosPushSendOutcome> {
+    ): Promise<NativePushSendOutcome> {
         // The register route guarantees a valid 32-byte key for ios rows, so
         // a bad key here is a permanently-corrupt row: it can never decrypt
         // anything and would black-hole every future notification. Prune it

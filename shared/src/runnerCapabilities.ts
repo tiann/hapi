@@ -15,6 +15,7 @@ import { RPC_METHODS } from './rpcMethods'
 import { getBuiltinAgentConfigDescriptors } from './agentConfig'
 
 export const RUNNER_CAPABILITIES = {
+    codexSharedRuntime: true as const,
     piExistingSessionResume: true as const,
     agentConfigs: getBuiltinAgentConfigDescriptors()
 }
@@ -31,6 +32,8 @@ export const MACHINE_CAPABILITIES = {
     AgentAvailability: RPC_METHODS.AgentAvailability,
     CursorChatStoreStatus: RPC_METHODS.CursorChatStoreStatus,
     StopRunner: RPC_METHODS.StopRunner,
+    /** Read-only file/Git/search RPCs available on the long-lived runner. */
+    WorkspaceFileAccess: 'workspace-file-access',
 } as const
 
 export type MachineCapability =
@@ -41,6 +44,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.AgentAvailability,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
     MACHINE_CAPABILITIES.StopRunner,
+    MACHINE_CAPABILITIES.WorkspaceFileAccess,
 ]
 
 /**

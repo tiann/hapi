@@ -71,6 +71,9 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
         const nextUpdatedAt = Math.max(nextSession.updatedAt, patch.updatedAt)
         assign('updatedAt', nextUpdatedAt)
     }
+    if (patch.lastUserMessageAt !== undefined) {
+        assign('lastUserMessageAt', Math.max(nextSession.lastUserMessageAt ?? 0, patch.lastUserMessageAt))
+    }
     if (patch.model !== undefined) assign('model', patch.model)
     if (patch.modelReasoningEffort !== undefined) assign('modelReasoningEffort', patch.modelReasoningEffort)
     if (patch.effort !== undefined) assign('effort', patch.effort)
@@ -81,6 +84,7 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (patch.collaborationMode !== undefined) assign('collaborationMode', patch.collaborationMode)
     if (patch.copilotAgentMode !== undefined) assign('copilotAgentMode', patch.copilotAgentMode)
     if (patch.backgroundTaskCount !== undefined) assign('backgroundTaskCount', patch.backgroundTaskCount)
+    if (patch.backgroundTasks !== undefined) assign('backgroundTasks', patch.backgroundTasks)
     // Version gates: dual SSE can deliver duplicates out of order.
     // Only mark changed when a strictly newer version lands —
     // otherwise keep previous object identity (no redundant render).

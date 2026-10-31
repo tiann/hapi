@@ -21,7 +21,10 @@ type DecryptedMessage = {
 }
 ```
 
-`content` is deliberately `unknown` on the wire. **Decoding must be total**: malformed content degrades to a stringified fallback — a client must never drop or crash on a message it does not recognize (with the two precise exceptions listed in [Fallback rules](#fallback-rules)).
+`content` is deliberately `unknown` on the wire. **Decoding must be total**:
+never crash on unfamiliar content. Use stringified fallbacks for unknown
+envelopes, and follow the family-specific skip/validation rules below for
+known transport records (see [Fallback rules](#fallback-rules)).
 
 ---
 
@@ -211,13 +214,22 @@ Several event rows are also synthesized by the other two families (system subtyp
 | `'output'` family, visible but unknown `data.type` | stringify as agent text |
 | `'event'` family, `data` lacks a string `type` | stringify as agent text |
 
-"Stringify" = a stable JSON serialization (web: `safeStringify`) rendered as plain text. These are the only two legitimate drop paths; everything else must render something.
+"Stringify" = a stable JSON serialization (web: `safeStringify`) rendered as
+plain text. Known event types also have the validation/empty-content skip
+rules listed above (for example, an image without an ID or unparseable usage).
+The golden fixtures and normalizer are authoritative; do not turn those
+transport-only records into fallback chat bubbles.
 
 ---
 
 ## Truncation marker
 
-At ingest the hub head+tail-truncates any **string longer than 64 KiB found anywhere inside agent-role content** (`hub/src/store/contentCodec.ts`): the stored value becomes first 48 KiB + `\n…[hapi: truncated N chars]…\n` + last 12 KiB. User-role content is never truncated (it is delivered verbatim to the CLI). The operation is idempotent and applied deep (arrays/objects).
+At ingest the hub head+tail-truncates strings longer than `64 * 1024`
+**UTF-16 code units** (`String.length`, not bytes) inside agent-role content
+(`hub/src/store/contentCodec.ts`): first `48 * 1024` units +
+`\n…[hapi: truncated N chars]…\n` + last `12 * 1024` units. User-role content
+is never truncated (it is delivered verbatim to the CLI). The operation is
+idempotent and applied deep (arrays/objects).
 
 Clients must render truncated strings as-is (recognizing the `…[hapi: truncated N chars]…` marker is optional polish), must not assume tool results are complete, and must never choke on the marker.
 
@@ -232,7 +244,7 @@ session.agentState = {
   requests?:          Record<requestId, { tool: string, toolCallId?: string, arguments: unknown, createdAt?: number | null }>
   completedRequests?: Record<requestId, {
     tool, toolCallId?: string, arguments, createdAt?, completedAt?,
-    status: 'canceled' | 'denied' | 'approved',
+    status: 'canceled' | 'denied' | 'approved' | 'resolved',
     reason?, mode?, allowTools?: string[],
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
     answers?: Record<string, string[]>                     // flat    (AskUserQuestion)
@@ -242,6 +254,10 @@ session.agentState = {
 ```
 
 `agentState` updates arrive as a versioned SSE patch — apply it under the version gate described in [sse.md](./sse.md#versioned-patch-algorithm). Render pending `requests` as approval cards interleaved with the chat (the web reducer keys them to the matching `tool_use` when one exists); on resolution the entry moves to `completedRequests`, whose `status`/`answers` back-fill the tool card's permission state. Decide via `POST /api/sessions/:id/permissions/:requestId/approve` (`{mode?, allowTools?, decision?, answers?}`) or `…/deny` (`{decision?}`) — see [rest.md](./rest.md). Session-list badges come precomputed on `SessionSummary.pendingRequestsCount` / `pendingRequests` (≤ 5 entries).
+
+`resolved` means native completion is known, but the winning answer/decision
+is not. Render it neutrally; never infer approval or fill answers from an
+unconfirmed local draft.
 
 Correlate a permission with the transcript using **`entry.toolCallId ?? requestId`**,
 but always submit approval/denial using **`requestId`**. Claude local-mode requests

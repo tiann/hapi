@@ -1,0 +1,220 @@
+{
+    "description": "Codex shared request resolved elsewhere: withdraw input, preserve neutral resolved status, never invent the winner or answers.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call",
+                    "input": {
+                        "itemId": "call",
+                        "questions": [
+                            {
+                                "header": "Choose",
+                                "id": "choice",
+                                "options": [
+                                    {
+                                        "description": "A",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "B",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which?"
+                            }
+                        ],
+                        "threadId": "thread",
+                        "turnId": "turn"
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "status": "resolved"
+                    },
+                    "result": {
+                        "status": "resolved"
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call",
+                    "input": {
+                        "itemId": "call",
+                        "questions": [
+                            {
+                                "header": "Choose",
+                                "id": "choice",
+                                "options": [
+                                    {
+                                        "description": "A",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "B",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which?"
+                            }
+                        ],
+                        "threadId": "thread",
+                        "turnId": "turn"
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "status": "resolved"
+                    },
+                    "result": {
+                        "status": "resolved"
+                    },
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "runtime:thread:number:1": {
+                    "arguments": {
+                        "itemId": "call",
+                        "questions": [
+                            {
+                                "header": "Choose",
+                                "id": "choice",
+                                "options": [
+                                    {
+                                        "description": "A",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "B",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which?"
+                            }
+                        ],
+                        "threadId": "thread",
+                        "turnId": "turn"
+                    },
+                    "completedAt": 1755000005000,
+                    "createdAt": 1755000001100,
+                    "status": "resolved",
+                    "tool": "request_user_input",
+                    "toolCallId": "call"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Choose an option.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call",
+                            "id": "codex:thread:question:call:start",
+                            "input": {
+                                "itemId": "call",
+                                "questions": [
+                                    {
+                                        "header": "Choose",
+                                        "id": "choice",
+                                        "options": [
+                                            {
+                                                "description": "A",
+                                                "label": "A"
+                                            },
+                                            {
+                                                "description": "B",
+                                                "label": "B"
+                                            }
+                                        ],
+                                        "question": "Which?"
+                                    }
+                                ],
+                                "threadId": "thread",
+                                "turnId": "turn"
+                            },
+                            "name": "request_user_input",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "shared-question",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call",
+                            "id": "codex:thread:question:call:resolved",
+                            "is_error": false,
+                            "output": {
+                                "status": "resolved"
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005000,
+                "id": "shared-resolved",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-shared-resolved"
+}

@@ -1,8 +1,11 @@
+import { compareSessionSummaries } from '@hapi/protocol'
 import {
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
+    ImplementCodexPlanRequestSchema,
     getPermissionModesForFlavor,
+    isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     SetSessionPinnedRequestSchema,
@@ -24,10 +27,11 @@ import {
     toSessionSummary,
     UploadFileRequestSchema
 } from '@hapi/protocol'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { RPC_METHODS, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
@@ -76,8 +80,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
-
         const namespace = c.get('namespace')
         const limitRaw = c.req.query('limit')
         const parsedLimit = limitRaw === undefined ? null : Number(limitRaw)
@@ -92,24 +94,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 if (order === 'updatedAt') {
                     return b.updatedAt - a.updatedAt
                 }
-                if (Boolean(a.globalPinned) !== Boolean(b.globalPinned)) {
-                    return a.globalPinned ? -1 : 1
-                }
-                if (Boolean(a.pinned) !== Boolean(b.pinned)) {
-                    return a.pinned ? -1 : 1
-                }
-                // Active sessions first (web session list)
-                if (a.active !== b.active) {
-                    return a.active ? -1 : 1
-                }
-                // Within active sessions, sort by pending requests count
-                const aPending = getPendingCount(a)
-                const bPending = getPendingCount(b)
-                if (a.active && aPending !== bPending) {
-                    return bPending - aPending
-                }
-                // Then by updatedAt
-                return b.updatedAt - a.updatedAt
+                return compareSessionSummaries(a, b)
             })
         if (limit !== null) {
             sessionRecords = sessionRecords.slice(0, limit)
@@ -453,7 +438,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true, alreadyArchived: true })
         }
 
-        if (!sessionResult.session.active && lifecycleState !== 'running') {
+        // tiann/hapi#1820: `idle` is a live lifecycle too — a session the hub
+        // reconciled as keepalive-only must stay archivable once its socket
+        // finally drops, exactly like a stale `running` row.
+        if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)) {
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
@@ -509,6 +497,48 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json(outcome, status)
     })
 
+    app.post('/sessions/:id/codex/plan/implement', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const access = requireSessionFromParam(c, engine, { requireActive: true })
+        if (access instanceof Response) return access
+        if (access.session.metadata?.flavor !== 'codex' || !access.session.metadata.capabilities?.concurrentClients) {
+            return c.json({ ok: false, code: 'unavailable', error: 'An active shared Codex session is required' }, 409)
+        }
+        const parsed = ImplementCodexPlanRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
+        const result = await engine.implementCodexPlan(access.sessionId, c.get('namespace'), parsed.data.planId).catch(() => ({
+            ok: false as const, code: 'indeterminate' as const,
+            error: 'Plan implementation could not be confirmed. Reconnect and check the mode, queue and conversation before retrying.'
+        }))
+        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 502 : 409
+        return c.json(result, status)
+    })
+
+    app.post('/sessions/:id/clear', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const session = requireSessionFromParam(c, engine)
+        if (session instanceof Response) return session
+        if (!session.session.metadata?.capabilities?.concurrentClients) return c.json({ error: 'Shared session required' }, 409)
+        let sessionId = session.sessionId
+        const namespace = c.get('namespace')
+        if (!session.session.active) {
+            // All clients intercept /clear and /new. Resume here so they share
+            // the normal Runner lifecycle instead of reimplementing it.
+            const result = await engine.resumeSession(sessionId, namespace, { permissionMode: session.session.permissionMode })
+            if (result.type === 'error') {
+                const status = result.code === 'no_machine_online' ? 503
+                    : result.code === 'access_denied' ? 403
+                        : result.code === 'session_not_found' ? 404
+                            : result.code === 'resume_unavailable' ? 409 : 500
+                return c.json({ error: result.message, code: result.code }, status)
+            }
+            sessionId = result.sessionId
+        }
+        return c.json(await engine.clearConversation(sessionId, namespace))
+    })
+
     app.post('/sessions/:id/switch', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -520,6 +550,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        if (sessionResult.session.metadata?.capabilities?.concurrentClients) return c.json({ error: 'Shared sessions do not switch modes', code: 'control_mode_not_applicable' }, 409)
         await engine.switchSession(sessionResult.sessionId, 'remote')
         return c.json({ ok: true })
     })
@@ -552,7 +583,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
             return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
         }
-        if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true) {
+        if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'OpenCode plan mode is only supported for remote sessions' }, 409)
         }
 
@@ -580,7 +611,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'codex') {
             return c.json({ error: 'Collaboration mode is only supported for Codex sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Collaboration mode can only be changed for remote Codex sessions' }, 409)
         }
 
@@ -614,7 +645,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'copilot') {
             return c.json({ error: 'Copilot agent mode is only supported for Copilot sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Copilot agent mode can only be changed for remote Copilot sessions' }, 409)
         }
 
@@ -654,7 +685,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!supportsModelChange(flavor)) {
             return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             if (flavor === 'codex') {
                 return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
             }
@@ -666,8 +697,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
         }
 
+        // Pi commits the model before setting its thinking level, so a failure
+        // in between would leave half of the request applied.
+        const { model, effort } = parsed.data
+        if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
+            return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
+        }
+
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
+            await engine.applySessionConfig(sessionResult.sessionId, effort === undefined ? { model } : { model, effort })
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model'
@@ -690,7 +728,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'codex' && flavor !== 'opencode') {
             return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)
         }
 
@@ -732,7 +770,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!supportsEffort(flavor)) {
             return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
-        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true) {
+        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
         }
 
@@ -760,7 +798,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'codex') {
             return c.json({ error: 'Fast mode is only supported for Codex sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Fast mode can only be changed for remote sessions' }, 409)
         }
 
@@ -795,11 +833,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const body = await c.req.json().catch(() => null)
         const parsed = RenameSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body: name is required' }, 400)
+            return c.json({ error: 'Invalid body: name or titleLocked is required' }, 400)
         }
 
         try {
-            await engine.renameSession(sessionResult.sessionId, parsed.data.name)
+            await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to rename session'
@@ -851,7 +889,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text)
+            await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text, parsed.data.titleLocked)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to update session summary'
@@ -1341,6 +1379,13 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const result = await engine.listCodexModelsForSession(sessionResult.sessionId)
             return c.json(result)
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Codex models'
@@ -1426,6 +1471,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.get('/sessions/:id/dsh-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'dsh') {
+            return c.json({ success: false, error: 'DSH models are only available for DeepSeek Harness sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listDshModelsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list DSH models'
+            }, 500)
+        }
+    })
+
     app.get('/sessions/:id/grok-reasoning-effort-options', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) return engine
@@ -1458,6 +1521,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Copilot models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/kimi-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'kimi') {
+            return c.json({ success: false, error: 'Kimi models are only available for Kimi sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listKimiModelsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Kimi models'
             }, 500)
         }
     })

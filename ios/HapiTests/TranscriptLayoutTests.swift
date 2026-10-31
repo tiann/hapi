@@ -21,6 +21,7 @@ final class TranscriptLayoutTests: XCTestCase {
         var jump = 0
         var layouts: [Int] = []
         var viewport: TranscriptViewport?
+        @ObservationIgnored var viewports: [TranscriptViewport] = []
         let presentation = ChatPresentationState()
         init(_ rows: [Row]) { self.rows = rows }
     }
@@ -32,7 +33,7 @@ final class TranscriptLayoutTests: XCTestCase {
                 items: driver.rows, historyVersion: driver.version, jumpToken: driver.jump,
                 historyControlID: "history",
                 isInspectionPresented: driver.inspecting,
-                onViewport: { driver.viewport = $0 },
+                onViewport: { driver.viewport = $0; driver.viewports.append($0) },
                 onLayout: { version, _ in driver.layouts.append(version) }
             ) { row in
                 AnyView(StatefulRow(row: row).environment(\.chatPresentationState, driver.presentation))
@@ -101,6 +102,20 @@ final class TranscriptLayoutTests: XCTestCase {
             .first.map { ($0.accessibilityIdentifier!, $0.frame.minY - view.contentOffset.y) }
     }
 
+    private func bottomDistance(_ view: UICollectionView) -> CGFloat {
+        max(-view.adjustedContentInset.top,
+            view.contentSize.height - view.bounds.height + view.adjustedContentInset.bottom) - view.contentOffset.y
+    }
+
+    private func browseBottom(_ view: UICollectionView, distance: CGFloat) async {
+        view.delegate?.scrollViewWillBeginDragging?(view)
+        view.contentOffset.y += bottomDistance(view) - distance
+        view.layoutIfNeeded()
+        view.delegate?.scrollViewDidEndDragging?(view, willDecelerate: false)
+        await settle()
+        XCTAssertEqual(bottomDistance(view), distance, accuracy: 1)
+    }
+
     private func anchorY(_ id: String, in view: UICollectionView) -> CGFloat? {
         view.visibleCells.first { $0.accessibilityIdentifier == id }.map { $0.frame.minY - view.contentOffset.y }
     }
@@ -108,6 +123,72 @@ final class TranscriptLayoutTests: XCTestCase {
     private func diagnostic(_ driver: Driver, _ view: UICollectionView) -> String {
         let cells = view.visibleCells.map { ($0.accessibilityIdentifier ?? "?") + ":" + String(describing: $0.frame.minY - view.contentOffset.y) }
         return "offset=\(view.contentOffset.y) height=\(view.contentSize.height) follows=\(String(describing: driver.viewport?.followsTail)) cells=\(cells)"
+    }
+
+    func testLatestAffordanceHysteresisNeverResumesFollowingAtSmallOffsets() async {
+        let driver = Driver(rows(0..<50))
+        let (window, view) = host(driver)
+        defer { window.isHidden = true }
+        await settle { driver.layouts.contains(0) }
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
+
+        view.delegate?.scrollViewWillBeginDragging?(view)
+        XCTAssertEqual(driver.viewport?.followsTail, false)
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false, "Starting a drag must not reveal the button")
+        view.delegate?.scrollViewDidEndDragging?(view, willDecelerate: false)
+        await settle()
+        XCTAssertEqual(driver.viewport?.followsTail, true, "A zero-distance drag still ends at the actual bottom")
+
+        await browseBottom(view, distance: 30)
+        XCTAssertEqual(driver.viewport?.followsTail, false)
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
+        let reports = driver.viewports.count
+        await browseBottom(view, distance: 50)
+        XCTAssertEqual(driver.viewports.count, reports, "Offsets inside the same band must not republish the viewport")
+
+        for (distance, away): (CGFloat, Bool) in [(81, true), (60, true), (23, false), (40, false)] {
+            await browseBottom(view, distance: distance)
+            XCTAssertEqual(driver.viewport?.isAwayFromBottom, away)
+            XCTAssertEqual(driver.viewport?.followsTail, false, "Hiding the affordance must not snap back to latest")
+        }
+        await browseBottom(view, distance: 0)
+        XCTAssertEqual(driver.viewport?.followsTail, true)
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
+    }
+
+    func testStreamingAndViewportResizeRevealLatestWithoutMovingTheSmallOffsetAnchor() async throws {
+        let driver = Driver(rows(0..<50))
+        let (window, view) = host(driver)
+        defer { window.isHidden = true }
+        await settle { driver.layouts.contains(0) }
+        await browseBottom(view, distance: 30)
+        let anchor = try XCTUnwrap(readingAnchor(view))
+
+        driver.rows[49].height += 20 // Streaming / a small media resize.
+        await settle { abs(self.bottomDistance(view) - 50) <= 1 }
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
+        XCTAssertEqual(driver.viewport?.followsTail, false)
+        XCTAssertEqual(try XCTUnwrap(anchorY(anchor.id, in: view)), anchor.y, accuracy: 1)
+
+        driver.rows[49].height += 40
+        await settle { driver.viewport?.isAwayFromBottom == true }
+        XCTAssertEqual(bottomDistance(view), 90, accuracy: 1)
+        XCTAssertEqual(driver.viewport?.followsTail, false)
+        XCTAssertEqual(try XCTUnwrap(anchorY(anchor.id, in: view)), anchor.y, accuracy: 1)
+
+        for height: CGFloat in [600, 844] { // Keyboard / composer viewport changes.
+            window.frame.size.height = height
+            window.layoutIfNeeded()
+            await settle()
+            XCTAssertEqual(driver.viewport?.followsTail, false)
+            XCTAssertEqual(driver.viewport?.isAwayFromBottom, true)
+            XCTAssertEqual(try XCTUnwrap(anchorY(anchor.id, in: view)), anchor.y, accuracy: 1)
+        }
+        driver.jump += 1
+        await settle { driver.viewport?.followsTail == true }
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
+        await browseBottom(view, distance: 40)
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false, "Explicit latest resets the hysteresis latch")
     }
 
     func testInspectorPausesTailAndPreservesAnchorUntilExplicitJump() async throws {
@@ -120,6 +201,7 @@ final class TranscriptLayoutTests: XCTestCase {
         driver.inspecting = true
         await settle { driver.viewport?.followsTail == false }
         XCTAssertEqual(driver.viewport?.needsOlder, false)
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
         driver.rows.append(contentsOf: rows(50..<65))
         driver.version += 1
         await settle { driver.layouts.contains(1) }
@@ -131,6 +213,7 @@ final class TranscriptLayoutTests: XCTestCase {
         driver.jump += 1
         await settle { driver.viewport?.followsTail == true }
         XCTAssertEqual(driver.viewport?.isAtBottom, true)
+        XCTAssertEqual(driver.viewport?.isAwayFromBottom, false)
     }
 
     func testInspectorPausesShortTranscriptHistoryDemand() async {
@@ -197,6 +280,8 @@ final class TranscriptLayoutTests: XCTestCase {
         await settle()
         XCTAssertEqual(view.contentOffset.y, view.contentSize.height - view.bounds.height, accuracy: 1)
         XCTAssertEqual(driver.viewport?.followsTail, true)
+        XCTAssertTrue(driver.viewports.allSatisfy { !$0.isAwayFromBottom },
+                      "Following must hide the affordance even while self-sizing/viewport corrections are pending")
     }
 
     func testShortAndHiddenOnlyPagesStillAcknowledgeLayout() async {

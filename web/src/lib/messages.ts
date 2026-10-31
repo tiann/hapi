@@ -71,13 +71,21 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
         const existing = byId.get(msg.id)
         if (existing) {
             // Preserve client-only signals the incoming (server) copy can't carry:
-            // a late ack timestamp and the live 'steered' marker (not persisted).
+            // a late ack timestamp, the live 'steered' marker (not persisted), and
+            // force-dismiss of an indeterminate queued row (#1839).
             const preserved: Partial<DecryptedMessage> = {}
             if (existing.invokedAt != null && msg.invokedAt == null) {
                 preserved.invokedAt = existing.invokedAt
             }
             if (existing.steered && !msg.steered) {
                 preserved.steered = true
+            }
+            if (
+                existing.queueDismissed
+                && msg.invokedAt === null
+                && msg.deliveryState === 'indeterminate'
+            ) {
+                preserved.queueDismissed = true
             }
             byId.set(msg.id, Object.keys(preserved).length > 0 ? { ...msg, ...preserved } : msg)
         } else {
@@ -100,6 +108,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
         const optimisticStatusByLocalId = new Map<string, DecryptedMessage['status']>()
         const optimisticInvokedAtByLocalId = new Map<string, number | null | undefined>()
         const optimisticSteeredByLocalId = new Map<string, boolean>()
+        const optimisticQueueDismissedByLocalId = new Map<string, boolean>()
         for (const msg of merged) {
             if (msg.localId && isOptimisticMessage(msg) && incomingStoredLocalIds.has(msg.localId)) {
                 if (msg.status) {
@@ -111,6 +120,9 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 if (msg.steered) {
                     optimisticSteeredByLocalId.set(msg.localId, true)
                 }
+                if (msg.queueDismissed) {
+                    optimisticQueueDismissedByLocalId.set(msg.localId, true)
+                }
             }
         }
         merged = merged.filter((msg) => {
@@ -119,7 +131,12 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
             }
             return !isOptimisticMessage(msg)
         })
-        if (optimisticStatusByLocalId.size > 0 || optimisticInvokedAtByLocalId.size > 0 || optimisticSteeredByLocalId.size > 0) {
+        if (
+            optimisticStatusByLocalId.size > 0
+            || optimisticInvokedAtByLocalId.size > 0
+            || optimisticSteeredByLocalId.size > 0
+            || optimisticQueueDismissedByLocalId.size > 0
+        ) {
             merged = merged.map((msg) => {
                 if (!msg.localId) return msg
                 const update: Partial<DecryptedMessage> = {}
@@ -145,6 +162,14 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 // otherwise the ↳ Steered badge vanishes the moment the echo lands.
                 if (optimisticSteeredByLocalId.has(msg.localId) && !msg.steered) {
                     update.steered = true
+                }
+                if (
+                    optimisticQueueDismissedByLocalId.has(msg.localId)
+                    && msg.invokedAt === null
+                    && msg.deliveryState === 'indeterminate'
+                    && !msg.queueDismissed
+                ) {
+                    update.queueDismissed = true
                 }
                 if (Object.keys(update).length > 0) {
                     return { ...msg, ...update }

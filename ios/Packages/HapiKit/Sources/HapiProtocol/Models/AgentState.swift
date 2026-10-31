@@ -29,6 +29,7 @@ public struct AgentStateRequest: Codable, Equatable, Sendable {
 /// Mirrors `AgentStateCompletedRequestSchema` (`shared/src/schemas.ts`).
 public struct AgentStateCompletedRequest: Codable, Equatable, Sendable {
     public enum Status: String, Codable, Sendable {
+        case resolved
         case canceled
         case denied
         case approved
@@ -94,6 +95,9 @@ public struct AgentState: Codable, Equatable, Sendable {
     public var controlledByUser: Bool?
     /// Launch mode the session was started in (persisted for reopen/resume).
     public var startingMode: SessionStartingMode?
+    /// Current actionable shared Codex proposal's tool-call id. Nil withdraws
+    /// the plan menu; proposals are not entries in `requests`.
+    public var codexPlanProposalId: String?
     /// Pending requests keyed by request id.
     public var requests: [String: AgentStateRequest]?
     /// Resolved requests keyed by request id.
@@ -103,10 +107,12 @@ public struct AgentState: Codable, Equatable, Sendable {
         controlledByUser: Bool? = nil,
         startingMode: SessionStartingMode? = nil,
         requests: [String: AgentStateRequest]? = nil,
-        completedRequests: [String: AgentStateCompletedRequest]? = nil
+        completedRequests: [String: AgentStateCompletedRequest]? = nil,
+        codexPlanProposalId: String? = nil
     ) {
         self.controlledByUser = controlledByUser
         self.startingMode = startingMode
+        self.codexPlanProposalId = codexPlanProposalId
         self.requests = requests
         self.completedRequests = completedRequests
     }

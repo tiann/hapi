@@ -165,6 +165,8 @@ struct SettingsView: View {
                     UserDefaults.standard.set(["en"], forKey: "AppleLanguages")
                 case .simplifiedChinese:
                     UserDefaults.standard.set(["zh-Hans"], forKey: "AppleLanguages")
+                case .russian:
+                    UserDefaults.standard.set(["ru"], forKey: "AppleLanguages")
                 }
             }
         )
@@ -258,7 +260,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .loaded(let health):
-                Text("Status: \(health.status) · protocol v\(health.protocolVersion)")
+                Text("Status: \(health.status) · protocol v\(health.protocolVersion, specifier: "%lld")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .failed:

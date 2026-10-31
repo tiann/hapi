@@ -9,6 +9,8 @@ import app.hapi.protocol.window.MessageViewMode
 import app.hapi.protocol.window.MessagePosition
 import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.PersistedMessageWindow
+import app.hapi.protocol.window.INITIAL_PAGE_SIZE
+import app.hapi.protocol.window.PAGE_SIZE
 import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.DecryptedMessage
@@ -234,6 +236,37 @@ class MessageWindowStoreTest {
         request.cancel()
         request.join()
         assertEquals(false, store.state.value.isLoadingMore)
+    }
+
+    @Test
+    fun `cold sync requests the initial page size`() = runTest {
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("s", api, backgroundScope)
+
+        val sync = launch { store.syncTail() }
+        runCurrent()
+        assertEquals(1, api.requests.size)
+        assertTrue(api.requests.single() is MessagesQuery.Latest)
+        assertEquals(INITIAL_PAGE_SIZE, (api.requests.single() as MessagesQuery.Latest).limit)
+
+        api.release(latestPage(listOf(agentRow("a-1", 1, 1000)), epoch = 0))
+        sync.join()
+    }
+
+    @Test
+    fun `reset sync keeps the full latest page size`() = runTest {
+        val api = GatedMessagesApi()
+        val initial = MessageWindowLogic.createState("s").copy(requiresLatestReset = true)
+        val store = MessageWindowStore("s", api, backgroundScope, initialState = initial)
+
+        val sync = launch { store.syncTail() }
+        runCurrent()
+        assertEquals(1, api.requests.size)
+        assertTrue(api.requests.single() is MessagesQuery.Latest)
+        assertEquals(PAGE_SIZE, (api.requests.single() as MessagesQuery.Latest).limit)
+
+        api.release(latestPage(listOf(agentRow("a-1", 1, 1000)), epoch = 1))
+        sync.join()
     }
 
     @Test

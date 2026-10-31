@@ -2,13 +2,14 @@ import Layout from "@/components/Layout";
 import AppShowcase from "@/components/AppShowcase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowRight, Check, Code2, Copy, Globe, Laptop, Lock, MessageSquare, Smartphone, Terminal, Zap, GitBranch, ShieldAlert, Coffee, Mountain, Footprints } from "lucide-react";
+import { Apple, ArrowRight, Check, Code2, Copy, Globe, Laptop, Lock, MessageSquare, Smartphone, Terminal, Zap, GitBranch, ShieldAlert, Coffee, Mountain, Footprints, Play } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
 import { motion, useScroll, useTransform } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { SEO } from "@/components/SEO";
 import { useLatestVersion } from "@/hooks/useLatestVersion";
+import { APP_STORE_URL, GOOGLE_PLAY_URL } from "@/const";
 
 export default function Home() {
   const [copied, setCopied] = useState("");
@@ -53,6 +54,22 @@ export default function Home() {
                 <Button variant="outline" size="lg" className="text-lg px-8 py-6 rounded-xl shadow-hard hover:translate-y-1 hover:shadow-none transition-all border-2 border-border bg-background" onClick={() => window.open('https://github.com/tiann/hapi', '_blank')}>
                   {t('hero.githubBtn')}
                 </Button>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-3">
+                  <Button variant="outline" className="rounded-xl shadow-hard-sm hover:translate-y-0.5 hover:shadow-none transition-all border-2 border-border bg-background font-bold" asChild>
+                    <a href={APP_STORE_URL} target="_blank" rel="noopener noreferrer" aria-label={t('hero.appStore')}>
+                      <Apple className="h-5 w-5" /> {t('hero.appStore')}
+                    </a>
+                  </Button>
+                  <Button variant="outline" className="rounded-xl shadow-hard-sm hover:translate-y-0.5 hover:shadow-none transition-all border-2 border-border bg-background font-bold" asChild>
+                    <a href={GOOGLE_PLAY_URL} target="_blank" rel="noopener noreferrer" aria-label={t('hero.googlePlay')}>
+                      <Play className="h-5 w-5" /> {t('hero.googlePlay')}
+                    </a>
+                  </Button>
+                </div>
+                <p className="text-sm text-muted-foreground">{t('hero.appsNote')}</p>
               </div>
             </div>
 

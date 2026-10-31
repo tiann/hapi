@@ -10,6 +10,7 @@ import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import type { SessionModel } from "@/api/types";
+import type { PermissionMode } from "./loop";
 
 function withoutTrackedModelArgs(args: string[]): string[] {
     const filtered: string[] = [];
@@ -39,6 +40,7 @@ export async function claudeLocal(opts: {
     claudeEnvVars?: Record<string, string>,
     claudeArgs?: string[]
     model?: SessionModel
+    permissionMode?: PermissionMode
     allowedTools?: string[]
     hookSettingsPath: string
 }) {
@@ -92,6 +94,10 @@ export async function claudeLocal(opts: {
     }
     if (opts.model) {
         args.push('--model', opts.model);
+    }
+    // Omit default so Claude's own settings.json defaultMode still applies.
+    if (opts.permissionMode && opts.permissionMode !== 'default') {
+        args.push('--permission-mode', opts.permissionMode);
     }
 
     // Add hook settings for session tracking

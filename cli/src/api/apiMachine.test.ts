@@ -8,6 +8,7 @@ const listOpencodeModelsForCwdMock = vi.hoisted(() => vi.fn())
 const listOpencodeModelVariantsMock = vi.hoisted(() => vi.fn())
 const listGrokModelsForCwdMock = vi.hoisted(() => vi.fn())
 const listCopilotModelsForCwdMock = vi.hoisted(() => vi.fn())
+const listKimiModelsForCwdMock = vi.hoisted(() => vi.fn())
 const inspectCursorChatStoreMock = vi.hoisted(() => vi.fn())
 
 vi.mock('socket.io-client', () => ({
@@ -32,6 +33,10 @@ vi.mock('../modules/common/grokModels', () => ({
 
 vi.mock('../modules/common/copilotModels', () => ({
     listCopilotModelsForCwd: listCopilotModelsForCwdMock
+}))
+
+vi.mock('../modules/common/kimiModels', () => ({
+    listKimiModelsForCwd: listKimiModelsForCwdMock
 }))
 
 vi.mock('@/cursor/cursorChatStoreStatus', () => ({
@@ -102,6 +107,15 @@ async function callListCopilotModels(client: ApiMachineClient, machineId: string
     const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
     const raw = await manager.handleRequest({
         method: `${machineId}:listCopilotModelsForCwd`,
+        params: JSON.stringify({ cwd })
+    })
+    return JSON.parse(raw) as unknown
+}
+
+async function callListKimiModels(client: ApiMachineClient, machineId: string, cwd: string): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:listKimiModelsForCwd`,
         params: JSON.stringify({ cwd })
     })
     return JSON.parse(raw) as unknown
@@ -479,6 +493,64 @@ describe('ApiMachineClient listGrokModelsForCwd handler', () => {
     })
 })
 
+describe('ApiMachineClient listKimiModelsForCwd handler', () => {
+    let workspaceRoot: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        listKimiModelsForCwdMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-kimi-machine-ws-'))
+    })
+
+    afterEach(() => {
+        rmSync(workspaceRoot, { recursive: true, force: true })
+    })
+
+    it('rejects cwd outside workspace roots before running the Kimi model probe', async () => {
+        const machine = makeMachine('kimi-machine-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const outsideCwd = mkdtempSync(join(tmpdir(), 'hapi-kimi-outside-'))
+
+        try {
+            expect(await callListKimiModels(client, machine.id, outsideCwd)).toEqual({
+                success: false,
+                error: 'Path is outside workspace roots'
+            })
+            expect(listKimiModelsForCwdMock).not.toHaveBeenCalled()
+        } finally {
+            rmSync(outsideCwd, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+
+    it('forwards a resolved workspace cwd to the Kimi model probe', async () => {
+        const machine = makeMachine('kimi-machine-2')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        listKimiModelsForCwdMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [
+                { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+                { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        })
+
+        try {
+            expect(await callListKimiModels(client, machine.id, workspaceRoot)).toEqual({
+                success: true,
+                availableModels: [
+                    { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+                    { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' }
+                ],
+                currentModelId: 'GLM-5.3-flash'
+            })
+            expect(listKimiModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
+        } finally {
+            client.shutdown()
+        }
+    })
+})
+
 describe('ApiMachineClient Codex transcript handlers', () => {
     const originalCodexHome = process.env.CODEX_HOME
     let workspaceRoot: string
@@ -674,6 +746,35 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('returns childStarted:false on outside_workspace_roots so hub deletes the stub', async () => {
+        const machine = makeMachine('machine-spawn-outside')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const spawnSession = vi.fn()
+
+        client.setRPCHandlers({
+            spawnSession,
+            stopSession: vi.fn(async () => 'stopped' as const),
+            requestShutdown: vi.fn()
+        })
+
+        try {
+            const result = await callSpawnHappySession(client, machine.id, {
+                directory: '/tmp/definitely-outside-roots',
+                agent: 'claude',
+            })
+
+            expect(result).toEqual({
+                type: 'error',
+                errorMessage: "Directory is outside this machine's workspace roots",
+                code: 'outside_workspace_roots',
+                childStarted: false,
+            })
+            expect(spawnSession).not.toHaveBeenCalled()
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {
@@ -764,6 +865,46 @@ describe('ApiMachineClient list-directory handler', () => {
         const entries = (result as { success: boolean; entries?: { name: string }[] }).entries ?? []
         return entries.map((entry) => entry.name).sort()
     }
+
+    it('browses outside the home directory when no workspace roots are configured', async () => {
+        const machine = makeMachine('machine-ls-unrestricted')
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            const result = await callListDirectory(client, machine.id, { path: workspaceRoot })
+            expect((result as { success: boolean }).success).toBe(true)
+            expect(entryNames(result)).toEqual(['plain.txt', 'visible-dir'])
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('lists in-root directory links and rejects links escaping explicit workspace roots', async () => {
+        const outside = mkdtempSync(join(tmpdir(), 'hapi-machine-ls-outside-'))
+        mkdirSync(join(workspaceRoot, 'visible-dir', '.git'))
+        symlinkSync(join(workspaceRoot, 'visible-dir'), join(workspaceRoot, 'linked-repo'), 'dir')
+        symlinkSync(outside, join(workspaceRoot, 'escape'), 'dir')
+        const machine = makeMachine('machine-ls-links')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        try {
+            const result = await callListDirectory(client, machine.id, { path: workspaceRoot })
+            expect(result).toMatchObject({
+                success: true,
+                entries: expect.arrayContaining([
+                    expect.objectContaining({ name: 'linked-repo', type: 'directory', isGitRepo: true }),
+                ]),
+            })
+            expect(entryNames(result)).not.toContain('escape')
+            expect(await callListDirectory(client, machine.id, { path: join(workspaceRoot, 'escape') }))
+                .toEqual({ success: false, error: 'Path is outside workspace roots' })
+            expect(await callListDirectory(client, machine.id, { path: join(workspaceRoot, '..') }))
+                .toEqual({ success: false, error: 'Path is outside workspace roots' })
+            expect(await callListDirectory(client, machine.id, { path: join(workspaceRoot, 'linked-repo') }))
+                .toMatchObject({ success: true })
+        } finally {
+            client.shutdown()
+            rmSync(outside, { recursive: true, force: true })
+        }
+    })
 
     it('filters dot-prefixed entries by default', async () => {
         const machine = makeMachine('machine-ls-1')

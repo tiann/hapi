@@ -132,7 +132,7 @@ fun Markdown(text: String, modifier: Modifier = Modifier) {
         }
         cache.cached(text) ?: prepared
     }
-    val baseStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 22.sp)
+    val baseStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp)
     CompositionLocalProvider(LocalTextStyle provides baseStyle) {
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (parsed != null) MarkdownBlockChildren(parsed.document, parsed)
@@ -291,8 +291,8 @@ private fun HtmlBlockFallback(literal: String) {
         text = literal.trimEnd('\n'),
         style = LocalTextStyle.current.copy(
             fontFamily = FontFamily.Monospace,
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
         ),
         color = MaterialTheme.hapi.hint,
     )
@@ -349,7 +349,7 @@ private fun collectTableRows(table: TableBlock): List<TableRowModel> {
  */
 @Composable
 private fun TableGrid(rows: List<TableRowModel>, columnCount: Int, colors: HapiExtendedColors) {
-    val cellStyle = LocalTextStyle.current.copy(fontSize = 13.sp, lineHeight = 19.sp)
+    val cellStyle = LocalTextStyle.current.copy(fontSize = 16.sp, lineHeight = 24.sp)
     Layout(
         content = {
             rows.forEachIndexed { r, row ->
@@ -469,7 +469,7 @@ private class InlineContext(val colors: HapiExtendedColors, val handler: Markdow
     )
     val codeSpanStyle = SpanStyle(
         fontFamily = FontFamily.Monospace,
-        fontSize = 0.9.em,
+        fontSize = 0.9375.em,
         background = colors.inlineCodeBackground,
         color = colors.inlineCodeForeground,
     )

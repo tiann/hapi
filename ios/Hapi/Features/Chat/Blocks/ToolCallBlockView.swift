@@ -4,11 +4,10 @@ import HapiUI
 import SwiftUI
 
 /// A bounded activity summary. Ordinary tools open the shared inspector;
-/// sidechains open their own transcript. Only approvals keep actions inline.
+/// sidechains open their own transcript. Questions, plans and approvals stay inline.
 struct ToolCallBlockView: View {
     let block: ToolCallBlock
     let basePath: String?
-    var compact = false
 
     @Environment(\.hapiTheme) private var theme
     @Environment(\.hapiTypography) private var typography
@@ -16,12 +15,32 @@ struct ToolCallBlockView: View {
     @Environment(\.openChatTool) private var openTool
 
     var body: some View {
+        if isQuestionDetailsTool(block.tool.name) {
+            QuestionToolCard(block: block)
+        } else {
+            activityCard
+        }
+    }
+
+    @ViewBuilder
+    private var activityCard: some View {
         let presentation = toolSummaryPresentation(block.tool, basePath: basePath)
         VStack(alignment: .leading, spacing: 0) {
             headerRow(presentation)
+            if let plan = planProposalMarkdown(block.tool) {
+                PlanProposalContent(markdown: plan)
+                    .padding(12)
+                    .accessibilityIdentifier("plan-proposal-\(block.id)")
+                if let interactions {
+                    CodexPlanActionsView(planId: block.tool.id, interactions: interactions)
+                }
+            }
             if let permission = block.tool.permission {
                 if permission.status == .pending, let interactions {
-                    pendingApprovalSection(permission: permission, interactions: interactions)
+                    PermissionApprovalView(
+                        tool: block.tool, requestId: permission.id, interactions: interactions,
+                        openInput: { openTool?(block) }
+                    )
                 } else {
                     PermissionStateRow(permission: permission)
                 }
@@ -29,7 +48,7 @@ struct ToolCallBlockView: View {
             if opensToolProcess(block) {
                 Button { openTool?(block) } label: {
                     Label(
-                        String(format: String(localized: "View process · %lld steps"), Int64(block.children.count)),
+                        String(localized: "View process · \(block.children.count) steps"),
                         systemImage: "arrow.right"
                     )
                     .font(typography.captionFont)
@@ -42,45 +61,37 @@ struct ToolCallBlockView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(compact ? Color.clear : theme.surface)
+        .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// Pending permission with a live interaction engine: highlighted banner
-    /// plus the actionable footer (approve buttons / answer forms).
-    private func pendingApprovalSection(
-        permission: ToolPermission,
-        interactions: ChatInteractor
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Label("Awaiting approval", systemImage: "hourglass")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
-            if !isAskUserQuestionToolName(block.tool.name) && !isRequestUserInputToolName(block.tool.name) {
-                Button { openTool?(block) } label: {
-                    Label("View full input", systemImage: "arrow.up.right.square")
-                        .font(typography.toolSubtitleFont)
-                        .frame(minHeight: 44)
-                }
-                .padding(.horizontal, 10)
-            }
-            PendingPermissionFooter(
-                tool: block.tool,
-                requestId: permission.id,
-                interactions: interactions
-            )
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.10))
-    }
-
     private func headerRow(_ presentation: ToolCardPresentation) -> some View {
-        Button {
-            openTool?(block)
-        } label: {
-            let layout = typography.usesStackedToolLayout
+        ToolSummaryRow(
+            presentation: presentation, state: block.tool.state,
+            showsStatus: block.tool.state != .pending || block.tool.permission?.status != .pending
+        ) { openTool?(block) }
+            .accessibilityHint(opensToolProcess(block)
+                ? String(localized: "View agent process") : String(localized: "View tool details"))
+            .accessibilityIdentifier("tool-summary-\(block.id)")
+    }
+}
+
+/// Lightweight, read-only row shared by the conversation and group browser.
+/// Tool output and approval controls are deliberately not part of this view.
+struct ToolSummaryRow: View {
+    let presentation: ToolCardPresentation
+    let state: ToolCallState
+    var showsStatus = true
+    let action: () -> Void
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
+
+    var body: some View {
+        Button(action: action) {
+            // An approval owns its status below this summary. Without a
+            // status chip, keep the chevron beside the title, not on an orphan row.
+            let stacksStatus = typography.usesStackedToolLayout && showsStatus
+            let layout = stacksStatus
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
                 : AnyLayout(HStackLayout(spacing: 8))
             layout {
@@ -107,10 +118,10 @@ struct ToolCallBlockView: View {
                         }
                     }
                 }
-                if !typography.usesStackedToolLayout { Spacer(minLength: 8) }
+                if !stacksStatus { Spacer(minLength: 8) }
                 HStack(spacing: 8) {
-                    if block.tool.state != .completed {
-                        ToolStatusIndicator(state: block.tool.state)
+                    if showsStatus && state != .completed {
+                        ToolStatusIndicator(state: state)
                     }
                     Image(systemName: "chevron.right")
                         .font(typography.captionFont)
@@ -123,12 +134,8 @@ struct ToolCallBlockView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(block.tool.state == .completed ? String(localized: "Completed") : "")
-        .accessibilityHint(opensToolProcess(block)
-            ? String(localized: "View agent process") : String(localized: "View tool details"))
-        .accessibilityIdentifier("tool-summary-\(block.id)")
+        .accessibilityValue(state == .completed ? String(localized: "Completed") : "")
     }
-
 }
 
 // MARK: - Status
@@ -171,44 +178,46 @@ private struct StatusChip: View {
 
 // MARK: - Permission (read-only)
 
-/// Read-only permission verdict: highlighted banner while pending (shown only
-/// without a `\.chatInteractions` engine — previews/tests; the live chat
-/// renders `PendingPermissionFooter` instead), subdued line once decided.
+/// Read-only verdict in the inspector or a non-interactive transcript. Live
+/// approvals share the same quiet status treatment in PermissionApprovalView.
 struct PermissionStateRow: View {
     let permission: ToolPermission
+    var horizontalInset: CGFloat = 12
 
     var body: some View {
-        switch permission.status {
-        case .pending:
-            Label("Awaiting approval", systemImage: "hourglass")
-                .font(.footnote.weight(.semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.orange.opacity(0.18))
-                .foregroundStyle(.orange)
-        case .approved:
-            PermissionLine(text: String(localized: "✓ Approved") + (permission.mode.map { " · \($0)" } ?? ""))
-        case .denied:
-            PermissionLine(
-                text: String(localized: "✕ Denied") + (permission.reason.map { " · \($0)" } ?? ""),
-                isError: true
-            )
-        case .canceled:
-            PermissionLine(text: String(localized: "— Canceled"))
+        Group {
+            switch permission.status {
+            case .pending:
+                PermissionPendingStatus()
+            case .approved:
+                PermissionLine(text: String(localized: "✓ Approved") + (permission.mode.map { " · \($0)" } ?? ""))
+            case .denied:
+                PermissionLine(
+                    text: String(localized: "✕ Denied") + (permission.reason.map { " · \($0)" } ?? ""),
+                    isError: true
+                )
+            case .resolved:
+                PermissionLine(text: String(localized: "Resolved in Codex"))
+            case .canceled:
+                PermissionLine(text: String(localized: "— Canceled"))
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, horizontalInset)
+        .padding(.vertical, 6)
     }
 }
 
 private struct PermissionLine: View {
     let text: String
     var isError = false
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         Text(text)
-            .font(.footnote)
-            .foregroundStyle(isError ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-            .padding(.horizontal, 10)
-            .padding(.bottom, 6)
+            .font(typography.captionFont)
+            .foregroundStyle(isError ? theme.danger : theme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

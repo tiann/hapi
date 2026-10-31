@@ -5,7 +5,7 @@ import {
     type HapiSessionExport,
     type HapiSessionExportResult
 } from '@hapi/protocol/sessionExport'
-import type { AttachmentMetadata, DecryptedMessage, Session } from '@hapi/protocol/types'
+import type { AttachmentMetadata, DecryptedMessage, Metadata, Session } from '@hapi/protocol/types'
 import {
     isClaudeChatVisibleMessage,
     isRedundantGoalStatusEventContent,
@@ -20,6 +20,14 @@ import { EventPublisher } from './eventPublisher'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
+
+/**
+ * localId prefix for peer submissions (`hapi ping-peer` / MCP `ping_peer`).
+ * Excludes peer rows from the session-end synthetic sweep so their invocation
+ * timestamps reflect real runtime consumption and unconsumed rows remain
+ * replayable. Shared with the CLI sender.
+ */
+export const PEER_MESSAGE_LOCAL_ID_PREFIX = 'ping-peer-'
 
 function messagePosition(message: StoredMessageForDelivery): MessagePosition {
     return {
@@ -496,6 +504,17 @@ export class MessageService {
         // Phase 2: row is still queued. Ask the CLI whether it already shifted the item
         // (race window between collectBatch() shift and messages-consumed ack).
         const { localId, resolvedId, scheduledAt } = lookup
+        const shared = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients === true
+        const connected = (this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)?.size ?? 0) > 0
+        if (shared && localId && !connected && (scheduledAt === null || scheduledAt <= Date.now())) {
+            // A shared worker keeps running through hub outages. Offline does
+            // not mean its native queue is empty; never claim cancellation.
+            if (localId) {
+                this.store.messages.setMessagesDeliveryState(sessionId, [localId], 'indeterminate')
+                this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds: [localId] })
+            }
+            return { status: 'busy', localId }
+        }
         const isDispatching = lookup.status === 'dispatching'
         const isIndeterminate = lookup.status === 'indeterminate'
 
@@ -539,7 +558,8 @@ export class MessageService {
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
             }
-            if (ackResult === 'in-flight' || ackResult === 'indeterminate' || (ackResult === 'timeout' && cliCount > 0)) {
+            if (ackResult === 'in-flight' || ackResult === 'indeterminate' || (ackResult === 'timeout' && cliCount > 0)
+                || (shared && ackResult !== 'removed')) {
                 return { status: 'busy', localId }
             }
             this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
@@ -696,6 +716,10 @@ export class MessageService {
                 : { status: 'not-found' }
         }
         if (cancelResult === 'in-flight' || cancelResult === 'timeout') {
+            return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+        if ((this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients
+            && cancelResult !== 'removed') {
             return { status: 'retry-unavailable', localId: lookup.localId }
         }
         const refreshed = this.store.messages.lookupQueuedMessage(sessionId, messageId)
@@ -865,10 +889,13 @@ export class MessageService {
             }
         }
 
+        // Every user message needs an identity: agents echo the turn back under
+        // it (Shared Codex clientUserMessageId), and (session, localId) is the
+        // only dedupe key. A sender that omits one gets a hub-minted id.
         const inserted = this.store.addMessageForCurrentSession(
             sessionId,
             content,
-            payload.localId ?? undefined,
+            payload.localId ?? randomUUID(),
             payload.scheduledAt ?? null
         )
         const actualSessionId = inserted.sessionId
@@ -941,6 +968,12 @@ export class MessageService {
      * see the row in the next mature-scan tick and the user's prompt would be
      * silently dropped.  See HAPI Bot R4 finding.
      *
+     * Peer rows (`ping-peer-` localIds) are also skipped: the sweep's synthetic
+     * invokedAt is not a runtime-consumption ACK, so stamping one would falsely
+     * confirm a delivery the recipient runtime never made. Skipped peer rows
+     * stay pending and replayable on re-attach; only a real runtime ACK
+     * (messages-consumed) confirms them.
+     *
      * Returns the list of localIds that were stamped and the invokedAt timestamp,
      * or null if no messages needed sweeping.
      */
@@ -951,7 +984,7 @@ export class MessageService {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
         const localIds = queued
             .map((m) => m.localId)
-            .filter((id): id is string => typeof id === 'string')
+            .filter((id): id is string => typeof id === 'string' && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX))
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)

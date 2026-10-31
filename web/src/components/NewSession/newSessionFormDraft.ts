@@ -83,7 +83,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 const yoloBridgeMode = LEGACY_YOLO_BRIDGE_AGENTS.includes(restoredAgent)
                     ? resolveHapiYoloPermissionMode(restoredAgent)
                     : null
-                if (agentPreserved && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
+                if (agentPreserved && parsedMode === undefined && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
                     return yoloBridgeMode
                 }
                 return 'default'

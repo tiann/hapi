@@ -81,7 +81,7 @@ describe('POST /v1/push validation', () => {
         { name: 'JSON array body', body: [1, 2], status: 400, code: 'bad_request' },
         { name: 'missing platform', body: { token: TOKEN, envelope: ENVELOPE }, status: 400, code: 'bad_request' },
         { name: 'unknown platform', body: { platform: 'web', token: TOKEN, envelope: ENVELOPE }, status: 400, code: 'bad_request' },
-        { name: 'android platform (reserved)', body: { platform: 'android', token: TOKEN, envelope: ENVELOPE }, status: 501, code: 'unsupported_platform' },
+        { name: 'android provider not configured', body: { platform: 'android', token: TOKEN, envelope: ENVELOPE }, status: 501, code: 'unsupported_platform' },
         { name: 'missing token', body: { platform: 'ios', envelope: ENVELOPE }, status: 400, code: 'bad_request' },
         { name: 'non-string token', body: { platform: 'ios', token: 42, envelope: ENVELOPE }, status: 400, code: 'bad_request' },
         { name: 'non-hex token', body: { platform: 'ios', token: 'zz'.repeat(32), envelope: ENVELOPE }, status: 400, code: 'bad_request' },
@@ -201,7 +201,7 @@ describe('POST /v1/push forwarding', () => {
         { status: 429, reason: 'TooManyProviderTokenUpdates', outcome: 'apns-throttled' },
         { status: 400, reason: 'BadDeviceToken', outcome: 'unregistered' },
         { status: 410, reason: 'Unregistered', outcome: 'unregistered' }
-    ])('logs the APNs reason for $status $reason', async ({ status, reason, outcome }) => {
+    ])('logs a sanitized APNs outcome for $status $reason', async ({ status, reason, outcome }) => {
         const { app, apns, logs } = makeHarness()
         apns.nextResults.push({ kind: 'rejected', status, reason })
         await app.handle(
@@ -209,7 +209,7 @@ describe('POST /v1/push forwarding', () => {
             '1.2.3.4'
         )
         expect(logs).toEqual([
-            `[relay] push token=${hashedTokenPrefix(TOKEN)} outcome=${outcome} (apns ${status} ${reason})`
+            expect.stringContaining(`[relay] push platform=ios token=${hashedTokenPrefix(TOKEN, 'ios')} outcome=${outcome} (apns ${status}) durationMs=`)
         ])
     })
 
@@ -225,7 +225,7 @@ describe('POST /v1/push forwarding', () => {
             expect(line).not.toContain(TOKEN)
             expect(line).not.toContain(TOKEN.toLowerCase())
         }
-        expect(logs.some((line) => line.includes(hashedTokenPrefix(TOKEN)))).toBe(true)
+        expect(logs.some((line) => line.includes(hashedTokenPrefix(TOKEN, 'ios')))).toBe(true)
     })
 })
 

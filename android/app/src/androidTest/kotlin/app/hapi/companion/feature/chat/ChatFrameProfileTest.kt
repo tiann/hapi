@@ -22,11 +22,19 @@ import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.UserTextBlock
+import app.hapi.protocol.chat.ToolGroupBlock
+import app.hapi.protocol.chat.ToolGroupingOptions
+import app.hapi.protocol.chat.buildVisibleChatBlocks
+import app.hapi.companion.feature.chat.blocks.previewToolCall
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
@@ -60,15 +68,36 @@ class ChatFrameProfileTest {
         loadFailed = false, warning = null, tailRevision = 0,
     )
 
+    private fun tools(revision: Int): ToolGroupBlock = buildVisibleChatBlocks(
+        (1..200).map { index ->
+            previewToolCall("profile-tool-$index", "Read", input = mapOf("file_path" to "/repo/file-$index.kt")).also {
+                if (index == 200) it.tool = it.tool.copy(state = "running", result = JsonPrimitive("output ".repeat(10_000) + revision))
+            }
+        }, ToolGroupingOptions(hasMoreMessages = false),
+    ).filterIsInstance<ToolGroupBlock>().single()
+
+    private fun heapBytes(): Long = Runtime.getRuntime().let { it.totalMemory() - it.freeMemory() }
+
     @Test fun profileRealFrames() {
         assumeTrue("Opt in with -e hapiScrollProfile true", InstrumentationRegistry.getArguments().getString("hapiScrollProfile") == "true")
         val output = File(instrumentation.targetContext.getExternalFilesDir(null), "scroll-profile").apply { mkdirs() }
         val records = File(output, "frames.jsonl").apply { writeText("") }
-        for (scenarioName in listOf("plain", "rich", "rich-updates")) {
+        for (scenarioName in listOf("plain", "rich", "rich-updates", "long-message", "tool-group-updates")) {
             val sources = (0..<800).map { source(it, scenarioName != "plain") }
             val updates = (0..<100).map { sources[799] + "\n\nStreaming revision $it" }
             val cache = MarkdownRenderCache().apply { prepare(sources.toSet()) }
-            val state = mutableStateOf(state(sources.mapIndexed(::row)))
+            val longText = "Long user message with preserved whitespace.\r\n".repeat(25_000)
+            val projection = TranscriptProjection()
+            val initialRows = sources.mapIndexed { index, source ->
+                when {
+                    scenarioName == "long-message" && index % 20 == 0 -> UserTextBlock(
+                        "profile-$index", null, index.toLong(), null, longText, null, null, null, null,
+                    )
+                    scenarioName == "tool-group-updates" && index == 340 -> tools(0)
+                    else -> row(index, source)
+                }
+            }
+            val state = mutableStateOf(state(projection.project(initialRows)))
             lateinit var list: LazyListState
             ActivityScenario.launch(ComponentActivity::class.java).use { activity ->
                 activity.onActivity { host ->
@@ -97,6 +126,7 @@ class ChatFrameProfileTest {
                     var width = 0
                     var height = 0
                     var refreshRate = 60f
+                    val heapBefore = heapBytes()
                     shell("dumpsys gfxinfo ${instrumentation.targetContext.packageName} reset")
                     activity.onActivity { host ->
                         startIndex = list.firstVisibleItemIndex
@@ -105,11 +135,16 @@ class ChatFrameProfileTest {
                         @Suppress("DEPRECATION")
                         refreshRate = host.windowManager.defaultDisplay.refreshRate
                         probe.start(host.window)
-                        if (scenarioName == "rich-updates") host.lifecycleScope.launch {
+                        if (scenarioName == "rich-updates" || scenarioName == "tool-group-updates") host.lifecycleScope.launch {
                             var revision = 0
                             while (isActive && probe.active.get()) {
+                                val next = withContext(Dispatchers.Default) {
+                                    if (scenarioName == "tool-group-updates") projection.project(initialRows.mapIndexed { index, block ->
+                                        if (index == 340) tools(revision) else block
+                                    }) else state.value.blocks.dropLast(1) + row(799, updates[revision % updates.size])
+                                }
                                 state.value = state.value.copy(
-                                    blocks = state.value.blocks.dropLast(1) + row(799, updates[revision % updates.size]),
+                                    blocks = next,
                                     messagesVersion = state.value.messagesVersion + 1,
                                 )
                                 revision++
@@ -128,11 +163,16 @@ class ChatFrameProfileTest {
                     activity.onActivity { host -> endIndex = list.firstVisibleItemIndex; probe.stop(host.window) }
                     probe.finish()
                     File(output, "$scenarioName-$repetition-gfxinfo.txt").writeText(shell("dumpsys gfxinfo ${instrumentation.targetContext.packageName} framestats"))
+                    File(output, "$scenarioName-$repetition-memory.txt").writeText(shell("dumpsys meminfo ${instrumentation.targetContext.packageName}"))
                     val record = probe.result(refreshRate.toDouble()).apply {
                         put("scenario", scenarioName); put("repetition", repetition); put("rows", 800)
                         put("viewportWidthPx", width); put("viewportHeightPx", height)
                         put("startIndex", startIndex); put("endIndex", endIndex)
                         put("api", android.os.Build.VERSION.SDK_INT)
+                        put("heapBeforeBytes", heapBefore); put("heapAfterBytes", heapBytes())
+                        put("nativeHeapAllocatedBytes", android.os.Debug.getNativeHeapAllocatedSize())
+                        put("longMessageUtf16Units", if (scenarioName == "long-message") longText.length else 0)
+                        put("inspectedGroupTools", if (scenarioName == "tool-group-updates") 200 else 0)
                         put("metric", "window-frame-metrics-and-choreographer-not-presented-fps")
                     }
                     records.appendText(record.toString() + "\n")

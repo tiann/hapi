@@ -30,7 +30,9 @@ internal data class QuestionDetail(
     val hasAnswers: Boolean get() = options.any { it.selected } || otherAnswers.isNotEmpty() || note != null
 }
 
-internal data class QuestionOptionDetail(val label: String, val description: String?, val selected: Boolean)
+internal data class QuestionOptionDetail(
+    val label: String, val description: String?, val selected: Boolean, val isOther: Boolean = false,
+)
 
 internal fun isQuestionDetailsTool(name: String): Boolean {
     val name = toolPresentationName(name)
@@ -93,12 +95,13 @@ private fun questionAnswerMap(value: JsonElement?): Map<String, List<String>> {
 private fun requestQuestionDetails(
     questions: List<RequestUserInputQuestion>, answers: Map<String, List<String>>,
 ): List<QuestionDetail> = questions.map { question ->
+    val options = question.answerOptions
     val selected = mutableSetOf<String>()
     val other = mutableListOf<String>()
     var note: String? = null
     for (value in answers[question.id].orEmpty()) {
         val trimmed = value.trim()
-        val option = question.options.firstOrNull { it.label == trimmed }
+        val option = options.firstOrNull { it.label == trimmed }
         when {
             // An actual option named "user_note: ..." is not metadata.
             option != null -> selected += option.label
@@ -112,7 +115,9 @@ private fun requestQuestionDetails(
     }
     QuestionDetail(
         header = null, question = question.question, multiple = question.multiple,
-        options = question.options.map { QuestionOptionDetail(it.label, it.description, it.label in selected) },
+        options = options.mapIndexed { index, option ->
+            QuestionOptionDetail(option.label, option.description, option.label in selected, question.isOtherOption(index))
+        },
         otherAnswers = other, note = note,
     )
 }

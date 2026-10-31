@@ -8,6 +8,8 @@ public struct TranscriptViewport: Equatable {
     public let followsTail: Bool
     public let needsOlder: Bool
     public let isAtBottom: Bool
+    /// Hysteretic button affordance, not a tail-following threshold.
+    public let isAwayFromBottom: Bool
 }
 
 /// SwiftUI owns message content; UIKit owns scrolling, recycling and layout
@@ -48,6 +50,19 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public func updateUIViewController(_ controller: TranscriptCollectionController<Item>, context: Context) {
         var next = self
         next.environment = context.environment
+        // SwiftUI re-runs this update only when an environment value read here
+        // changes (strictly so on iOS 27; even `@Environment(\.self)` is tracked
+        // per key). Hosted rows render from the copied snapshot in their own
+        // hosting roots, so read every value they follow at runtime.
+        _ = context.environment.dynamicTypeSize
+        _ = context.environment.legibilityWeight
+        _ = context.environment.hapiTypography
+        _ = context.environment.locale
+        _ = context.environment.layoutDirection
+        _ = context.environment.colorScheme
+        _ = context.environment.hapiTheme
+        _ = context.environment.hapiOpenURL
+        _ = context.environment.isEnabled
         controller.update(next)
     }
 }
@@ -192,6 +207,9 @@ final class TranscriptLayout: UICollectionViewLayout {
                                                withOriginalAttributes: originalAttributes)
         let index = originalAttributes.indexPath.item
         guard ids.indices.contains(index), let view = collectionView else { return context }
+        // UIKit may supply attributes from before width or typography invalidation.
+        prepare()
+        let currentFrame = frames[index]
         let height = max(1, preferredAttributes.size.height)
         let delta = height - estimatedHeight(for: ids[index])
         heights[ids[index]] = height
@@ -199,13 +217,13 @@ final class TranscriptLayout: UICollectionViewLayout {
         dirtyFromIndex = min(dirtyFromIndex ?? index, index)
         context.invalidateItems(at: [preferredAttributes.indexPath])
         let viewportTop = view.contentOffset.y + view.adjustedContentInset.top
-        if followsTail || originalAttributes.frame.maxY <= viewportTop {
+        if followsTail || currentFrame.maxY <= viewportTop {
             context.contentOffsetAdjustment.y += delta
-        } else if originalAttributes.frame.minY <= viewportTop,
-                  originalAttributes.frame.minY + height <= viewportTop {
+        } else if currentFrame.minY <= viewportTop,
+                  currentFrame.minY + height <= viewportTop {
             // A font reduction can make the first partial row shorter than
             // the reading offset. Keep its last point visible, not a later row.
-            context.contentOffsetAdjustment.y += originalAttributes.frame.minY + height - 1 - viewportTop
+            context.contentOffsetAdjustment.y += currentFrame.minY + height - 1 - viewportTop
         }
         return context
     }
@@ -279,6 +297,7 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
     private var lastJumpToken = 0
     private var reportScheduled = false
     private var lastViewport: TranscriptViewport?
+    private var bottomProximity = TranscriptBottomProximity()
     private let content = TranscriptContent<Item>()
     #if DEBUG
     private(set) var cellConfigurationCount = 0
@@ -457,10 +476,12 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
         let top = max(0, collection.contentOffset.y + collection.adjustedContentInset.top)
         let bottomDistance = layout.bottomOffset(collection) - collection.contentOffset.y
         let short = layout.collectionViewContentSize.height <= height + 1
+        bottomProximity.update(bottomDistance: Double(bottomDistance), followsTail: layout.followsTail)
         let viewport = TranscriptViewport(
             followsTail: layout.followsTail,
             needsOlder: configuration?.isInspectionPresented != true && (short || (!layout.followsTail && top <= height)),
-            isAtBottom: bottomDistance <= 1
+            isAtBottom: bottomDistance <= 1,
+            isAwayFromBottom: bottomProximity.isAwayFromBottom
         )
         guard viewport != lastViewport else { return }
         lastViewport = viewport

@@ -23,17 +23,20 @@ import kotlinx.coroutines.test.runTest
  * (`PushBinding.isAvailable == false` → null token).
  */
 class DeviceRegistrarTest {
+    private companion object {
+        val IDENTITY = PushIdentity("device-uuid", java.util.Base64.getEncoder().encodeToString(ByteArray(32)))
+    }
 
     private class FakeGateway : PushDeviceGateway {
-        data class Registration(val hubUrl: String, val token: String, val deviceId: String)
+        data class Registration(val hubUrl: String, val token: String, val identity: PushIdentity)
 
         val registrations = mutableListOf<Registration>()
         val unregistrations = mutableListOf<Pair<String, String>>()
         val failures = mutableMapOf<String, Exception>()
 
-        override suspend fun register(hubUrl: String, token: String, deviceId: String) {
+        override suspend fun register(hubUrl: String, token: String, identity: PushIdentity) {
             failures[hubUrl]?.let { throw it }
-            registrations += Registration(hubUrl, token, deviceId)
+            registrations += Registration(hubUrl, token, identity)
         }
 
         override suspend fun unregister(hubUrl: String, token: String) {
@@ -58,12 +61,16 @@ class DeviceRegistrarTest {
         val registry = HubRegistry(InMemoryHubRegistryStorage())
         val gateway = FakeGateway()
         val retries = RecordingRetries()
+        var identityUnavailable = false
         val scope = CoroutineScope(StandardTestDispatcher(testScope.testScheduler))
         val registrar = DeviceRegistrar(
             registry = registry,
             gateway = gateway,
             tokenSource = { token },
-            deviceIds = { "device-uuid" },
+            identities = {
+                if (identityUnavailable) throw IOException("Key storage unavailable")
+                IDENTITY
+            },
             retryScheduler = retries,
             scope = scope,
         )
@@ -83,6 +90,19 @@ class DeviceRegistrarTest {
     private val hubB = "https://hub-b.example"
 
     @Test
+    fun `identity persistence failures schedule registration retries without sending an unpersisted key`() = test { h ->
+        h.registry.addHub(hubA)
+        h.identityUnavailable = true
+        h.registrar.start()
+        advanceUntilIdle()
+        assertTrue(h.gateway.registrations.isEmpty())
+        assertEquals(listOf(hubA), h.retries.retries)
+        h.identityUnavailable = false
+        h.registrar.registerHubOnce(hubA)
+        assertEquals(IDENTITY, h.gateway.registrations.single().identity)
+    }
+
+    @Test
     fun `start fans the token out to every persisted hub`() = test { h ->
         h.registry.addHub(hubA)
         h.registry.addHub(hubB, makeActive = false)
@@ -92,8 +112,8 @@ class DeviceRegistrarTest {
 
         assertEquals(
             listOf(
-                FakeGateway.Registration(hubA, "fcm-token-1", "device-uuid"),
-                FakeGateway.Registration(hubB, "fcm-token-1", "device-uuid"),
+                FakeGateway.Registration(hubA, "fcm-token-1", IDENTITY),
+                FakeGateway.Registration(hubB, "fcm-token-1", IDENTITY),
             ),
             h.gateway.registrations,
         )
@@ -202,14 +222,14 @@ class DeviceRegistrarTest {
     }
 
     @Test
-    fun `deviceId is threaded stably into every registration`() = test { h ->
+    fun `device id and key stay stable across registration retries and token rotation`() = test { h ->
         h.registry.addHub(hubA)
 
         h.registrar.registerHubOnce(hubA)
         h.registrar.onNewToken("fcm-token-3")
         advanceUntilIdle()
 
-        assertEquals(setOf("device-uuid"), h.gateway.registrations.map { it.deviceId }.toSet())
+        assertEquals(setOf(IDENTITY), h.gateway.registrations.map { it.identity }.toSet())
         assertEquals(2, h.gateway.registrations.size)
     }
 }

@@ -435,4 +435,39 @@ describe('alive incremental events', () => {
         }
         expect(update.data).toEqual(expect.objectContaining({ thinking: false }))
     })
+
+    it('judges liveness by hub receive time when the client clock lags (#1986)', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const machines = new MachineCache(store, createPublisher(events))
+        const sessions = new SessionCache(store, createPublisher(events))
+        const machine = machines.getOrCreateMachine(
+            'machine-clock-skew',
+            { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+            null,
+            'default'
+        )
+        const session = sessions.getOrCreateSession(
+            'session-clock-skew',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+        const heartbeatAt = Date.now() + 60_000
+        const laggingClientTime = heartbeatAt - 41_800
+
+        const originalNow = Date.now
+        Date.now = () => heartbeatAt
+        try {
+            machines.handleMachineAlive({ machineId: machine.id, time: laggingClientTime })
+            sessions.handleSessionAlive({ sid: session.id, time: laggingClientTime, thinking: false })
+        } finally {
+            Date.now = originalNow
+        }
+        machines.expireInactive(heartbeatAt + 5_000)
+        sessions.expireInactive(heartbeatAt + 5_000)
+
+        expect(machines.getMachine(machine.id)?.active).toBe(true)
+        expect(sessions.getSession(session.id)?.active).toBe(true)
+    })
 })

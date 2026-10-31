@@ -20,7 +20,7 @@ final class QuestionDetailsPresentationTests: XCTestCase {
                 ToolCallBlockView(block: initial, basePath: nil).padding()
                     .navigationTitle("HAPI · 问答")
                     .sheet(isPresented: Binding(get: { presented }, set: { if !$0 { inspection.dismiss(owner: "chat") } })) {
-                        ToolDetailSheet(inspection: inspection, basePath: nil, openFile: { _ in })
+                        ToolInspectionSheet(inspection: inspection, basePath: nil, openFile: { _ in })
                             .environment(\.dynamicTypeSize, typeSize)
                     }
             }

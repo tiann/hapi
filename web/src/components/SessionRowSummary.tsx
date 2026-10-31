@@ -1,32 +1,18 @@
-import { useMemo } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { ScheduleIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
-import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
+import { getAttentionLabel, SessionAttentionIndicator, SessionSpinner } from '@/components/SessionAttentionIndicator'
 import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
-import { getCodexImportedAt } from '@/lib/codexImportedSessions'
+import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
+import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
-
-function LoaderIcon(props: { className?: string }) {
-    return (
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
-            <line x1="12" y1="2" x2="12" y2="6" />
-            <line x1="12" y1="18" x2="12" y2="22" />
-            <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
-            <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
-            <line x1="2" y1="12" x2="6" y2="12" />
-            <line x1="18" y1="12" x2="22" y2="12" />
-            <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
-            <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
-        </svg>
-    )
-}
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -81,11 +67,9 @@ function formatCodexImportedRelativeTime(
 
 function getSessionTimeLabel(
     session: SessionSummary,
+    importedAt: number | null,
     t: (key: string, params?: Record<string, string | number>) => string
 ): string | null {
-    const importedAt = session.metadata?.flavor === 'codex'
-        ? getCodexImportedAt(session.metadata?.agentSessionId)
-        : null
     if (importedAt !== null) {
         return formatCodexImportedRelativeTime(importedAt, t)
     }
@@ -161,7 +145,11 @@ export function SessionRowSummary(props: {
     )
     const attentionId = attentionTooltipIdProp ?? ownedIds.attentionId
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
-    const timeLabel = getSessionTimeLabel(s, t)
+    // Rows are memoized, so the label keeps itself current.
+    useMinuteTick()
+    const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
+    const importedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
+    const timeLabel = getSessionTimeLabel(s, importedAt, t)
 
     return (
         <div className={`flex w-full min-w-0 flex-col gap-1 ${className ?? ''}`}>
@@ -188,7 +176,7 @@ export function SessionRowSummary(props: {
                             aria-label={attentionLabel ?? undefined}
                         />
                     ) : s.active && s.thinking ? (
-                        <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-badge-success-text)]" />
+                        <SessionSpinner />
                     ) : urgentAttention && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator
                             attention={attention}
@@ -209,22 +197,8 @@ export function SessionRowSummary(props: {
                             label={attentionLabel ?? ''}
                             tooltipId={attentionId}
                         />
-                    ) : showDetailedStatus && attention?.kind === 'background' ? (
-                        <span
-                            className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS.background}`}
-                            title={attentionLabel ?? undefined}
-                            aria-label={attentionLabel ?? undefined}
-                        />
-                    ) : s.active && (s.backgroundTaskCount ?? 0) > 0 ? (
-                        <span
-                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-success-text)]"
-                            title={t('session.item.running')}
-                        >
-                            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
-                            {!inRunningSection ? (
-                                <span className="text-[11px] font-medium leading-none">{t('session.item.running')}</span>
-                            ) : null}
-                        </span>
+                    ) : (showDetailedStatus && attention?.kind === 'background') || (s.active && (s.backgroundTaskCount ?? 0) > 0) ? (
+                        <SessionSpinner background />
                     ) : s.active && (s.pendingRequestsCount ?? 0) > 0 ? (
                         <span
                             className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-warning-text)]"
@@ -278,7 +252,7 @@ export function SessionRowSummary(props: {
                             {todoProgress.completed}/{todoProgress.total}
                         </span>
                     ) : null}
-                    {!attention && s.pendingRequestsCount > 0 ? (
+                    {!attention && s.active && s.pendingRequestsCount > 0 ? (
                         <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                             {t('session.item.pending')} {s.pendingRequestsCount}
                         </span>

@@ -809,6 +809,75 @@ struct ChatInteractorTests {
 
     // MARK: Config
 
+    @Test func collaborationModeSwitchesIndependentlyOfPermissionsAndSerializesChanges() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "codex"), activate: false)
+        let interactor = harness.interactor
+        #expect(interactor.config.collaborationMode == nil)
+        #expect(interactor.config.canChangeCollaborationMode)
+        interactor.setCollaborationMode(.default)
+        #expect(await harness.performer.count("POST", pathSuffix: "/collaboration-mode") == 0)
+        await harness.performer.gate("POST", pathSuffix: "/collaboration-mode")
+        defer { Task { await harness.performer.openGates() } }
+        interactor.setCollaborationMode(.plan)
+        #expect(interactor.config.collaborationMode == .plan)
+        #expect(interactor.config.permissionMode == .default)
+        #expect(interactor.configOpPending)
+        interactor.setCollaborationMode(.default)
+        interactor.setModel("other")
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/collaboration-mode") == 1 })
+        #expect(await harness.performer.count("POST", pathSuffix: "/model") == 0)
+        await harness.performer.openGates()
+        #expect(await eventually { !interactor.configOpPending })
+        interactor.setCollaborationMode(.plan)
+        interactor.setCollaborationMode(.default)
+        #expect(await eventually { !interactor.configOpPending })
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/collaboration-mode") == [#"{"mode":"plan"}"#, #"{"mode":"default"}"#])
+        #expect(interactor.config.permissionMode == .default)
+
+        harness.store.applySessionEvent(.sessionUpdated(namespace: nil, sessionId: chatSessionID, data: .patch(SessionPatch(collaborationMode: .plan))))
+        #expect(interactor.config.collaborationMode == .plan)
+        #expect(await harness.performer.count("POST", pathSuffix: "/collaboration-mode") == 2)
+    }
+
+    @Test func collaborationModeRejectsUnavailableSessionsButAllowsConcurrentTerminals() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "claude"), activate: false)
+        let interactor = harness.interactor
+        #expect(!interactor.config.canChangeCollaborationMode)
+        interactor.setCollaborationMode(.plan)
+        harness.store.updateDetailLocal(chatSessionID) {
+            $0.metadata?.flavor = "codex"
+            $0.active = false
+        }
+        #expect(!interactor.config.canChangeCollaborationMode)
+        interactor.setCollaborationMode(.plan)
+        harness.store.updateDetailLocal(chatSessionID) {
+            $0.active = true
+            $0.agentState = AgentState(controlledByUser: true)
+        }
+        #expect(!interactor.config.canChangeCollaborationMode)
+        interactor.setCollaborationMode(.plan)
+        #expect(await harness.performer.count("POST", pathSuffix: "/collaboration-mode") == 0)
+        harness.store.updateDetailLocal(chatSessionID) {
+            $0.metadata?.capabilities = SessionCapabilities(concurrentClients: true)
+        }
+        #expect(interactor.config.canChangeCollaborationMode)
+        interactor.setCollaborationMode(.plan)
+        #expect(await eventually { !interactor.configOpPending })
+        #expect(await harness.performer.count("POST", pathSuffix: "/collaboration-mode") == 1)
+        harness.store.releaseDetail(chatSessionID)
+        #expect(!interactor.config.canChangeCollaborationMode)
+    }
+
+    @Test func rejectedCollaborationModeReloadsServerTruthAndReportsFailure() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "codex"), activate: false)
+        await harness.performer.script("POST", "/api/sessions/sess-1/collaboration-mode", status: 409, json: #"{"error":"Config rejected"}"#)
+        harness.interactor.setCollaborationMode(.plan)
+        #expect(harness.interactor.config.collaborationMode == .plan)
+        #expect(await eventually { !harness.interactor.configOpPending })
+        #expect(harness.interactor.config.collaborationMode == nil)
+        #expect(harness.events.contains { if case .notice = $0 { return true }; return false })
+    }
+
     @Test func permissionModeSwitchAppliesOptimisticallyAndRollsBackToServerTruthOnError() async throws {
         let harness = try await ChatInteractionHarness(detail: chatDetail(permissionMode: .default))
         await harness.performer.script(
@@ -896,6 +965,120 @@ struct ChatInteractorTests {
         #expect(config.effortOptions?.map(\.value) == [nil, "low", "medium", "high"])
     }
 
+    // MARK: Codex plans (client actions, not permissions)
+
+    private func planSession() -> Session {
+        var detail = chatDetail(flavor: "codex", agentState: AgentState(codexPlanProposalId: "plan-1"))
+        detail.metadata?.capabilities = SessionCapabilities(concurrentClients: true)
+        detail.collaborationMode = .plan
+        return detail
+    }
+
+    @Test func codexPlanActionsRequireCurrentSharedActiveCodexProposal() async throws {
+        let harness = try await ChatInteractionHarness(detail: planSession(), activate: false)
+        let interactor = harness.interactor
+        #expect(interactor.codexPlanActions(planId: "plan-1").canAct)
+        #expect(!interactor.codexPlanActions(planId: "historical").isVisible)
+        #expect(!interactor.codexPlanActions(planId: "child-plan").isVisible)
+        for modify: (inout Session) -> Void in [
+            { $0.active = false },
+            { $0.metadata?.flavor = "claude" },
+            { $0.metadata?.capabilities = nil },
+            { $0.agentState?.codexPlanProposalId = nil },
+            { $0.agentState?.codexPlanProposalId = "newer-plan" },
+        ] {
+            var detail = planSession()
+            modify(&detail)
+            harness.store.updateDetailLocal(chatSessionID) { $0 = detail }
+            #expect(!interactor.codexPlanActions(planId: "plan-1").isVisible)
+            interactor.implementCodexPlan(planId: "plan-1")
+            interactor.continueCodexPlan(planId: "plan-1")
+        }
+        #expect(interactor.composerFocusRequest == 0)
+        #expect(await harness.performer.count("POST", pathSuffix: "/codex/plan/implement") == 0)
+    }
+
+    @Test func continuePlanningDismissesActionsAndPreservesDraftAndMode() async throws {
+        let harness = try await ChatInteractionHarness(detail: planSession(), activate: false)
+        harness.interactor.setComposerText("Please refine step two")
+        harness.interactor.continueCodexPlan(planId: "plan-1")
+        #expect(harness.interactor.composerFocusRequest == 1)
+        #expect(harness.interactor.composerText == "Please refine step two")
+        #expect(harness.store.detail(for: chatSessionID)?.collaborationMode == .plan)
+        #expect(await harness.performer.exchanges.filter { $0.method == "POST" }.isEmpty)
+        #expect(!harness.interactor.codexPlanActions(planId: "plan-1").isVisible)
+        harness.interactor.continueCodexPlan(planId: "plan-1")
+        harness.interactor.implementCodexPlan(planId: "plan-1")
+        #expect(harness.interactor.composerFocusRequest == 1)
+        harness.store.updateDetailLocal(chatSessionID) { $0 = planSession() }
+        #expect(!harness.interactor.codexPlanActions(planId: "plan-1").isVisible)
+        harness.store.updateDetailLocal(chatSessionID) {
+            $0.agentState?.codexPlanProposalId = "plan-2"
+        }
+        #expect(harness.interactor.codexPlanActions(planId: "plan-2").canAct)
+    }
+
+    @Test func implementingPlanIsSingleFlightAndSurvivesWithdrawalAndStaleRefresh() async throws {
+        let harness = try await ChatInteractionHarness(detail: planSession(), activate: false)
+        let interactor = harness.interactor
+        await harness.performer.gate("POST", pathSuffix: "/codex/plan/implement")
+        interactor.setComposerText("Keep this draft")
+        interactor.implementCodexPlan(planId: "plan-1")
+        interactor.implementCodexPlan(planId: "plan-1")
+        interactor.continueCodexPlan(planId: "plan-1")
+        #expect(interactor.codexPlanActions(planId: "plan-1").pending)
+        #expect(!interactor.codexPlanActions(planId: "plan-1").canAct)
+        #expect(interactor.composerFocusRequest == 0)
+        #expect(await eventually {
+            await harness.performer.count("POST", pathSuffix: "/codex/plan/implement") == 1
+        })
+        harness.store.applySessionEvent(.sessionUpdated(namespace: nil, sessionId: chatSessionID, data: .patch(SessionPatch(
+            agentState: VersionedValue(version: 2, value: AgentState())
+        ))))
+        #expect(!interactor.codexPlanActions(planId: "plan-1").available)
+        #expect(interactor.codexPlanActions(planId: "plan-1").pending)
+        await harness.performer.openGates()
+        #expect(await eventually { !interactor.codexPlanActions(planId: "plan-1").pending })
+        // The GET deliberately still serves the old id; acceptance must win.
+        #expect(!interactor.codexPlanActions(planId: "plan-1").isVisible)
+        interactor.implementCodexPlan(planId: "plan-1")
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/codex/plan/implement") == [#"{"planId":"plan-1"}"#])
+        #expect(await harness.performer.exchanges.filter { $0.method == "POST" }.count == 1)
+        #expect(await harness.performer.count("GET", pathSuffix: "/api/sessions/sess-1") == 2)
+        #expect(interactor.composerText == "Keep this draft")
+    }
+
+    @Test(arguments: [(409, "stale_plan"), (409, "unavailable"), (502, "failed"), (503, "indeterminate")])
+    func planFailureRemainsVisibleAfterWithdrawalWithoutAutomaticResubmission(status: Int, code: String) async throws {
+        let harness = try await ChatInteractionHarness(detail: planSession(), activate: false)
+        await harness.performer.script("POST", "/api/sessions/sess-1/codex/plan/implement", status: status,
+                                       json: "{\"ok\":false,\"code\":\"\(code)\",\"error\":\"Plan was not confirmed\"}")
+        var next = planSession()
+        next.agentState?.codexPlanProposalId = nil
+        try await harness.serveDetail(next)
+        harness.interactor.implementCodexPlan(planId: "plan-1")
+        #expect(await eventually { !harness.interactor.codexPlanActions(planId: "plan-1").pending })
+        let state = harness.interactor.codexPlanActions(planId: "plan-1")
+        #expect(state.error == "Plan was not confirmed")
+        #expect(state.isVisible && !state.available && !state.canAct)
+        #expect(await harness.performer.count("POST", pathSuffix: "/codex/plan/implement") == 1)
+        #expect(await harness.performer.count("GET", pathSuffix: "/api/sessions/sess-1") == 2)
+        #expect(harness.store.detail(for: chatSessionID)?.collaborationMode == .plan)
+    }
+
+    @Test func confirmedPlanFailureCanBeRetriedExplicitly() async throws {
+        let harness = try await ChatInteractionHarness(detail: planSession(), activate: false)
+        await harness.performer.script("POST", "/api/sessions/sess-1/codex/plan/implement", status: 502,
+                                       json: #"{"ok":false,"code":"failed","error":"Try again"}"#)
+        harness.interactor.implementCodexPlan(planId: "plan-1")
+        #expect(await eventually { !harness.interactor.codexPlanActions(planId: "plan-1").pending })
+        #expect(harness.interactor.codexPlanActions(planId: "plan-1").canAct)
+        harness.interactor.implementCodexPlan(planId: "plan-1")
+        #expect(harness.interactor.codexPlanActions(planId: "plan-1").error == nil)
+        #expect(await eventually { !harness.interactor.codexPlanActions(planId: "plan-1").isVisible })
+        #expect(await harness.performer.count("POST", pathSuffix: "/codex/plan/implement") == 2)
+    }
+
     // MARK: Misc
 
     @Test func draftPersistsOnTypingAndRestoresOnOpen() async throws {
@@ -917,6 +1100,281 @@ struct ChatInteractorTests {
 
         #expect(await eventually {
             await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/abort") == 1
+        })
+    }
+
+    // MARK: Conversation history
+
+    private func historyDetail(thinking: Bool = false, flavor: String = "claude") -> Session {
+        var detail = chatDetail(flavor: flavor, thinking: thinking)
+        detail.metadata?.capabilities = SessionCapabilities(
+            conversationHistory: ConversationHistoryCapabilities(forkCurrent: true, forkAtMessage: true, rewindToMessage: true)
+        )
+        detail.metadata?.conversationHistoryPoints = ["l1": true]
+        return detail
+    }
+
+    @Test func forkCurrentAndAtMessagePostAndOpenTheNewSession() async throws {
+        let harness = try await ChatInteractionHarness(detail: historyDetail())
+        #expect(harness.interactor.canForkCurrentConversation)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/fork", json: #"{"sessionId":"fork-1"}"#)
+
+        harness.interactor.forkConversation()
+        #expect(await eventually { harness.events.contains(.sessionSuperseded(sessionId: "fork-1")) })
+        #expect(await eventually { !harness.interactor.historyActionPending })
+        harness.interactor.forkConversation(fromMessageLocalId: "l1")
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/fork") == ["{}", #"{"messageLocalId":"l1"}"#]
+        })
+    }
+
+    @Test func messageActionsNeedANativePointAndAnIdleTurn() async throws {
+        let idle = try await ChatInteractionHarness(detail: historyDetail())
+        #expect(idle.interactor.historyActions(forMessageLocalId: "l1") == (true, true))
+        #expect(idle.interactor.historyActions(forMessageLocalId: "l2") == (false, false))
+        #expect(idle.interactor.historyActions(forMessageLocalId: nil) == (false, false))
+
+        let running = try await ChatInteractionHarness(detail: historyDetail(thinking: true))
+        #expect(running.interactor.historyActions(forMessageLocalId: "l1") == (false, false))
+        let runningCodex = try await ChatInteractionHarness(detail: historyDetail(thinking: true, flavor: "codex"))
+        #expect(runningCodex.interactor.historyActions(forMessageLocalId: "l1") == (true, false))
+        #expect(!runningCodex.interactor.canForkCurrentConversation)
+    }
+
+    @Test func ambiguousRewindOffersAForkInstead() async throws {
+        let harness = try await ChatInteractionHarness(detail: historyDetail())
+        await harness.performer.script(
+            "POST", "/api/sessions/sess-1/rewind",
+            status: 409, json: #"{"error":"ambiguous","code":"ambiguous_native_boundary_fork_safe","hydrateFailed":false}"#
+        )
+        harness.interactor.rewindConversation(toMessageLocalId: "l1")
+        #expect(await eventually { harness.interactor.rewindForkFallbackLocalId == "l1" })
+
+        harness.interactor.dismissRewindForkFallback()
+        await harness.performer.script("POST", "/api/sessions/sess-1/rewind", status: 409, json: #"{"error":"Session busy"}"#)
+        harness.interactor.rewindConversation(toMessageLocalId: "l1")
+        #expect(await eventually { harness.events.contains(.notice("Session busy")) })
+        #expect(harness.interactor.rewindForkFallbackLocalId == nil)
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/rewind").first == #"{"messageLocalId":"l1"}"#)
+    }
+
+    // MARK: Scheduled send
+
+    @Test func presetScheduleResolvesAtSendAndQueuesWithoutSteer() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
+        harness.interactor.setPendingSchedule(.delay(minutes: 30))
+        harness.interactor.setComposerText("ship it")
+
+        harness.interactor.sendMessage(steer: true)
+
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages") == [
+                #"{"deliveryMode":"queue","localId":"local-1","scheduledAt":1801000,"text":"ship it"}"#,
+            ]
+        })
+        #expect(harness.interactor.pendingSchedule == nil, "the schedule is consumed by the send")
+        #expect(harness.interactor.composerText.isEmpty)
+        #expect(await eventually { await harness.row(localId: "local-1")?.scheduledAt == 1_801_000 })
+    }
+
+    @Test func invalidSchedulesAndAttachmentsKeepTheDraft() async throws {
+        let harness = try await ChatInteractionHarness()
+        harness.interactor.setComposerText("later")
+
+        harness.interactor.setPendingSchedule(.at(1_000 - 31_000))
+        harness.interactor.sendMessage()
+        #expect(harness.events.contains(.notice("Scheduled time must be in the future")))
+
+        harness.interactor.setPendingSchedule(.at(1_000 + 8 * 24 * 60 * 60_000))
+        harness.interactor.sendMessage()
+        #expect(harness.events.contains(.notice("Scheduled sends can be at most 7 days ahead")))
+
+        // Within the 30 s grace a minute-resolution pick still goes out.
+        #expect(PendingSchedule.validate(1_000 - 29_000, now: 1_000) == nil)
+        #expect(harness.interactor.composerText == "later")
+        #expect(harness.interactor.pendingSchedule != nil)
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/messages") == 0)
+    }
+
+    // MARK: Slash commands
+
+    @Test func slashSuggestionsLoadOnceWhenEnteringSlashMode() async throws {
+        var detail = chatDetail()
+        detail.metadata?.slashCommands = ["deploy"]
+        let harness = try await ChatInteractionHarness(detail: detail)
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/slash-commands",
+            json: #"{"success":true,"commands":[{"name":"compact","description":"Summarize","source":"builtin"}]}"#
+        )
+
+        harness.interactor.setComposerText("/")
+        #expect(harness.interactor.slashSuggestions.map(\.name).first == "deploy")
+        #expect(await eventually { harness.interactor.slashSuggestions.map(\.name) == ["deploy", "compact"] })
+        harness.interactor.setComposerText("/co")
+        harness.interactor.setComposerText("/com")
+        #expect(harness.interactor.slashSuggestions.map(\.name) == ["compact"])
+
+        harness.interactor.selectSlashCommand(SlashCommand(name: "compact", source: "builtin"))
+        #expect(harness.interactor.composerText == "/compact ")
+        #expect(harness.interactor.slashSuggestions.isEmpty, "arguments close the menu")
+        harness.interactor.setComposerText("")
+        harness.interactor.setComposerText("/")
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await harness.performer.count("GET", pathSuffix: "/slash-commands") == 1)
+    }
+
+    // MARK: Discovered agent catalogs
+
+    @Test func grokLoadsModelsAndEffortsAndReloadsEffortsAfterAModelSwitch() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "grok", model: "grok-4"))
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/grok-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"grok-4","name":"Grok 4"},{"modelId":"grok-mini"}]}"#
+        )
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/grok-reasoning-effort-options",
+            json: #"{"success":true,"options":[{"value":"high","name":"High"}]}"#
+        )
+
+        harness.interactor.loadModelOptions()
+
+        #expect(await eventually { harness.interactor.config.modelOptions?.count == 3 })
+        #expect(harness.interactor.config.modelOptions?.first == CatalogOption(value: nil, label: "Default"))
+        #expect(await eventually { harness.interactor.config.effortOptions?.map(\.value) == [nil, "high"] })
+
+        harness.interactor.setModel("grok-mini")
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/model") == [#"{"model":"grok-mini"}"#]
+        })
+        #expect(await eventually {
+            await harness.performer.count("GET", pathSuffix: "/grok-reasoning-effort-options") == 2
+        })
+    }
+
+    @Test func discoveredCatalogsSkipInactiveAndTerminalControlledSessions() async throws {
+        let inactive = try await ChatInteractionHarness(detail: chatDetail(flavor: "kimi", active: false))
+        inactive.interactor.loadModelOptions()
+        var controlled = chatDetail(flavor: "copilot", agentState: AgentState(controlledByUser: true))
+        controlled.metadata?.capabilities = nil
+        let terminal = try await ChatInteractionHarness(detail: controlled)
+        terminal.interactor.loadModelOptions()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await inactive.performer.count("GET", pathSuffix: "/kimi-models") == 0)
+        #expect(await terminal.performer.count("GET", pathSuffix: "/copilot-models") == 0)
+        #expect(inactive.interactor.config.modelOptions == nil)
+    }
+
+    @Test func agyReadsTheMachineCatalogAndPiSwitchesWithAProviderReference() async throws {
+        var agyDetail = chatDetail(flavor: "agy")
+        agyDetail.metadata?.machineId = "mach-1"
+        let agy = try await ChatInteractionHarness(detail: agyDetail)
+        await agy.performer.serve(
+            "GET", "/api/machines/mach-1/agy-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"gemini-3.7-flash-high"}]}"#
+        )
+        agy.interactor.loadModelOptions()
+        #expect(await eventually { agy.interactor.config.modelOptions?.map(\.value) == ["gemini-3.7-flash-high"] })
+
+        let pi = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", model: "m"))
+        await pi.performer.serve(
+            "GET", "/api/sessions/sess-1/pi-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"m","provider":"a"},{"modelId":"n","provider":"b"}]}"#
+        )
+        pi.interactor.loadModelOptions()
+        #expect(await eventually { pi.interactor.config.model == "a/m" })
+        pi.interactor.setModel("b/n")
+        #expect(await eventually {
+            await pi.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/model")
+                == [#"{"model":{"modelId":"n","provider":"b"}}"#]
+        })
+        #expect(pi.store.detail(for: chatSessionID)?.metadata?.piSelectedModel == PiModelReference(provider: "b", modelId: "n"))
+    }
+
+    // MARK: Session lifecycle
+
+    @Test func renameTrimsAndPatchesTheNameAndAFailureEmitsANotice() async throws {
+        let harness = try await ChatInteractionHarness()
+
+        harness.interactor.renameSession("  ")
+        harness.interactor.renameSession("  Release prep  ")
+
+        #expect(await eventually {
+            await harness.performer.bodies("PATCH", pathSuffix: "/api/sessions/sess-1") == [#"{"name":"Release prep"}"#]
+        })
+        #expect(harness.store.detail(for: chatSessionID)?.metadata?.name == "Release prep")
+
+        await harness.performer.script("PATCH", "/api/sessions/sess-1", status: 500, json: #"{"error":"boom"}"#)
+        harness.interactor.renameSession("Other")
+        #expect(await eventually { harness.events.contains(.notice("Failed to rename session")) })
+    }
+
+    @Test func deleteConflictReportsArchiveFirstAndSuccessFiresTheRemoval() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        var removals: [String] = []
+        harness.store.onSessionRemoved = { removals.append($0) }
+
+        await harness.performer.script(
+            "DELETE", "/api/sessions/sess-1",
+            status: 409, json: #"{"error":"Cannot delete active session. Archive it first."}"#
+        )
+        harness.interactor.deleteSession()
+        #expect(await eventually {
+            harness.events.contains(.notice("Active sessions can't be deleted — archive first"))
+        })
+        #expect(await eventually { !harness.interactor.sessionOpPending })
+        #expect(removals.isEmpty)
+        #expect(harness.store.detail(for: chatSessionID) != nil, "a failed delete restores the detail")
+
+        await harness.performer.script("DELETE", "/api/sessions/sess-1", json: #"{"ok":true}"#)
+        harness.interactor.deleteSession()
+        #expect(await eventually { removals == [chatSessionID] })
+    }
+
+    @Test func reopenWithASupersedingIdMovesTheDraftAndRenavigates() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        await harness.performer.serve(
+            "POST", "/api/sessions/sess-1/reopen",
+            json: #"{"ok":true,"sessionId":"sess-2","resumed":true}"#
+        )
+        harness.interactor.setComposerText("unsent words")
+
+        harness.interactor.reopenSession()
+
+        #expect(await eventually { harness.events.contains(.sessionSuperseded(sessionId: "sess-2")) })
+        #expect(harness.drafts.storage["sess-2"] == "unsent words")
+        #expect(harness.drafts.storage[chatSessionID] == nil)
+        #expect(!harness.interactor.sessionOpPending)
+    }
+
+    @Test func reopenInPlaceMarksTheSessionActiveWithoutRenavigating() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        await harness.performer.serve(
+            "POST", "/api/sessions/sess-1/reopen",
+            json: #"{"ok":true,"sessionId":"sess-1","resumed":true}"#
+        )
+
+        harness.interactor.reopenSession()
+
+        #expect(await eventually { harness.store.detail(for: chatSessionID)?.active == true })
+        #expect(await eventually { !harness.interactor.sessionOpPending })
+        #expect(!harness.events.contains { event in
+            if case .sessionSuperseded = event { return true }
+            return false
+        })
+    }
+
+    @Test func reopenMissingMetadataSurfacesTheHubMessage() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        await harness.performer.serve(
+            "POST", "/api/sessions/sess-1/reopen",
+            status: 422, json: #"{"error":"Session metadata is incomplete","missing":["path","machineId"]}"#
+        )
+
+        harness.interactor.reopenSession()
+
+        #expect(await eventually {
+            harness.events.contains(.notice("Session metadata is incomplete (missing: path, machineId)"))
         })
     }
 }

@@ -1,0 +1,221 @@
+{
+    "description": "Proposal Markdown lives in input.plan. Keep it standalone between ordinary tools; null output completes a proposal without inventing approval. The lowercase alias also accepts a pending permission.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "read-before",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "read-before",
+                    "input": {
+                        "file_path": "/repo/README.md"
+                    },
+                    "name": "Read",
+                    "result": "Readme",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "codex-proposed-plan:plan-1",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "codex-proposed-plan:plan-1",
+                    "input": {
+                        "plan": "# 实施计划\n\n1. Inspect **input.plan**\n2. Render Markdown\n\n```swift\nlet ready = true\n```\n"
+                    },
+                    "name": "exit_plan_mode",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "read-after",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "read-after",
+                    "input": {
+                        "file_path": "/repo/package.json"
+                    },
+                    "name": "Read",
+                    "result": "{}",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "read-before",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "read-before",
+                    "input": {
+                        "file_path": "/repo/README.md"
+                    },
+                    "name": "Read",
+                    "result": "Readme",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "codex-proposed-plan:plan-1",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "codex-proposed-plan:plan-1",
+                    "input": {
+                        "plan": "# 实施计划\n\n1. Inspect **input.plan**\n2. Render Markdown\n\n```swift\nlet ready = true\n```\n"
+                    },
+                    "name": "exit_plan_mode",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            },
+            {
+                "createdAt": 1755000003000,
+                "id": "read-after",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "read-after",
+                    "input": {
+                        "file_path": "/repo/package.json"
+                    },
+                    "name": "Read",
+                    "result": "{}",
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "requests": {
+                "plan-approval": {
+                    "arguments": {
+                        "plan": "# 实施计划\n\n1. Inspect **input.plan**\n2. Render Markdown\n\n```swift\nlet ready = true\n```\n"
+                    },
+                    "createdAt": 1755000002000,
+                    "tool": "exit_plan_mode",
+                    "toolCallId": "codex-proposed-plan:plan-1"
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "read-before",
+                            "input": {
+                                "file_path": "/repo/README.md"
+                            },
+                            "name": "Read",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "proposal-1-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "read-before",
+                            "output": "Readme",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "proposal-1-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "codex-proposed-plan:plan-1",
+                            "id": "plan-1",
+                            "input": {
+                                "plan": "# 实施计划\n\n1. Inspect **input.plan**\n2. Render Markdown\n\n```swift\nlet ready = true\n```\n"
+                            },
+                            "name": "exit_plan_mode",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "proposal-1-2",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "read-after",
+                            "input": {
+                                "file_path": "/repo/package.json"
+                            },
+                            "name": "Read",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003000,
+                "id": "proposal-1-3",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "read-after",
+                            "output": "{}",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004000,
+                "id": "proposal-1-4",
+                "localId": null,
+                "seq": 5
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-plan-proposal-pending"
+}

@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { UpdateHubSettingsRequestSchema, type HubSettingsResponse } from '@hapi/protocol'
 import {
     getSettingsFile,
-    readSettingsOrThrow,
+    readSettingsOrThrowCached,
     updateSettings,
     type Settings
 } from '../../config/settings'
@@ -24,7 +24,7 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
     // flags. Mutations stay owner-only below.
     app.get('/hub-settings', async (c) => {
         c.header('Cache-Control', 'no-store')
-        const settings = await readSettingsOrThrow(getSettingsFile(dataDir))
+        const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
         return c.json(toHubSettings(settings))
     })
 

@@ -13,13 +13,14 @@ import app.hapi.data.push.PushPayload
  *
  *  - `permission_requests` — HIGH: an agent is blocked on the operator; the
  *    heads-up + sound interruption is the point.
+ *  - `input_requests` — HIGH: an agent needs an answer, not tool approval.
  *  - `ready` — DEFAULT: the agent finished and is waiting for input.
  *  - `task_notifications` — DEFAULT: task completed/failed; also the bucket
  *    for unknown types / contract versions (never heads-up for those).
  *
  * minSdk is 26, so the channel APIs are unconditionally available. Importance
  * is only a creation-time default — operators can retune per channel in
- * system settings, which is exactly why these are three separate channels.
+ * system settings, which is exactly why these are separate channels.
  */
 object NotificationChannels {
 
@@ -33,6 +34,13 @@ object NotificationChannels {
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = context.getString(R.string.channel_permission_requests_desc)
+                },
+                NotificationChannel(
+                    PushPayload.CHANNEL_INPUT_REQUESTS,
+                    context.getString(R.string.channel_input_requests),
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = context.getString(R.string.channel_input_requests_desc)
                 },
                 NotificationChannel(
                     PushPayload.CHANNEL_READY,

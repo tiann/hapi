@@ -288,8 +288,11 @@ public func isEligibleForToolGrouping(_ block: ToolCallBlock) -> Bool {
     if planToolNames.contains(block.tool.name) { return false }
     if milestoneToolNames.contains(block.tool.name) { return false }
     if isInteractiveToolBlock(block) { return false }
-    if block.tool.name == "CodexBash" && !getCodexCommandActions(block).isEmpty {
-        return isCodexExplorationTool(block)
+    // Classification selects the group family; shared Codex `unknown`
+    // agent commands still belong in ordinary groups. User shell stays separate.
+    if block.tool.name == "CodexBash"
+        && getInputStringAny(block.tool.input, ["command_source", "commandSource"])?.lowercased() == "usershell" {
+        return false
     }
     return true
 }

@@ -18,7 +18,6 @@ import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
-import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 import { ResumeSessionPicker } from '@/ui/ink/ResumeSessionPicker'
 import type { CommandDefinition } from './types'
 
@@ -90,7 +89,6 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
     }
 
     if (target.flavor === 'codex') {
-        assertCodexLocalSupported()
         const { runCodex } = await import('@/codex/runCodex')
         await runCodex({
             existingSessionId: base.existingSessionId,
@@ -252,6 +250,11 @@ export const resumeCommand: CommandDefinition = {
             // stopped by handoffSessionToLocal and then failing locally.
             if (target.flavor === 'gemini') {
                 throw new Error('Gemini CLI is no longer supported and cannot be resumed (Google sunset the consumer Gemini CLI on 2026-06-18). The session history remains viewable in the web UI.')
+            }
+
+            if (target.flavor === 'codex') {
+                await dispatchLocalResume(target)
+                return
             }
 
             if (target.active && target.controlledByUser) {

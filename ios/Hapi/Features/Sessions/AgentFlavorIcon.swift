@@ -50,7 +50,7 @@ struct AgentFlavorIconView: View {
                 icon
             }
         } else {
-            Text("Un")
+            Text(verbatim: "Un")
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

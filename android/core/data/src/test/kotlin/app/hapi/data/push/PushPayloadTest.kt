@@ -51,6 +51,27 @@ class PushPayloadTest {
     }
 
     @Test
+    fun `input request preserves the question and routing but never offers approval or reply`() {
+        val body = "需要检查安全性吗？\n+1 more question\n查看 PR #1842 的改动"
+        for (version in listOf("1", "2")) {
+            val payload = PushPayload.parse(permissionData(
+                "type" to "input-request", "contractVersion" to version,
+                "title" to "Codex needs your input", "body" to body,
+                "notifySummary" to """{"summary":"Unrelated summary"}""",
+            ))!!
+            assertEquals(PushType.INPUT_REQUEST, payload.type)
+            assertEquals("req-1", payload.requestId)
+            assertEquals("/sessions/${payload.sessionId}", payload.url)
+            assertEquals("Codex needs your input", payload.displayTitle)
+            assertEquals(body, payload.displayBody)
+            assertFalse(payload.supportsActions)
+            assertEquals("input-request-${payload.sessionId}", payload.notificationTag)
+            assertEquals(if (version == "1") PushPayload.CHANNEL_INPUT_REQUESTS
+                else PushPayload.CHANNEL_TASK_NOTIFICATIONS, payload.channelId)
+        }
+    }
+
+    @Test
     fun `missing sessionId rejects the message`() {
         assertNull(PushPayload.parse(mapOf("type" to "ready", "title" to "t", "body" to "b")))
         assertNull(PushPayload.parse(permissionData("sessionId" to "")))

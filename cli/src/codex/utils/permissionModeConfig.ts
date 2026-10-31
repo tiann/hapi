@@ -10,6 +10,7 @@ export type CodexPermissionModeConfig = {
 export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): CodexPermissionModeConfig {
     switch (mode) {
         case 'default':
+        case 'autoReview':
             return {
                 // Remote Codex sessions rely on HAPI's approval UI for sandbox escalation.
                 // `on-request` keeps workspace-write sandboxing while still surfacing a
@@ -23,15 +24,6 @@ export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): Cod
                 approvalPolicy: 'never',
                 sandbox: 'read-only',
                 sandboxPolicy: { type: 'readOnly' }
-            };
-        case 'safe-yolo':
-            return {
-                // Current Codex versions reject the removed `on-failure` policy. Keep
-                // escalation available through `on-request`; HAPI auto-approves these
-                // requests in safe-yolo mode.
-                approvalPolicy: 'on-request',
-                sandbox: 'workspace-write',
-                sandboxPolicy: { type: 'workspaceWrite' }
             };
         case 'yolo':
             return {

@@ -4,9 +4,11 @@ import type { SessionSummary } from '@/types/api'
 import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
+    groupSessionsByDirectory,
     filterActiveSessionsOnly,
     filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
+    bucketRunningSessions,
     getSessionTimeRange,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
@@ -443,6 +445,7 @@ describe('getVisibleSessionPreview', () => {
     it('keeps selected and pending sessions inside the collapsed preview without promoting them', () => {
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
             id: `s-${index + 1}`,
+            active: index === 4,
             pendingRequestsCount: index === 4 ? 1 : 0,
             metadata: { path: '/work/hapi' },
             updatedAt: 100 - index
@@ -454,6 +457,20 @@ describe('getVisibleSessionPreview', () => {
         })
 
         expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('does not let archived pending sessions displace active ones', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            active: index < 3,
+            pendingRequestsCount: index >= 4 ? 1 : 0,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, { limit: 3 })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-3'])
     })
 
     it('does not exceed the limit just because many sessions are active', () => {
@@ -578,6 +595,19 @@ describe('filterUnreadSessionsOnly', () => {
         expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
         expect(machineB).toEqual([])
     })
+
+    it('keeps an explicitly unread generating session in the unread lens', () => {
+        const sessions = [
+            makeSession({ id: 'manual-thinking', active: true, thinking: true, updatedAt: 5000, metadata: { path: '/p' } })
+        ]
+
+        expect(filterUnreadSessionsOnly(
+            sessions,
+            null,
+            () => 5000,
+            () => 5000
+        ).map(s => s.id)).toEqual(['manual-thinking'])
+    })
 })
 
 describe('getNextSessionVisibleCount', () => {
@@ -651,5 +681,87 @@ describe('getPullRefreshIndicatorRotation', () => {
     it('turns the pull indicator upward once refresh is ready', () => {
         expect(getPullRefreshIndicatorRotation('pulling')).toBe(0)
         expect(getPullRefreshIndicatorRotation('ready')).toBe(180)
+    })
+})
+
+describe('bucketRunningSessions', () => {
+    // tiann/hapi#1820: a keepalive-only session stays `active` (its socket is
+    // genuinely up) but must not read as a ready session in the list.
+    const idle = makeSession({
+        id: 'idle-1',
+        active: true,
+        updatedAt: 10,
+        metadata: { path: '/p', host: 'h', lifecycleState: 'idle' } as SessionSummary['metadata']
+    })
+    const quiet = makeSession({
+        id: 'quiet-1',
+        active: true,
+        updatedAt: 20,
+        metadata: { path: '/p', host: 'h', lifecycleState: 'running' } as SessionSummary['metadata']
+    })
+
+    it('separates keepalive-only sessions from quiet-but-ready ones', () => {
+        const buckets = bucketRunningSessions([idle, quiet], true)
+
+        expect(buckets.idle.map((s) => s.id)).toEqual(['idle-1'])
+        expect(buckets.active.map((s) => s.id)).toEqual(['quiet-1'])
+        // Exactly one bucket each — the row must not be duplicated.
+        expect(buckets.working).toHaveLength(0)
+        expect(buckets.pending).toHaveLength(0)
+    })
+
+    it('moves a session out of idle once it is working again', () => {
+        const woken = { ...idle, thinking: true }
+        const buckets = bucketRunningSessions([woken, quiet], true)
+
+        expect(buckets.idle).toHaveLength(0)
+        expect(buckets.working.map((s) => s.id)).toEqual(['idle-1'])
+    })
+
+    it('keeps real work ahead of the idle mark', () => {
+        // An idle-marked session that picked up a background task or a pending
+        // request belongs in its work bucket, not in idle.
+        expect(bucketRunningSessions([{ ...idle, backgroundTaskCount: 1 }], true).working).toHaveLength(1)
+        expect(bucketRunningSessions([{ ...idle, pendingRequestsCount: 1 }], true).pending).toHaveLength(1)
+    })
+
+    it('ignores disconnected and pinned sessions', () => {
+        const buckets = bucketRunningSessions([
+            { ...idle, active: false },
+            { ...idle, id: 'idle-pinned', pinned: true }
+        ], true)
+
+        expect(buckets.idle).toHaveLength(0)
+    })
+})
+
+describe('session list user-activity ordering', () => {
+    const session = (id: string, at: number, path = '/proj', extra: Partial<SessionSummary> = {}) =>
+        makeSession({ id, createdAt: at, lastUserMessageAt: at, metadata: { path }, ...extra })
+    const ids = (sessions: SessionSummary[]) => groupSessionsByDirectory(sessions).flatMap(g => g.sessions.map(s => s.id))
+
+    it('keeps rows and projects stable through output, completion and permission changes', () => {
+        const sessions = [session('a', 1_000, '/a'), session('b', 2_000, '/b'), session('c', 3_000, '/b')]
+        expect(ids(sessions)).toEqual(['c', 'b', 'a'])
+        const noisy = sessions.map(s => ({ ...s, updatedAt: 99_000, active: s.id === 'a', pendingRequestsCount: 4, thinking: true }))
+        expect(ids(noisy.reverse())).toEqual(['c', 'b', 'a'])
+        expect(ids(sessions.map(s => s.id === 'a' ? { ...s, lastUserMessageAt: 100_000 } : s))).toEqual(['a', 'c', 'b'])
+    })
+
+    it('keeps manual pins ahead of user recency', () => {
+        expect(ids([session('new', 9_000), session('pinned', 1_000, '/proj', { pinned: true })])).toEqual(['pinned', 'new'])
+        expect(ids([session('new', 9_000, '/new'), session('pinned', 1_000, '/old', { pinned: true })])).toEqual(['pinned', 'new'])
+    })
+
+    it('uses creation time before any user input and deterministic ties on refetch', () => {
+        const sessions = [session('b', 2_000, '/b', { lastUserMessageAt: undefined }), session('a', 2_000, '/a', { lastUserMessageAt: undefined })]
+        expect(ids(sessions)).toEqual(['a', 'b'])
+        expect(ids([...sessions].reverse())).toEqual(['a', 'b'])
+    })
+
+    it('keeps the optional in-progress layout, with stable order inside each bucket', () => {
+        const sessions = [session('old', 1_000, '/proj', { active: true, thinking: true, updatedAt: 90_000 }), session('new', 2_000, '/proj', { active: true, thinking: true, updatedAt: 1 })]
+        expect(bucketRunningSessions(sessions, true).working.map(s => s.id)).toEqual(['new', 'old'])
+        expect(bucketRunningSessions(sessions.map(s => ({ ...s, updatedAt: 200_000 })), true).working.map(s => s.id)).toEqual(['new', 'old'])
     })
 })

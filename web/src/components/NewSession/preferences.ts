@@ -84,8 +84,9 @@ export function loadPreferredLaunchSettings(
             return null
         }
         const permissionMode = typeof parsed.permissionMode === 'string'
-            && getPermissionModesForFlavor(agent).includes(parsed.permissionMode as PermissionMode)
-            ? parsed.permissionMode as PermissionMode
+            ? getPermissionModesForFlavor(agent).includes(parsed.permissionMode as PermissionMode)
+                ? parsed.permissionMode as PermissionMode
+                : 'default'
             : undefined
         return {
             model: parsed.model,
@@ -133,7 +134,13 @@ export function resolvePreferredLaunchSettings(
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
-    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot'
+    // Kimi's catalog is dynamic (machine discovery); validating a saved alias
+    // against the static list would reset it to 'auto'. The settled-catalog
+    // effect in NewSession validates it once the real catalog has arrived.
+    // AGY families are also validated against the machine catalog after loading.
+    // Claude's catalog is dynamic too, and a saved Claude model is kept even
+    // when the catalog drops it (it is offered as "no longer listed").
+    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot' && agent !== 'kimi' && agent !== 'claude' && agent !== 'agy'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel
     const effort = agent === 'claude'
@@ -155,7 +162,8 @@ export function resolvePreferredLaunchSettings(
     const usesSharedPermissionMode = usesSharedPermissionModeState(agent)
     const availablePermissionModes = getPermissionModesForFlavor(agent)
     const preferredPermissionMode = preferred?.permissionMode
-    const legacyYoloBridgeMode = legacyYolo && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
+    // A removed explicit mode falls back to Default, never to a stale YOLO toggle.
+    const legacyYoloBridgeMode = preferredPermissionMode === undefined && legacyYolo && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
         ? resolveHapiYoloPermissionMode(agent)
         : null
     const permissionMode = usesSharedPermissionMode

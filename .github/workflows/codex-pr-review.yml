@@ -2,7 +2,7 @@ name: Codex PR Review
 
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize]
+    types: [opened, reopened, ready_for_review, synchronize, edited]
 
 concurrency:
   group: codex-pr-review-${{ github.event.pull_request.number }}
@@ -17,103 +17,47 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
+      checks: read
+      statuses: read
       pull-requests: write
     outputs:
       review_result: ${{ steps.run_codex.outputs.final-message }}
 
     steps:
-      - name: Check HAPI Bot review state
-        id: check_bot
+      # Load executable scripts and prompts from trusted base code. PR objects
+      # are fetched for inspection below, never checked out or run.
+      - name: Checkout review policy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Prepare review context and check for duplicate inputs
+        id: prepare
         uses: actions/github-script@v7
         with:
           script: |
-            const marker = "*HAPI Bot*";
-            const allowedLogins = (process.env.HAPI_BOT_LOGINS || "github-actions[bot]")
-              .split(",")
-              .map((value) => value.trim())
-              .filter(Boolean);
-            const currentHeadSha = context.payload.pull_request.head.sha;
-            const reviews = await github.paginate(
-              github.rest.pulls.listReviews,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                per_page: 100
-              }
-            );
-            const botReviews = reviews
-              .filter((review) => {
-                if (!(review?.body || "").includes(marker)) {
-                  return false;
-                }
-                const user = review.user;
-                if (!user || user.type !== "Bot") {
-                  return false;
-                }
-                return allowedLogins.includes(user.login);
-              })
-              .sort((left, right) => {
-                const leftTime = new Date(left.submitted_at || left.created_at || 0).getTime();
-                const rightTime = new Date(right.submitted_at || right.created_at || 0).getTime();
-                if (rightTime !== leftTime) {
-                  return rightTime - leftTime;
-                }
-                return (right.id || 0) - (left.id || 0);
-              });
-            const latestBotReview = botReviews[0];
-            const hasReviewForCurrentHead = botReviews.some(
-              (review) => review.commit_id === currentHeadSha
-            );
-            const isFollowUpReview = Boolean(
-              latestBotReview?.commit_id && latestBotReview.commit_id !== currentHeadSha
-            );
-
-            core.setOutput("current_head_sha", currentHeadSha);
-            core.setOutput("has_review_for_current_head", hasReviewForCurrentHead ? "true" : "false");
-            core.setOutput("latest_bot_review_id", latestBotReview ? String(latestBotReview.id) : "");
-            core.setOutput("latest_bot_review_commit", latestBotReview?.commit_id || "");
-            core.setOutput("is_follow_up_review", isFollowUpReview ? "true" : "false");
-
-            if (hasReviewForCurrentHead) {
-              core.info(`Existing HAPI Bot review found for ${currentHeadSha}; skipping.`);
-            } else if (isFollowUpReview) {
-              core.info(
-                `Latest HAPI Bot review was for ${latestBotReview.commit_id}; running follow-up review for ${currentHeadSha}.`
-              );
-            }
+            const { prepareReview } = require('./.github/scripts/pr-review.cjs');
+            await prepareReview({ github, context, core });
         env:
           HAPI_BOT_LOGINS: ${{ vars.HAPI_BOT_LOGINS }}
 
-      # Codex reviews the PR merge ref under pull_request_target (needs base-repo
-      # secrets). GitHub's 2026-07-20 checkout backport refuses fork PR checkouts
-      # here unless explicitly opted in: https://github.blog/changelog/2026-06-18-safer-pull_request_target-defaults-for-github-actions-checkout/
-      - name: Checkout repository
-        if: steps.check_bot.outputs.has_review_for_current_head != 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          fetch-depth: 0
-          allow-unsafe-pr-checkout: true
+      - name: Fetch fixed review commits
+        if: steps.prepare.outputs.should_review == 'true'
+        env:
+          BASE_SHA: ${{ steps.prepare.outputs.base_sha }}
+          CURRENT_HEAD_SHA: ${{ steps.prepare.outputs.current_head_sha }}
+        run: git fetch --no-tags origin "$BASE_SHA" "$CURRENT_HEAD_SHA"
 
-      - name: Pre-fetch base and head refs
-        if: steps.check_bot.outputs.has_review_for_current_head != 'true'
-        run: |
-          git fetch --no-tags origin \
-            ${{ github.event.pull_request.base.ref }} \
-            +refs/pull/${{ github.event.pull_request.number }}/head
-
-      - name: Run Codex for PR Review
+      - name: Analyze requirement, approach, and code
         id: run_codex
-        if: steps.check_bot.outputs.has_review_for_current_head != 'true'
+        if: steps.prepare.outputs.should_review == 'true'
         uses: openai/codex-action@v1.11
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
-          CURRENT_HEAD_SHA: ${{ steps.check_bot.outputs.current_head_sha }}
-          LATEST_BOT_REVIEW_ID: ${{ steps.check_bot.outputs.latest_bot_review_id }}
-          LATEST_BOT_REVIEW_COMMIT: ${{ steps.check_bot.outputs.latest_bot_review_commit }}
-          IS_FOLLOW_UP_REVIEW: ${{ steps.check_bot.outputs.is_follow_up_review }}
+          REVIEW_CONTEXT_PATH: ${{ steps.prepare.outputs.context_path }}
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           responses-api-endpoint: ${{ secrets.OPENAI_BASE_URL }}
@@ -126,3 +70,16 @@ jobs:
           prompt-file: .github/prompts/codex-pr-review.md
           allow-bots: true
           allow-users: "*"
+
+      - name: Validate and publish one review
+        id: publish
+        if: steps.prepare.outputs.should_review == 'true'
+        uses: actions/github-script@v7
+        env:
+          HAPI_BOT_LOGINS: ${{ vars.HAPI_BOT_LOGINS }}
+          REVIEW_CONTEXT_PATH: ${{ steps.prepare.outputs.context_path }}
+          REVIEW_RESULT: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          script: |
+            const { publishReview } = require('./.github/scripts/pr-review.cjs');
+            await publishReview({ github, context, core });

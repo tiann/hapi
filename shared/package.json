@@ -18,6 +18,7 @@
         "./schemas": "./src/schemas.ts",
         "./sessionCitation": "./src/sessionCitation.ts",
         "./sessionExport": "./src/sessionExport.ts",
+        "./sessionLifecycle": "./src/sessionLifecycle.ts",
         "./types": "./src/types.ts",
         "./voice": "./src/voice.ts",
         "./voicePickerCatalog": "./src/voicePickerCatalog.ts",

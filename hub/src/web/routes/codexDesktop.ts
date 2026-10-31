@@ -2013,6 +2013,18 @@ function importSingleCodexSession(options: {
 
     try {
         const candidates = collectImportCandidates(options.store, options.namespace, options.getSyncEngine)
+        const activeCandidate = candidates.find((candidate) => (
+            candidate.active
+            && getCodexImportIds(candidate.metadata).includes(options.codexSessionId)
+            && (
+                !options.machineId
+                || typeof candidate.metadata?.machineId !== 'string'
+                || candidate.metadata.machineId === options.machineId
+            )
+        ))
+        if (activeCandidate) {
+            throw new Error('Cannot sync Codex transcript while the matching HAPI session is active')
+        }
         const target = selectImportTargetSession(
             options.store,
             candidates,

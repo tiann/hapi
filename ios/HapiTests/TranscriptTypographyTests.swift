@@ -152,14 +152,18 @@ final class TranscriptTypographyTests: XCTestCase {
         defer { window.isHidden = true }
         await settle { driver.layouts.contains(0) }
         let cell = try await browse(view, index: 25)
-        view.contentOffset.y = cell.frame.minY + 350
+        // Keep the anchor inside this measured row on iPad as well as iPhone.
+        // A fixed 350pt can already be in the next row with tablet metrics.
+        let deepOffset = min(350, cell.frame.height / 2)
+        XCTAssertGreaterThan(deepOffset, 100, "Exercise an offset beyond the unmeasured height estimate")
+        view.contentOffset.y = cell.frame.minY + deepOffset
         view.layoutIfNeeded()
         await settle()
         let previousSize = try XCTUnwrap(driver.typography).bodySize
         driver.size = .accessibility5
         await settle { (driver.typography?.bodySize ?? 0) > previousSize }
         let grown = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
-        XCTAssertEqual(view.contentOffset.y - grown.frame.minY, 350, accuracy: 1)
+        XCTAssertEqual(view.contentOffset.y - grown.frame.minY, deepOffset, accuracy: 1)
     }
 
     func testReadingWidthAndBoldTextChangesKeepHistoryInPlace() async throws {
@@ -171,7 +175,13 @@ final class TranscriptTypographyTests: XCTestCase {
         let offset = cell.frame.minY - view.contentOffset.y
         for width: CGFloat in [1024, 768, 507, 320] {
             driver.width = width
-            await settle { abs(view.bounds.width - width) < 1 }
+            await settle {
+                guard let frame = view.cellForItem(at: IndexPath(item: 25, section: 0))?.frame else { return false }
+                return abs(view.bounds.width - width) < 1
+                    && abs(frame.width - HapiReadingLayout.contentWidth(in: width)) < 1
+                    && abs(frame.midX - width / 2) < 1
+                    && abs(frame.minY - view.contentOffset.y - offset) < 1
+            }
             let frame = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0))).frame
             XCTAssertEqual(frame.width, HapiReadingLayout.contentWidth(in: width), accuracy: 1)
             XCTAssertEqual(frame.midX, width / 2, accuracy: 1)

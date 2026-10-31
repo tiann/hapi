@@ -6,7 +6,7 @@ import { getFcmDevicesByNamespace, removeFcmDeviceByToken, upsertFcmDevice } fro
 /**
  * Native-device registry. Despite the historical `fcm_` naming, the table
  * holds every native push registration: Android phone/wear rows (FCM
- * tokens) and iOS rows (hex APNs token + E2E `pushKey`). Callers that send
+ * tokens, optional phone `pushKey`) and iOS rows (hex APNs token + `pushKey`). Callers that send
  * through a specific pipeline must pass a platform filter so FCM never sees
  * APNs tokens and vice versa.
  */

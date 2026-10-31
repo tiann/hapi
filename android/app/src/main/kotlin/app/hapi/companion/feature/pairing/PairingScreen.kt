@@ -106,6 +106,7 @@ fun PairingScreen(
             ) {
                 Text(stringResource(R.string.pairing_manual_entry))
             }
+            app.hapi.companion.ui.components.PrivacyPolicyLink()
         }
     }
 }

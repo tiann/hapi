@@ -4,13 +4,22 @@ import type { SessionSummary } from '@/types/api'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { canUseAppBadging, countUnreadSessions, useAppBadge } from './useAppBadge'
 
-function createSession(id: string, updatedAt: number): SessionSummary {
+function createSession(
+    id: string,
+    updatedAt: number,
+    thinking = false,
+    active = thinking,
+): SessionSummary {
     return {
         id,
-        active: false,
-        thinking: false,
+        active,
+        thinking,
         activeAt: updatedAt,
         updatedAt,
+        // Has real conversation content, so it's eligible for the sidebar's
+        // "Unread" filter and "mark all read" — see createStubSession() below
+        // for a session excluded from both.
+        hasConversationContent: true,
         metadata: null,
         metadataVersion: 0,
         agentStateVersion: 0,
@@ -25,6 +34,12 @@ function createSession(id: string, updatedAt: number): SessionSummary {
         model: null,
         effort: null,
     }
+}
+
+/** A duplicate/reconnect artifact with no real content — excluded from the sidebar's
+ *  "Unread" filter and "mark all read" via shouldShowSessionInSidebar (hapi#1845). */
+function createStubSession(id: string, updatedAt: number): SessionSummary {
+    return { ...createSession(id, updatedAt), hasConversationContent: false }
 }
 
 function setDisplayMode(standalone: boolean): void {
@@ -61,6 +76,35 @@ describe('useAppBadge', () => {
         expect(countUnreadSessions(
             [createSession('session-a', 11), createSession('session-b', 20)],
             { 'session-a': 10, 'session-b': 20 },
+        )).toBe(1)
+    })
+
+    it('does not count a session while it is generating, then counts it after completion', () => {
+        const lastSeenById = { 'session-a': 10 }
+
+        expect(countUnreadSessions(
+            [createSession('session-a', 11, true)],
+            lastSeenById,
+        )).toBe(0)
+
+        expect(countUnreadSessions(
+            [createSession('session-a', 11)],
+            lastSeenById,
+        )).toBe(1)
+    })
+
+    it('preserves a manually marked unread session while it is generating', () => {
+        expect(countUnreadSessions(
+            [createSession('session-a', 12, true)],
+            { 'session-a': 10 },
+            { 'session-a': 11 },
+        )).toBe(1)
+    })
+
+    it('counts an inactive session even if its thinking flag is stale', () => {
+        expect(countUnreadSessions(
+            [createSession('session-a', 11, true, false)],
+            { 'session-a': 10 },
         )).toBe(1)
     })
 
@@ -159,6 +203,23 @@ describe('useAppBadge', () => {
         rerender([createSession('session-a', 11)])
         await new Promise(resolve => setTimeout(resolve, 0))
         expect(setAppBadge).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not count an empty stub session the sidebar filters out of "Unread"/"mark all read" (hapi#1845)', async () => {
+        setDisplayMode(true)
+        const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
+        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'stub-session': 10 }))
+
+        renderHook(() => useAppBadge({
+            enabled: true,
+            scope: 'https://hapi.test',
+            sessions: [createStubSession('stub-session', 11)],
+            isLoading: false,
+            hasError: false,
+        }))
+
+        await waitFor(() => expect(clearAppBadge).toHaveBeenCalledTimes(1))
+        expect(setAppBadge).not.toHaveBeenCalled()
     })
 
     it('does not use app badges for a normal browser tab', async () => {

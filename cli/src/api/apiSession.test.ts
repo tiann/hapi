@@ -11,6 +11,7 @@ const socketHarness = vi.hoisted(() => ({
         trigger: (event: string, ...args: any[]) => void
         triggerConnect: () => void
         triggerConnectError: () => void
+        emitWithAckImpl: (event: string, ...args: unknown[]) => Promise<unknown>
     }>
 }))
 
@@ -28,7 +29,8 @@ vi.mock('socket.io-client', () => ({
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
             trigger: () => {},
             triggerConnect: () => {},
-            triggerConnectError: () => {}
+            triggerConnectError: () => {},
+            emitWithAckImpl: async () => ({})
         }
         state.trigger = (event: string, ...args: any[]) => {
             for (const listener of state.listeners.get(event) ?? []) {
@@ -62,8 +64,10 @@ vi.mock('socket.io-client', () => ({
                 state.emitted.push({ event, args })
                 return socket
             },
-            emitWithAck: async () => ({}),
-            timeout: () => ({ emitWithAck: async () => ({}) }),
+            emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args),
+            timeout: () => ({
+                emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args)
+            }),
             connect: () => {
                 state.connectCalls += 1
                 if (state.connectImmediately) {
@@ -76,7 +80,10 @@ vi.mock('socket.io-client', () => ({
                 return socket
             }
         }
-        Object.assign(socket, { volatile: socket })
+        Object.assign(socket, {
+            volatile: socket,
+            io: { opts: { reconnection: true } }
+        })
         socketHarness.sockets.push(state)
         return socket
     }
@@ -162,6 +169,70 @@ function triggerIncomingUserMessage(
         }
     })
 }
+
+describe('ApiSessionClient input buffered during initialization', () => {
+    function message(text: string, localId: string, seq: number) {
+        return {
+            id: `message-${seq}`, seq, localId,
+            content: { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'webapp' } },
+        }
+    }
+
+    it.each([false, true])('cancels buffered input before a user-message handler is ready (callback=%s)', async (withCallback) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const cancel = vi.fn(() => false)
+        if (withCallback) client.onCancelQueuedMessage(cancel)
+        await update({ body: { t: 'new-message', message: message('cancel me', 'local-1', 1) } })
+        await update({ body: { t: 'new-message', message: message('keep me', 'local-2', 2) } })
+        const ack = vi.fn()
+
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: true, inFlight: false, indeterminate: false, consumed: false })
+        expect(cancel).not.toHaveBeenCalled()
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).toHaveBeenCalledTimes(1)
+        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { type: 'text', text: 'keep me' } }), 'local-2')
+        client.close()
+    })
+
+    it.each([false, true])('replaces buffered input on retry without flushing twice (callback=%s)', async (withCallback) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const cancel = vi.fn(() => 'consumed' as const)
+        if (withCallback) client.onCancelQueuedMessage(cancel)
+        await update({ body: { t: 'new-message', message: message('original', 'local-1', 1) } })
+        const ack = vi.fn()
+        await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: false, accepted: true })
+        expect(cancel).not.toHaveBeenCalled()
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).toHaveBeenCalledTimes(1)
+        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { type: 'text', text: 'replacement' } }), 'local-1')
+        client.close()
+    })
+
+    it.each(['in-flight', 'consumed', 'indeterminate'] as const)('keeps %s cancellation semantics after input leaves the buffer', async (result) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const update = socketHarness.sockets[0]!.listeners.get('update')![0]!
+        const cancel = vi.fn(async () => result)
+        client.onCancelQueuedMessage(cancel)
+        const ack = vi.fn()
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, ack)
+        expect(cancel).toHaveBeenCalledWith('local-1')
+        expect(ack).toHaveBeenCalledWith({
+            removed: false, inFlight: result === 'in-flight', indeterminate: result === 'indeterminate', consumed: result === 'consumed',
+        })
+        client.close()
+    })
+})
 
 describe('ApiSessionClient lazy materialization', () => {
     it('does not connect or materialize without a real user message', async () => {
@@ -410,6 +481,189 @@ describe('ApiSessionClient lazy materialization', () => {
         expect(socket.connectCalls).toBeGreaterThan(0)
         client.close()
     })
+
+    it('emits hub-archived from update-session metadata (#1910)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+
+        socket.trigger('update', {
+            body: {
+                t: 'update-session',
+                sid: session.id,
+                metadata: {
+                    version: 2,
+                    value: {
+                        path: '/tmp',
+                        host: 'h',
+                        flavor: 'claude',
+                        lifecycleState: 'archived',
+                        archivedBy: 'hub',
+                        archiveReason: 'Archived from hub (CLI unreachable)'
+                    }
+                },
+                agentState: null
+            }
+        })
+
+        expect(archived).toBe(true)
+        expect(client.getMetadata()?.lifecycleState).toBe('archived')
+        client.close()
+    })
+
+    it('stops metadata CAS when hub returns archived on version-mismatch (#1911 M1)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude', lifecycleState: 'running' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let ackCalls = 0
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+        socket.emitWithAckImpl = async (event) => {
+            if (event !== 'update-metadata') return {}
+            ackCalls += 1
+            return {
+                result: 'version-mismatch',
+                version: 2,
+                metadata: {
+                    path: '/tmp',
+                    host: 'h',
+                    flavor: 'claude',
+                    lifecycleState: 'archived',
+                    archivedBy: 'hub',
+                    archiveReason: 'Archived from hub'
+                }
+            }
+        }
+
+        client.updateMetadata((meta) => ({ ...meta, lifecycleState: 'running', hostPid: 42 }))
+
+        await vi.waitFor(() => {
+            expect(client.getMetadata()?.lifecycleState).toBe('archived')
+            expect(archived).toBe(true)
+        })
+        await new Promise((r) => setTimeout(r, 50))
+        expect(ackCalls).toBe(1)
+        client.close()
+    })
+
+    it('exits via hub-archived on success+merge-preserve ack (#1911 criterion 6)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude', lifecycleState: 'running' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let ackCalls = 0
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+        socket.emitWithAckImpl = async (event) => {
+            if (event !== 'update-metadata') return {}
+            ackCalls += 1
+            // Hub merge-preserved archive fields and returned success.
+            return {
+                result: 'success',
+                version: 2,
+                metadata: {
+                    path: '/tmp',
+                    host: 'h',
+                    flavor: 'claude',
+                    lifecycleState: 'archived',
+                    archivedBy: 'hub',
+                    archiveReason: 'Archived from hub',
+                    hostPid: 42
+                }
+            }
+        }
+
+        client.updateMetadata((meta) => ({ ...meta, lifecycleState: 'running', hostPid: 42 }))
+
+        await vi.waitFor(() => {
+            expect(archived).toBe(true)
+            expect(client.getMetadata()?.lifecycleState).toBe('archived')
+        })
+        await new Promise((r) => setTimeout(r, 50))
+        expect(ackCalls).toBe(1)
+        client.close()
+    })
+
+    it('reconciles hub-archived metadata on reconnect (#1910)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({
+            data: {
+                session: {
+                    metadataVersion: 1,
+                    metadata: { path: '/tmp', host: 'h', flavor: 'claude' }
+                },
+                messages: []
+            }
+        })
+
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+
+        // Establish first connection so hasConnectedOnce is true.
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalled())
+
+        axiosHarness.get.mockImplementation(async (url: string) => {
+            if (String(url).includes('/messages')) {
+                return { data: { messages: [] } }
+            }
+            return {
+                data: {
+                    session: {
+                        metadataVersion: 5,
+                        metadata: {
+                            path: '/tmp',
+                            host: 'h',
+                            flavor: 'claude',
+                            lifecycleState: 'archived',
+                            archivedBy: 'hub',
+                            archiveReason: 'Archived from hub (CLI unreachable)'
+                        }
+                    }
+                }
+            }
+        })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await vi.waitFor(() => expect(archived).toBe(true))
+        expect(client.getMetadata()?.archivedBy).toBe('hub')
+        client.close()
+    })
 })
 
 describe('ApiSessionClient agy transcript messages', () => {
@@ -447,6 +701,26 @@ describe('ApiSessionClient agy transcript messages', () => {
 })
 
 describe('ApiSessionClient incoming user messages', () => {
+    it.each([true, false])('replays explicitly marked native queue input only for shared sessions (%s)', shared => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({
+            metadata: { path: '/tmp', host: 'test', capabilities: { concurrentClients: shared } }
+        }))
+        const socket = socketHarness.sockets[0]
+        const received = vi.fn()
+        client.onUserMessage(received)
+        const message = { id: 'native-queued', seq: 10, localId: 'native-client-id', content: {
+            role: 'user', content: { type: 'text', text: 'queued before exit' },
+            meta: { sentFrom: 'cli', isNativeQueuedMessage: true }
+        } }
+        socket.trigger('update', { body: { t: 'new-message', message } })
+        socket.trigger('update', { body: { t: 'new-message', message } })
+        expect(received).toHaveBeenCalledTimes(shared ? 1 : 0)
+        if (shared) expect(received).toHaveBeenCalledWith(expect.objectContaining({
+            content: { type: 'text', text: 'queued before exit' }
+        }), 'native-client-id')
+        client.close()
+    })
     it('ignores CLI-originated transcript messages while advancing the incoming cursor', () => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
@@ -744,5 +1018,53 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
         expect(filter.accept({ id: 'pending', seq: 7 })).toBe(false)
         expect(filter.accept({ id: 'a', seq: 8 })).toBe(true)
         expect(filter.accept({ id: 'b', seq: 9 })).toBe(true)
+    })
+})
+
+describe('explicit title action metadata refresh', () => {
+    it('observes user lock changes without rolling back a newer socket metadata version', async () => {
+        const client = new ApiSessionClient('test-token', createSession({
+            metadataVersion: 10, metadata: { path: '/tmp', host: 'test', name: 'Pinned', titleLocked: true }
+        }))
+        try {
+            axiosHarness.get.mockResolvedValue({ data: { session: {
+                metadataVersion: 11, metadata: { path: '/tmp', host: 'test', name: 'Pinned', titleLocked: false }
+            } } })
+            expect(await client.refreshMetadata()).toBe(true)
+            expect(client.getMetadata()?.titleLocked).toBe(false)
+            axiosHarness.get.mockResolvedValue({ data: { session: {
+                metadataVersion: 9, metadata: { path: '/tmp', host: 'test', name: 'Old', titleLocked: true }
+            } } })
+            expect(await client.refreshMetadata()).toBe(true)
+            expect(client.getMetadata()).toMatchObject({ name: 'Pinned', titleLocked: false })
+        } finally { client.close() }
+    })
+
+    it('reports an unavailable or malformed Hub response instead of trusting cached lock state', async () => {
+        const client = new ApiSessionClient('test-token', createSession())
+        try {
+            axiosHarness.get.mockRejectedValue(new Error('Offline'))
+            expect(await client.refreshMetadata()).toBe(false)
+            axiosHarness.get.mockResolvedValue({ data: { session: { metadataVersion: 99, metadata: { titleLocked: true } } } })
+            expect(await client.refreshMetadata()).toBe(false)
+        } finally { client.close() }
+    })
+})
+
+describe('ApiSessionClient runtime heartbeat', () => {
+    it('replays the latest runtime when the socket connects (#2053)', () => {
+        const client = new ApiSessionClient('token', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.connected = false
+        socket.emitted.length = 0
+
+        client.keepAlive(true, 'remote', { permissionMode: 'bypassPermissions' })
+        expect(socket.emitted).toEqual([])
+
+        socket.triggerConnect()
+        expect(socket.emitted.filter((entry) => entry.event === 'session-alive').map((entry) => entry.args[0])).toEqual([
+            { sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', permissionMode: 'bypassPermissions' }
+        ])
+        client.close()
     })
 })

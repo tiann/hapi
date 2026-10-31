@@ -28,11 +28,14 @@ import kotlinx.serialization.json.JsonElement
  */
 @Serializable
 data class Session(
+    /** Hub: the session has conversation content (first-field parity with `SessionSchema`). */
+    val hasConversationContent: Boolean = false,
     val id: String,
     val namespace: String,
     val seq: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    val lastUserMessageAt: Long? = null,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val active: Boolean,

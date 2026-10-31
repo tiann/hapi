@@ -12,13 +12,14 @@ import { resolveDshAcpCommand } from '@/dsh/utils/dshBackend'
 import { getAgentLaunchCommand, resolveExecutable } from './agentLaunchCommand'
 
 type LaunchEnvironment = Record<string, string | undefined>
+type LaunchContext = 'runner' | 'terminal'
 
 type AgentLaunchSpec = {
     command: string
     args: string[]
 }
 
-function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment): AgentLaunchSpec {
+function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment, context: LaunchContext): AgentLaunchSpec {
     if (agent === 'claude') {
         return { command: getDefaultClaudeCodePath(env), args: [] }
     }
@@ -26,7 +27,7 @@ function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment): AgentLau
         // Remote Codex sessions launch app-server through this explicit
         // override. Validate the same command the session will actually use,
         // rather than falling back to an unrelated PATH/Desktop install.
-        if (env.HAPI_CODEX_APP_SERVER_BIN) {
+        if (context === 'runner' && env.HAPI_CODEX_APP_SERVER_BIN) {
             return { command: env.HAPI_CODEX_APP_SERVER_BIN.trim(), args: [] }
         }
         return resolveCodexCommand(env)
@@ -70,6 +71,7 @@ function hasResolvableCommand(spec: AgentLaunchSpec, env: LaunchEnvironment): bo
 export function getAgentAvailability(
     agent: AgentFlavor,
     env: LaunchEnvironment = process.env,
+    context: LaunchContext = 'runner',
 ): AgentAvailabilityEntry {
     if (agent === 'gemini') {
         return { agent, available: false, reason: 'not_found' }
@@ -77,7 +79,7 @@ export function getAgentAvailability(
 
     let spec: AgentLaunchSpec
     try {
-        spec = resolveLaunchSpec(agent, env)
+        spec = resolveLaunchSpec(agent, env, context)
         if (agent === 'dsh' && !hasValidDshConfiguration(env)) {
             return { agent, available: false, reason: 'invalid_configuration' }
         }
@@ -97,7 +99,7 @@ export function getAgentAvailability(
     return {
         agent,
         available: false,
-        reason: agent === 'codex' && Boolean(env.HAPI_CODEX_APP_SERVER_BIN)
+        reason: context === 'runner' && agent === 'codex' && Boolean(env.HAPI_CODEX_APP_SERVER_BIN)
             ? 'invalid_configuration'
             : 'not_found',
     }

@@ -1,7 +1,8 @@
 import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as codexExecutable from '@/codex/utils/codexExecutable'
 import { executableCandidates, getAgentLaunchCommand, resolveExecutable } from './agentLaunchCommand'
 import { getAgentAvailability } from './agentAvailability'
 
@@ -69,8 +70,28 @@ describe('agent executable resolution', () => {
         })).toEqual({ agent: 'codex', available: true })
     })
 
+    it('checks the terminal Codex executable independently of the runner override', async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'hapi-agent-path-'))
+        const codex = await makeExecutable(directory, 'codex')
+        const resolveSpy = vi.spyOn(codexExecutable, 'resolveCodexCommand')
+        try {
+            resolveSpy.mockReturnValue({ command: codex, args: [] })
+            expect(getAgentAvailability('codex', {
+                PATH: '', HAPI_CODEX_APP_SERVER_BIN: '/missing/app-server'
+            }, 'terminal')).toEqual({ agent: 'codex', available: true })
+
+            resolveSpy.mockReturnValue({ command: join(directory, 'missing-codex'), args: [] })
+            expect(getAgentAvailability('codex', {
+                PATH: '', HAPI_CODEX_APP_SERVER_BIN: codex
+            }, 'terminal')).toEqual({ agent: 'codex', available: false, reason: 'not_found' })
+        } finally {
+            resolveSpy.mockRestore()
+        }
+    })
+
     it('rejects malformed or missing DSH static configuration', async () => {
         const directory = await mkdtemp(join(tmpdir(), 'hapi-agent-path-'))
+        await makeExecutable(directory, 'dsh')
         await makeExecutable(directory, 'dsh-acp-demo')
         expect(getAgentAvailability('dsh', {
             PATH: directory,
@@ -85,6 +106,11 @@ describe('agent executable resolution', () => {
         await writeFile(config, 'agents: []\n')
         expect(getAgentAvailability('dsh', {
             PATH: directory,
+            HAPI_DSH_ACP_CONFIG: config,
+        })).toEqual({ agent: 'dsh', available: true })
+        expect(getAgentAvailability('dsh', {
+            PATH: directory,
+            HAPI_DSH_ACP_COMMAND: 'dsh-acp-demo',
             HAPI_DSH_ACP_CONFIG: config,
         })).toEqual({ agent: 'dsh', available: true })
     })

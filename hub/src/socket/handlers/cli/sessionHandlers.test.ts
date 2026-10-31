@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, mock } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -27,6 +27,28 @@ class FakeSocket {
     }
 }
 
+it('does not rebroadcast stored messages and retains repeated consumption acknowledgements', () => {
+    const store = new Store(':memory:')
+    const session = store.sessions.getOrCreateSession('dedupe-replay', {}, null, 'default')
+    const socket = new FakeSocket()
+    const events: SyncEvent[] = []
+    const progress = mock(() => {})
+    registerSessionHandlers(socket as unknown as CliSocketWithData, {
+        store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+        onWebappEvent: event => events.push(event), onAgentProgress: progress
+    })
+    const message = { sid: session.id, localId: 'stable-1', message: { role: 'user', content: { type: 'text', text: 'hello' } } }
+    socket.trigger('message', message)
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['stable-1'] })
+    socket.trigger('message', message)
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['stable-1'] })
+    expect(events.filter(event => event.type === 'message-received')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'messages-consumed')).toHaveLength(2)
+    expect(progress).toHaveBeenCalledTimes(1)
+    expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+    store.close()
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',
@@ -53,6 +75,42 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { text: 'pending' }, 'pending')
+        const socket = new FakeSocket(); const sweep = mock(); const end = mock()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onSweepImmediateQueued: sweep, onSessionEnd: end
+        })
+        socket.trigger('session-end', { sid: session.id, time: Date.now(), reason })
+        expect(sweep).not.toHaveBeenCalled(); expect(end).toHaveBeenCalledTimes(1)
+        expect(store.messages.getAllMessages(session.id)[0]).toMatchObject({ localId: 'pending', invokedAt: null })
+        store.close()
+    })
+    it('mirrors native queued edits/removal without overwriting or deleting a consumed row', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('shared-queue', { capabilities: { concurrentClients: true } }, null, 'default')
+        const socket = new FakeSocket(); const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {}, onWebappEvent: event => events.push(event)
+        })
+        const sync = (localId: string, text: string | null) => socket.trigger('native-queue-message', { sid: session.id, localId, text })
+        sync('queued', 'one'); sync('queued', 'edited')
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        expect(store.messages.getAllMessages(session.id)[0]).toMatchObject({ invokedAt: null, content: {
+            content: { text: 'edited' }, meta: { sentFrom: 'cli', isNativeQueuedMessage: true }
+        } })
+        sync('queued', null); expect(events.at(-1)).toMatchObject({ type: 'message-cancelled', localId: 'queued' })
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'original', attachments: [{ name: 'image.png' }] }, meta: { sentFrom: 'web' } }, 'attachment')
+        sync('attachment', 'edited')
+        expect(store.messages.getAllMessages(session.id)[0]).toMatchObject({ content: { content: { attachments: [{ name: 'image.png' }], text: 'edited' }, meta: { sentFrom: 'web' } } })
+        sync('attachment', null)
+        sync('consumed', 'executed'); store.messages.markMessagesInvoked(session.id, ['consumed'], Date.now())
+        sync('consumed', 'stale'); sync('consumed', null)
+        expect(store.messages.getAllMessages(session.id)[0]).toMatchObject({ content: { content: { text: 'executed' } } })
+    })
     it('preserves immediate queued rows for cleared handoff transfer', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('clear-end', {}, null, 'default')
@@ -402,7 +460,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -420,7 +478,9 @@ describe('cli session handlers', () => {
                     path: '/tmp/project',
                     [field]: field === 'supersededBySessionId'
                         ? 'foreign-session'
-                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                        : field === 'opencodeClearOperation'
+                            ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                            : field === 'titleSuggestionTurn' ? { first: false, completed: true } : 1234
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -450,6 +510,32 @@ describe('cli session handlers', () => {
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+        })
+    })
+
+    it('preserves the automatic title attempt marker across CLI metadata updates', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-auto-title-marker', {
+            path: '/tmp/project',
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false }
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', titleSuggestionAutoAttemptedAt: 9999, titleSuggestionTurn: { first: false, completed: true } }
+        }, () => {})
+
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false }
         })
     })
 })

@@ -106,8 +106,8 @@ describe('resumeCommand', () => {
 
         await resumeCommand.run(createContext(['hapi-session-1']))
 
-        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-session-1')
-        expect(assertCodexLocalSupportedMock).toHaveBeenCalledOnce()
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(assertCodexLocalSupportedMock).not.toHaveBeenCalled()
         expect(runCodexMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-1',
             workingDirectory: '/tmp/project',

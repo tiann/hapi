@@ -66,6 +66,61 @@ final class ToolInspectionTests: XCTestCase {
         XCTAssertEqual(inspector.invalidation, 1)
     }
 
+    func testGroupRootOwnsSheetAndResolvesLatestMembersWithoutSelectingOne() throws {
+        let inspector = ToolInspectionState()
+        let original = grouped([block("a"), block("b")])
+        guard case .toolGroup(let group) = original[0] else { return XCTFail("Expected group") }
+        inspector.update(original)
+        inspector.update(grouped([block("a"), block("b", result: "updated"), block("c")]))
+        XCTAssertTrue(inspector.openGroup(group.id, owner: "chat"))
+        XCTAssertEqual(inspector.owner, "chat")
+        XCTAssertNil(inspector.selection)
+        XCTAssertEqual(inspector.groupSelection?.block.tools.map(\.id), ["a", "b", "c"])
+        XCTAssertTrue(inspector.selectGroupTool("b"))
+        XCTAssertEqual(inspector.selection?.block.tool.result, .string("updated"))
+        inspector.update(grouped([block("a"), block("b", result: "streamed"), block("c"), block("d")]))
+        XCTAssertEqual(inspector.selection?.block.id, "b")
+        XCTAssertEqual(inspector.selection?.block.tool.result, .string("streamed"))
+        XCTAssertEqual(inspector.siblingIDs, ["a", "b", "c", "d"])
+        inspector.returnToGroup()
+        XCTAssertNil(inspector.selection)
+        XCTAssertEqual(inspector.owner, "chat")
+        inspector.dismiss(owner: "process:other")
+        XCTAssertEqual(inspector.owner, "chat")
+        inspector.dismiss(owner: "chat")
+        XCTAssertNil(inspector.owner)
+        XCTAssertNil(inspector.groupSelection)
+        XCTAssertFalse(inspector.openGroup("missing", owner: "chat"))
+        XCTAssertNil(inspector.owner)
+    }
+
+    func testGroupSnapshotAndSelectedToolSurviveRegroupingAndTrimming() {
+        let inspector = ToolInspectionState()
+        let original = grouped([block("a", result: "first"), block("b", result: "last")])
+        guard case .toolGroup(let group) = original[0] else { return XCTFail("Expected group") }
+        inspector.update(original)
+        inspector.openGroup(group.id, owner: "chat")
+        inspector.selectGroupTool("b")
+        inspector.update([.block(.toolCall(block("b", result: "still live")))])
+        XCTAssertTrue(inspector.isGroupStale)
+        XCTAssertFalse(inspector.isStale)
+        XCTAssertEqual(inspector.selection?.block.tool.result, .string("still live"))
+        inspector.update(grouped([block("replacement"), block("other")]))
+        XCTAssertEqual(inspector.groupSelection?.block.id, group.id)
+        XCTAssertTrue(inspector.isStale)
+        XCTAssertEqual(inspector.selection?.block.tool.result, .string("still live"))
+        inspector.move(by: -1)
+        XCTAssertEqual(inspector.selection?.block.id, "a")
+        XCTAssertEqual(inspector.selection?.block.tool.result, .string("first"))
+        inspector.move(by: 1)
+        XCTAssertEqual(inspector.selection?.block.tool.result, .string("still live"))
+        XCTAssertFalse(inspector.selectGroupTool("replacement"))
+        inspector.invalidate()
+        XCTAssertNil(inspector.owner)
+        XCTAssertNil(inspector.groupSelection)
+        XCTAssertNil(inspector.selection)
+    }
+
     func testLongTextPagesPreserveFullUnicodePayload() {
         let text = String(repeating: "中👩🏽‍💻\n", count: 20_001) + "last line  \n"
         let pages = toolTextPages(text)

@@ -5,6 +5,7 @@ import {
     utf8ByteLength
 } from '@hapi/protocol/voice-personality'
 import type { DecryptedMessage, Session } from '@/types/api'
+import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
 import { formatMessage } from './contextFormatters'
 import { VOICE_CONFIG } from '../voiceConfig'
 
@@ -21,13 +22,13 @@ export interface SessionVoiceContextPlan {
 }
 
 function formatSessionHeader(session: Session): string {
-    const summary = session.metadata?.summary?.text?.trim()
     const path = session.metadata?.path
+    const title = hasSessionTitleSignal(session) ? getSessionTitle(session) : null
     const lines = [
         'THIS IS AN ACTIVE SESSION.',
         `# Session ID: ${session.id}`,
         path ? `# Project path: ${path}` : '',
-        summary ? `# Session summary:\n${summary}` : ''
+        title ? `# Session summary:\n${title}` : ''
     ].filter(Boolean)
     return lines.join('\n\n')
 }

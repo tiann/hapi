@@ -3,6 +3,7 @@ import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
+import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
 
 function buildSessionUrl(baseUrl: string, sessionId: string): string {
     try {
@@ -38,12 +39,15 @@ export class ServerChanChannel implements NotificationChannel {
         }
 
         const name = getSessionName(session)
-        const request = session.agentState?.requests
-            ? Object.values(session.agentState.requests)[0]
-            : null
+        const pending = getFirstPendingRequest(session)
+        const request = pending?.request
+        const inputNotification = composeInputRequestNotification(session, pending)
         const toolName = request?.tool ? ` (${request.tool})` : ''
         const url = buildSessionUrl(this.publicUrl, session.id)
-        await this.send('HAPI Permission Request', `${name}${toolName}\n\n${url}`)
+        await this.send(
+            inputNotification ? `HAPI ${inputNotification.title}` : 'HAPI Permission Request',
+            `${inputNotification?.body ?? `${name}${toolName}`}\n\n${url}`
+        )
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {

@@ -6,6 +6,7 @@ import { decodeMessageContent } from './contentCodec'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
     deleteLiveReasoningSnapshots,
@@ -39,6 +40,7 @@ import {
     copyMessagesToSession as copyStoredMessagesToSession,
     getAllMessages,
     getMessagesAfterSeq,
+    getMinSeq,
     getMessageSeqById,
     truncateMessagesFromLocalId,
     type CancelQueuedMessageResult,
@@ -56,6 +58,10 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {
+        return syncNativeQueuedMessage(this.db, sessionId, localId, text)
     }
 
     deleteLiveReasoningSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
@@ -87,6 +93,10 @@ export class MessageStore {
 
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
+    }
+
+    getMinSeq(sessionId: string): number | null {
+        return getMinSeq(this.db, sessionId)
     }
 
     getSeqById(sessionId: string, messageId: string): number | null {

@@ -25,6 +25,32 @@ final class ToolContentPresentationTests: XCTestCase {
         XCTAssertNil(toolSourceInput(.object(["unknown": .bool(true)]), keys: ["patch"]))
     }
 
+    func testPlanProposalsReadInputAndPreserveTheCompleteDocument() throws {
+        let plan = "\n# 计划 👩🏽‍💻\n\n" + String(repeating: "- Inspect **input.plan**  \n", count: 1_000) + "last  \n"
+        for name in ["ExitPlanMode", "exit_plan_mode"] {
+            let input: JSONValue = .object(["plan": .string(plan), "extra": .bool(true)])
+            let call = tool(name, input: input, result: .null)
+            XCTAssertTrue(isPlanProposalTool(name))
+            XCTAssertEqual(planProposalMarkdown(call), plan)
+            XCTAssertEqual(call.input, input)
+            XCTAssertFalse(planProposalShowsResult(call))
+            for result in [JSONValue.string("Approved"), .object(["error": .string("Failed")])] {
+                XCTAssertTrue(planProposalShowsResult(tool(name, input: input, result: result)))
+            }
+            for result in [nil, JSONValue.null, .string(" \n")] {
+                XCTAssertFalse(planProposalShowsResult(tool(name, input: input, result: result)))
+            }
+            XCTAssertTrue(planProposalShowsResult(tool(name, input: input, state: .error)))
+            for input in ["null", "[]", "{}", #"{"plan":null}"#, #"{"plan":42}"#,
+                          #"{"plan":[]}"#, #"{"plan":"  \n"}"#, #""a raw string""#] {
+                XCTAssertNil(planProposalMarkdown(tool(name, input: try json(input))), input)
+            }
+        }
+        XCTAssertNil(planProposalMarkdown(tool("update_plan", input: .object(["plan": .string(plan)]))))
+        XCTAssertNil(planProposalMarkdown(tool("mcp__server__ExitPlanMode", input: .object(["plan": .string(plan)]))))
+        XCTAssertEqual(checklistItems(try json(#"{"plan":[{"step":"Inspect","status":"completed"}]}"#)).first?.glyph, "☑")
+    }
+
     func testResultEnvelopesAndWhitespace() throws {
         for payload in [#"{"output":"hello\n"}"#, #"{"result":{"data":{"text":"hello\n"}}}"#,
                         #"{"content":["hello\n"]}"#, #"{"file":{"content":"hello\n"}}"#,
