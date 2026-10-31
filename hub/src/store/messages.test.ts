@@ -438,7 +438,7 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes scheduled rows', ()
             .toEqual([image.id, text.id])
     })
 
-    it('continues past a full filtered page to find later deliverable rows', () => {
+    it('withholds later immediate rows behind a mature scheduled barrier', () => {
         const store = makeStore()
         const session = makeSession(store, 'backfill-filtered-page')
         const now = Date.now()
@@ -466,7 +466,42 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes scheduled rows', ()
 
         const delivered = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
 
-        expect(delivered.map((message) => message.id)).toContain(immediate.id)
+        expect(delivered.map((message) => message.id)).not.toContain(immediate.id)
+    })
+
+    it('returns only the immediate prefix before an earlier mature attachment', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-interleaved-prefix')
+        const now = Date.now()
+
+        const first = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate first' } },
+            'lid-prefix-first',
+        )
+        const attachment = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment second',
+                    attachments: [{ path: 'hapi-hub:scratchlist/default/session/interleaved.png' }],
+                },
+            },
+            'lid-prefix-attachment',
+            now - 60_000,
+        )
+        const third = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate third' } },
+            'lid-prefix-third',
+        )
+
+        const delivered = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
+        expect(delivered.map((message) => message.id)).toEqual([first.id])
+        expect(delivered.map((message) => message.id)).not.toContain(attachment.id)
+        expect(delivered.map((message) => message.id)).not.toContain(third.id)
     })
 
     it('respects afterSeq alongside the scheduled_at filter (2-axis interaction)', () => {

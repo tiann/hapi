@@ -1392,16 +1392,18 @@ export class MessageService {
         // an OpenCode clear handoff, an attachment row may still be awaiting
         // Hub -> CLI staging; replaying a later immediate prompt here would
         // overtake it and break the finalized sequence order.
-        const firstSeq = queued[0]!.seq
         const now = Date.now()
-        const hasEarlierMatureScheduled = this.store.messages
+        const earliestMatureScheduledSeq = this.store.messages
             .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
-            .some((message) => message.seq < firstSeq
-                && message.scheduledAt !== null
-                && message.scheduledAt <= now)
-        if (hasEarlierMatureScheduled) return 0
+            .filter((message) => message.scheduledAt !== null && message.scheduledAt <= now)
+            .reduce<number | null>((earliest, message) =>
+                earliest === null || message.seq < earliest ? message.seq : earliest, null)
+        const replayable = earliestMatureScheduledSeq === null
+            ? queued
+            : queued.filter((message) => message.seq < earliestMatureScheduledSeq)
+        if (replayable.length === 0) return 0
 
-        for (const msg of queued) {
+        for (const msg of replayable) {
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -1420,7 +1422,7 @@ export class MessageService {
             }
             this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
         }
-        return queued.length
+        return replayable.length
     }
 
     /** Release a completed clear handoff in finalized seq order. */

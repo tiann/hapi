@@ -508,25 +508,30 @@ export function getDeliverableMessagesAfter(
         LIMIT ?
     `)
 
-    // Attachment-backed scheduled rows stay on the mature-scan path, so the
-    // SQL page can contain rows that are filtered from the CLI backfill. Keep
-    // reading pages until the requested number of deliverable rows is filled;
-    // otherwise a full page of filtered rows can make the CLI stop before it
-    // reaches a later immediate message.
+    // Scheduled rows stay on the ordered mature-delivery path. Once one is
+    // encountered, stop: returning later immediate rows would let reconnect
+    // backfill overtake an attachment that is still awaiting CLI staging.
     while (deliverable.length < safeLimit) {
         const rows = selectRows.all(sessionId, cursor, now, safeLimit) as DbMessageRow[]
 
         if (rows.length === 0) break
         cursor = rows[rows.length - 1]!.seq
 
+        let blockedByEarlierScheduled = false
         for (const row of rows) {
             const message = toStoredMessage(row)
-            if (message.scheduledAt !== null) continue
+            if (message.scheduledAt !== null) {
+                // A mature scheduled row is awaiting the ordered materialization
+                // drain. Do not let reconnect backfill pass it with later
+                // immediate text.
+                blockedByEarlierScheduled = true
+                break
+            }
             deliverable.push(message)
             if (deliverable.length >= safeLimit) break
         }
 
-        if (rows.length < safeLimit) break
+        if (blockedByEarlierScheduled || rows.length < safeLimit) break
     }
 
     return deliverable

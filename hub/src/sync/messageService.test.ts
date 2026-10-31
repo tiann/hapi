@@ -2838,7 +2838,7 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('absent')
     })
 
-    it('keeps immediate replay behind an earlier mature attachment awaiting staging', async () => {
+    it('replays only the immediate prefix before an earlier mature attachment awaiting staging', async () => {
         const store = makeStore()
         const session = makeSession(store, 'ordered-replay-behind-staging')
         const cliEmitted: unknown[] = []
@@ -2872,33 +2872,45 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         )
         store.messages.addMessage(
             session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate first' } },
+            'ordered-immediate-first',
+        )
+        store.messages.addMessage(
+            session.id,
             {
                 role: 'user',
                 content: {
                     type: 'text',
-                    text: 'attachment first',
+                    text: 'attachment second',
                     attachments: [makeHubScratchlistAttachment(session.id, 'ordered-replay')],
                 },
             },
-            'ordered-attachment-first',
+            'ordered-attachment-second',
             Date.now() - 1_000,
         )
         store.messages.addMessage(
             session.id,
-            { role: 'user', content: { type: 'text', text: 'text second' } },
-            'ordered-text-second',
+            { role: 'user', content: { type: 'text', text: 'immediate third' } },
+            'ordered-immediate-third',
         )
 
         const release = service.releaseDeliverableQueuedMessages(session.id, Date.now())
         await started
-        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
-        expect(cliEmitted).toHaveLength(0)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual(['ordered-immediate-first'])
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordered-immediate-first',
+            'ordered-immediate-first',
+        ])
 
         resolveMaterialization()
         await release
         expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
-            'ordered-attachment-first',
-            'ordered-text-second',
+            'ordered-immediate-first',
+            'ordered-immediate-first',
+            'ordered-attachment-second',
+            'ordered-immediate-third',
         ])
     })
 
