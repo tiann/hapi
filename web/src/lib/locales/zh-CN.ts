@@ -255,6 +255,7 @@ export default {
   // Session header
   'session.title': '文件',
   'session.view.returnToChat': '返回会话',
+  'session.header.metadata': '会话元数据',
   'session.more': '更多操作',
   'session.sidebar.show': '显示会话列表',
   'session.outline.open': '会话大纲',

@@ -283,6 +283,21 @@ html {
     background: transparent;
 }
 
+/* Keep title and metadata surfaces horizontally scrollable without adding a
+ * visible desktop scrollbar. The global scrollbar theme above intentionally
+ * styles ordinary scroll regions; these compact header surfaces are the
+ * exception and use gradients as their scroll affordance. */
+.hapi-scrollable-surface {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.hapi-scrollable-surface::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
 button, [role="button"] {
     cursor: pointer;
 }
