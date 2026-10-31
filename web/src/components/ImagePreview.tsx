@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
+import { useRouter } from '@tanstack/react-router'
 import { ArrowLeftIcon, ArrowRightIcon, CloseIcon, MinusIcon, PlusIcon } from '@/components/icons'
 import { formatFileSize } from '@/lib/file-metadata'
 
@@ -57,6 +58,7 @@ export function ImagePreview(props: {
     onTriggerContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void
     onTriggerClick?: (event: MouseEvent<HTMLButtonElement>) => void
 }) {
+    const router = useRouter({ warn: false })
     const [viewerOpen, setViewerOpen] = useState(false)
     const [previewImages, setPreviewImages] = useState<PreviewImage[]>([])
     const [previewIndex, setPreviewIndex] = useState(0)
@@ -133,6 +135,23 @@ export function ImagePreview(props: {
         backdropPressRef.current = null
         resetView()
     }, [resetView])
+
+    useEffect(() => {
+        // Standalone previews (including component fixtures) need no router.
+        if (!viewerOpen || !router) return
+
+        // Consume Back at the overlay before it can leave the conversation.
+        // No synthetic history entry is needed, so all other close paths leave
+        // normal navigation intact. Unmounting also removes the blocker.
+        return router.history.block({
+            blockerFn: ({ action }) => {
+                if (action !== 'BACK') return false
+                closeViewer()
+                return true
+            },
+            enableBeforeUnload: false,
+        })
+    }, [closeViewer, router, viewerOpen])
 
     const showPreview = useCallback((index: number) => {
         setPreviewIndex(index)

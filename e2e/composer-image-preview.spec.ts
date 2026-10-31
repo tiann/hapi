@@ -65,7 +65,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
             const ticks = Number(await page.getByTestId('refresh-count').textContent())
             await expect.poll(async () => Number(await page.getByTestId('refresh-count').textContent())).toBeGreaterThan(ticks + 5)
             await expect(dialog).toBeVisible()
-            await dialog.locator('div').last().click({ position: { x: 5, y: 5 } })
+            await dialog.locator('img').locator('..').click({ position: { x: 5, y: 5 } })
             await expect(dialog).toBeHidden()
         })
     })
