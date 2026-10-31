@@ -69,6 +69,8 @@ type ResolvedWorkspacePath = { cwd: string; path: string } | { error: string }
 
 const OUTSIDE_WORKSPACE_ERROR = 'Path is outside workspace roots'
 const OUTSIDE_SESSION_WORKSPACE_ERROR = 'Path is outside the session workspace'
+const STAT_FILES_BATCH_SIZE = 16
+type StatFileEntry = NonNullable<StatFilesResponse['entries']>[number]
 export const MAX_WORKSPACE_FILE_BYTES = MAX_GENERATED_IMAGE_BYTES
 
 function isWithinRoot(root: string, target: string): boolean {
@@ -216,7 +218,7 @@ export function registerWorkspaceFileHandlers(
 
     rpcHandlerManager.registerHandler<WorkspaceStatFilesRequest, StatFilesResponse>(
         RPC_METHODS.WorkspaceStatFiles,
-        async (data) => {
+        async (data, signal) => {
             if (!Array.isArray(data.paths) || data.paths.length > 500) {
                 return rpcError('Invalid file paths')
             }
@@ -231,6 +233,7 @@ export function registerWorkspaceFileHandlers(
 
             const resolvedPaths: Array<{ requested: string; path: string }> = []
             for (const requested of data.paths) {
+                signal?.throwIfAborted()
                 const path = await pathPolicy.resolveForCheck(resolve(cwd.cwd, requested))
                 if (!pathPolicy.isWithinSpawnRoots(path)) {
                     return rpcError(OUTSIDE_WORKSPACE_ERROR)
@@ -241,18 +244,24 @@ export function registerWorkspaceFileHandlers(
                 resolvedPaths.push({ requested, path })
             }
 
-            const entries = await Promise.all(resolvedPaths.map(async ({ requested, path }) => {
-                try {
-                    const stats = await stat(path)
-                    return {
-                        path: requested,
-                        size: stats.size,
-                        modified: stats.mtime.getTime(),
+            const entries: StatFileEntry[] = []
+            for (let index = 0; index < resolvedPaths.length; index += STAT_FILES_BATCH_SIZE) {
+                signal?.throwIfAborted()
+                const batch = resolvedPaths.slice(index, index + STAT_FILES_BATCH_SIZE)
+                entries.push(...await Promise.all(batch.map(async ({ requested, path }) => {
+                    try {
+                        const stats = await stat(path)
+                        return {
+                            path: requested,
+                            size: stats.size,
+                            modified: stats.mtime.getTime(),
+                        }
+                    } catch {
+                        return { path: requested }
                     }
-                } catch {
-                    return { path: requested }
-                }
-            }))
+                })))
+            }
+            signal?.throwIfAborted()
 
             return { success: true, entries }
         },
@@ -319,7 +328,7 @@ export function registerWorkspaceFileHandlers(
 
     rpcHandlerManager.registerHandler<WorkspaceRipgrepRequest, CommandResponse>(
         RPC_METHODS.WorkspaceRipgrep,
-        async (data) => {
+        async (data, signal) => {
             if (!Array.isArray(data.args) || !data.args.every((arg): arg is string => typeof arg === 'string')) {
                 return rpcError('Invalid ripgrep arguments')
             }
@@ -330,8 +339,9 @@ export function registerWorkspaceFileHandlers(
             }
 
             try {
+                signal?.throwIfAborted()
                 const result = data.fileSearch
-                    ? await runFileSearch(data.args, { ...data.fileSearch, cwd: resolved.cwd })
+                    ? await runFileSearch(data.args, { ...data.fileSearch, cwd: resolved.cwd }, signal)
                     : await runRipgrep(data.args, { cwd: resolved.cwd })
                 return {
                     success: true,
@@ -340,6 +350,9 @@ export function registerWorkspaceFileHandlers(
                     stderr: result.stderr,
                 }
             } catch (error) {
+                if (error instanceof Error && error.name === 'AbortError') {
+                    throw error
+                }
                 return rpcError(getErrorMessage(error, 'Failed to run ripgrep'))
             }
         },

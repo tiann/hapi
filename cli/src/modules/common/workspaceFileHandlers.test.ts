@@ -23,6 +23,22 @@ async function callWorkspaceHandler(
     return JSON.parse(response) as Record<string, unknown>
 }
 
+async function callCancelledWorkspaceHandler(
+    rpc: RpcHandlerManager,
+    method: string,
+    params: unknown,
+): Promise<Record<string, unknown>> {
+    const requestId = `cancel-${method}`
+    const pending = rpc.handleRequest({
+        requestId,
+        method: `machine-test:${method}`,
+        params: JSON.stringify(params),
+    })
+    rpc.cancelRequest(requestId)
+    const response = await pending
+    return JSON.parse(response) as Record<string, unknown>
+}
+
 describe('workspace file RPC handlers', () => {
     let rootDir: string
     let rpc: RpcHandlerManager
@@ -85,6 +101,25 @@ describe('workspace file RPC handlers', () => {
                 { path: 'missing.ts' },
             ],
         })
+    })
+
+    it('honors cancellation before starting workspace metadata work', async () => {
+        const response = await callCancelledWorkspaceHandler(rpc, RPC_METHODS.WorkspaceStatFiles, {
+            cwd: rootDir,
+            paths: Array.from({ length: 64 }, (_, index) => `src/file-${index}.ts`),
+        })
+
+        expect(response).toEqual({ error: 'Request aborted' })
+    })
+
+    it('honors cancellation before spawning a workspace file search', async () => {
+        const response = await callCancelledWorkspaceHandler(rpc, RPC_METHODS.WorkspaceRipgrep, {
+            cwd: rootDir,
+            args: ['--files'],
+            fileSearch: { query: '*.ts', limit: 10 },
+        })
+
+        expect(response).toEqual({ error: 'Request aborted' })
     })
 
     it('rejects oversized and non-regular files before reading them', async () => {
