@@ -585,4 +585,60 @@ class PiImportControllerTest {
         assertFalse(PiImportLogic.matchesQuery(target, "nope"))
         assertTrue(PiImportLogic.matchesQuery(target, "  "))
     }
+
+    // ------------------------------------------------------ long listings --
+
+    /**
+     * Review item: "Please cover a long list and concurrent import/marker
+     * updates." A 300-row listing (well past the dialog's 380 dp cap and the
+     * lazy list's initial viewport) driven through three full select-all →
+     * confirm import rounds on the deterministic test scheduler: every round
+     * checks all 300 rows, ships one 300-id batch, closes on all-success and
+     * settles both busy flags — no drift across rounds.
+     */
+    @Test
+    fun `a long listing stays stable across repeated select-all import rounds`() = runTest {
+        val sessions = (1..300).map { session("pi-$it") }
+        val ids = sessions.map { it.id }.toSet()
+        val gateway = FakeGateway().apply {
+            piSessionsImpl = { _, machineId ->
+                PiLocalSessionsResponse(success = true, machineId = machineId, sessions = sessions)
+            }
+            importResult = PiImportSessionsResponse(
+                success = true,
+                machineId = "m1",
+                results = sessions.map {
+                    PiImportResult(
+                        piSessionId = it.id,
+                        hapiSessionId = "hapi-${it.id}",
+                        action = "created",
+                        appended = 1,
+                    )
+                },
+            )
+        }
+        val controller = buildController(gateway)
+
+        repeat(3) { round ->
+            controller.openDialog("/repo", "m1")
+            advanceUntilIdle()
+            controller.selectAll()
+            advanceUntilIdle()
+
+            assertEquals(300, controller.state.value.dialogSelection.size, "round $round: select-all checks every row")
+            controller.confirm() // 300 checked rows → bulk import
+            advanceUntilIdle()
+
+            val state = controller.state.value
+            assertFalse(state.importing, "round $round: the busy flag clears")
+            assertFalse(state.loading, "round $round: the post-import re-pull scan settles")
+            assertFalse(state.open, "round $round: an all-success batch closes the dialog")
+            assertNull(state.selectedSessionId, "round $round: the inline selection is cleared")
+            assertTrue(state.successNotice != null, "round $round: the success notice lands inline")
+            val batch = gateway.importCalls[round]
+            assertEquals(300, batch.sessionIds.size, "round $round: one full batch ships")
+            assertEquals(ids, batch.sessionIds.toSet(), "round $round: the batch is exactly the listing")
+        }
+        assertEquals(3, gateway.importCalls.size, "one import per round — the busy guard holds")
+    }
 }
