@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -142,8 +145,18 @@ fun CodexSessionSyncDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> Column(modifier = Modifier.heightIn(max = 380.dp)) {
-                    filtered.forEachIndexed { index, session ->
+                // Height-bounded **lazy** list: rows past the cap stay
+                // individually selectable by scrolling (the previous plain
+                // Column clipped them with no way to reach them). Nested in
+                // the sheet's outer scroll — the cap keeps the lazy list's
+                // constraints bounded, and each row scrolls first.
+                else -> LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                        .testTag("codex-sync-session-list"),
+                ) {
+                    itemsIndexed(filtered, key = { _, session -> session.id }) { index, session ->
                         if (index > 0) HorizontalDivider()
                         CodexSessionRow(
                             session = session,
@@ -153,6 +166,7 @@ fun CodexSessionSyncDialog(
                             enabled = !busy,
                             onToggle = { onToggleSession(session.id) },
                             dateFormat = dateFormat,
+                            modifier = Modifier.testTag("codex-sync-session-${session.id}"),
                         )
                     }
                 }
@@ -253,9 +267,10 @@ private fun CodexSessionRow(
     enabled: Boolean,
     onToggle: () -> Unit,
     dateFormat: DateFormat,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, role = Role.Checkbox, onClick = onToggle),
         verticalAlignment = Alignment.Top,
