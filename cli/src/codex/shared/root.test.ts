@@ -4,7 +4,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
-import { codexPlanProposalId } from './plan';
+import { codexPlanProposalId, planImplementationMessageId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { SharedRewindBarrier } from './rewind';
 
@@ -677,6 +677,38 @@ describe('shared plan actions', () => {
         expect(request.mock.calls[settingsIndex][1]).toMatchObject({ collaborationMode: { mode: 'default' } });
         expect(f.native.queue[0]).toMatchObject({ input: [{ type: 'text', text: 'Implement the plan.' }] });
         expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('restores plan actions and submits a fresh implementation after rewinding the implementation turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const planId = await completePlan(f);
+        f.native.thread.historyMode = 'paginated';
+        const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId });
+        const request = vi.spyOn(f.root.client, 'request');
+
+        expect(await action()).toEqual({ ok: true });
+        const firstImplementationId = f.native.queue[0]!.clientUserMessageId;
+        expect(firstImplementationId).toBe(planImplementationMessageId(planId));
+
+        const item = { id: 'implementation-user', type: 'userMessage', clientId: firstImplementationId, content: [{ type: 'inputText', text: 'Implement the plan.' }] };
+        const turn = { id: 'implementation-turn', status: 'inProgress', items: [item] };
+        f.native.thread.turns.push(turn);
+        f.native.notify('item/completed', { threadId: 'thread', turnId: turn.id, item });
+        turn.status = 'completed';
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: turn.id, status: 'completed' } });
+        await f.drain();
+        f.native.queue = [];
+
+        const rewound = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: firstImplementationId }) as { rewindToken: string };
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewound.rewindToken });
+        await f.root.applySettings({ collaborationMode: 'plan' });
+
+        expect(f.state().codexPlanProposalId).toBe(planId);
+        expect(await action()).toEqual({ ok: true });
+        expect(f.native.queue).toHaveLength(1);
+        expect(f.native.queue[0]!.clientUserMessageId).not.toBe(firstImplementationId);
+        expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(2);
     });
 
     it('does not let a slow history snapshot resurrect a plan after native continuation', async () => {

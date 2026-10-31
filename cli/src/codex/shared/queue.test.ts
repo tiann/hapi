@@ -111,6 +111,18 @@ describe('shared native queue', () => {
         expect(restarted.state('local')).toBe('unknown');
         expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
     });
+    it('persists rewound plan attempts and allocates a fresh identity after restart', async () => {
+        const { queue, client, dir, consumed, uncertain } = await fixture();
+        const first = queue.nextPlanImplementationId('plan');
+        await queue.committed(first);
+        await queue.rewindPlanImplementation('plan');
+        expect(queue.state(first)).toBe('rewound');
+
+        const restarted = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restarted.load();
+        expect(restarted.state(first)).toBe('rewound');
+        expect(restarted.nextPlanImplementationId('plan')).toBe('plan:implement:2');
+    });
     it('waits for a definitive native delete before acknowledging cancellation', async () => {
         const { queue, rpc } = await fixture();
         rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'native', input, clientUserMessageId: 'local' } }); await queue.enqueue('local', input);

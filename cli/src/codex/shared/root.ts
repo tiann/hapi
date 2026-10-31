@@ -282,7 +282,8 @@ export class SharedCodexRoot {
             || this.stopping || this.closed || this.reconnecting || this.submittingPlan || this.rewindBarrier.blocked || !this.client.isInitialized()) return null;
         const id = this.latestTurn.planId;
         // An uncertain/accepted submission must never become a fresh Execute button after reconnect.
-        return id && !this.queue?.owns(planImplementationMessageId(id)) ? id : null;
+        const implementation = id ? this.queue?.planImplementation(id) : undefined;
+        return id && (!implementation || implementation.state === 'rewound') ? id : null;
     }
     private publishPlan(): void {
         const id = this.availablePlanId();
@@ -530,15 +531,15 @@ export class SharedCodexRoot {
     private async implementPlan(planId: string): Promise<ImplementCodexPlanResult> {
         const unavailable = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Codex is disconnected or stopping. Reconnect before implementing the plan.' });
         const stale = (): ImplementCodexPlanResult => ({ ok: false, code: 'stale_plan', error: 'This plan is no longer actionable. Refresh the conversation.' });
-        const localId = planImplementationMessageId(planId);
+        let localId: string | undefined;
         if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
         try {
             // A reconnect snapshot may have started before this action arrived.
             await this.refreshing;
             await this.refresh();
-            const prior = this.queue.state(localId);
-            if (prior === 'queued' || prior === 'consumed') return { ok: true };
-            if (prior) return { ok: false, code: 'indeterminate', error: 'This implementation was already submitted. Check the queue and conversation before sending again.' };
+            const prior = this.queue.planImplementation(planId);
+            if (prior?.state === 'queued' || prior?.state === 'consumed') return { ok: true };
+            if (prior && prior.state !== 'rewound') return { ok: false, code: 'indeterminate', error: 'This implementation was already submitted. Check the queue and conversation before sending again.' };
             const before = await this.queue.list();
             if (this.availablePlanId() !== planId || before.length) return stale();
             const revision = this.turnRevision;
@@ -548,11 +549,12 @@ export class SharedCodexRoot {
             if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
             if (this.turnRevision !== revision || this.currentTurn || this.latestTurn?.planId !== planId
                 || this.settings.collaborationMode !== 'default' || queued.length) return stale();
+            localId = this.queue.nextPlanImplementationId(planId);
             await this.queue.enqueue(localId, buildUserInputFromMessage('Implement the plan.'));
             return { ok: true };
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
-            return { ok: false, code: isIndeterminateError(error) || this.queue.state(localId) === 'unknown' ? 'indeterminate' : 'failed',
+            return { ok: false, code: isIndeterminateError(error) || (localId !== undefined && this.queue.state(localId) === 'unknown') ? 'indeterminate' : 'failed',
                 error: `Plan implementation was not confirmed: ${detail}. Check the mode, queue and conversation before retrying.` };
         } finally { this.submittingPlan = false; this.publishPlan(); }
     }
@@ -732,6 +734,7 @@ export class SharedCodexRoot {
             this.interrupted = last.status === 'interrupted';
             await this.projection.history(thread, { replayTranscript: false });
             if (await this.session.flush() === false) throw new Error('Hub history reconciliation acknowledgement is unavailable');
+            if (this.latestTurn?.planId) await this.queue.rewindPlanImplementation(this.latestTurn.planId);
         });
         this.deferredRequests = [];
         this.publishPlan(); return { success: true };
