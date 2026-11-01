@@ -761,7 +761,11 @@ private fun PrimaryActionButton(
     // allows an attachments-only send (wire: text or attachments required).
     val attachmentsBusy = attachments.any { it.status != ComposerAttachmentStatus.Ready }
     val attachmentsReady = attachments.isNotEmpty() && !attachmentsBusy
-    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending && !state.isImportingShare
+    // Promoted attachments still rehydrating hold the text hostage: no chip
+    // exists yet, so only this flag keeps the text-only draft unsent.
+    val restoring = state.isRestoringAttachments
+    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !restoring &&
+        !state.isSending && !state.isImportingShare
     val action = when {
         state.isSending || state.isImportingShare -> ComposerPrimaryAction.Sending
         state.canSteer && !hasDraft -> ComposerPrimaryAction.Stop

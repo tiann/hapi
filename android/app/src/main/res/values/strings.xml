@@ -307,6 +307,7 @@
     <string name="chat_notice_scratchlist_stage_failed">Couldn’t prepare the note’s attachments — check the hub connection</string>
     <string name="chat_notice_scratchlist_rehydrate_failed">Couldn’t re-add some attachments to the composer</string>
     <string name="chat_notice_attachments_uploading">Attachments are still uploading — wait, or retry/remove the failed ones</string>
+    <string name="chat_notice_promoted_attachments_loading">Note attachments are still loading — sending waits for them</string>
     <string name="chat_notice_resume_failed">Session is inactive and could not be resumed</string>
     <string name="chat_notice_abort_failed">Failed to abort</string>
     <string name="chat_notice_rename_failed">Failed to rename session</string>

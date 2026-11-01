@@ -205,6 +205,12 @@ data class ComposerUiState(
      * send button, web `scratchlistMode`).
      */
     val routesToScratchlist: Boolean = false,
+    /**
+     * A promote-to-composer fetch is rehydrating attachments into the tray:
+     * the text is already live but no chips exist yet — submission waits so
+     * the text can never go out without its attachments.
+     */
+    val isRestoringAttachments: Boolean = false,
 )
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
@@ -284,10 +290,12 @@ sealed interface ChatNotice {
 
     /** Promote-to-queue could not stage the entry's attachments (fetch/upload). */
     data object ScratchlistPromoteStagingFailed : ChatNotice
-
     /** Promote-to-composer rehydrated only part of the entry's attachments. */
     data object ScratchlistRehydratePartial : ChatNotice
     data object AttachmentsUploading : ChatNotice
+
+    /** A promote-to-composer fetch is still loading the entry's attachments — Send waits. */
+    data object PromotedAttachmentsLoading : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
     data object QueuedEditScheduleDropped : ChatNotice
@@ -691,6 +699,17 @@ class ChatViewModel(
         scratchlistMode.value = enabled
     }
 
+    /**
+     * Promote-to-composer attachments still rehydrating (blob fetch +
+     * prepare): the entry text is already in the composer but no chips exist
+     * yet, so both the send button and [sendMessage]/[parkComposerDraft]
+     * must wait — an eager send would deliver the text without its
+     * attachments (the web covers this with per-chip pending upload state;
+     * here the fetch runs before any chip exists). Counted, not boolean, so
+     * consecutive promotes stack.
+     */
+    private val promoteRehydrationPending = MutableStateFlow(0)
+
     /** Composer bar state (text is VM-owned so drafts and edit-prefill flow through it). */
     val composer: StateFlow<ComposerUiState> = combine(
         composerDraft,
@@ -699,8 +718,9 @@ class ChatViewModel(
         composerFocusRequest,
         importingShare,
         scratchlistMode,
+        promoteRehydrationPending,
     ) { values: Array<Any?> ->
-        // Six heterogeneous sources overflow the typed five-flow combine;
+        // Seven heterogeneous sources overflow the typed five-flow combine;
         // the samples pipeline above uses the same Array<Any?> unpacking.
         val draft = values[0] as ComposerDraft
         val session = values[2] as SessionLiveState
@@ -712,6 +732,7 @@ class ChatViewModel(
             isImportingShare = values[4] as Boolean,
             caretPosition = draft.selectionEnd,
             routesToScratchlist = scratchlistSendRouting(values[5] as Boolean, schedulePending = false),
+            isRestoringAttachments = (values[6] as Int) > 0,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -1300,7 +1321,10 @@ class ChatViewModel(
      * the tray re-uploads through the normal chat pipeline). Copy, not move
      * — the entry itself stays. Scratchlist composer mode is left first so
      * the next Send delivers the promoted draft instead of re-parking it
-     * (web flushSync exit order).
+     * (web flushSync exit order). The rehydration is registered
+     * synchronously, before any suspension: between the insert and the
+     * chips appearing there is no other pending state, so Send and park are
+     * gated on it (see [promoteRehydrationPending]).
      */
     fun promoteScratchlistEntryToComposer(entry: ScratchlistEntry) {
         scratchlistMode.value = false
@@ -1308,11 +1332,16 @@ class ChatViewModel(
         val fetcher = scratchlistBlobFetcher
         val preparer = scratchlistPickPreparer
         if (fetcher == null || preparer == null || entry.attachments.isEmpty()) return
+        promoteRehydrationPending.value += entry.attachments.size
         scope.launch {
-            val picks = ScratchlistPromoter.rehydrateToComposer(sessionId, entry.attachments, fetcher, preparer)
-            picks.forEach { attachments.add(it) }
-            if (picks.size < entry.attachments.size) {
-                _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistRehydratePartial))
+            try {
+                val picks = ScratchlistPromoter.rehydrateToComposer(sessionId, entry.attachments, fetcher, preparer)
+                picks.forEach { attachments.add(it) }
+                if (picks.size < entry.attachments.size) {
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistRehydratePartial))
+                }
+            } finally {
+                promoteRehydrationPending.value -= entry.attachments.size
             }
         }
     }
@@ -1330,6 +1359,13 @@ class ChatViewModel(
         if (!parkPending.compareAndSet(false, true)) return
         if (attachments.hasUnsettled()) {
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
+            parkPending.set(false)
+            return
+        }
+        // A park mid-rehydration would split the promoted draft: the entry
+        // keeps the text while the fetched chips land in the next draft.
+        if (promoteRehydrationPending.value > 0) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.PromotedAttachmentsLoading))
             parkPending.set(false)
             return
         }
@@ -1521,6 +1557,12 @@ class ChatViewModel(
         if (sendInFlight.value || importingShare.value) return
         if (attachments.hasUnsettled()) {
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
+            return
+        }
+        // Promoted attachments are still rehydrating: the text alone must
+        // not go out (and must not park text-only either).
+        if (promoteRehydrationPending.value > 0) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.PromotedAttachmentsLoading))
             return
         }
         // Web `shouldRouteToScratchlist` park interception: in scratchlist

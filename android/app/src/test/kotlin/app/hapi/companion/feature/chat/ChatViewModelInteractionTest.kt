@@ -2426,4 +2426,70 @@ class ChatViewModelInteractionTest {
         assertEquals("do not lose me", vm.composer.value.text)
         vm.attachments.items.first { chips -> chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready }
     }
+
+    @Test
+    fun `send and park wait while promoted attachments rehydrate and then deliver together`() = runTest {
+        val fetchGate = CompletableDeferred<Unit>()
+        val harness = InteractionHarness(
+            this,
+            scratchlist = FakeScratchlist(),
+            blobFetcher = ScratchlistPromoter.AttachmentFetcher { _, _ ->
+                fetchGate.await()
+                ScratchlistAttachmentFile(byteArrayOf(1), "image/png")
+            },
+            pickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
+                PreparedAttachment(
+                    id = "pick-${attachment.id}",
+                    filename = attachment.filename,
+                    mimeType = mimeType,
+                    bytes = bytes,
+                    previewBytes = null,
+                )
+            },
+        )
+        val vm = harness.viewModel
+        vm.start()
+
+        vm.promoteScratchlistEntryToComposer(
+            ScratchlistEntry(
+                "e1", "slow fetch", 1, 1,
+                attachments = listOf(ScratchlistAttachment("a1", "note.png", "image/png", 4, "hapi-hub:scratchlist/a1")),
+            )
+        )
+
+        // Text lands immediately; the composer reports the rehydration so the
+        // send button disables (no chip exists yet to gate it otherwise).
+        vm.composer.first { it.text == "slow fetch" }
+        assertTrue(vm.composer.first { it.isRestoringAttachments }.isRestoringAttachments)
+
+        // An eager send is refused with a notice and delivers nothing.
+        val sendNotice = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            vm.events.filterIsInstance<ChatEvent.Notice>()
+                .first { it.notice == ChatNotice.PromotedAttachmentsLoading }
+        }
+        vm.sendMessage()
+        assertTrue(harness.api.sendCalls.value.isEmpty(), "no text-only send may go out")
+        assertEquals(ChatNotice.PromotedAttachmentsLoading, sendNotice.await().notice)
+
+        // A park is equally refused — it would split the promoted draft
+        // (text into the entry, late chips into the next draft).
+        vm.parkComposerDraft()
+        assertTrue(harness.scratchlist!!.created.isEmpty(), "no text-only park may commit")
+        assertEquals("slow fetch", vm.composer.value.text)
+
+        // The fetch settles: the pick rehydrates and the same draft now
+        // delivers text and attachment together.
+        fetchGate.complete(Unit)
+        vm.attachments.items.first { chips ->
+            chips.any { it.id == "pick-a1" && it.status == ComposerAttachmentStatus.Ready }
+        }
+        vm.composer.first { !it.isRestoringAttachments }
+        vm.sendMessage()
+        harness.window().state.first { state ->
+            state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Sent }
+        }
+        val request = harness.api.sendCalls.value.single().second
+        assertEquals("slow fetch", request.text)
+        assertEquals(1, request.attachments!!.size, "the rehydrated attachment rides the send")
+    }
 }

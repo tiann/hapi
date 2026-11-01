@@ -314,6 +314,7 @@
     <string name="chat_notice_scratchlist_stage_failed">无法准备笔记的附件 — 请检查 hub 连接</string>
     <string name="chat_notice_scratchlist_rehydrate_failed">部分附件无法恢复到输入框</string>
     <string name="chat_notice_attachments_uploading">附件仍在上传 — 请稍候，或重试/移除失败的附件</string>
+    <string name="chat_notice_promoted_attachments_loading">笔记附件仍在加载 — 发送将等待其就绪</string>
     <string name="chat_notice_resume_failed">会话已停止，且无法恢复</string>
     <string name="chat_notice_abort_failed">中止失败</string>
     <string name="chat_notice_rename_failed">重命名会话失败</string>

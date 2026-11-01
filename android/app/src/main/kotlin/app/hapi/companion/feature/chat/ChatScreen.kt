@@ -724,6 +724,8 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.ScratchlistRehydratePartial ->
         context.getString(R.string.chat_notice_scratchlist_rehydrate_failed)
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
+    ChatNotice.PromotedAttachmentsLoading ->
+        context.getString(R.string.chat_notice_promoted_attachments_loading)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
     ChatNotice.QueuedEditScheduleDropped -> context.getString(R.string.chat_notice_edit_schedule_dropped)

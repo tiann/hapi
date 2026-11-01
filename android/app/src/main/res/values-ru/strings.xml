@@ -307,6 +307,7 @@
     <string name="chat_notice_scratchlist_stage_failed">Не удалось подготовить вложения заметки — проверьте подключение к хабу</string>
     <string name="chat_notice_scratchlist_rehydrate_failed">Не удалось вернуть часть вложений в поле ввода</string>
     <string name="chat_notice_attachments_uploading">Вложения ещё загружаются — подождите либо повторите или удалите неудачные</string>
+    <string name="chat_notice_promoted_attachments_loading">Вложения заметки ещё загружаются — отправка подождёт их</string>
     <string name="chat_notice_resume_failed">Сессия неактивна, и её не удалось возобновить</string>
     <string name="chat_notice_abort_failed">Не удалось прервать</string>
     <string name="chat_notice_rename_failed">Не удалось переименовать сессию</string>
