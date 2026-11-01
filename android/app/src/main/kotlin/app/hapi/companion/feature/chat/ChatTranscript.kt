@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.wire.SessionReadState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
@@ -63,6 +64,8 @@ internal fun ChatTranscript(
     onLayout: (Long, Boolean) -> Unit,
     onRetryHistory: () -> Unit,
     onJumpToLatest: () -> Unit,
+    foreground: Boolean = true,
+    onTailDisplayed: (Long?, SessionReadState?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(state.sessionId),
@@ -82,6 +85,7 @@ internal fun ChatTranscript(
     var consumedJumpToken by rememberSaveable(state.sessionId) { mutableLongStateOf(0) }
     var correctingTail by remember(state.sessionId) { mutableStateOf(false) }
     var renderedHistoryVersion by remember(state.sessionId) { mutableLongStateOf(-1) }
+    var renderedMessagesVersion by remember(state.sessionId) { mutableLongStateOf(-1) }
     val currentRows by rememberUpdatedState(rows)
     val rowIDs = remember(rows) { rows.mapTo(mutableSetOf()) { it.id } }
     val currentIDs by rememberUpdatedState(rowIDs)
@@ -89,9 +93,12 @@ internal fun ChatTranscript(
     val currentJumpToken by rememberUpdatedState(jumpToken)
     val reportViewport by rememberUpdatedState(onViewport)
     val reportLayout by rememberUpdatedState(onLayout)
+    val reportTail by rememberUpdatedState(onTailDisplayed)
+    val isForeground by rememberUpdatedState(foreground)
 
     LaunchedEffect(state.sessionId, listState) {
         var lastVersion = -1L
+        var lastDisplayedRevision: Long? = null
         var readerWasScrolling = false
         var previousIDs = emptySet<String>()
         var previousVisibleHeight = 0
@@ -116,7 +123,10 @@ internal fun ChatTranscript(
             val short = !listState.canScrollBackward && !listState.canScrollForward
             LayoutReport(
                 version = currentState.historyVersion,
+                readRevision = currentState.readThroughRevision.takeIf { isForeground &&
+                    !currentState.isSyncingTail && currentState.warning == null && !currentState.requiresLatestReset },
                 matches = matches && renderedHistoryVersion == currentState.historyVersion &&
+                    renderedMessagesVersion == currentState.messagesVersion &&
                     height > 0 && info.visibleItemsInfo.isNotEmpty(),
                 short = short,
                 nearTop = !listState.canScrollBackward || distance <= height,
@@ -128,6 +138,9 @@ internal fun ChatTranscript(
                 visibleHeight = info.visibleItemsInfo.sumOf { it.size },
             )
         }.collect { report ->
+            if (report.readRevision == null || !report.following || !report.atBottom || report.scrolling) {
+                lastDisplayedRevision = null
+            }
             if (!report.matches) return@collect
             if (report.scrolling && !report.ownScroll) {
                 readerWasScrolling = true
@@ -140,6 +153,11 @@ internal fun ChatTranscript(
             if (demand != lastReadingDemand) {
                 lastReadingDemand = demand
                 reportViewport(demand.first, demand.second)
+            }
+            if (report.readRevision != null && followsTail && report.atBottom && !report.scrolling &&
+                report.readRevision != lastDisplayedRevision) {
+                lastDisplayedRevision = report.readRevision
+                reportTail(report.readRevision, currentState.renderedReadState)
             }
             if (report.version != lastVersion) {
                 val progress = report.ids.any { it !in previousIDs } ||
@@ -224,10 +242,12 @@ internal fun ChatTranscript(
                 // here forces a measure/placement pass even for a hidden-only
                 // page; acknowledging composition alone is too early.
                 val version = state.historyVersion
+                val messagesVersion = state.messagesVersion
                 val placeable = measurable.measure(constraints)
                 layout(placeable.width, placeable.height) {
                     placeable.place(0, 0)
                     renderedHistoryVersion = version
+                    renderedMessagesVersion = messagesVersion
                 }
             },
             contentPadding = PaddingValues(vertical = 10.dp),
@@ -267,6 +287,7 @@ internal fun ChatTranscript(
 
 private data class LayoutReport(
     val version: Long,
+    val readRevision: Long?,
     val matches: Boolean,
     val short: Boolean,
     val nearTop: Boolean,

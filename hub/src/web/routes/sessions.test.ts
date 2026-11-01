@@ -1750,6 +1750,22 @@ describe('sessions routes', () => {
         })
     })
 
+    it('dispatches an archived source fork to the engine without requiring an active CLI', async () => {
+        const source = createSession({ active: false, metadata: { path: '/work', host: 'test', flavor: 'codex', lifecycleState: 'archived' } })
+        const calls: unknown[][] = []
+        const { app } = createApp(source, { forkConversation: async (...args) => {
+            calls.push(args)
+            return { type: 'success', sessionId: 'new-child' }
+        } })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageLocalId: 'boundary' })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'new-child' })
+        expect(calls[0]?.[0]).toBe('session-1')
+        expect(calls[0]?.[2]).toBe('boundary')
+    })
+
     it('forks via POST /sessions/:id/fork and returns the child session id', async () => {
         const calls: Array<{ sessionId: string; namespace: string; messageLocalId?: string }> = []
         const session = createSession({

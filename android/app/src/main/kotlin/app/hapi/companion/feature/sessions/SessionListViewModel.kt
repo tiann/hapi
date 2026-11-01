@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.sessions
 
 import app.hapi.data.api.ApiError
+import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
@@ -148,20 +149,14 @@ class SessionListViewModel(
         scope.launch {
             sessionStore.sessions.drop(1).collect { sessions ->
                 if (isOffline.value) isOffline.value = false
-                // Seed the unread baseline from SSE data too — when REST
-                // refresh fails but the stream works, unseeded watermarks
-                // would light every row's unread dot (once-per-scope inside
-                // the store, so repeated calls are no-ops).
-                if (sessions.isNotEmpty()) {
-                    runCatching { lastSeenStore.initializeBaseline(hubKey, sessions) }
-                }
+
             }
         }
     }
 
     val uiState: StateFlow<SessionListUiState> = combine(
         combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
-            Triple(sessions, machines, lastSeen.lastSeen)
+            Triple(sessions, machines, lastSeen)
         },
         combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
             Triple(filter, query, selected)
@@ -218,16 +213,13 @@ class SessionListViewModel(
             isRefreshing.value = true
             try {
                 // Only a failed *sessions* fetch means "offline". Machines and
-                // the unread baseline are secondary: their failures must not
+                // other stores are secondary: their failures must not
                 // pin the offline banner over a perfectly live list (this
                 // exact cascade shipped once — a machines decode error kept
                 // the banner up while SSE streamed active sessions).
                 sessionStore.refresh()
                 isOffline.value = false
                 hasRefreshedOnce.value = true
-                // First successful list for this hub seeds the unread baseline
-                // so historical sessions do not all light up as unread.
-                runCatching { lastSeenStore.initializeBaseline(hubKey, sessionStore.sessions.value) }
                 try {
                     machineStore.refresh()
                 } catch (cancellation: CancellationException) {
@@ -283,11 +275,9 @@ class SessionListViewModel(
         searchQuery.value = query
     }
 
-    /** Call when navigating into a session: stamps the last-seen watermark. */
+    /** Keep the selected row visible under list filters; reading is acknowledged by the transcript. */
     fun onSessionOpened(sessionId: String) {
         selectedSessionId.value = sessionId
-        val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
-        lastSeenStore.markSeen(sessionId, summary.updatedAt)
     }
 
     /** `PUT /sessions/:id/pin` with optimistic re-sort; failures surface on [errors]. */
@@ -373,7 +363,7 @@ class SessionListViewModel(
     private fun buildUiState(
         sessions: List<SessionSummary>,
         machines: List<Machine>,
-        lastSeen: Map<String, Long>,
+        lastSeen: LastSeenState,
         filter: String?,
         searchQuery: String,
         selectedSessionId: String?,
@@ -475,7 +465,7 @@ class SessionListViewModel(
                     summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
-                unread = LastSeenStore.isUnread(summary, lastSeen[summary.id] ?: 0),
+                unread = LastSeenStore.isUnread(summary, lastSeen),
                 machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }

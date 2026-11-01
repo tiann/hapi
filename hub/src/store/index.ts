@@ -439,6 +439,10 @@ export class Store {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_user_message_at INTEGER,
+                content_revision INTEGER NOT NULL DEFAULT 0,
+                read_revision INTEGER NOT NULL DEFAULT 0,
+                read_state_version INTEGER NOT NULL DEFAULT 0,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -476,6 +480,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
+                content_revision INTEGER NOT NULL DEFAULT 0,
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -1182,12 +1187,26 @@ export class Store {
         })()
     }
 
-    /** Rebuild the derived content index after adding truncation metadata. */
+    /** v29→v30: rebuild content search and add read-state revisions. */
     private migrateFromV29ToV30(): void {
         createMessageContentSearchTable(this.db)
-        if (this.getMessageColumnNames().size === 0) return
-        rebuildMessageContentSearch(this.db)
+
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) {
+                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+            }
+        }
+
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0) {
+            if (!messageColumns.has('content_revision')) {
+                this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+            }
+            rebuildMessageContentSearch(this.db)
+        }
     }
+
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))

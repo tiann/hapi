@@ -46,7 +46,7 @@ struct SessionFilterMenu: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(String(
-                format: String(localized: "Marks %lld unread sessions as read on this device."),
+                format: String(localized: "Marks %lld unread sessions as read across your devices."),
                 Int64(model.unreadCount)
             ))
         }

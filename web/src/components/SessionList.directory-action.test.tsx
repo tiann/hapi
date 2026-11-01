@@ -1397,7 +1397,7 @@ describe('SessionList search toggle', () => {
             updatedAt: 100,
             metadata: { path: '/work/hapi', name: 'Newly unread', flavor: 'codex' },
         })
-        markSessionUnread(unreadSession.id, unreadSession.updatedAt)
+        markSessionUnread(unreadSession.id, { readRevision: 0, manualUnread: false, version: 0 })
         markSessionSeen(newlyUnreadSession.id, newlyUnreadSession.updatedAt)
         const api = {
             searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),
@@ -1434,7 +1434,7 @@ describe('SessionList search toggle', () => {
                 [unreadSession.id]
             )
 
-            act(() => markSessionUnread(newlyUnreadSession.id, newlyUnreadSession.updatedAt))
+            act(() => markSessionUnread(newlyUnreadSession.id, { readRevision: 0, manualUnread: false, version: 0 }))
             await act(async () => {
                 vi.advanceTimersByTime(180)
                 await Promise.resolve()
@@ -1469,7 +1469,7 @@ describe('SessionList search toggle', () => {
             updatedAt: 100,
             metadata: { path: '/work/hapi', name: 'Seen', flavor: 'codex' },
         })
-        markSessionUnread(runningUnread.id, runningUnread.updatedAt)
+        markSessionUnread(runningUnread.id, { readRevision: 0, manualUnread: false, version: 0 })
         markSessionSeen(seenSession.id, seenSession.updatedAt)
         const api = {
             searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),

@@ -76,8 +76,11 @@ const SIMPLE_RESUME_TOKENS = [
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
 const HUB_OWNED_METADATA_FIELDS = [
+    'codexArchivedFork',
+    'codexResumePending',
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'promptTitle'
 ] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -149,6 +152,10 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
 }
 
 type DbSessionRow = {
+    content_revision: number
+    read_revision: number
+    read_state_version: number
+    manual_unread: number
     id: string
     tag: string | null
     namespace: string
@@ -184,6 +191,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         lastUserMessageAt: row.last_user_message_at ?? undefined,
+        contentRevision: row.content_revision,
+        readState: { readRevision: row.read_revision, version: row.read_state_version, manualUnread: row.manual_unread === 1 },
         pinned: row.pinned === 1,
         globalPinned: row.global_pinned === 1,
         metadata: safeJsonParse(row.metadata),

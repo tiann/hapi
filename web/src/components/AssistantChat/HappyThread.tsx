@@ -1,3 +1,4 @@
+import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ThreadPrimitive, unstable_useThreadMessageIds, useAuiState } from '@assistant-ui/react'
 import type { ComponentProps } from 'react'
@@ -693,6 +694,7 @@ export function HappyThread(props: {
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
+    allowInactiveFork?: boolean
     onRefresh: () => void
     onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
@@ -702,6 +704,7 @@ export function HappyThread(props: {
     isLatestCompletedBoundary?: (messageId: string) => boolean
     onViewModeChange: (mode: 'tail' | 'history') => void
     onJumpToTail?: () => void
+    readThroughRevision?: number
     isSyncingTail: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
@@ -889,6 +892,9 @@ export function HappyThread(props: {
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
     const needsViewportCoverageRef = useRef<() => boolean>(() => false)
+    useSelectedSessionSeen(props.sessionId,
+        !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
+        props.session.readState?.version, viewportRef, contentRef)
     const atBottomRef = useRef(true)
     const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
@@ -2517,6 +2523,7 @@ export function HappyThread(props: {
             onContinuePlan: props.onContinuePlan,
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
+            allowInactiveFork: props.allowInactiveFork,
             onForkConversation: props.onForkConversation,
             onRewindConversation: props.onRewindConversation,
             isLatestCompletedBoundary: props.isLatestCompletedBoundary,

@@ -36,6 +36,7 @@ export type NewerLoadOutcome =
     }
 
 export type MessageWindowState = {
+    readThroughRevision?: number
     sessionId: string
     messages: DecryptedMessage[]
     hasMore: boolean
@@ -444,6 +445,7 @@ function getNewestCursor(state: InternalState): MessagePosition | null {
 function buildState(
     previous: InternalState,
     updates: Partial<Pick<InternalState,
+        | 'readThroughRevision'
         | 'messages'
         | 'hasMore'
         | 'epoch'
@@ -759,6 +761,8 @@ function applyLatestResponse(
             : responseOldest ?? previousOldest
     return buildState(previous, {
         messages: kept,
+        readThroughRevision: Math.max(previous.readThroughRevision ?? 0, response.page.readThroughRevision ?? 0,
+            ...kept.map(message => message.contentRevision ?? 0)),
         hasMore: response.page.hasMore || (!options.replaceServerRows && previous.hasMore) || dropped.length > 0,
         epoch: response.page.epoch,
         oldestPositionAt: oldest?.at ?? null,
@@ -957,6 +961,8 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                     ? (comparePosition(nextAfter, currentNewest) >= 0 ? nextAfter : currentNewest)
                     : nextAfter ?? currentNewest
                 return buildState(merged, {
+                    readThroughRevision: Math.max(merged.readThroughRevision ?? 0, response.page.readThroughRevision ?? 0,
+                        ...merged.messages.map(message => message.contentRevision ?? 0)),
                     epoch: response.page.epoch,
                     newestPositionAt: newest?.at ?? null,
                     newestPositionSeq: newest?.seq ?? null,
@@ -1602,6 +1608,8 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
             ? incomingNewest
             : currentNewest
         merged = buildState(merged, {
+            readThroughRevision: merged.readThroughRevision === undefined ? undefined
+                : Math.max(merged.readThroughRevision, ...incoming.map(message => message.contentRevision ?? 0)),
             newestPositionAt: newest?.at ?? null,
             newestPositionSeq: newest?.seq ?? null
         })
@@ -1715,7 +1723,7 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
     const source = getState(fromSessionId)
     const target = getState(toSessionId)
     const seeded = buildState(createState(toSessionId), {
-        messages: [...source.messages],
+        messages: source.messages.map(message => ({ ...message, contentRevision: undefined })),
         hasMore: source.hasMore,
         tailRevision: source.tailRevision,
         oldestPositionAt: source.oldestPositionAt,
