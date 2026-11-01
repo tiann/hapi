@@ -7,6 +7,11 @@ import {
 } from './agentConfig'
 
 describe('agent config descriptors', () => {
+    test('exposes model-dependent Antigravity effort at creation and during a session', () => {
+        expect(getAgentConfigDescriptor('agy').fields).toContainEqual({
+            id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both'
+        })
+    })
     test('exposes the three primary fields with their intended placements', () => {
         const descriptor = getAgentConfigDescriptor('codex')
         expect(descriptor.fields.map((field) => [field.id, field.section])).toEqual([

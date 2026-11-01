@@ -137,9 +137,10 @@ export function resolvePreferredLaunchSettings(
     // Kimi's catalog is dynamic (machine discovery); validating a saved alias
     // against the static list would reset it to 'auto'. The settled-catalog
     // effect in NewSession validates it once the real catalog has arrived.
+    // AGY families are also validated against the machine catalog after loading.
     // Claude's catalog is dynamic too, and a saved Claude model is kept even
     // when the catalog drops it (it is offered as "no longer listed").
-    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot' && agent !== 'kimi' && agent !== 'claude'
+    const model = staticModelValues.length > 0 && agent !== 'codex' && agent !== 'copilot' && agent !== 'kimi' && agent !== 'claude' && agent !== 'agy'
         ? resolvePreferredOptionValue(preferredModel, staticModelValues, 'auto')
         : preferredModel
     const effort = agent === 'claude'

@@ -63,9 +63,9 @@ export function HappyAssistantMessage() {
     const history = ctx.metadata?.capabilities?.conversationHistory
     const historicalForkLocalId = ctx.assistantForkPoints?.get(messageId)
     const showForkCurrent = Boolean(
-        history?.forkCurrent
+        (history?.forkCurrent || ctx.allowInactiveFork)
         && ctx.isLatestCompletedBoundary?.(messageId)
-        && !ctx.disabled
+        && (!ctx.disabled || ctx.allowInactiveFork === true)
         && ctx.onForkConversation
     )
     const showHistoricalFork = Boolean(

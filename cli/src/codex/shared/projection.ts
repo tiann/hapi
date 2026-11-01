@@ -6,6 +6,7 @@ import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
 import { codexPlanProposalId } from './plan';
+import { CodexCompactionSummaryLookup } from '../utils/codexCompactionSummary';
 
 export function inputText(input: unknown): string {
     if (!Array.isArray(input)) return '';
@@ -44,8 +45,12 @@ export class SharedCodexProjection {
     private readonly pendingTitles = new Map<string, string>();
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
+    private readonly compactionSummaries: CodexCompactionSummaryLookup;
+    private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
+        private readonly readSummaryThread?: () => Promise<unknown>) {
+        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
@@ -177,7 +182,19 @@ export class SharedCodexProjection {
                     this.emitted.add(key);
                     this.session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
                 }
-            } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
+            } else if (event.type === 'context_compacted') {
+                if (!fromHistory && this.readSummaryThread) {
+                    try { this.summaryThread = await this.readSummaryThread(); } catch { this.summaryThread = undefined; }
+                }
+                const compact = turnId && itemId ? await this.compactionSummaries.find(this.summaryThread, turnId, itemId, fromHistory ? { attempts: 1 } : undefined) : null;
+                if (compact) {
+                    // A distinct durable ID can enrich a previously stored boundary.
+                    // Clients fold it back into that exact compaction's original position.
+                    send({ type: 'compact-summary', ...compact, summary: compact.summary ?? '', compactionId: `codex:${this.threadId}:${key}` }, `${key}:summary`);
+                } else {
+                    send({ ...event, flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
+                }
+            } else if (event.type === 'token_count' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'proposed_plan' && turnId && itemId) {
@@ -209,6 +226,7 @@ export class SharedCodexProjection {
     }
 
     async history(thread: unknown): Promise<void> {
+        if (record(thread).id === this.threadId) this.summaryThread = thread;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;

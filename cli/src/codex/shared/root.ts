@@ -138,6 +138,7 @@ export class SharedCodexRoot {
         });
         this.session.onReconnect(() => {
             if (!this.threadId || this.closed || this.stopping) return;
+            const wasActivated = Boolean(this.heartbeat);
             // An emitted socket packet is not a durable hub acknowledgement.
             // Replay final native history with stable IDs after every reconnect.
             this.projection?.reset();
@@ -145,6 +146,11 @@ export class SharedCodexRoot {
             this.publishedPlanId = undefined;
             this.publishedCompactionIds = undefined;
             void this.refresh().then(() => this.refreshChildren(false)).then(() => this.queue.replay())
+                .then(() => {
+                    // Hub restart loses its ephemeral readiness fence. Replay
+                    // it only after native revalidation and completed activation.
+                    if (wasActivated && this.heartbeat && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
+                })
                 .catch(error => logger.debug('[Codex shared] hub resync', error));
         });
     }
@@ -201,7 +207,7 @@ export class SharedCodexRoot {
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
-        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id));
+        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id), undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
@@ -286,7 +292,7 @@ export class SharedCodexRoot {
             if (!await this.ownsThread(eventThread)) return;
             let projection = this.children.get(eventThread);
             if (!projection) {
-                projection = new SharedCodexProjection(this.session, eventThread, async () => {}, this.threadId);
+                projection = new SharedCodexProjection(this.session, eventThread, async () => {}, this.threadId, async () => record(await this.client.request('thread/read', { threadId: eventThread, includeTurns: false })).thread);
                 this.children.set(eventThread, projection);
             }
             await projection.notification(method, params); return;
