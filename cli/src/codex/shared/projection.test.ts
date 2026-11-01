@@ -221,7 +221,8 @@ describe('shared history projection', () => {
         const session = {
             getMetadata: () => metadata,
             updateMetadata: (fn: (value: typeof metadata) => typeof metadata) => { metadata = fn(metadata) },
-            sendAgentMessage: vi.fn()
+            sendAgentMessage: vi.fn(),
+            emitMessagesConsumed: vi.fn()
         } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'child', async () => {});
 
