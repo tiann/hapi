@@ -332,7 +332,8 @@ sealed interface PermissionAction {
  *   catalog pickers with optimistic detail updates, rolled back to server
  *   truth on error; per-flavor catalogs fetched per session
  *   ([loadModelOptions]) — codex models+efforts, opencode/grok dynamic
- *   efforts, pi thinking levels, cursor variants.
+ *   efforts, pi thinking levels, cursor variants. OpenCode efforts are
+ *   keyed by model (invalidated on a session-model change).
  *
  * B-M3f adds:
  * - **Attachments** ([attachments], a [ComposerAttachments] tray): picks are
@@ -557,7 +558,10 @@ class ChatViewModel(
      * Per-flavor dynamic catalogs behind the config sheet (slice C). One
      * fetch per sheet open: [loadModelOptions] routes on the session flavor,
      * fills the fields that flavor needs, and leaves [loadedFlavor] null on
-     * failure so the next open retries.
+     * failure so the next open retries. OpenCode efforts are additionally
+     * keyed by model ([opencodeEffortsModel]): a session-model change
+     * invalidates them — stale options are hidden at render and the gate
+     * refetches (web: `useOpencodeReasoningEffortOptions`).
      */
     private data class ConfigCatalogs(
         val loading: Boolean = false,
@@ -565,6 +569,12 @@ class ChatViewModel(
         val loadedFlavor: String? = null,
         val codexModels: List<CodexModelSummary>? = null,
         val opencodeEfforts: List<OpencodeReasoningEffortOption>? = null,
+        /**
+         * Model the [opencodeEfforts] were accepted for (the response's
+         * `targetModelId`, else the session model at fetch time). A session
+         * model that differs from it means the cache is stale.
+         */
+        val opencodeEffortsModel: String? = null,
         val grokEfforts: List<GrokReasoningEffortOption>? = null,
         val piModels: List<PiModelSummary>? = null,
         /** Cursor session catalog (`GET /api/sessions/:id/cursor-models`). */
@@ -2022,14 +2032,23 @@ class ChatViewModel(
      * Fetch the session flavor's dynamic config catalogs (codex models +
      * efforts, opencode/grok reasoning-effort options, pi models, cursor
      * session+machine catalogs). One load per flavor: a failure leaves
-     * `loadedFlavor` null so the next sheet open retries. Other flavors are a
-     * no-op (static/no catalog).
+     * `loadedFlavor` null so the next sheet open retries. OpenCode is the
+     * exception — its effort options are model-scoped, so a loaded cache is
+     * only reused while the session model still matches the model it was
+     * fetched for; a model switch (this client or another) refetches. Other
+     * flavors are a no-op (static/no catalog).
      */
     fun loadModelOptions() {
         val flavor = currentFlavor() ?: return
         if (flavor !in configCatalogFlavors) return
         val state = catalogs.value
-        if (state.loading || state.loadedFlavor == flavor) return
+        if (state.loading) return
+        if (state.loadedFlavor == flavor) {
+            // Model-keyed reuse for opencode: a cache fetched for another
+            // model is stale — refetch instead of serving it (web polls the
+            // same RPC until the effective model's options land).
+            if (flavor != "opencode" || opencodeCacheIsCurrent(state)) return
+        }
         catalogs.value = ConfigCatalogs(loading = true)
         scope.launch {
             catalogs.value = when (flavor) {
@@ -2041,6 +2060,16 @@ class ChatViewModel(
                 else -> ConfigCatalogs()
             }
         }
+    }
+
+    /**
+     * The cached opencode efforts belong to the session's model — true while
+     * the association matches (or neither side pins a model, mirroring the
+     * web's lenient `!currentModelId || !targetModelId` check).
+     */
+    private fun opencodeCacheIsCurrent(state: ConfigCatalogs): Boolean {
+        val model = currentDetail()?.model
+        return state.opencodeEffortsModel == null || model == null || state.opencodeEffortsModel == model
     }
 
     private suspend fun loadCodexCatalogs(): ConfigCatalogs {
@@ -2061,20 +2090,61 @@ class ChatViewModel(
         }
     }
 
-    /** Silent-hide on failure — the opencode section simply stays absent (web parity). */
+    /**
+     * Silent-hide on failure — the opencode section simply stays absent (web
+     * parity). A response whose `currentModelId` still names the previous
+     * model (a requested switch has not been applied by the backend yet)
+     * describes the OLD model's variants: it is never cached. Instead the
+     * loader polls with bounded budgets — mismatched until the switch
+     * settles, empty/failed lists during discovery — mirroring
+     * `useOpencodeReasoningEffortOptions`. When the budget runs out the
+     * section simply stays hidden (`loadedFlavor` null, so the next sheet
+     * open retries); nothing is marked permanently loaded on stale data.
+     */
     private suspend fun loadOpencodeCatalogs(): ConfigCatalogs {
-        val response = try {
-            api.getSessionOpencodeReasoningEffortOptions(sessionId)
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (_: Exception) {
-            return ConfigCatalogs()
-        }
-        val options = response.options
-        return if (response.success && options != null) {
-            ConfigCatalogs(loadedFlavor = "opencode", opencodeEfforts = options)
-        } else {
-            ConfigCatalogs()
+        val sessionModel = currentDetail()?.model
+        var mismatchPolls = 0
+        var discoveryPolls = 0
+        while (true) {
+            val response = try {
+                api.getSessionOpencodeReasoningEffortOptions(sessionId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                return ConfigCatalogs()
+            }
+            val options = response.options
+            // Web `targetModelId = data?.targetModelId ?? sessionModel`: the
+            // model the options must describe for them to be current.
+            val targetModel = response.targetModelId ?: sessionModel
+            val mismatched = response.currentModelId != null &&
+                targetModel != null &&
+                response.currentModelId != targetModel
+            when {
+                response.success && !mismatched && !options.isNullOrEmpty() -> return ConfigCatalogs(
+                    loadedFlavor = "opencode",
+                    opencodeEfforts = options,
+                    opencodeEffortsModel = targetModel,
+                )
+                response.success && !mismatched ->
+                    // Variant-less model or a transient empty list — bounded
+                    // discovery polling, then hidden (web parity).
+                    if (++discoveryPolls >= MAX_OPENCODE_EFFORT_DISCOVERY_POLLS) {
+                        return ConfigCatalogs()
+                    }
+                mismatched ->
+                    // The backend still reports the previous model (this
+                    // includes a variant-less previous model with no options).
+                    if (++mismatchPolls >= MAX_OPENCODE_EFFORT_MISMATCH_POLLS) {
+                        return ConfigCatalogs()
+                    }
+                else ->
+                    // success:false — retry within the discovery budget.
+                    if (++discoveryPolls >= MAX_OPENCODE_EFFORT_DISCOVERY_POLLS) {
+                        return ConfigCatalogs()
+                    }
+            }
+            delay(OPENCODE_EFFORT_POLL_INTERVAL_MS)
         }
     }
 
@@ -2214,7 +2284,18 @@ class ChatViewModel(
             "opencode" -> {
                 modelOptions = null // Model picker stays create-form only.
                 effort = detail?.modelReasoningEffort
-                effortOptions = SessionConfigSections.opencodeReasoningEffortOptions(effort, catalogs.opencodeEfforts)
+                // Options cached for another model (a switch landed after the
+                // load — from this client or another) are stale: hide them
+                // until the refetch for the new model lands (web filters
+                // mismatched responses the same way).
+                val effortsCurrent = catalogs.opencodeEffortsModel == null ||
+                    model == null ||
+                    catalogs.opencodeEffortsModel == model
+                effortOptions = if (effortsCurrent) {
+                    SessionConfigSections.opencodeReasoningEffortOptions(effort, catalogs.opencodeEfforts)
+                } else {
+                    null
+                }
             }
             "grok" -> {
                 modelOptions = null
@@ -2517,6 +2598,17 @@ class ChatViewModel(
         const val PIPELINE_INTERVAL_MS: Long = 100
 
         const val DRAFT_SAVE_DEBOUNCE_MS: Long = 300
+
+        /**
+         * OpenCode effort-option refresh (web
+         * `useOpencodeReasoningEffortOptions`): while the backend still
+         * reports the previous model's options (a switch has not settled),
+         * poll at 1s — bounded so an idle session that never turns again
+         * does not poll forever.
+         */
+        const val OPENCODE_EFFORT_POLL_INTERVAL_MS: Long = 1_000
+        const val MAX_OPENCODE_EFFORT_MISMATCH_POLLS = 60
+        const val MAX_OPENCODE_EFFORT_DISCOVERY_POLLS = 10
 
         fun Exception.isSessionInactive(): Boolean =
             this is ApiError && status == 409 && code == "session_inactive"

@@ -294,8 +294,11 @@ private class RecordingChatApi : ChatSessionApi {
 
     var opencodeEffortsResult: OpencodeReasoningEffortResponse =
         OpencodeReasoningEffortResponse(success = false, error = "not scripted")
-    override suspend fun getSessionOpencodeReasoningEffortOptions(sessionId: String): OpencodeReasoningEffortResponse =
-        opencodeEffortsResult
+    val opencodeEffortsCalls = MutableStateFlow(0)
+    override suspend fun getSessionOpencodeReasoningEffortOptions(sessionId: String): OpencodeReasoningEffortResponse {
+        opencodeEffortsCalls.value += 1
+        return opencodeEffortsResult
+    }
 
     var grokEffortsResult: GrokReasoningEffortResponse =
         GrokReasoningEffortResponse(success = false, error = "not scripted")
@@ -1757,6 +1760,101 @@ class ChatViewModelInteractionTest {
         harness.viewModel.setEffort("high")
         harness.api.configCalls.first { "modelReasoningEffort:high" in it }
         assertEquals("high", harness.sessionStore.currentDetail(IX_SESSION)?.modelReasoningEffort)
+    }
+
+    @Test
+    fun `opencode options cached for another model are hidden and refetched after a model switch`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "opencode", model = "qwen3-coder"))
+        harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(
+            success = true,
+            options = listOf(
+                app.hapi.protocol.wire.OpencodeReasoningEffortOption("low", "Low"),
+                app.hapi.protocol.wire.OpencodeReasoningEffortOption("high"),
+            ),
+            currentModelId = "qwen3-coder",
+            targetModelId = "qwen3-coder",
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(listOf(null, "low", "high"), config.effortOptions?.map { it.value })
+        assertEquals(1, harness.api.opencodeEffortsCalls.value)
+
+        // Another client switches the model (an SSE patch lands a new
+        // detail): the stale qwen3-coder options must stop rendering.
+        harness.sessionStore.setDetail(detail(flavor = "opencode", model = "gpt-5.5-codex"))
+        harness.viewModel.config.first { it.effortOptions == null }
+
+        // Reopening the sheet must refetch — the cache is keyed by model, so
+        // the new model's options replace the old ones.
+        harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(
+            success = true,
+            options = listOf(app.hapi.protocol.wire.OpencodeReasoningEffortOption("medium", "Medium")),
+            currentModelId = "gpt-5.5-codex",
+            targetModelId = "gpt-5.5-codex",
+        )
+        harness.viewModel.loadModelOptions()
+        val switched = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(listOf(null, "medium"), switched.effortOptions?.map { it.value })
+        assertEquals(2, harness.api.opencodeEffortsCalls.value)
+    }
+
+    @Test
+    fun `opencode options mismatching the effective model are withheld until the switch settles`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "opencode", model = "gpt-5.5-codex"))
+        // The backend still reports the previous model while the switch
+        // settles — those variants describe qwen3-coder and must not be
+        // cached or shown for gpt-5.5-codex.
+        harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(
+            success = true,
+            options = listOf(app.hapi.protocol.wire.OpencodeReasoningEffortOption("low", "Low")),
+            currentModelId = "qwen3-coder",
+            targetModelId = "gpt-5.5-codex",
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+        harness.viewModel.loadModelOptions()
+        testScheduler.runCurrent()
+        assertEquals(1, harness.api.opencodeEffortsCalls.value)
+        assertNull(harness.viewModel.config.value.effortOptions)
+
+        // The loader keeps polling (bounded); once the backend catches up the
+        // effective model's options land without another sheet open.
+        harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(
+            success = true,
+            options = listOf(app.hapi.protocol.wire.OpencodeReasoningEffortOption("medium", "Medium")),
+            currentModelId = "gpt-5.5-codex",
+            targetModelId = "gpt-5.5-codex",
+        )
+        val config = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(listOf(null, "medium"), config.effortOptions?.map { it.value })
+    }
+
+    @Test
+    fun `opencode mismatch polling is bounded and marks nothing permanently loaded`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "opencode", model = "gpt-5.5-codex"))
+        harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(
+            success = true,
+            options = listOf(app.hapi.protocol.wire.OpencodeReasoningEffortOption("low", "Low")),
+            currentModelId = "qwen3-coder",
+            targetModelId = "gpt-5.5-codex",
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+        harness.viewModel.loadModelOptions()
+
+        // 60 mismatched polls at 1s apart, then the loader gives up silently
+        // (an idle session that never settles must not poll forever).
+        testScheduler.advanceTimeBy(120_000)
+        testScheduler.runCurrent()
+        assertEquals(60, harness.api.opencodeEffortsCalls.value)
+        assertNull(harness.viewModel.config.value.effortOptions)
+
+        // Giving up left no permanent mark: the next sheet open retries.
+        harness.viewModel.loadModelOptions()
+        testScheduler.runCurrent()
+        assertEquals(61, harness.api.opencodeEffortsCalls.value)
     }
 
     @Test

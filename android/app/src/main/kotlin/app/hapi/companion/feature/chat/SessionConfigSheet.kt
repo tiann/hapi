@@ -52,8 +52,11 @@ fun SessionConfigSheet(
     onSetServiceTier: (String) -> Unit = {},
 ) {
     // Re-run on flavor change: a reopened session of another flavor must fetch
-    // its own catalogs ([ChatViewModel.loadModelOptions] dedupes per flavor).
-    LaunchedEffect(config.flavor) { onLoadModelOptions() }
+    // its own catalogs. Also on model change — the opencode effort options are
+    // model-scoped, so a switch (from this sheet or another client's patch)
+    // must refresh them. [ChatViewModel.loadModelOptions] dedupes per flavor
+    // and, for opencode, per model.
+    LaunchedEffect(config.flavor to config.model) { onLoadModelOptions() }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         SessionConfigSheetContent(
