@@ -422,7 +422,8 @@ public final class ComposerAttachments {
             if let owned = uploadedPaths.remove(id: entry.ui.id) {
                 Self.deleteDetached(api: api, uploads: [owned])
             }
-            entries[index].path = nil`r`n            entries[index].attachmentId = nil
+            entries[index].path = nil
+            entries[index].attachmentId = nil
             entries[index].ui = entry.ui.with(status: .uploading)
             upload(id: entry.ui.id, filename: entry.ui.filename, mimeType: entry.ui.mimeType, bytes: bytes)
         }
