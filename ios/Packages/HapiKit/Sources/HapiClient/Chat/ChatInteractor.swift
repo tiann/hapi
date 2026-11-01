@@ -53,8 +53,9 @@ public final class ChatInteractor {
 
     /// Composer attachment tray (A-M3f). The screen feeds prepared picks in
     /// and renders `attachments.items`; ``sendMessage(steer:)`` consumes the
-    /// Ready set. Lives (and dies) with this interactor — see the tray's own
-    /// docs for the discard-on-deallocation semantics.
+    /// Ready set. Lives with this interactor, or is handed to its replacement
+    /// when upload recovery changes the session ID. See the tray's own docs
+    /// for discard-on-deallocation semantics.
     public let attachments: ComposerAttachments
 
     // MARK: Observable storage
@@ -120,6 +121,11 @@ public final class ChatInteractor {
     /// owning screen model; replaced wholesale on re-activation.
     @ObservationIgnored public var onEvent: (@MainActor (ChatInteractionEvent) -> Void)?
 
+    /// The host defers source-session removal while /resume is in flight,
+    /// and retains the tray before navigating to a replacement session.
+    @ObservationIgnored public var onAttachmentSessionRecovery: (@MainActor (Bool) -> Void)?
+    @ObservationIgnored public var onAttachmentSessionSuperseded: (@MainActor (String, ChatInteractor) -> Void)?
+
     // MARK: Wiring
 
     private let api: APIClient
@@ -142,6 +148,7 @@ public final class ChatInteractor {
         sessionStore: SessionListStore,
         windows: MessageWindowControllers,
         drafts: (any ChatDrafts)? = nil,
+        attachments: ComposerAttachments? = nil,
         draftSaveDebounce: Duration = .milliseconds(300),
         now: @escaping () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
         makeLocalId: @escaping () -> String = { "local-\(UUID().uuidString)" }
@@ -154,7 +161,43 @@ public final class ChatInteractor {
         self.draftSaveDebounce = draftSaveDebounce
         self.now = now
         self.makeLocalId = makeLocalId
-        self.attachments = ComposerAttachments(api: api, sessionId: sessionId)
+        self.attachments = attachments ?? ComposerAttachments(api: api, sessionId: sessionId)
+        self.attachments.resumeInactiveSession = { [weak self] source in
+            guard let self else { throw CancellationError() }
+            return try await self.resumeForAttachmentUpload(from: source)
+        }
+    }
+
+    /// Like text-send recovery, but preserve the entire unsent composer. The
+    /// tray single-flights concurrent 409s and retries each upload only once.
+    private func resumeForAttachmentUpload(from source: String) async throws -> String {
+        onAttachmentSessionRecovery?(true)
+        defer { onAttachmentSessionRecovery?(false) }
+        let target = try await api.resumeSession(id: source, permissionMode: sessionStore.detail(for: source)?.permissionMode)
+        if target != source {
+            await windows.seed(fromSessionId: source, toSessionId: target)
+            flushPendingDraft()
+            drafts?.move(fromSessionId: source, toSessionId: target)
+        }
+        scratchlistSendTarget = target
+        attachments.retarget(to: target)
+        sessionStore.updateDetailLocal(target) { $0.active = true }
+        sessionStore.scheduleRefresh()
+        if target != sessionId {
+            // Store the live tray before the event: navigation constructs a
+            // new interactor, while pending uploads still belong to this tray.
+            onAttachmentSessionSuperseded?(target, self)
+            emit(.sessionSuperseded(sessionId: target))
+        }
+        return target
+    }
+
+    /// Read at replacement-screen creation, not at /resume completion: the
+    /// user may still type before navigation runs. Cancel the source's draft
+    /// debounce so it cannot later resurrect a draft cleared by the new chat.
+    public func prepareComposerHandoff() -> (attachments: ComposerAttachments, text: String) {
+        flushPendingDraft()
+        return (attachments, composerText)
     }
 
     // MARK: - Lifecycle (paired with the screen's appear/disappear)
@@ -279,7 +322,7 @@ public final class ChatInteractor {
         composerText = text
         draftTask?.cancel()
         guard let drafts else { return }
-        let sessionId = sessionId
+        let sessionId = scratchlistSendTarget ?? sessionId
         let debounce = draftSaveDebounce
         // Inherits main-actor isolation, so capturing the drafts store is safe.
         draftTask = Task {
@@ -328,6 +371,7 @@ public final class ChatInteractor {
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
+            if let target = self.scratchlistSendTarget { self.drafts?.clear(sessionId: target) }
             if attachmentMetadata == nil && (text == "/clear" || text == "/new")
                 && self.sessionStore.detail(for: self.sessionId)?.metadata?.capabilities?.concurrentClients == true {
                 defer { self.isSending = false }
@@ -449,7 +493,7 @@ public final class ChatInteractor {
         targetSessionId: String? = nil
     ) async -> String? {
         defer { isSending = false }
-        let target = targetSessionId ?? sessionId
+        let target = targetSessionId ?? scratchlistSendTarget ?? sessionId
         let store = target == sessionId ? await windowController() : await windows.open(sessionId: target)
         if isRetry {
             await store.updateStatus(localId: localId, status: .sending)
@@ -1259,7 +1303,7 @@ public final class ChatInteractor {
         draftTask?.cancel()
         draftTask = nil
         guard pending, let drafts else { return }
-        drafts.save(sessionId: sessionId, text: composerText)
+        drafts.save(sessionId: scratchlistSendTarget ?? sessionId, text: composerText)
     }
 
     private func emit(_ event: ChatInteractionEvent) {

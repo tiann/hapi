@@ -77,6 +77,7 @@ import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
 import app.hapi.data.auth.AuthTerminalReason
+import app.hapi.data.sse.SseSubscriptionKey
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -790,6 +791,7 @@ private class SessionListViewModelHolder : ViewModel() {
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
+            connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
         ).also { model = it }
     }
 

@@ -49,6 +49,7 @@ fun HomeScreen(
                 activeHubUrl = activeHubUrl,
                 pairedHubs = pairedHubs,
                 hasActiveFilters = state.hasActiveFilters,
+                connectionStatus = state.connectionStatus,
                 searchExpanded = searchExpanded,
                 searchQuery = state.searchQuery,
                 onOpenSearch = { searchExpanded = true },

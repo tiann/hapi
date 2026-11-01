@@ -12,9 +12,21 @@ import {
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
     isRenderIrrelevantSessionPatch,
+    sameSessionSummaryMetadata,
     shouldInvalidateSessionListForEvent,
     useSSE
 } from './useSSE'
+
+describe('session summary metadata equality', () => {
+    it('detects capability changes that control list actions', () => {
+        const base = { path: '/p', host: 'h' }
+        expect(sameSessionSummaryMetadata(base, { ...base, conversationHistory: { forkCurrent: true } })).toBe(false)
+        expect(sameSessionSummaryMetadata(
+            { ...base, conversationHistory: { forkCurrent: true } },
+            { ...base, conversationHistory: { forkCurrent: true } },
+        )).toBe(true)
+    })
+})
 
 class FakeEventSource {
     static instances: FakeEventSource[] = []
