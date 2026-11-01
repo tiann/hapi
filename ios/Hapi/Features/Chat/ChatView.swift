@@ -304,7 +304,7 @@ struct ChatView: View {
         .toolPresentations(model: model, session: session, owner: "chat") { path in
             viewerRoute = FileViewerRoute(sessionId: sessionId, path: path, mode: .file)
         }
-        .environment(\.chatMedia, model.imageLoader)
+        .environment(\.chatMedia, model.mediaLoader)
         .environment(\.chatPresentationState, model.presentationState)
         .environment(\.hapiMarkdownCache, model.markdownCache)
         .environment(\.chatInteractions, model.interactor)
