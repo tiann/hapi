@@ -67,6 +67,8 @@ export class SessionCache {
         private readonly publisher: EventPublisher,
         private readonly lifecycleHooks: {
             beforeDeleteSession?: (sessionId: string) => Promise<void> | undefined
+            /** Revalidate lifecycle guards after asynchronous deletion preparation. */
+            assertDeleteSession?: (sessionId: string) => void
             afterDeleteSession?: (sessionId: string) => void
             /** Fires after a merge deletes a session row. Dedup collisions and
              *  resume-id rotation both land in `mergeSessionData`, so this is
@@ -1873,6 +1875,7 @@ export class SessionCache {
                 if (preparation) {
                     await preparation
                 }
+                this.lifecycleHooks.assertDeleteSession?.(oldSessionId)
                 if (this.sessions.get(oldSessionId)?.active) {
                     throw new Error('Cannot merge a session that became active')
                 }

@@ -31,6 +31,7 @@ function setup() {
 
 function setupWithDeleteHooks(hooks: {
     beforeDeleteSession?: (sessionId: string) => Promise<void> | undefined
+    assertDeleteSession?: (sessionId: string) => void
     afterDeleteSession?: (sessionId: string) => void
 }) {
     const root = mkdtempSync(join(tmpdir(), 'hapi-session-attachments-hooks-'))
@@ -289,6 +290,58 @@ describe('durable attachment session lifecycle', () => {
         expect(context.store.attachments.getForSession(attachment.id, 'default', newSession.id)).toBeNull()
         expect(context.store.scratchlist.list(oldSession.id).map((entry) => entry.entryId)).toEqual(['activity-race-note'])
         expect(context.store.scratchlist.list(newSession.id)).toHaveLength(0)
+    })
+
+    it('rechecks the resume guard after automatic consolidation preparation', async () => {
+        let store!: Store
+        let cache!: SessionCache
+        const context = setupWithDeleteHooks({
+            beforeDeleteSession: async (sessionId) => {
+                const latest = store.sessions.getSessionByNamespace(sessionId, 'default')!
+                store.sessions.updateSessionMetadata(sessionId, {
+                    ...(latest.metadata as Record<string, unknown>),
+                    codexResumePending: { machineId: 'machine', nativeSessionId: 'native-consolidation' }
+                }, latest.metadataVersion, 'default')
+                cache.refreshSession(sessionId)
+            },
+            assertDeleteSession: (sessionId) => {
+                const metadata = store.sessions.getSessionByNamespace(sessionId, 'default')?.metadata as {
+                    codexResumePending?: unknown
+                } | undefined
+                if (metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed')
+            }
+        })
+        store = context.store
+        cache = context.cache
+        const { oldSession, newSession } = makeSessions(cache)
+        const attachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: oldSession.id,
+            filename: 'consolidation-race.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('consolidation-race')
+        })
+        const message = store.messages.addMessage(oldSession.id, {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'consolidation race',
+                attachments: [{
+                    id: 'consolidation-race-attachment',
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    attachmentId: attachment.id
+                }]
+            }
+        }, 'consolidation-race-message')
+
+        await expect(cache.mergeSessions(oldSession.id, newSession.id, 'default'))
+            .rejects.toThrow('resume startup is unconfirmed')
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
+        expect(store.messages.getAllMessages(oldSession.id).map((row) => row.id)).toEqual([message.id])
+        expect(store.attachments.getForSession(attachment.id, 'default', oldSession.id)).not.toBeNull()
+        expect(store.attachments.getForSession(attachment.id, 'default', newSession.id)).toBeNull()
     })
 
     it('aborts when scratchlist content changes during attachment preparation', async () => {

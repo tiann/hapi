@@ -311,6 +311,7 @@ export class SyncEngine {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
             beforeDeleteSession: (sessionId) => this.prepareSessionForDeletionIfNeeded(sessionId),
+            assertDeleteSession: (sessionId) => this.assertSessionDeletionAllowed(sessionId),
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
             // dedup alike — so enumeration cleanup rides on one hook.
