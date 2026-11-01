@@ -8,6 +8,8 @@ import Foundation
 /// `teamStateUpdatedAt` are the watermarks the versioned-patch gate in
 /// `applySessionDetailPatch(session:patch:)` checks against.
 public struct Session: Codable, Equatable, Sendable {
+    public var contentRevision: Int?
+    public var readState: SessionReadState?
     public var id: String
     public var namespace: String
     public var seq: Int
@@ -44,6 +46,8 @@ public struct Session: Codable, Equatable, Sendable {
     public var copilotAgentMode: CopilotAgentMode?
 
     public init(
+        contentRevision: Int? = nil,
+        readState: SessionReadState? = nil,
         id: String,
         namespace: String,
         seq: Int,
@@ -82,6 +86,8 @@ public struct Session: Codable, Equatable, Sendable {
         self.lastUserMessageAt = lastUserMessageAt
         self.pinned = pinned
         self.globalPinned = globalPinned
+        self.contentRevision = contentRevision
+        self.readState = readState
         self.active = active
         self.activeAt = activeAt
         self.metadata = metadata
@@ -107,6 +113,8 @@ public struct Session: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        contentRevision = try container.decodeIfPresent(Int.self, forKey: .contentRevision)
+        readState = try container.decodeIfPresent(SessionReadState.self, forKey: .readState)
         id = try container.decode(String.self, forKey: .id)
         namespace = try container.decode(String.self, forKey: .namespace)
         seq = try container.decode(Int.self, forKey: .seq)

@@ -40,6 +40,7 @@ data class DecryptedMessage(
     val invokedAt: OptionalField<Long?> = OptionalField.Absent,
     val scheduledAt: Long? = null,
     val deliveryState: String? = null,
+    val contentRevision: Long? = null,
 ) {
     /** `invokedAt` collapsed to a plain value (both absent and `null` → null). */
     val invokedAtOrNull: Long? get() = invokedAt.valueOrNull()
@@ -58,6 +59,7 @@ internal object DecryptedMessageSerializer : KSerializer<DecryptedMessage> {
         val obj = input.decodeJsonElement() as? JsonObject
             ?: throw SerializationException("DecryptedMessage must be a JSON object")
         return DecryptedMessage(
+            contentRevision = obj["contentRevision"]?.longOrNull,
             id = obj["id"].stringOrNull
                 ?: throw SerializationException("DecryptedMessage.id must be a string"),
             seq = obj["seq"].longOrNull,
@@ -79,6 +81,7 @@ internal object DecryptedMessageSerializer : KSerializer<DecryptedMessage> {
         val output = encoder as? JsonEncoder
             ?: throw SerializationException("DecryptedMessage supports JSON only")
         output.encodeJsonElement(buildJsonObject {
+            value.contentRevision?.let { put("contentRevision", JsonPrimitive(it)) }
             put("id", JsonPrimitive(value.id))
             put("seq", value.seq?.let(::JsonPrimitive) ?: JsonNull)
             put("localId", value.localId?.let(::JsonPrimitive) ?: JsonNull)

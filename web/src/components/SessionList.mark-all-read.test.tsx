@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
+import { markSessionSeen, getSessionLastSeenSnapshot } from '@/lib/sessionLastSeen'
 import { SessionList } from './SessionList'
 
 afterEach(() => cleanup())
@@ -28,6 +29,7 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         nextScheduledAt: null,
         model: null,
         effort: null,
+        contentRevision: overrides.updatedAt ?? 0,
         ...overrides
     }
 }
@@ -68,7 +70,7 @@ describe('SessionList mark all as read', () => {
     })
 
     it('only shows the independent action when unread sessions exist', () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ read: 1000 }))
+        seedReads({ read: 1000 })
         renderSessionList([
             makeSession({ id: 'read', updatedAt: 1000, metadata: { path: '/work/read', name: 'Read' } })
         ])
@@ -76,7 +78,7 @@ describe('SessionList mark all as read', () => {
         expect(screen.queryByRole('button', { name: 'Mark all as read (1)' })).toBeNull()
 
         cleanup()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ unread: 1000 }))
+        seedReads({ unread: 1000 })
         renderSessionList([
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/unread', name: 'Unread' } })
         ])
@@ -89,11 +91,11 @@ describe('SessionList mark all as read', () => {
     })
 
     it('requires confirmation before marking every unread session read', async () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        seedReads({
             unreadA: 1000,
             unreadB: 2000,
             read: 3000
-        }))
+        })
         renderSessionList([
             makeSession({ id: 'unreadA', updatedAt: 1100, metadata: { path: '/work/a', name: 'Unread A' } }),
             makeSession({ id: 'unreadB', updatedAt: 2200, metadata: { path: '/work/b', name: 'Unread B' } }),
@@ -105,16 +107,16 @@ describe('SessionList mark all as read', () => {
         const title = within(dialog).getByRole('heading', { name: 'Mark all as read?' })
         expect(title.parentElement).toHaveClass('pr-0')
         expect(title).toHaveClass('min-h-6', 'px-10', 'text-center', 'leading-6')
-        expect(screen.getByText('This will mark 2 unread sessions as read on this device.')).toBeTruthy()
+        expect(screen.getByText('This will mark 2 unread sessions as read across your devices.')).toBeTruthy()
         expect(within(dialog).getByRole('button', { name: 'Confirm' })).toHaveClass('bg-red-600', 'text-white')
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toMatchObject({ unreadA: 1000, unreadB: 2000 })
+        expect(getSessionLastSeenSnapshot()).toMatchObject({ unreadA: 1000, unreadB: 2000 })
 
         fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
 
         await waitFor(() => {
             expect(screen.queryByRole('button', { name: 'Mark all as read (2)' })).toBeNull()
         })
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toMatchObject({
+        expect(getSessionLastSeenSnapshot()).toMatchObject({
             unreadA: 1100,
             unreadB: 2200,
             read: 3000
@@ -123,7 +125,7 @@ describe('SessionList mark all as read', () => {
     })
 
     it('leaves unread state unchanged when the confirmation is cancelled', () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ unread: 1000 }))
+        seedReads({ unread: 1000 })
         renderSessionList([
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/unread', name: 'Unread' } })
         ])
@@ -132,14 +134,14 @@ describe('SessionList mark all as read', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
         expect(screen.getByRole('button', { name: 'Mark all as read (1)' })).toBeTruthy()
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toEqual({ unread: 1000 })
+        expect(getSessionLastSeenSnapshot()).toEqual({ unread: 1000 })
     })
 
     it('marks hidden duplicate session IDs so a dedup winner change stays read', async () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        seedReads({
             visibleWinner: 2000,
             hiddenDuplicate: 0,
-        }))
+        })
         const queryClient = new QueryClient({
             defaultOptions: {
                 queries: { retry: false },
@@ -189,17 +191,17 @@ describe('SessionList mark all as read', () => {
         ))))
 
         expect(screen.queryByRole('button', { name: 'Mark all as read (1)' })).toBeNull()
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toMatchObject({
+        expect(getSessionLastSeenSnapshot()).toMatchObject({
             visibleWinner: 2000,
             hiddenDuplicate: 1000,
         })
     })
 
     it('does not count unread inactive empty session stubs', () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        seedReads({
             visible: 2000,
             emptyStub: 0,
-        }))
+        })
         renderSessionList([
             makeSession({
                 id: 'visible',
@@ -214,7 +216,7 @@ describe('SessionList mark all as read', () => {
 
     it('uses the requested Chinese label', () => {
         localStorage.setItem('hapi-lang', 'zh-CN')
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ unread: 1000 }))
+        seedReads({ unread: 1000 })
         renderSessionList([
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/unread', name: 'Unread' } })
         ])
@@ -222,3 +224,7 @@ describe('SessionList mark all as read', () => {
         expect(screen.getByRole('button', { name: '全部标为已读（1）' })).toBeTruthy()
     })
 })
+
+function seedReads(values: Record<string, number>) {
+    for (const [id, revision] of Object.entries(values)) markSessionSeen(id, revision)
+}
