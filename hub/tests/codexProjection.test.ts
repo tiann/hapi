@@ -45,7 +45,7 @@ async function fixture() {
     const queue = new SharedCodexQueue({ request: async () => ({ data: [] }) } as never,
         'thread', join(directory, 'queue.json'), ids => session.emitMessagesConsumed(ids), () => {})
     const projection = new SharedCodexProjection(session, 'thread', id => queue.committed(id, false), undefined,
-        ids => queue.committedHistory(ids, false))
+        undefined, undefined, ids => queue.committedHistory(ids, false))
     return { store, engine, source, projection, packets, directory, async close() {
         engine.stop()
         store.close()
