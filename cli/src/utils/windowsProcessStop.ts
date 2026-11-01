@@ -87,8 +87,23 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         return confirmed
     }
     const remaining = () => Math.max(0, deadline - performance.now())
+    const signal = async (pid: number, hard: boolean, tree: boolean) => {
+        phase = 'signal'
+        return execute('taskkill', [
+            ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),
+        ], Math.min(5_000, remaining()))
+    }
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
-    if (!initial) return finish(false)
+    if (!initial) {
+        // A transient CIM failure must not leave the cancellation path with no
+        // termination attempt. A direct process probe still supplies a
+        // generation-safe witness for the known root; descendants remain
+        // unverified, so the result stays unconfirmed.
+        phase = 'root-fallback-probe'; snapshots++
+        const rootProbe = await readWindowsProcessTable(Math.min(5_000, remaining()), [rootPid])
+        if (rootProbe?.get(rootPid)) await signal(rootPid, force, true)
+        return finish(false)
+    }
     const members = new Map<number, string | null>()
     const queue = [rootPid]
     while (queue.length) {
@@ -110,12 +125,6 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
             // Once resolved, PID reuse cannot reintroduce it into this tree.
             if (!current || (marker && current.marker && marker !== current.marker)) unresolved.delete(pid)
         }
-    }
-    const signal = async (pid: number, hard: boolean, tree: boolean) => {
-        phase = 'signal'
-        return execute('taskkill', [
-            ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),
-        ], Math.min(5_000, remaining()))
     }
     refresh(initial)
     if (!unresolved.size) return finish(true)

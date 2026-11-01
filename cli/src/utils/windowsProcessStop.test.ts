@@ -129,6 +129,25 @@ describe('Windows asynchronous tree stop', () => {
         expect(rows.some(p => p.ProcessId === 400)).toBe(true)
     })
 
+    it('attempts root tree termination through a direct probe when CIM is unavailable', async () => {
+        execFileMock.mockImplementation((file, args, _options, callback) => {
+            queueMicrotask(() => {
+                if (file === 'powershell') {
+                    const script = String(args.at(-1))
+                    if (script.includes('Get-CimInstance')) callback(new Error('CIM failed'), '', '')
+                    else callback(null, JSON.stringify({ complete: true, processes: [row(100)] }), '')
+                } else {
+                    const pid = Number(args[args.indexOf('/PID') + 1])
+                    kills.push({ pid, force: args.includes('/F'), tree: args.includes('/T') })
+                    callback(null, '', '')
+                }
+            })
+            return { kill: vi.fn() }
+        })
+        await expect(killProcessTreeByPid(100, true)).resolves.toBe(false)
+        expect(kills).toContainEqual({ pid: 100, force: true, tree: true })
+    })
+
     it('never treats a failed snapshot as proof of exit', async () => {
         execFileMock.mockImplementation((_file, _args, _options, callback) => {
             queueMicrotask(() => callback(new Error('CIM failed'), '', ''))
@@ -176,6 +195,9 @@ describe('Windows asynchronous tree stop', () => {
         await new Promise(resolve => setTimeout(resolve, 0))
         expect(callbacks).toHaveLength(1)
         callbacks[0]()
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(callbacks).toHaveLength(2)
+        callbacks[1]()
         await expect(operation).resolves.toBe(false)
     })
 
