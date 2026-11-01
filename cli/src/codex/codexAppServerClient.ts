@@ -519,7 +519,7 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as ThreadGoalClearResponse;
     }
 
-    async disconnect(): Promise<void> {
+    async disconnect(options?: { gracefulTimeoutMs?: number }): Promise<void> {
         if (this.socket) {
             const socket = this.socket;
             this.socket = null;
@@ -538,7 +538,18 @@ export class CodexAppServerClient extends JsonLineParser {
 
         try {
             child?.stdin.end();
-            if (child) {
+            if (child && options?.gracefulTimeoutMs && child.exitCode === null && child.signalCode === null) {
+                // Read/fork helpers have no active turns after archiving their
+                // temporary child. EOF normally exits the native server; avoid
+                // an expensive Windows process-tree probe in the Runner loop.
+                await new Promise<void>(resolve => {
+                    const finish = () => { clearTimeout(timer); child.off('exit', finish); child.off('error', finish); resolve(); };
+                    const timer = setTimeout(finish, options.gracefulTimeoutMs);
+                    child.once('exit', finish); child.once('error', finish);
+                    if (child.exitCode !== null || child.signalCode !== null) finish();
+                });
+            }
+            if (child && child.exitCode === null && child.signalCode === null) {
                 await killProcessByChildProcess(child);
             }
         } catch (error) {

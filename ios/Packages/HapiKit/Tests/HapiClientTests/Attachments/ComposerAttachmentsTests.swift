@@ -27,12 +27,17 @@ private actor UploadRoutingPerformer: HTTPPerforming {
 
     private(set) var exchanges: [Exchange] = []
     private var uploadResults: [(status: Int, json: String)] = []
+    private var uploadTransportError: URLError.Code?
     private var uploadsGated = false
     private var gateWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// One-shot upload responses, consumed FIFO; empty ⇒ derived success.
     func scriptUpload(status: Int = 200, json: String) {
         uploadResults.append((status, json))
+    }
+
+    func failNextUpload(_ code: URLError.Code) {
+        uploadTransportError = code
     }
 
     /// Parks subsequent uploads until ``openGate()`` (in-flight state tests).
@@ -70,6 +75,10 @@ private actor UploadRoutingPerformer: HTTPPerforming {
         if path.hasSuffix("/upload/delete") {
             json = #"{"success":true}"#
         } else if path.hasSuffix("/upload") {
+            if let code = uploadTransportError {
+                uploadTransportError = nil
+                throw URLError(code)
+            }
             if uploadsGated {
                 await withCheckedContinuation { continuation in
                     gateWaiters.append(continuation)
@@ -79,6 +88,8 @@ private actor UploadRoutingPerformer: HTTPPerforming {
                 let scripted = uploadResults.removeFirst()
                 status = scripted.status
                 json = scripted.json
+            } else if path.hasSuffix("/scratchlist/upload") {
+                json = #"{"success":true,"attachment":{"id":"saved","filename":"shot.jpg","mimeType":"image/jpeg","size":3,"path":"hapi-hub:scratchlist/test/saved"}}"#
             } else {
                 struct UploadBody: Decodable { let filename: String }
                 let filename = request.httpBody
@@ -179,6 +190,7 @@ struct ComposerAttachmentsTests {
         let chip = harness.tray.items[0]
         #expect(chip.filename == "shot.jpg")
         #expect(chip.sizeBytes == 3)
+        #expect(chip.errorMessage == nil)
         #expect(harness.tray.allReady)
 
         let expectedBase64 = Data([10, 20, 30]).base64EncodedString()
@@ -216,14 +228,20 @@ struct ComposerAttachmentsTests {
             harness.tray.items.count == 1 && harness.tray.items[0].status == .failed
         })
         #expect(harness.tray.hasUnsettled)
+        #expect(harness.tray.items[0].errorMessage == "HTTP 500 (boom)")
 
+        await harness.performer.gateUploads()
         harness.tray.retry("att-1")
+        #expect(harness.tray.items[0].status == .uploading)
+        #expect(harness.tray.items[0].errorMessage == nil)
+        await harness.performer.openGate()
         #expect(await eventually {
             harness.tray.items.count == 1 && harness.tray.items[0].status == .ready
         })
         let uploads = await harness.performer.bodies(pathSuffix: "/upload")
         #expect(uploads.count == 2)
         #expect(uploads[0] == uploads[1])
+        #expect(harness.tray.items[0].errorMessage == nil)
     }
 
     @Test func successFalseResponsesSettleFailedToo() async throws {
@@ -235,6 +253,61 @@ struct ComposerAttachmentsTests {
         #expect(await eventually {
             harness.tray.items.count == 1 && harness.tray.items[0].status == .failed
         })
+        #expect(harness.tray.items[0].errorMessage == "disk full")
+    }
+
+    @Test(arguments: [403, 409, 413, 500], [false, true])
+    func httpFailuresPreserveStatusAndCodeWithoutExposingTheRawBody(status: Int, toScratchlist: Bool) async throws {
+        let harness = try TrayHarness()
+        await harness.performer.scriptUpload(status: status, json: #"{"error":"Upload rejected","code":"upload_rejected","debug":"private detail"}"#)
+        harness.tray.add(prepared(), toScratchlist: toScratchlist)
+        #expect(await eventually { harness.tray.items.first?.status == .failed })
+        #expect(harness.tray.items.first?.errorMessage == "HTTP \(status) (upload_rejected)")
+    }
+
+    @Test(arguments: ["photo.jpg", "camera.jpg", "document.txt"], [false, true])
+    func preparedPicksKeepNetworkFailureReasonsAndRemainRetryable(filename: String, toScratchlist: Bool) async throws {
+        let harness = try TrayHarness()
+        await harness.performer.failNextUpload(.networkConnectionLost)
+        harness.tray.add(prepared(filename: filename), toScratchlist: toScratchlist)
+        #expect(await eventually { harness.tray.items.first?.status == .failed })
+        #expect(harness.tray.items.first?.errorMessage == URLError(.networkConnectionLost).localizedDescription)
+        harness.tray.retry("att-1")
+        #expect(await eventually { harness.tray.allReady })
+        #expect(harness.tray.items.first?.errorMessage == nil)
+        let uploads = await harness.performer.bodies(pathSuffix: "/upload")
+        #expect(uploads.count == 2)
+        #expect(uploads[0] == uploads[1])
+    }
+
+    @Test(arguments: [#"{"success":true}"#, #"{"success":true,"path":""}"#, #"{"success":false}"#])
+    func missingUploadPathsHaveAnExplicitFailureReason(json: String) async throws {
+        let harness = try TrayHarness()
+        await harness.performer.scriptUpload(json: json)
+        harness.tray.add(prepared())
+        #expect(await eventually { harness.tray.items.first?.status == .failed })
+        #expect(harness.tray.items.first?.errorMessage == "Invalid upload response")
+    }
+
+    @Test(arguments: [false, true])
+    func malformedResponsePreservesDecodingFailureInsteadOfSilentlyFailing(toScratchlist: Bool) async throws {
+        let harness = try TrayHarness()
+        await harness.performer.scriptUpload(json: "not JSON")
+        harness.tray.add(prepared(), toScratchlist: toScratchlist)
+        #expect(await eventually { harness.tray.items.first?.status == .failed })
+        #expect(harness.tray.items.first?.errorMessage?.isEmpty == false)
+    }
+
+    @Test func scratchlistFailuresAlsoPreserveReasonsAndClearThemOnRetry() async throws {
+        let harness = try TrayHarness()
+        await harness.performer.scriptUpload(json: #"{"success":false,"error":"Scratchlist storage is full"}"#)
+        harness.tray.add(prepared(), toScratchlist: true)
+        #expect(await eventually { harness.tray.items.first?.status == .failed })
+        #expect(harness.tray.items.first?.errorMessage == "Scratchlist storage is full")
+        harness.tray.retry("att-1")
+        #expect(harness.tray.items.first?.errorMessage == nil)
+        #expect(await eventually { harness.tray.allReady })
+        #expect(harness.tray.items.first?.errorMessage == nil)
     }
 
     @Test func removingAReadyChipDeletesTheHubUploadBestEffort() async throws {

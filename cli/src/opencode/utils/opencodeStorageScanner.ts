@@ -99,6 +99,9 @@ class OpencodeStorageScanner {
     private dbReady = false;
 
     private readonly messageRoles = new Map<string, string>();
+    private readonly summaryMessageIds = new Set<string>();
+    private batchComplete = true;
+    private sessionGeneration = 0;
     private readonly messageDbVersion = new Map<string, number>();
     private readonly partDbVersion = new Map<string, number>();
 
@@ -177,6 +180,7 @@ class OpencodeStorageScanner {
             return;
         }
         this.scanning = true;
+        this.batchComplete = true;
         try {
             // Try to initialize database if not ready
             if (!this.dbReady && !this.db) {
@@ -197,7 +201,12 @@ class OpencodeStorageScanner {
             }
 
             if (this.activeSessionId) {
-                await this.scanMessagesAndParts(this.activeSessionId);
+                const scannedSessionId = this.activeSessionId;
+                const generation = this.sessionGeneration;
+                await this.scanMessagesAndParts(scannedSessionId);
+                if (this.batchComplete && generation === this.sessionGeneration && scannedSessionId === this.activeSessionId) {
+                    this.onEvent({ event: 'transcript.scan.completed', sessionId: scannedSessionId, payload: {} });
+                }
             }
         } finally {
             this.scanning = false;
@@ -357,29 +366,38 @@ class OpencodeStorageScanner {
         if (this.activeSessionId === sessionId && (!source || this.activeStorageSource === source)) {
             return;
         }
+        const generation = ++this.sessionGeneration;
         this.activeSessionId = sessionId;
         this.messageRoles.clear();
+        this.summaryMessageIds.clear();
         this.messageDbVersion.clear();
         this.partDbVersion.clear();
         this.activeStorageSource = null;
 
         const storageSource = source ?? await this.resolveStorageSourceForSession(sessionId);
+        if (generation !== this.sessionGeneration) return;
 
         if (storageSource === 'database' && this.dbReady && this.db) {
             try {
                 await this.primeSessionFilesFromDatabase(sessionId);
+                if (this.batchComplete && generation === this.sessionGeneration) this.onEvent({ event: 'transcript.scan.completed', sessionId, payload: {} });
+                if (generation !== this.sessionGeneration) return;
                 this.activeStorageSource = 'database';
             } catch (error) {
                 logger.debug(`[opencode-storage] Database priming failed, falling back to files: ${error}`);
+                if (generation !== this.sessionGeneration) return;
                 this.activeStorageSource = null;
             }
         }
 
         if (!this.activeStorageSource && await this.ensureStorageDir()) {
             await this.primeSessionFilesFromFiles(sessionId);
+            if (this.batchComplete && generation === this.sessionGeneration) this.onEvent({ event: 'transcript.scan.completed', sessionId, payload: {} });
+            if (generation !== this.sessionGeneration) return;
             this.activeStorageSource = 'files';
         }
 
+        if (generation !== this.sessionGeneration) return;
         this.onSessionFound?.(sessionId);
         logger.debug(`[opencode-storage] Tracking session ${sessionId} (source: ${this.activeStorageSource})`);
     }
@@ -438,157 +456,14 @@ class OpencodeStorageScanner {
     }
 
     private async primeSessionFilesFromDatabase(sessionId: string): Promise<void> {
-        if (!this.db) {
-            return;
-        }
-
-        try {
-            const messageQuery = this.db.prepare(`
-                SELECT id, session_id, time_created, time_updated, data
-                FROM message
-                WHERE session_id = ?
-                ORDER BY time_created ASC
-            `);
-            const messages = messageQuery.all(sessionId) as DbMessageRow[];
-            const replayThresholdMs = this.referenceTimestampMs - REPLAY_CLOCK_SKEW_MS;
-            const messageIds: string[] = [];
-            const replayMessageIds = new Set<string>();
-
-            for (const msg of messages) {
-                if (msg.id) {
-                    messageIds.push(msg.id);
-                    this.messageDbVersion.set(msg.id, msg.time_updated);
-
-                    if (msg.time_created >= replayThresholdMs) {
-                        try {
-                            const info = {
-                                ...(JSON.parse(msg.data) as Record<string, unknown>),
-                                id: msg.id,
-                                sessionID: msg.session_id
-                            } as Record<string, unknown>;
-                            const role = getString(info.role);
-                            if (role) {
-                                this.messageRoles.set(msg.id, role);
-                            }
-                            replayMessageIds.add(msg.id);
-                            this.onEvent({
-                                event: 'message.updated',
-                                payload: { info },
-                                sessionId: msg.session_id || undefined
-                            });
-                        } catch {
-                            // ignore JSON parse errors
-                        }
-                    }
-                }
-            }
-
-            // Now load parts
-            for (const messageId of messageIds) {
-                const partQuery = this.db.prepare(`
-                    SELECT id, message_id, session_id, time_created, time_updated, data
-                    FROM part
-                    WHERE message_id = ?
-                    ORDER BY time_created ASC
-                `);
-                const parts = partQuery.all(messageId) as DbPartRow[];
-
-                for (const partRow of parts) {
-                    this.partDbVersion.set(partRow.id, partRow.time_updated);
-                    if (!replayMessageIds.has(messageId)) {
-                        continue;
-                    }
-
-                    try {
-                        const part = {
-                            ...(JSON.parse(partRow.data) as Record<string, unknown>),
-                            id: partRow.id,
-                            messageID: partRow.message_id,
-                            sessionID: partRow.session_id
-                        };
-                        if (this.shouldEmitPart(part, messageId)) {
-                            this.onEvent({
-                                event: 'message.part.updated',
-                                payload: { part },
-                                sessionId: partRow.session_id || undefined
-                            });
-                        }
-                    } catch {
-                        // ignore JSON parse errors
-                    }
-                }
-            }
-
-            logger.debug(`[opencode-storage] Primed ${messages.length} messages and parts from database`);
-        } catch (error) {
-            logger.debug(`[opencode-storage] Failed to prime from database: ${error}`);
-            throw error;
-        }
+        await this.scanMessagesAndPartsFromDatabase(sessionId, true);
     }
 
     private async primeSessionFilesFromFiles(sessionId: string): Promise<void> {
-        const messageDir = join(this.storageDir, 'message', sessionId);
-        const messageFiles = await listJsonFiles(messageDir);
-        const messageIds: string[] = [];
-        const replayMessageIds = new Set<string>();
-        const replayThresholdMs = this.referenceTimestampMs - REPLAY_CLOCK_SKEW_MS;
-
-        for (const filePath of messageFiles) {
-            const mtime = await readMtime(filePath);
-            if (mtime !== null) {
-                this.messageDbVersion.set(filePath, mtime);
-            }
-            const info = await readJsonRecord(filePath);
-            const messageId = getString(info?.id) ?? filenameToId(filePath);
-            if (messageId) {
-                messageIds.push(messageId);
-                const role = getString(info?.role);
-                if (role) {
-                    this.messageRoles.set(messageId, role);
-                }
-            }
-            const timestamp = getMessageTimestamp(info, mtime);
-            if (messageId && info && timestamp !== null && timestamp >= replayThresholdMs) {
-                replayMessageIds.add(messageId);
-                const eventSessionId = getString(info.sessionID) ?? sessionId;
-                this.onEvent({
-                    event: 'message.updated',
-                    payload: { info },
-                    sessionId: eventSessionId || undefined
-                });
-            }
-        }
-
-        for (const messageId of messageIds) {
-            const partDir = join(this.storageDir, 'part', messageId);
-            const partFiles = await listJsonFiles(partDir);
-            for (const partPath of partFiles) {
-                const mtime = await readMtime(partPath);
-                if (mtime !== null) {
-                    this.partDbVersion.set(partPath, mtime);
-                }
-                if (!replayMessageIds.has(messageId)) {
-                    continue;
-                }
-                const part = await readJsonRecord(partPath);
-                if (!part) {
-                    continue;
-                }
-                if (!this.shouldEmitPart(part, messageId)) {
-                    continue;
-                }
-                const eventSessionId = getString(part.sessionID) ?? sessionId;
-                this.onEvent({
-                    event: 'message.part.updated',
-                    payload: { part },
-                    sessionId: eventSessionId || undefined
-                });
-            }
-        }
+        await this.scanMessagesAndPartsFromFiles(sessionId, true);
     }
 
     private async scanMessagesAndParts(sessionId: string): Promise<void> {
-        // Use the same storage source as setActiveSession for consistency
         if (this.activeStorageSource === 'database' && this.dbReady && this.db) {
             await this.scanMessagesAndPartsFromDatabase(sessionId);
         } else if (this.activeStorageSource === 'files' || !this.activeStorageSource) {
@@ -596,167 +471,108 @@ class OpencodeStorageScanner {
         }
     }
 
-    private async scanMessagesAndPartsFromDatabase(sessionId: string): Promise<void> {
-        if (!this.db) {
-            return;
-        }
+    private recordMessage(info: Record<string, unknown>, sessionId: string): void {
+        const id = getString(info.id);
+        const role = getString(info.role);
+        if (id && role) this.messageRoles.set(id, role);
+        if (id && info.summary === true) this.summaryMessageIds.add(id);
+        this.onEvent({ event: 'message.updated', payload: { info }, sessionId });
+    }
 
+    private async scanMessagesAndPartsFromDatabase(sessionId: string, prime = false): Promise<void> {
+        if (!this.db) { this.batchComplete = false; return; }
         try {
-            const messageQuery = this.db.prepare(`
+            const messages = this.db.prepare(`
                 SELECT id, session_id, time_created, time_updated, data
-                FROM message
-                WHERE session_id = ?
-                ORDER BY time_created ASC
-            `);
-            const messages = messageQuery.all(sessionId) as DbMessageRow[];
-
+                FROM message WHERE session_id = ? ORDER BY time_created ASC
+            `).all(sessionId) as DbMessageRow[];
+            const threshold = this.referenceTimestampMs - REPLAY_CLOCK_SKEW_MS;
+            const replayIds = new Set(messages.filter(m => m.time_created >= threshold).map(m => m.id));
             for (const msg of messages) {
-                if (!msg.id) {
-                    continue;
-                }
-
-                const previous = this.messageDbVersion.get(msg.id) ?? 0;
-                if (msg.time_updated <= previous) {
-                    continue;
-                }
-
-                this.messageDbVersion.set(msg.id, msg.time_updated);
-
+                if (!msg.id || (!prime && msg.time_updated <= (this.messageDbVersion.get(msg.id) ?? 0))) continue;
                 try {
-                    const info = {
-                        ...(JSON.parse(msg.data) as Record<string, unknown>),
-                        id: msg.id,
-                        sessionID: msg.session_id
-                    } as Record<string, unknown>;
-                    const role = getString(info.role);
-                    if (role) {
-                        this.messageRoles.set(msg.id, role);
-                    }
-
-                    this.onEvent({
-                        event: 'message.updated',
-                        payload: { info },
-                        sessionId: msg.session_id || undefined
-                    });
-                } catch {
-                    // ignore JSON parse errors
-                }
+                    const parsed: unknown = JSON.parse(msg.data);
+                    if (!isObject(parsed)) throw new Error('Invalid message record');
+                    const info = { ...parsed, id: msg.id, sessionID: msg.session_id };
+                    // Old metadata is needed to classify a compaction that
+                    // finishes after attachment. Its ordinary text stays primed.
+                    this.recordMessage(info, msg.session_id);
+                    this.messageDbVersion.set(msg.id, msg.time_updated);
+                } catch { this.batchComplete = false; }
             }
-
-            // Scan parts
-            const partQuery = this.db.prepare(`
+            const parts = this.db.prepare(`
                 SELECT id, message_id, session_id, time_created, time_updated, data
-                FROM part
-                WHERE session_id = ?
-                ORDER BY time_created ASC
-            `);
-            const parts = partQuery.all(sessionId) as DbPartRow[];
-
-            for (const partRow of parts) {
-                const previous = this.partDbVersion.get(partRow.id) ?? 0;
-                if (partRow.time_updated <= previous) {
-                    continue;
-                }
-
-                this.partDbVersion.set(partRow.id, partRow.time_updated);
-
+                FROM part WHERE session_id = ? ORDER BY time_created ASC
+            `).all(sessionId) as DbPartRow[];
+            for (const row of parts) {
+                if (!prime && row.time_updated <= (this.partDbVersion.get(row.id) ?? 0)) continue;
                 try {
-                    const part = {
-                        ...(JSON.parse(partRow.data) as Record<string, unknown>),
-                        id: partRow.id,
-                        messageID: partRow.message_id,
-                        sessionID: partRow.session_id
-                    };
-                    if (!this.shouldEmitPart(part, partRow.message_id)) {
-                        continue;
+                    const parsed: unknown = JSON.parse(row.data);
+                    if (!isObject(parsed)) throw new Error('Invalid part record');
+                    const part: Record<string, unknown> = { ...parsed, id: row.id, messageID: row.message_id, sessionID: row.session_id };
+                    if ((!prime || replayIds.has(row.message_id) || part.type === 'compaction') && this.shouldEmitPart(part, row.message_id)) {
+                        this.onEvent({ event: 'message.part.updated', payload: { part }, sessionId: row.session_id });
                     }
-
-                    this.onEvent({
-                        event: 'message.part.updated',
-                        payload: { part },
-                        sessionId: partRow.session_id || undefined
-                    });
-                } catch {
-                    // ignore JSON parse errors
-                }
+                    // Failed reads must remain eligible at the same version.
+                    this.partDbVersion.set(row.id, row.time_updated);
+                } catch { this.batchComplete = false; }
             }
         } catch (error) {
+            this.batchComplete = false;
             logger.debug(`[opencode-storage] Database scan failed: ${error}`);
+            if (prime) throw error;
         }
     }
 
-    private async scanMessagesAndPartsFromFiles(sessionId: string): Promise<void> {
-        const messageDir = join(this.storageDir, 'message', sessionId);
-        const messageFiles = await listJsonFiles(messageDir);
-        const messageIds: string[] = [];
-
-        for (const filePath of messageFiles) {
-            const messageIdFromPath = filenameToId(filePath);
-            if (messageIdFromPath) {
-                messageIds.push(messageIdFromPath);
-            }
-
-            const mtime = await readMtime(filePath);
-            if (mtime === null) {
-                continue;
-            }
-            const previous = this.messageDbVersion.get(filePath) ?? 0;
-            if (mtime <= previous) {
-                continue;
-            }
-
-            const info = await readJsonRecord(filePath);
-            this.messageDbVersion.set(filePath, mtime);
-            if (!info) {
-                continue;
-            }
-
-            const messageId = getString(info.id) ?? messageIdFromPath;
-            if (messageId) {
-                const role = getString(info.role);
-                if (role) {
-                    this.messageRoles.set(messageId, role);
-                }
-            }
-
-            const eventSessionId = getString(info.sessionID) ?? sessionId;
-            this.onEvent({
-                event: 'message.updated',
-                payload: { info },
-                sessionId: eventSessionId || undefined
-            });
+    private async scanFiles(path: string, required = true): Promise<string[]> {
+        try {
+            return (await readdir(path, { withFileTypes: true }))
+                .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+                .map(entry => join(path, entry.name));
+        } catch (error) {
+            if (required || (error as NodeJS.ErrnoException).code !== 'ENOENT') this.batchComplete = false;
+            return [];
         }
+    }
 
-        for (const messageId of messageIds) {
-            const partDir = join(this.storageDir, 'part', messageId);
-            const partFiles = await listJsonFiles(partDir);
-
-            for (const partPath of partFiles) {
-                const mtime = await readMtime(partPath);
-                if (mtime === null) {
-                    continue;
+    private async scanMessagesAndPartsFromFiles(sessionId: string, prime = false): Promise<void> {
+        const generation = this.sessionGeneration;
+        const files = await this.scanFiles(join(this.storageDir, 'message', sessionId));
+        if (generation !== this.sessionGeneration) return;
+        const ids: string[] = [];
+        const replayIds = new Set<string>();
+        const threshold = this.referenceTimestampMs - REPLAY_CLOCK_SKEW_MS;
+        for (const path of files) {
+            const id = filenameToId(path);
+            if (id) ids.push(id);
+            const mtime = await readMtime(path);
+            if (sessionId !== this.activeSessionId || generation !== this.sessionGeneration) return;
+            if (mtime === null) { this.batchComplete = false; continue; }
+            if (!prime && mtime <= (this.messageDbVersion.get(path) ?? 0)) continue;
+            const info = await readJsonRecord(path);
+            if (sessionId !== this.activeSessionId || generation !== this.sessionGeneration) return;
+            if (!info) { this.batchComplete = false; continue; }
+            const messageId = getString(info.id) ?? id;
+            const timestamp = getMessageTimestamp(info, mtime);
+            if (messageId && timestamp !== null && timestamp >= threshold) replayIds.add(messageId);
+            this.recordMessage(info, getString(info.sessionID) ?? sessionId);
+            this.messageDbVersion.set(path, mtime);
+        }
+        for (const id of ids) {
+            const parts = await this.scanFiles(join(this.storageDir, 'part', id), this.summaryMessageIds.has(id));
+            if (generation !== this.sessionGeneration) return;
+            for (const path of parts) {
+                const mtime = await readMtime(path);
+                if (generation !== this.sessionGeneration) return;
+                if (mtime === null) { this.batchComplete = false; continue; }
+                if (!prime && mtime <= (this.partDbVersion.get(path) ?? 0)) continue;
+                const part = await readJsonRecord(path);
+                if (sessionId !== this.activeSessionId || generation !== this.sessionGeneration) return;
+                if (!part) { this.batchComplete = false; continue; }
+                if ((!prime || replayIds.has(id) || part.type === 'compaction') && this.shouldEmitPart(part, id)) {
+                    this.onEvent({ event: 'message.part.updated', payload: { part }, sessionId: getString(part.sessionID) ?? sessionId });
                 }
-                const previous = this.partDbVersion.get(partPath) ?? 0;
-                if (mtime <= previous) {
-                    continue;
-                }
-
-                const part = await readJsonRecord(partPath);
-                this.partDbVersion.set(partPath, mtime);
-                if (!part) {
-                    continue;
-                }
-
-                if (!this.shouldEmitPart(part, messageId)) {
-                    continue;
-                }
-
-                const eventSessionId = getString(part.sessionID) ?? sessionId;
-                this.onEvent({
-                    event: 'message.part.updated',
-                    payload: { part },
-                    sessionId: eventSessionId || undefined
-                });
+                this.partDbVersion.set(path, mtime);
             }
         }
     }
@@ -766,6 +582,8 @@ class OpencodeStorageScanner {
         if (!partType) {
             return false;
         }
+
+        if (partType === 'compaction') return true;
 
         if (partType === 'text') {
             const text = getString(part.text);

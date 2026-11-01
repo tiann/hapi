@@ -11,6 +11,7 @@ import { initializeSharedClient } from './launch';
 import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
+import { asyncQuestionsForItem } from './asyncQuestions';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
@@ -53,6 +54,76 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it('projects native async questions and delivers answers during generation and after completion', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const modelRequests: Record<string, unknown>[] = [];
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const questions = [{ title: 'Which client?', options: ['Web', 'Terminal'] }, { title: 'Any details?' }];
+        const http = createServer((request, response) => {
+            const chunks: Buffer[] = [];
+            request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            request.on('end', () => { void (async () => {
+                if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+                modelRequests.push(record(JSON.parse(Buffer.concat(chunks).toString())));
+                const count = modelRequests.length;
+                if (count === 2) await gate;
+                const id = randomUUID();
+                const item = count === 1 ? { type: 'function_call', call_id: 'call_async', name: 'request_user_input_async', arguments: JSON.stringify({ questions }) }
+                    : { type: 'message', role: 'assistant', id: `msg_${id}`, content: [{ type: 'output_text', text: 'MOCK DONE' }] };
+                const events = [{ type: 'response.created', response: { id } }, { type: 'response.output_item.done', item },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            })(); });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        // This model's bundled tool catalog includes request_user_input_async.
+        // All Responses traffic goes to the isolated mock; no model credentials.
+        await writeFile(join(ch, 'config.toml'), `model = "gpt-6.1-sol"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[features]\nsend_message_to_user_async = true\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        let client: CodexAppServerClient | undefined;
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const threadId = runtime.sessions[sessionId].threadId;
+            const web = state.sessions.get(sessionId)!;
+            client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
+            const nativeRequests = vi.fn(); client.setServerRequestHandler(nativeRequests); await initializeSharedClient(client);
+            await client.request('thread/resume', { threadId });
+            web.user?.({ content: { text: 'ASK ASYNC' } }, 'async-prompt');
+            await vi.waitFor(() => expect(Object.keys(web.state.requests ?? {})).toHaveLength(2), { timeout: 15_000 });
+            expect(nativeRequests).not.toHaveBeenCalled();
+            const [choice, details] = asyncQuestionsForItem(threadId, { type: 'agentMessage', id: 'call_async', delivery: 'async', questions });
+            expect(web.messages).toContainEqual(expect.objectContaining({ type: 'tool-call', name: 'request_user_input', callId: choice.id }));
+            await vi.waitFor(() => expect(modelRequests.length).toBe(2));
+            await web.rpc.get('permission')!({ id: choice.id, approved: true, answers: { [choice.questionItemId]: ['Web'] } });
+            release();
+            await vi.waitFor(() => expect(web.state.completedRequests?.[choice.id]?.status).toBe('resolved'), { timeout: 15_000 });
+            await vi.waitFor(() => expect(web.state.steeringActive).toBe(false), { timeout: 15_000 });
+            expect(web.state.requests?.[details.id]).toBeDefined();
+            await web.rpc.get('permission')!({ id: details.id, approved: true, answers: { [details.questionItemId]: ['user_note: From mobile'] } });
+            await vi.waitFor(() => expect(web.state.completedRequests?.[details.id]?.status).toBe('resolved'), { timeout: 15_000 });
+            await vi.waitFor(() => expect(web.messages).toContainEqual({ user: 'Any details?\nFrom mobile' }));
+            await vi.waitFor(() => expect(JSON.stringify(modelRequests)).toContain('From mobile'), { timeout: 15_000 });
+            expect(JSON.stringify(modelRequests)).toContain('send_user_message_question_reply');
+            const history = record(record(await client.request('thread/read', { threadId, includeTurns: true })).thread);
+            const items = (history.turns as Array<{ items: unknown[] }>).flatMap(turn => turn.items);
+            expect(items).toContainEqual(expect.objectContaining({ type: 'agentMessage', id: 'call_async', delivery: 'async',
+                questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }, { title: 'Any details?', options: null }] }));
+            expect(Object.keys(web.state.requests ?? {})).toHaveLength(0);
+        } finally {
+            release(); abort.abort(); await running.catch(() => {}); await client?.disconnect();
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
     it('rejects a child ID before creating a HAPI binding or calling native resume', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-child-'); state.home = home;
         const ch = join(home, 'codex'); await mkdir(ch);
