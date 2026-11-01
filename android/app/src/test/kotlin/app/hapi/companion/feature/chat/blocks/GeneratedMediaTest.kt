@@ -142,6 +142,61 @@ class GeneratedMediaTest {
     }
 
     @Test
+    fun longMultibyteNamesStayUnderTheFilesystemByteLimit() {
+        // r4370795787: 80 hanzi + ".pdf" = 244 bytes of name; with a UUID
+        // imageId prefix the old UTF-16-capped component reached 281 bytes,
+        // past the 255-byte NAME_MAX. Now the complete component (prefix +
+        // stem + extension) is bounded, deterministically, id-first.
+        val uuid = "550e8400-e29b-41d4-a716-446655440000"
+        val name = sanitizedGeneratedMediaFileName(uuid, "截图".repeat(40) + ".pdf")
+        val bytes = name.toByteArray(Charsets.UTF_8)
+        assertTrue(bytes.size <= GENERATED_MEDIA_NAME_MAX_BYTES, "${bytes.size}: $name")
+        assertTrue(name.startsWith(uuid), name)
+        assertTrue(name.endsWith(".pdf"), name)
+        assertEquals(name, sanitizedGeneratedMediaFileName(uuid, "截图".repeat(40) + ".pdf"))
+
+        // Extensions survive byte truncation of the stem.
+        val archive = sanitizedGeneratedMediaFileName("id", "图表".repeat(120) + ".tar.gz")
+        assertTrue(archive.endsWith(".gz"), archive)
+        assertTrue(archive.toByteArray(Charsets.UTF_8).size <= GENERATED_MEDIA_NAME_MAX_BYTES, archive)
+    }
+
+    @Test
+    fun multibyteNamesRoundTripThroughUtf8WithoutMojibake() {
+        // The whitelist keeps only BMP letters/digits/._- (a surrogate half
+        // is never a letter, so supplementary-plane characters — emoji and
+        // CJK Extension B alike — are stripped before any truncation), which
+        // makes every surviving char one complete code point: byte cuts land
+        // only between chars and components always re-decode byte-identically.
+        for (name in listOf(
+            "截图".repeat(40) + ".pdf",
+            "😀".repeat(200) + ".bin",
+            "a" + "😀".repeat(50) + ".bin",
+            "naïve-файл-ファイル.tar.gz",
+            "图表".repeat(120) + ".gz",
+        )) {
+            val component = sanitizedGeneratedMediaFileName(
+                "550e8400-e29b-41d4-a716-446655440000",
+                name,
+            )
+            val bytes = component.toByteArray(Charsets.UTF_8)
+            assertTrue(bytes.size <= GENERATED_MEDIA_NAME_MAX_BYTES, "$name -> $component (${bytes.size})")
+            assertEquals(component, String(bytes, Charsets.UTF_8), name)
+        }
+        // Symbols are stripped wholesale — an emoji-only name reduces to its
+        // extension stem (the historical shape; the extension needs a stem).
+        assertEquals("i-bin", sanitizedGeneratedMediaFileName("i", "😀".repeat(200) + ".bin"))
+    }
+
+    @Test
+    fun asciiNamesKeepTheirHistoricalShape() {
+        assertEquals("i-" + "a".repeat(96), sanitizedGeneratedMediaFileName("i", "a".repeat(500)))
+        assertEquals("img-1-media", sanitizedGeneratedMediaFileName("img-1", ""))
+        assertEquals("id-x.bin", sanitizedGeneratedMediaFileName("", "x.bin"))
+        assertEquals("i-截图01.png", sanitizedGeneratedMediaFileName("i", "截图 01.png"))
+    }
+
+    @Test
     fun fetchDownloadsBodyAndShortCircuitsOnCachedFile() {
         val server = MockWebServer()
         server.enqueue(MockResponse().setBody("payload"))

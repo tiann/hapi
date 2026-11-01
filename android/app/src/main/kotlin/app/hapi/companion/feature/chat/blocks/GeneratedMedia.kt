@@ -97,15 +97,88 @@ internal const val GENERIC_FILE_MIME_TYPE: String = "application/octet-stream"
  * Filesystem-safe cache file name for one generated media blob. The wire
  * `fileName`/`imageId` are untrusted; strip path fragments and unsafe
  * characters, and keep both ids so distinct blobs never collide.
+ *
+ * The *complete* component (id prefix + stem + extension) is bounded by
+ * UTF-8 bytes, because Android filename limits are byte limits (NAME_MAX
+ * 255): a UTF-16 `take(96)` alone lets 96 CJK chars through at up to 288
+ * bytes, and a UUID imageId prefix on an 80-hanzi ".pdf" name produced a
+ * 281-byte component (r4370795787). The stem keeps its historical 96-char
+ * cap — ASCII names keep their exact prior shape — and only bytes beyond
+ * the budget are cut, taken from the stem on code-point boundaries so the
+ * extension always survives intact.
  */
 internal fun sanitizedGeneratedMediaFileName(imageId: String, fileName: String): String {
     val base = fileName.substringAfterLast('/').substringAfterLast('\\')
-    val safeName = base.filter { it.isLetterOrDigit() || it == '.' || it == '-' || it == '_' }
-        .take(96)
+    val safe = base.filter { it.isLetterOrDigit() || it == '.' || it == '-' || it == '_' }
+    val splitAt = safe.lastIndexOf('.').takeIf { it > 0 && it < safe.length - 1 }
+    var stem = takeUtf16Chars(if (splitAt != null) safe.substring(0, splitAt) else safe, 96)
         .trim('.', '-', '_')
-        .ifEmpty { "media" }
-    val safeId = imageId.filter { it.isLetterOrDigit() || it == '-' }.ifEmpty { "id" }
-    return "$safeId-$safeName"
+    var extension = if (splitAt != null) safe.substring(splitAt) else ""
+    if (stem.isEmpty()) {
+        // Keep the historical whole-name shapes: "" -> "media", and a stem
+        // that trims to nothing ("..doc") -> the trimmed whole name, which
+        // therefore carries no separate extension suffix.
+        stem = takeUtf16Chars(safe, 96).trim('.', '-', '_').ifEmpty { "media" }
+        extension = ""
+    }
+    val prefix = truncateUtf8Bytes(
+        imageId.filter { it.isLetterOrDigit() || it == '-' }.ifEmpty { "id" } + "-",
+        GENERATED_MEDIA_ID_PREFIX_MAX_BYTES,
+    )
+    val boundedExtension = truncateUtf8Bytes(extension, GENERATED_MEDIA_EXTENSION_MAX_BYTES)
+    val stemBudget = GENERATED_MEDIA_NAME_MAX_BYTES -
+        prefix.toByteArray(Charsets.UTF_8).size -
+        boundedExtension.toByteArray(Charsets.UTF_8).size
+    val boundedStem = truncateUtf8Bytes(stem, stemBudget).trimEnd('.', '-', '_')
+    return prefix + boundedStem + boundedExtension
+}
+
+/**
+ * Byte budget for one cache file name component — Linux NAME_MAX, the
+ * bound Android filesystems actually enforce, counted in UTF-8 bytes.
+ */
+internal const val GENERATED_MEDIA_NAME_MAX_BYTES: Int = 255
+
+/** Pathological ids/extensions get their own caps so the stem always keeps room. */
+internal const val GENERATED_MEDIA_ID_PREFIX_MAX_BYTES: Int = 64
+internal const val GENERATED_MEDIA_EXTENSION_MAX_BYTES: Int = 32
+
+/** Like [String.take] on UTF-16 chars but never ends inside a surrogate pair. */
+private fun takeUtf16Chars(value: String, maxChars: Int): String {
+    if (value.length <= maxChars) return value
+    var end = maxChars
+    if (end > 0 && value[end - 1].isHighSurrogate() && end < value.length && value[end].isLowSurrogate()) {
+        end--
+    }
+    return value.substring(0, end)
+}
+
+/**
+ * Prefix of [value] fitting in [maxBytes] UTF-8 bytes, cut only on
+ * code-point boundaries. The whitelist above drops surrogate halves (a lone
+ * half is never a letter or digit), so pairs cannot reach this cut today —
+ * the pair handling is defense in depth for any future code-point-aware
+ * whitelist; an unpaired surrogate counts as its encoder output, the 1-byte
+ * `?` replacement.
+ */
+private fun truncateUtf8Bytes(value: String, maxBytes: Int): String {
+    var bytes = 0
+    var end = 0
+    while (end < value.length) {
+        val first = value[end]
+        val isPair = first.isHighSurrogate() && end + 1 < value.length && value[end + 1].isLowSurrogate()
+        val byteCount = when {
+            isPair -> 4
+            first.isSurrogate() -> 1 // unpaired: the platform encoder writes '?'
+            first.code < 0x80 -> 1
+            first.code < 0x800 -> 2
+            else -> 3
+        }
+        if (bytes + byteCount > maxBytes) break
+        bytes += byteCount
+        end += if (isPair) 2 else 1
+    }
+    return value.substring(0, end)
 }
 
 internal fun generatedMediaCacheFile(cacheDir: File, imageId: String, fileName: String): File =
