@@ -515,6 +515,30 @@ describe('shared conversation rewind', () => {
         expect(f.state().completedRequests?.[newQuestion.id]).toMatchObject({ status: 'resolved' })
     })
 
+    it('reopens a retained question when rewind removes its answer turn', async () => {
+        const f = await history()
+        const question = { type: 'agentMessage', id: 'retained-question', delivery: 'async', text: 'Which client?',
+            questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] }
+        const q = asyncQuestionsForItem('thread', question)[0]
+        const answer = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: q.questionItemId, answer: 'Web', question: q.title
+        }])}\n</send_user_message_question_reply>`
+        f.native.thread.turns[0]!.items.push(question)
+        f.native.thread.turns[1]!.items.push({ type: 'userMessage', id: 'retained-answer', clientId: 'answer-turn',
+            content: [{ type: 'text', text: answer }] })
+        await f.root.refresh()
+        await f.drain()
+        await vi.waitFor(() => expect(f.state().completedRequests?.[q.id]?.status).toBe('resolved'))
+
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+
+        expect(f.state().completedRequests?.[q.id]).toBeUndefined()
+        expect(f.state().requests?.[q.id]).toMatchObject({ tool: 'request_user_input', toolCallId: q.id })
+    })
+
     it('rejects queued native input without changing history', async () => {
         const f = await history();
         f.native.queue.push({ id: 'q', clientUserMessageId: 'queued', input: [] });

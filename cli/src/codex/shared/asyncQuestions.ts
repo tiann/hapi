@@ -102,32 +102,51 @@ export class SharedCodexAsyncQuestions {
 
     /** Reconcile cards whose native items were removed, then pre-scan surviving answers. */
     reconcileHistory(threadId: string, thread: unknown): void {
-        const live = new Set<string>()
+        const live = new Map<string, AsyncQuestion>()
+        const answered = new Set<string>()
         const turns = record(thread).turns
         if (Array.isArray(turns)) {
             for (const value of turns) {
                 const items = record(value).items
                 if (!Array.isArray(items)) continue
                 for (const item of items) {
-                    for (const question of asyncQuestionsForItem(threadId, item)) live.add(question.id)
+                    for (const question of asyncQuestionsForItem(threadId, item)) live.set(question.id, question)
+                    if (record(item).type !== 'userMessage' || !Array.isArray(record(item).content)) continue
+                    for (const part of record(item).content as unknown[]) {
+                        if (record(part).type !== 'text') continue
+                        for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
+                            answered.add(reply.questionItemId)
+                        }
+                    }
                 }
             }
         }
 
         const stale = new Set<string>()
+        const reset = new Set<string>()
         for (const [id, question] of this.questions) {
-            if (question.threadId === threadId && !live.has(id)) stale.add(id)
-        }
-        if (stale.size > 0) {
-            for (const id of stale) {
-                this.pending.delete(id)
-                this.questions.delete(id)
-                this.completed.delete(id)
+            if (question.threadId !== threadId) continue
+            if (!live.has(id)) stale.add(id)
+            else if (this.completed.get(id)?.status === 'resolved' && !answered.has(question.questionItemId)) {
+                // The question survived a rewind but its answer turn did not.
+                reset.add(id)
             }
+        }
+        for (const id of stale) {
+            this.pending.delete(id)
+            this.questions.delete(id)
+            this.completed.delete(id)
+        }
+        for (const id of reset) {
+            this.pending.delete(id)
+            this.completed.delete(id)
+        }
+        const cleared = new Set([...stale, ...reset])
+        if (cleared.size > 0) {
             this.session.updateAgentState(state => {
                 const requests = { ...state.requests }
                 const completedRequests = { ...state.completedRequests }
-                for (const id of stale) {
+                for (const id of cleared) {
                     delete requests[id]
                     delete completedRequests[id]
                 }
