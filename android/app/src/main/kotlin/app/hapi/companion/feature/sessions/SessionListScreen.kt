@@ -60,6 +60,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -141,7 +142,9 @@ fun SessionListScreen(
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
-    var exportRow by remember { mutableStateOf<SessionRowUi?>(null) }
+    // Saveable session id: the export dialog must come back after the SAF
+    // picker rotates/kills the activity, to re-register for its result.
+    var exportSessionId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -271,7 +274,7 @@ fun SessionListScreen(
                 sheetRow = null
             },
             onExport = {
-                exportRow = row
+                exportSessionId = row.id
                 sheetRow = null
             },
             onReopen = {
@@ -308,11 +311,11 @@ fun SessionListScreen(
             onDismiss = { deleteRow = null },
         )
     }
-    if (exportRow != null && sessionExport != null) {
+    if (exportSessionId != null && sessionExport != null) {
         SessionExportDialog(
-            sessionId = exportRow?.id.orEmpty(),
+            sessionId = exportSessionId.orEmpty(),
             support = sessionExport,
-            onDismiss = { exportRow = null },
+            onDismiss = { exportSessionId = null },
             onSaved = { filename ->
                 scope.launch {
                     snackbarHostState.showSnackbar(

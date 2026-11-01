@@ -28,8 +28,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -54,6 +57,12 @@ import kotlinx.coroutines.withContext
  * web's single download button split into the platform's two outlets:
  * SAVE (system file picker via SAF) and SHARE (`ACTION_SEND` of a
  * FileProvider cache file, the `FullTextAction` precedent).
+ *
+ * The SAVE outlet stages the artifact bytes and arms a
+ * [SessionExportPendingSave] *before* launching the picker; the armed record
+ * lives in `rememberSaveable`, so the picker result — which may arrive after
+ * the system picker rotated or killed the activity behind it — lands on a
+ * still-armed operation and writes the real document.
  */
 
 /**
@@ -127,29 +136,36 @@ fun SessionExportDialog(
         }
     }
 
+    // The armed save survives the picker rotating/killing us — the staged
+    // bytes live in a cache file and this small record is saved with the
+    // instance state (CameraCaptureSaver precedent).
+    var pendingSave by rememberSaveable(stateSaver = SessionExportPendingSaveSaver) {
+        mutableStateOf<SessionExportPendingSave?>(null)
+    }
+
     val saveLauncher = rememberLauncherForActivityResult(CreateSessionExportDocument()) { uri ->
-        val artifact = (controller.state.value as? SessionExportUiState.Ready)?.artifact
-        if (uri == null || artifact == null) {
-            // Picker cancelled (or state lost): back to Idle so Save/Share work again.
+        val pending = pendingSave
+        pendingSave = null
+        if (uri == null || pending == null) {
+            // Picker cancelled (or nothing restorable was armed): never write
+            // an empty document — release the staged bytes, back to Idle.
+            if (pending != null) scope.launch { pending.discard() }
             controller.reset()
             return@rememberLauncherForActivityResult
         }
         scope.launch {
-            val written = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use { stream ->
-                        stream.write(artifact.text.toByteArray(Charsets.UTF_8))
-                    } != null
-                } catch (_: Exception) {
-                    false
+            when (
+                pending.complete(
+                    uri.toString(),
+                    sink = { target -> context.contentResolver.openOutputStream(Uri.parse(target)) },
+                )
+            ) {
+                is SessionExportSaveOutcome.Saved -> {
+                    controller.reset()
+                    onSaved(pending.filename)
+                    onDismiss()
                 }
-            }
-            if (written) {
-                controller.reset()
-                onSaved(artifact.filename)
-                onDismiss()
-            } else {
-                controller.writeFailed()
+                is SessionExportSaveOutcome.Failed -> controller.writeFailed()
             }
         }
     }
@@ -159,8 +175,12 @@ fun SessionExportDialog(
     LaunchedEffect(state) {
         val current = state as? SessionExportUiState.Ready ?: return@LaunchedEffect
         when (current.outlet) {
-            SessionExportOutlet.SAVE ->
+            SessionExportOutlet.SAVE -> {
+                // Stage before the picker takes over: the picker result must
+                // land on a still-armed operation even across recreation.
+                pendingSave = SessionExportPendingSave.arm(current.artifact, context.cacheDir)
                 saveLauncher.launch(current.artifact.format.mimeType to current.artifact.filename)
+            }
             SessionExportOutlet.SHARE -> shareArtifact(current.artifact)
         }
     }

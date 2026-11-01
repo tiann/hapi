@@ -137,7 +137,9 @@ internal fun ChatScreen(
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
     var messageInfoBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
-    var exportDialogOpen by remember { mutableStateOf(false) }
+    // Saveable: a SAF export picker open on top may rotate/kill this activity,
+    // and the dialog must come back to re-register for its picker result.
+    var exportDialogOpen by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
