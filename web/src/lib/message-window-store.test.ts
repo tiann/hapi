@@ -3070,6 +3070,25 @@ describe('explicit history navigation', () => {
         releaseNavigation()
     })
 
+    it('does not keep a failed send as the tail turn prompt', () => {
+        const id = sessionId('navigation-tail-failed-send')
+        const releaseNavigation = beginNavigation(id)
+        setMessageViewMode(id, 'history')
+        const total = HISTORY_WINDOW_SIZE + VISIBLE_WINDOW_SIZE + 50
+        const tailStartSeq = total - VISIBLE_WINDOW_SIZE + 2
+        ingestIncomingMessages(id, Array.from({ length: total }, (_, index) => {
+            const seq = index + 2
+            if (seq === tailStartSeq - 10) return makeUserMessage({ id: 'tail-prompt', seq, createdAt: seq, invokedAt: seq })
+            if (seq === tailStartSeq - 2) return makeUserMessage({ id: 'failed-send', seq, createdAt: seq, invokedAt: seq, status: 'failed' })
+            return makeAgentMessage({ id: `overflow-${index}`, seq, at: seq })
+        }))
+
+        const ids = getMessageWindowState(id).messages.map((message) => message.id)
+        expect(ids).toContain('tail-prompt')
+        expect(ids).not.toContain('failed-send')
+        releaseNavigation()
+    })
+
     it('marks omitted rows by display order, not seq adjacency', () => {
         const id = sessionId('navigation-late-invoked-prompt')
         const releaseNavigation = beginNavigation(id)

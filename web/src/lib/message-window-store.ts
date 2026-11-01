@@ -572,8 +572,10 @@ function trimNavigationRegularWindow(
     const tailStart = regular.length - NAVIGATION_TAIL_LIMIT
     // Keep the input of the turn the tail starts in, so its first retained
     // response still links to a prompt instead of dead-ending at the gap.
+    // Failed sends never reached the agent, so they do not start a turn.
+    const isPrompt = (message: DecryptedMessage) => isUserMessage(message) && message.status !== 'failed'
     let promptIndex = tailStart
-    while (promptIndex >= NAVIGATION_HEAD_LIMIT && !isUserMessage(regular[promptIndex]!)) promptIndex -= 1
+    while (promptIndex >= NAVIGATION_HEAD_LIMIT && !isPrompt(regular[promptIndex]!)) promptIndex -= 1
     const prompt = promptIndex >= NAVIGATION_HEAD_LIMIT && promptIndex < tailStart ? regular[promptIndex]! : null
     const kept = new Set([
         ...regular.slice(0, NAVIGATION_HEAD_LIMIT),
