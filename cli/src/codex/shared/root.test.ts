@@ -479,6 +479,9 @@ describe('shared conversation rewind', () => {
         await expect(f.rpc.get(RPC_METHODS.Permission)!({
             id: oldQuestion.id, approved: true, answers: { [oldQuestion.questionItemId]: ['Web'] }
         })).rejects.toThrow(/rewind/i)
+        await expect(f.rpc.get(RPC_METHODS.Permission)!({
+            id: oldQuestion.id, approved: false
+        })).rejects.toThrow(/rewind/i)
 
         await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
         expect(f.state().requests?.[oldQuestion.id]).toBeUndefined()
@@ -686,6 +689,7 @@ describe('shared conversation rewind', () => {
 
         await vi.waitFor(() => expect(f.native.initialized).toBe(true))
         expect(requestSpy.mock.calls.some(([method]) => method === 'thread/resume')).toBe(true)
+        await vi.waitFor(() => expect((f.root as unknown as { reconnecting: boolean }).reconnecting).toBe(false))
         expect(f.metadata().conversationHistoryTurns).toEqual({ one: 'one' })
         await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'reconnected' })).resolves.toBeDefined()
     })

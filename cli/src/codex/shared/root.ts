@@ -15,7 +15,7 @@ import { buildUserInputFromMessage } from '../utils/appServerConfig';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 import { resolveCodexSlashCommand } from '../utils/slashCommands';
 import { parseReasoningEffortValue } from '../utils/reasoningEffort';
-import { SharedCodexPermissions } from './permissions';
+import { SharedCodexPermissions, type PermissionReply } from './permissions';
 import { SharedCodexAsyncQuestions } from './asyncQuestions';
 import { SharedCodexQueue } from './queue';
 import { SharedCodexProjection, inputText } from './projection';
@@ -88,7 +88,7 @@ export class SharedCodexRoot {
     private supportsRevert?: boolean;
     private retainedTurnIds?: string[];
     private deferredRequests: NativeServerRequest[] = [];
-    private readonly pendingQuestionAnswers = new Set<Promise<void>>();
+    private readonly pendingQuestionAnswers = new Set<Promise<unknown>>();
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
@@ -187,9 +187,23 @@ export class SharedCodexRoot {
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);
         this.asyncQuestions = new SharedCodexAsyncQuestions(this.session, (threadId, text, id) => this.submitQuestionAnswer(threadId, text, id));
-        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.asyncQuestions.answer(reply));
+        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.answerAsyncQuestion(reply));
         this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
     }
+
+    private async answerAsyncQuestion(reply: PermissionReply): Promise<boolean> {
+        if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+        const release = this.rewindBarrier.enter();
+        const operation = this.asyncQuestions.answer(reply);
+        this.pendingQuestionAnswers.add(operation);
+        try {
+            return await operation;
+        } finally {
+            this.pendingQuestionAnswers.delete(operation);
+            release();
+        }
+    }
+
     private async submitQuestionAnswer(threadId: string, text: string, clientUserMessageId: string): Promise<void> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         const release = this.rewindBarrier.enter();
@@ -201,12 +215,10 @@ export class SharedCodexRoot {
             await this.client.request(turnId ? 'turn/steer' : 'turn/start', { ...params, ...(turnId ? { expectedTurnId: turnId } : {}) });
         })();
         this.controls.add(operation);
-        this.pendingQuestionAnswers.add(operation);
         try {
             await operation;
         } finally {
             this.controls.delete(operation);
-            this.pendingQuestionAnswers.delete(operation);
             release();
         }
     }
@@ -520,7 +532,7 @@ export class SharedCodexRoot {
                 try {
                     await initializeSharedClient(this.client);
                     if (this.stopping) return;
-                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.asyncQuestions.answer(reply));
+                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.answerAsyncQuestion(reply));
                     this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
                     const settingsRevision = this.settingsRevision;
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));

@@ -19,6 +19,18 @@ function requestId(threadId: string, questionItemId: string): string {
     return `codex-async-question:${JSON.stringify([threadId, questionItemId])}`;
 }
 
+function parseRequestId(id: string): { threadId: string; questionItemId: string } | null {
+    const prefix = 'codex-async-question:';
+    if (!id.startsWith(prefix)) return null;
+    try {
+        const parsed = JSON.parse(id.slice(prefix.length));
+        if (!Array.isArray(parsed) || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string') return null;
+        return { threadId: parsed[0], questionItemId: parsed[1] };
+    } catch {
+        return null;
+    }
+}
+
 export function asyncQuestionReplies(text: string): Array<{ questionItemId: string; question?: string; answer: string }> {
     const opening = '<send_user_message_question_reply>';
     const closing = '</send_user_message_question_reply>';
@@ -131,6 +143,11 @@ export class SharedCodexAsyncQuestions {
                 // The question survived a rewind but its answer turn did not.
                 reset.add(id)
             }
+        }
+        for (const [id, resolution] of this.completed) {
+            if (resolution.status !== 'resolved') continue
+            const parsed = parseRequestId(id)
+            if (parsed?.threadId === threadId && !answered.has(parsed.questionItemId)) reset.add(id)
         }
         for (const id of stale) {
             this.pending.delete(id)

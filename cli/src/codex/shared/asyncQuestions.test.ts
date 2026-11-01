@@ -79,6 +79,18 @@ describe('Codex queued follow-up questions', () => {
         } });
     });
 
+    it('clears answer-only completions when the question was never loaded', () => {
+        const f = fixture()
+        const q = questions[0]
+        const reply = nativeReply(q.questionItemId, 'Web')
+        f.manager.history('thread', { turns: [{ items: [reply] }] })
+        f.manager.reconcileHistory('thread', { turns: [{ items: [] }] })
+        f.manager.observeItem('thread', item)
+
+        expect(f.state().requests?.[q.id]).toMatchObject({ tool: 'request_user_input', toolCallId: q.id })
+        expect(f.state().completedRequests?.[q.id]).toBeUndefined()
+    })
+
     it('scopes child replies and cards to their own thread', async () => {
         const f = fixture(); f.manager.observeItem('child', item);
         const q = asyncQuestionsForItem('child', item)[0];
