@@ -12,6 +12,7 @@ import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { asyncQuestionsForItem } from './asyncQuestions';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
@@ -120,6 +121,47 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(Object.keys(web.state.requests ?? {})).toHaveLength(0);
         } finally {
             release(); abort.abort(); await running.catch(() => {}); await client?.disconnect();
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
+    it('seeds the generated fork title before binding child history', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-fork-summary-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const http = createServer((request, response) => {
+            if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+            request.resume();
+            request.on('end', () => {
+                const id = randomUUID();
+                const events = [
+                    { type: 'response.created', response: { id } },
+                    { type: 'response.output_item.done', item: { id: `msg_${id}`, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'MOCK' }] } },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }
+                ];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        try {
+            const { sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const source = state.sessions.get(sessionId)!;
+            source.updateMetadata(metadata => ({ ...metadata, name: 'Source title' }));
+            const result = record(await source.rpc.get(RPC_METHODS.ForkConversation)!({}));
+            const child = state.sessions.get(String(result.sessionId))!;
+            expect(result.sessionId).not.toBe(sessionId);
+            expect(child.metadata.summary).toMatchObject({ text: 'Fork: Source title' });
+            expect(child.metadata.name).toBeUndefined();
+        } finally {
+            abort.abort(); await running.catch(() => {});
             await new Promise<void>(resolve => http.close(() => resolve()));
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }

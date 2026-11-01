@@ -380,6 +380,8 @@ export default {
   'session.action.delete': 'Удалить',
   'session.action.copy': 'Копировать',
   'session.action.copyReference': 'Копировать ссылку',
+  'session.action.fork': 'Форк сессии',
+  'session.action.forkRunning': 'Дождитесь завершения текущего хода, прежде чем создавать форк.',
 
   // Диалоги
   'dialog.uri.title': 'Открыть эту ссылку?',
@@ -406,6 +408,10 @@ export default {
   'dialog.archive.cleanupDescription': 'Сессия отключена. Проверяем архивирование и завершение фоновых процессов. Это окно можно закрыть: архивирование продолжится.',
   'dialog.archive.error': 'Не удалось подтвердить архивирование',
   'dialog.reopen.errorTitle': 'Не удалось открыть сессию заново',
+  'dialog.sessionFork.title': 'Форк сессии',
+  'dialog.sessionFork.description': 'Создать новую сессию с последней завершённой точки? Текущая сессия не будет изменена.',
+  'dialog.sessionFork.confirm': 'Подтвердить',
+  'dialog.sessionFork.confirming': 'Создание форка…',
   'dialog.reopen.dismiss': 'Закрыть',
   'dialog.delete.title': 'Удалить сессию',
   'dialog.delete.description': 'Вы уверены, что хотите удалить «{name}»? Это действие необратимо.',

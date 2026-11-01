@@ -349,6 +349,34 @@ describe('SessionActionMenu - Linked PR header', () => {
     })
 })
 
+describe('SessionActionMenu - Fork session action', () => {
+    it('places Fork session immediately after Copy reference', () => {
+        renderMenu({ onForkSession: vi.fn() })
+        const items = screen.getAllByRole('menuitem')
+        const copyIndex = items.findIndex((item) => item.textContent?.includes('Copy reference'))
+        expect(copyIndex).toBeGreaterThanOrEqual(0)
+        expect(items[copyIndex + 1]).toHaveTextContent('Fork session')
+    })
+
+    it('fires the fork handler and closes the menu', () => {
+        const onForkSession = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onForkSession, onClose })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        expect(onForkSession).toHaveBeenCalledOnce()
+        expect(onClose).toHaveBeenCalledOnce()
+    })
+
+    it('keeps the action visible but disabled while its reason applies', () => {
+        const onForkSession = vi.fn()
+        renderMenu({ onForkSession, forkDisabledReason: 'Finish the current turn first.' })
+        const item = screen.getByRole('menuitem', { name: 'Fork session' })
+        expect(item).toHaveAttribute('aria-disabled', 'true')
+        fireEvent.click(item)
+        expect(onForkSession).not.toHaveBeenCalled()
+    })
+})
+
 describe('SessionActionMenu - separate window action', () => {
     it('opens the session separately and closes the menu', () => {
         const onClose = vi.fn()

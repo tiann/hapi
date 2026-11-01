@@ -3,6 +3,7 @@ package app.hapi.companion.feature.home
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Build
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
@@ -130,8 +131,21 @@ class HomeScreenTest {
 
     private fun label(id: Int) = context.getString(id)
     private fun openFilters() = compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
+    // Send a real Back event: dispatching straight to the activity skips the
+    // IME's pre-IME handling, which dismisses the keyboard before app callbacks.
     private fun pressBack() {
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+    }
+
+    private fun platformImeVisible(): Boolean {
+        var visible = false
+        compose.runOnUiThread {
+            // On API 29 the decor sees IME insets that ADJUST_RESIZE consumes
+            // before they reach Compose. Observe the actual window instead.
+            visible = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+                ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        }
+        return visible
     }
 
     /**
@@ -239,15 +253,15 @@ class HomeScreenTest {
         mount()
         compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
         compose.onNodeWithTag("home-search-input").performTextInput("Build")
-        awaitPhase("IME appears after opening search") { imeVisible }
+        awaitPhase("IME appears after opening search") { platformImeVisible() }
         pressBack()
-        awaitPhase("IME hides after Back") { !imeVisible }
+        awaitPhase("IME hides after Back") { !platformImeVisible() }
         compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertTextEquals("Build")
 
         compose.onNodeWithTag("home-search-input").performClick()
-        awaitPhase("IME appears after re-focusing the search field") { imeVisible }
+        awaitPhase("IME appears after re-focusing the search field") { platformImeVisible() }
         compose.onNodeWithTag("home-search-input").performImeAction()
-        awaitPhase("IME hides after the IME Search action") { !imeVisible }
+        awaitPhase("IME hides after the IME Search action") { !platformImeVisible() }
         compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertTextEquals("Build")
         pressBack()
         awaitPhase("search closes once the keyboard is already hidden") {

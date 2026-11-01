@@ -155,6 +155,18 @@ final class CodexPlanActionPresentationTests: XCTestCase {
         XCTAssertEqual(driver.interactor.composerText, "Refine step two")
     }
 
+    func testFocusingTheCollapsedComposerKeepsFocusWhileItExpands() async throws {
+        let driver = try Driver()
+        let window = try host(ChatComposerView(interactor: driver.interactor).hapiTypography())
+        defer { window.isHidden = true }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(hasFirstResponder(window))
+        driver.interactor.continueCodexPlan(planId: "proposal")
+        try await settle { self.hasFirstResponder(window) }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(hasFirstResponder(window), "The compact → expanded switch must not drop focus")
+    }
+
     func testActionCardSpecimensInLightDarkOLEDAndLargeType() async throws {
         let cases: [(String, HapiTheme, DynamicTypeSize, CGFloat)] = [
             ("light", .light, .large, 390), ("dark", .dark, .large, 390),

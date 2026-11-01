@@ -1,14 +1,26 @@
+import type { ReactNode } from 'react'
 import type { PendingRequest, SessionSummary } from '@/types/api'
 import type { SessionAttention } from '@/lib/sessionAttention'
 import { getSessionAttentionLabelKey } from '@/lib/sessionAttention'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS } from '@/components/HoverTooltip'
-import { LoaderIcon } from '@/components/icons'
+import { HandIcon, LoaderIcon, MessageIcon } from '@/components/icons'
 
-const ATTENTION_DOT_CLASS: Record<Exclude<SessionAttention['kind'], 'background'>, string> = {
-    permission: 'bg-amber-500 animate-pulse',
-    input: 'bg-blue-500',
-    unread: 'bg-[var(--app-link)]'
+/**
+ * Pending-request symbol: amber hand (permission) or bubble (input). Symbols,
+ * not dots, so the row's presence badge stays its only dot.
+ */
+export function SessionRequestIcon(props: { kind: 'permission' | 'input'; label?: string }) {
+    const Icon = props.kind === 'permission' ? HandIcon : MessageIcon
+    return (
+        <span
+            className="inline-flex shrink-0 text-[var(--app-badge-warning-text)]"
+            title={props.label}
+            aria-label={props.label}
+        >
+            <Icon className="h-3.5 w-3.5" />
+        </span>
+    )
 }
 
 /** Row spinner: green while a turn runs, blue while only background work runs. */
@@ -18,7 +30,8 @@ export function SessionSpinner(props: { background?: boolean }) {
 }
 
 /**
- * Visible attention dot + hover tooltip explaining the indicator.
+ * Visible attention symbol (or a caller-provided `target`, e.g. the row's
+ * agent icon) + hover tooltip explaining the indicator.
  *
  * The tooltip body composes from `summary.pendingRequests` (capped oldest-first;
  * see `PENDING_REQUEST_SUMMARY_CAP` in `@hapi/protocol`) for permission / input
@@ -29,15 +42,17 @@ export function SessionAttentionIndicator(props: {
     summary: SessionSummary
     label: string
     tooltipId: string
+    target?: ReactNode
 }) {
     const { t } = useTranslation()
-    const dot = props.attention.kind === 'background' ? (
+    const kind = props.attention.kind
+    const dot = props.target ?? (kind === 'background' ? (
         <SessionSpinner background />
+    ) : kind === 'unread' ? (
+        <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-[var(--app-link)]" />
     ) : (
-        <span
-            className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[props.attention.kind]}`}
-        />
-    )
+        <SessionRequestIcon kind={kind} />
+    ))
 
     return (
         <HoverTooltip
