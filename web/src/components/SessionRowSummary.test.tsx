@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
+import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
@@ -27,6 +28,7 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         nextScheduledAt: null,
         model: null,
         effort: null,
+        contentRevision: overrides.updatedAt ?? 0,
         ...overrides
     }
 }
@@ -76,7 +78,7 @@ describe('SessionRowSummary background status', () => {
             backgroundTaskCount: 0,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
+        markSessionSeen(session.id, 2_000)
         const view = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -89,7 +91,7 @@ describe('SessionRowSummary background status', () => {
 
         expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument()
 
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 1_999 }))
+        markSessionUnread(session.id)
         view.rerender(
             <I18nProvider>
                 <SessionRowSummary
@@ -110,8 +112,8 @@ describe('SessionRowSummary background status', () => {
             backgroundTaskCount: 0,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
-        localStorage.setItem('hapi.sessionManualUnread.v1', JSON.stringify({ [session.id]: 2_000 }))
+        markSessionSeen(session.id, 2_000)
+        markSessionUnread(session.id)
 
         const view = render(
             <I18nProvider>
@@ -146,8 +148,8 @@ describe('SessionRowSummary background status', () => {
             thinking: true,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
-        localStorage.setItem('hapi.sessionManualUnread.v1', JSON.stringify({ [session.id]: 2_000 }))
+        markSessionSeen(session.id, 2_000)
+        markSessionUnread(session.id)
 
         render(
             <I18nProvider>

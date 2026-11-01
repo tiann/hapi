@@ -48,7 +48,6 @@ import { isOwnerNamespace } from '@/lib/namespace'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
-import { useSplitViewport } from '@/hooks/useSplitViewport'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -84,8 +83,7 @@ import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
 import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
-import { initializeSessionLastSeen } from '@/lib/sessionLastSeen'
-import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
+import { configureSessionReadState, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
@@ -210,15 +208,20 @@ function SessionsPage() {
     )
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
-    const selectedSession = useMemo(
-        () => selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null,
-        [selectedSessionId, sessions]
-    )
+    const readStateScope = api?.getReadStateScope()
+    useEffect(() => {
+        const scope = readStateScope
+        if (!api || !scope) return
+        return configureSessionReadState(scope, (id, request) => {
+            if (api.getReadStateScope() !== scope) return Promise.reject(new Error('Read-state identity changed'))
+            return api.updateSessionReadState(id, request)
+        })
+    }, [api, readStateScope])
     useEffect(() => {
         if (isLoading || error) {
             return
         }
-        initializeSessionLastSeen(baseUrl, sessions)
+        observeSessionReadStates(sessions)
         setInitializedHub(baseUrl)
     }, [baseUrl, error, isLoading, sessions])
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
@@ -250,7 +253,6 @@ function SessionsPage() {
         )
     }, [isSessionsIndex, pathname, router, sidebarHidden, sidebarSearch])
     const sidebar = useSidebarResize()
-    const isSplitViewport = useSplitViewport()
     const [sessionsMode, setSessionsMode] = useState<SessionsMode>('sessions')
     // Every /api/todo-boards route 403s outside the owner namespace — hide
     // the switch itself rather than let a non-owner select it and land on a
@@ -392,24 +394,16 @@ function SessionsPage() {
         isLoading: newCardTemplatesLoading,
         error: newCardTemplatesError,
     } = useIssueTemplates(api, effectiveBoardId, newCardRepo, newCardDialogOpen)
-    // Hidden behind the board list while in Boards mode with an item
-    // selected (mobile *and* desktop, since BoardItemDetail then occupies the
-    // right-pane slot) — marking it "seen" there would silently clear unread
-    // state for messages the user never actually looked at. But Boards mode
-    // with *no* item selected falls through to <Outlet/> in that same slot,
-    // which still renders the previously-routed session chat underneath — on
-    // the desktop split layout that pane stays visible regardless of mode
-    // (only the single-pane mobile layout actually hides it), so seen
-    // tracking must keep running there too, or messages visibly on screen
-    // stay marked unread until the operator switches back to Sessions mode
-    // (hapi#238 Codex review, two rounds: the first review caught over-eager
-    // seen-tracking while the chat was genuinely hidden behind Boards mode;
-    // this one caught the desktop-split case where it's hidden on mobile only).
-    const isBoardChatVisibleInSplitView = sessionsMode === 'boards' && selectedBoardItem === null && isSplitViewport
-    useSelectedSessionSeen(
-        sessionsMode === 'sessions' || isBoardChatVisibleInSplitView ? selectedSessionId : null,
-        selectedSession?.updatedAt
-    )
+    // Seen-tracking used to live here, gated on sessionsMode/selection
+    // (hapi#238 Codex review, two rounds) — upstream reworked
+    // useSelectedSessionSeen to be driven by the rendered transcript's own
+    // viewport/scroll visibility instead of selection state ("Called by the
+    // rendered transcript, never by list selection or SSE metadata"), and
+    // HappyThread calls it directly with real DOM refs. That supersedes the
+    // mode-based heuristic this used to need: HappyThread stays mounted
+    // underneath Boards mode exactly when this fork's old comment described
+    // (desktop split with no item selected), so its own visibility check
+    // already covers that case, correctly, without a router-level call.
     const linkedBoardSession = useMemo(
         () => findSessionLinkedToIssue(sessions, selectedBoardItem?.url ?? null),
         [sessions, selectedBoardItem]
@@ -873,6 +867,7 @@ function SessionPage() {
         messagesVersion,
         historyVersion,
         tailRevision,
+        readThroughRevision,
         setViewMode,
     } = useMessages(api, sessionId)
 
@@ -1323,6 +1318,7 @@ function SessionPage() {
 
     return (
         <SessionChat
+            readThroughRevision={readThroughRevision}
             api={api}
             titleSuggestionAvailable={titleSuggestionAvailable}
             session={session}

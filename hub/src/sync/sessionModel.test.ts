@@ -2059,6 +2059,7 @@ describe('session model', () => {
 
         expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
         expect(outcome.capturedResumeSessionIds).toEqual([rootThreadId])
+        expect(outcome.after.metadata).toMatchObject({ codexResumePending: { nativeSessionId: rootThreadId } })
         expect([
             outcome.persistedCodexSessionId,
             outcome.cachedCodexSessionId,
@@ -2067,7 +2068,7 @@ describe('session model', () => {
         ]).toEqual([
             rootThreadId,
             rootThreadId,
-            outcome.before.metadataVersion + 1,
+            outcome.before.metadataVersion + 2, // recovered identity + durable startup fence
             outcome.before.updatedAt
         ])
     })
@@ -2083,8 +2084,8 @@ describe('session model', () => {
         expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
         expect(outcome.capturedResumeSessionIds).toEqual([metadataThreadId])
         expect(outcome.after).toMatchObject({
-            metadata: { codexSessionId: metadataThreadId },
-            metadataVersion: outcome.before.metadataVersion,
+            metadata: { codexSessionId: metadataThreadId, codexResumePending: { nativeSessionId: metadataThreadId } },
+            metadataVersion: outcome.before.metadataVersion + 1,
             updatedAt: outcome.before.updatedAt
         })
     })
@@ -2153,7 +2154,7 @@ describe('session model', () => {
         ]).toEqual([
             concurrentThreadId,
             concurrentThreadId,
-            outcome.before.metadataVersion,
+            outcome.before.metadataVersion + 1,
             outcome.before.updatedAt
         ])
     })
@@ -2180,7 +2181,7 @@ describe('session model', () => {
             outcome.after.updatedAt
         ]).toEqual([
             messageThreadId,
-            outcome.before.metadataVersion + 1,
+            outcome.before.metadataVersion + 2,
             outcome.before.updatedAt
         ])
     })

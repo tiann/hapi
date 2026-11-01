@@ -1084,6 +1084,23 @@ describe('sessions routes', () => {
         ])
     })
 
+    it.each(['high', null])('applies an Antigravity model and effort %s atomically', async (effort) => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gemini-4-argon', effort })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'gemini-4-argon', effort }]
+        ])
+    })
+
     it('rejects an effort sent with a model change for Pi, which applies the two separately', async () => {
         const session = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
@@ -1280,6 +1297,22 @@ describe('sessions routes', () => {
             error: 'Effort selection is not supported for this session type'
         })
         expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies effort changes for Antigravity sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { effort: 'high' }]
+        ])
     })
 
     it('applies effort changes for Claude sessions', async () => {
@@ -1970,6 +2003,22 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
             expect(calls).toEqual(['session-1'])
         })
+    })
+
+    it('dispatches an archived source fork to the engine without requiring an active CLI', async () => {
+        const source = createSession({ active: false, metadata: { path: '/work', host: 'test', flavor: 'codex', lifecycleState: 'archived' } })
+        const calls: unknown[][] = []
+        const { app } = createApp(source, { forkConversation: async (...args) => {
+            calls.push(args)
+            return { type: 'success', sessionId: 'new-child' }
+        } })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageLocalId: 'boundary' })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'new-child' })
+        expect(calls[0]?.[0]).toBe('session-1')
+        expect(calls[0]?.[2]).toBe('boundary')
     })
 
     it('forks via POST /sessions/:id/fork and returns the child session id', async () => {

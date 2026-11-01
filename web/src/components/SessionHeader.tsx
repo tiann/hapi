@@ -577,7 +577,7 @@ export function SessionHeader(props: {
                 onRename={() => setRenameOpen(true)}
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
-                onMarkUnread={() => markSessionUnread(session.id, session.updatedAt)}
+                onMarkUnread={() => markSessionUnread(session.id, session.readState)}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId && !session.active ? handleSyncCodex : undefined}
