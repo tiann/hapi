@@ -26,12 +26,12 @@ class LastSeenStoreTest {
     }
 
     @Test
-    fun `unread ignores metadata and keeps running output pending`() = runTest {
+    fun `unread ignores metadata and includes running output`() = runTest {
         val store = LastSeenStore(backgroundScope)
         val row = summary("s1", updatedAt = 999_999)
         assertFalse(LastSeenStore.isUnread(row, store.state.value))
         assertTrue(LastSeenStore.isUnread(row.copy(contentRevision = 2), store.state.value))
-        assertFalse(LastSeenStore.isUnread(row.copy(contentRevision = 2, active = true, thinking = true), store.state.value))
+        assertTrue(LastSeenStore.isUnread(row.copy(contentRevision = 2, active = true, thinking = true), store.state.value))
         assertTrue(LastSeenStore.isUnread(row.copy(contentRevision = 2, active = false, thinking = true), store.state.value))
         store.markSeen("s1", 1)
         assertTrue(LastSeenStore.isUnread(row.copy(contentRevision = 2), store.state.value))
