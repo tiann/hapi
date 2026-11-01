@@ -10,7 +10,7 @@ describe('Store V12/V13→V14 schema reconciliation', () => {
         const store = new Store(':memory:')
         expect(tableExists(store, 'message_epochs')).toBe(true)
         expect(tableExists(store, 'session_scratchlist')).toBe(true)
-        expect(getUserVersion(store)).toBe(31)
+            expect(getUserVersion(store)).toBe(31)
         store.close()
     })
 

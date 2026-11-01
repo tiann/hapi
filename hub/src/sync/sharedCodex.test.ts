@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -217,6 +217,10 @@ describe('shared Codex hub binding', () => {
             }, 'native-fork-local-id')
             f.store.messages.markMessagesInvoked(child.id, ['native-fork-local-id'], Date.now())
 
+            const events: Array<{ type: string; sessionId?: string }> = []
+            const unsubscribe = f.engine.subscribe((event) => {
+                events.push(event)
+            })
             f.engine.handleSessionReady({ sid: child.id, time: Date.now() })
             let clonedId: string | undefined
             for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -234,6 +238,11 @@ describe('shared Codex hub binding', () => {
             }
             expect(clonedId).toBeDefined()
             expect(clonedId).not.toBe(attachment.id)
+            expect(events).toContainEqual(expect.objectContaining({
+                type: 'messages-invalidated',
+                sessionId: child.id
+            }))
+            unsubscribe()
 
             const cachedSource = f.engine.getSession(source.id)
             if (cachedSource) cachedSource.active = false
@@ -241,6 +250,94 @@ describe('shared Codex hub binding', () => {
             expect((await f.store.attachments.readForSessionAsync(clonedId!, 'default', child.id))?.data)
                 .toEqual(Buffer.from('native fork original'))
         } finally {
+            f.cleanup()
+        }
+    })
+
+    it('waits for parent shared-fork hydration before hydrating a nested child', async () => {
+        const f = fixture()
+        let releaseClone: (() => void) | undefined
+        let restoreClone: (() => void) | undefined
+        try {
+            const source = f.create('nested-source')
+            const attachment = await f.store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'nested.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('nested original')
+            })
+            f.store.messages.addMessage(source.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'nested attachment',
+                    attachments: [{
+                        id: 'nested-attachment',
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType,
+                        size: attachment.size,
+                        attachmentId: attachment.id
+                    }]
+                }
+            }, 'nested-tip')
+            f.store.messages.markMessagesInvoked(source.id, ['nested-tip'], Date.now())
+
+            let signalCloneStarted!: () => void
+            const cloneStarted = new Promise<void>((resolve) => { signalCloneStarted = resolve })
+            const cloneGate = new Promise<void>((resolve) => { releaseClone = resolve })
+            const originalClone = f.store.attachments.cloneMessageAttachments.bind(f.store.attachments)
+            const cloneSpy = spyOn(f.store.attachments, 'cloneMessageAttachments').mockImplementation(async (...args) => {
+                signalCloneStarted()
+                await cloneGate
+                return await originalClone(...args)
+            })
+            restoreClone = () => cloneSpy.mockRestore()
+
+            const first = f.create('nested-first', {
+                forkedFrom: source.id,
+                forkedThroughMessageLocalId: 'nested-tip'
+            }, false)
+            const firstHydration = (f.engine as any).ensureSharedForkAttachments(
+                source.id,
+                'default',
+                first.id,
+                undefined,
+                'nested-tip'
+            ) as Promise<void>
+            await cloneStarted
+
+            const second = f.create('nested-second', {
+                forkedFrom: first.id,
+                forkedThroughMessageLocalId: 'nested-tip'
+            }, false)
+            const secondHydration = (f.engine as any).ensureSharedForkAttachments(
+                first.id,
+                'default',
+                second.id,
+                undefined,
+                'nested-tip'
+            ) as Promise<void>
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(cloneSpy).toHaveBeenCalledTimes(1)
+
+            releaseClone?.()
+            await firstHydration
+            await secondHydration
+
+            const firstAttachmentId = ((f.store.messages.getAllMessages(first.id)[0]?.content as any)
+                ?.content?.attachments?.[0]?.attachmentId) as string | undefined
+            const secondAttachmentId = ((f.store.messages.getAllMessages(second.id)[0]?.content as any)
+                ?.content?.attachments?.[0]?.attachmentId) as string | undefined
+            expect(firstAttachmentId).toBeDefined()
+            expect(secondAttachmentId).toBeDefined()
+            expect(secondAttachmentId).not.toBe(firstAttachmentId)
+            expect((await f.store.attachments.readForSessionAsync(
+                secondAttachmentId!, 'default', second.id
+            ))?.data).toEqual(Buffer.from('nested original'))
+        } finally {
+            releaseClone?.()
+            restoreClone?.()
             f.cleanup()
         }
     })
@@ -463,6 +560,224 @@ describe('shared Codex hub binding', () => {
         }
     })
 
+    it('retains failed hydration protection until child deletion succeeds', async () => {
+        const f = fixture()
+        let restoreDelete: (() => void) | undefined
+        try {
+            const source = f.create('failed-deletion-source')
+            const child = f.create('failed-deletion-child', {
+                forkedFrom: source.id,
+                forkedThroughMessageLocalId: 'missing-tip'
+            }, false)
+            await expect((f.engine as any).ensureSharedForkAttachments(
+                source.id, 'default', child.id, undefined, 'missing-tip'
+            )).rejects.toThrow('Fork tip boundary message not found')
+
+            const cache = (f.engine as any).sessionCache
+            const originalDelete = cache.deleteSession.bind(cache)
+            let failDeletion = true
+            cache.deleteSession = async (sessionId: string) => {
+                if (failDeletion && sessionId === child.id) {
+                    throw new Error('simulated child deletion failure')
+                }
+                return await originalDelete(sessionId)
+            }
+            restoreDelete = () => { cache.deleteSession = originalDelete }
+
+            const cachedChild = f.engine.getSession(child.id)
+            if (cachedChild) cachedChild.active = false
+            await expect(f.engine.deleteSession(child.id)).rejects.toThrow('simulated child deletion failure')
+            expect(f.engine.getSession(child.id)).toBeDefined()
+
+            const cachedSource = f.engine.getSession(source.id)
+            if (cachedSource) cachedSource.active = false
+            await expect(f.engine.deleteSession(source.id)).rejects.toThrow('Fork tip boundary message not found')
+
+            failDeletion = false
+            await expect(f.engine.deleteSession(child.id)).resolves.toBeUndefined()
+            await expect(f.engine.deleteSession(source.id)).resolves.toBeUndefined()
+        } finally {
+            restoreDelete?.()
+            f.cleanup()
+        }
+    })
+
+    it('clears hydration failures after external child deletion finalization', async () => {
+        const f = fixture()
+        try {
+            const source = f.create('externally-finalized-source')
+            const child = f.create('externally-finalized-child', {
+                forkedFrom: source.id,
+                forkedThroughMessageLocalId: 'missing-tip'
+            }, false)
+            await expect((f.engine as any).ensureSharedForkAttachments(
+                source.id, 'default', child.id, undefined, 'missing-tip'
+            )).rejects.toThrow('Fork tip boundary message not found')
+
+            const cachedSource = f.engine.getSession(source.id)
+            if (cachedSource) cachedSource.active = false
+            expect(f.store.sessions.deleteSession(child.id, 'default')).toBe(true)
+            f.engine.finalizeDeletedSession(child.id, 'default')
+            await expect(f.engine.deleteSession(source.id)).resolves.toBeUndefined()
+        } finally {
+            f.cleanup()
+        }
+    })
+
+    it('settles child hydration before deleting an inactive shared fork child', async () => {
+        const f = fixture()
+        let releaseClone: (() => void) | undefined
+        let restoreClone: (() => void) | undefined
+        try {
+            const source = f.create('settle-target-source')
+            const attachment = await f.store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'settle-target.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('settle target original')
+            })
+            f.store.messages.addMessage(source.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'settle target',
+                    attachments: [{
+                        id: 'settle-target-attachment',
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType,
+                        size: attachment.size,
+                        attachmentId: attachment.id
+                    }]
+                }
+            }, 'settle-target-tip')
+            f.store.messages.markMessagesInvoked(source.id, ['settle-target-tip'], Date.now())
+            const child = f.create('settle-target-child', {
+                forkedFrom: source.id,
+                forkedThroughMessageLocalId: 'settle-target-tip',
+                capabilities: { concurrentClients: false }
+            }, false)
+            const storedChild = f.store.sessions.getSession(child.id)
+            if (!storedChild?.metadata) throw new Error('Missing child metadata')
+            f.store.sessions.updateSessionMetadata(
+                child.id,
+                { ...storedChild.metadata, capabilities: { concurrentClients: true } },
+                storedChild.metadataVersion,
+                'default',
+                { touchUpdatedAt: false }
+            )
+            ;(f.engine as any).sessionCache.refreshSession(child.id)
+            const cachedChild = f.engine.getSession(child.id)
+            if (cachedChild) cachedChild.active = false
+
+            let signalCloneStarted!: () => void
+            const cloneStarted = new Promise<void>((resolve) => { signalCloneStarted = resolve })
+            const cloneGate = new Promise<void>((resolve) => { releaseClone = resolve })
+            const originalClone = f.store.attachments.cloneMessageAttachments.bind(f.store.attachments)
+            const cloneSpy = spyOn(f.store.attachments, 'cloneMessageAttachments').mockImplementation(async (...args) => {
+                signalCloneStarted()
+                await cloneGate
+                return await originalClone(...args)
+            })
+            restoreClone = () => cloneSpy.mockRestore()
+
+            const hydration = (f.engine as any).ensureSharedForkAttachments(
+                source.id,
+                'default',
+                child.id,
+                undefined,
+                'settle-target-tip'
+            ) as Promise<void>
+            await cloneStarted
+            const deletion = f.engine.deleteSession(child.id)
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            expect(f.store.sessions.getSessionByNamespace(child.id, 'default')).not.toBeNull()
+            releaseClone?.()
+            await hydration
+            await deletion
+            restoreClone?.()
+            restoreClone = undefined
+
+            expect(f.store.sessions.getSessionByNamespace(child.id, 'default')).toBeNull()
+            const cachedSource = f.engine.getSession(source.id)
+            if (cachedSource) cachedSource.active = false
+            await expect(f.engine.deleteSession(source.id)).resolves.toBeUndefined()
+        } finally {
+            releaseClone?.()
+            restoreClone?.()
+            f.cleanup()
+        }
+    })
+
+    it('protects shared-fork attachments during automatic session consolidation', async () => {
+        const f = fixture()
+        try {
+            const source = f.create('automatic-merge-source')
+            const target = f.create('automatic-merge-target')
+            const attachment = await f.store.attachments.create({
+                namespace: 'default',
+                sessionId: source.id,
+                filename: 'automatic-merge.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('automatic merge original')
+            })
+            f.store.messages.addMessage(source.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'automatic merge source',
+                    attachments: [{
+                        id: 'automatic-merge-attachment',
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType,
+                        size: attachment.size,
+                        attachmentId: attachment.id
+                    }]
+                }
+            }, 'automatic-merge-tip')
+            f.store.messages.markMessagesInvoked(source.id, ['automatic-merge-tip'], Date.now())
+            const child = f.create('automatic-merge-child', {
+                forkedFrom: source.id,
+                forkedThroughMessageLocalId: 'automatic-merge-tip',
+                capabilities: { concurrentClients: false }
+            }, false)
+            const storedChild = f.store.sessions.getSession(child.id)
+            if (!storedChild?.metadata) throw new Error('Missing child metadata')
+            f.store.sessions.updateSessionMetadata(
+                child.id,
+                { ...storedChild.metadata, capabilities: { concurrentClients: true } },
+                storedChild.metadataVersion,
+                'default',
+                { touchUpdatedAt: false }
+            )
+            ;(f.engine as any).sessionCache.refreshSession(child.id)
+            for (const sessionId of [source.id, target.id, child.id]) {
+                const cached = f.engine.getSession(sessionId)
+                if (cached) cached.active = false
+            }
+
+            const cache = (f.engine as any).sessionCache
+            await cache.mergeSessions(source.id, target.id, 'default')
+
+            const childMessage = f.store.messages.getAllMessages(child.id)
+                .find((message) => message.localId === 'automatic-merge-tip')
+            const childAttachmentId = ((childMessage?.content as {
+                content?: { attachments?: Array<{ attachmentId?: string }> }
+            } | undefined)?.content?.attachments?.[0]?.attachmentId)
+            expect(childAttachmentId).toBeDefined()
+            expect(childAttachmentId).not.toBe(attachment.id)
+            expect((await f.store.attachments.readForSessionAsync(
+                childAttachmentId!,
+                'default',
+                child.id
+            ))?.data).toEqual(Buffer.from('automatic merge original'))
+            expect(f.store.attachments.getForSession(attachment.id, 'default', source.id)).toBeNull()
+            expect(f.store.attachments.getForSession(attachment.id, 'default', target.id)).not.toBeNull()
+        } finally {
+            f.cleanup()
+        }
+    })
+
     it('rebuilds restart-safe fork hydration protection before deleting a source', async () => {
         const f = fixture()
         try {
@@ -508,6 +823,99 @@ describe('shared Codex hub binding', () => {
             expect((await f.store.attachments.readForSessionAsync(clonedId!, 'default', child.id))?.data)
                 .toEqual(Buffer.from('restart-protection'))
         } finally {
+            f.cleanup()
+        }
+    })
+
+    it('preserves completed nested hydration after ancestor deletion and restart', async () => {
+        const f = fixture()
+        let restarted: SyncEngine | undefined
+        try {
+            const ancestor = f.create('restart-ancestor')
+            const attachment = await f.store.attachments.create({
+                namespace: 'default',
+                sessionId: ancestor.id,
+                filename: 'restart-chain.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('restart chain original')
+            })
+            f.store.messages.addMessage(ancestor.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'restart chain',
+                    attachments: [{
+                        id: 'restart-chain-attachment',
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType,
+                        size: attachment.size,
+                        attachmentId: attachment.id
+                    }]
+                }
+            }, 'restart-chain-tip')
+            f.store.messages.markMessagesInvoked(ancestor.id, ['restart-chain-tip'], Date.now())
+
+            const child = f.create('restart-chain-child', {
+                forkedFrom: ancestor.id,
+                forkedThroughMessageLocalId: 'restart-chain-tip'
+            }, false)
+            await (f.engine as any).ensureSharedForkAttachments(
+                ancestor.id,
+                'default',
+                child.id,
+                undefined,
+                'restart-chain-tip'
+            )
+            expect(((f.store.sessions.getSession(child.id)?.metadata ?? null) as Metadata | null)
+                ?.sharedForkAttachmentsHydrated).toBe(true)
+
+            const cachedAncestor = f.engine.getSession(ancestor.id)
+            if (cachedAncestor) cachedAncestor.active = false
+            await f.engine.deleteSession(ancestor.id)
+            expect(f.store.sessions.getSession(child.id)).toBeDefined()
+
+            f.engine.stop()
+            restarted = new SyncEngine(f.store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            await expect((restarted as any).ensureSharedForkAttachments(
+                ancestor.id,
+                'default',
+                child.id,
+                undefined,
+                'restart-chain-tip'
+            )).resolves.toBeUndefined()
+            const childMetadata = { ...(restarted.getSession(child.id)?.metadata ?? {}) }
+            delete (childMetadata as any).sharedForkAttachmentsHydrated
+            const grandchild = restarted.getOrCreateSession('restart-chain-grandchild', {
+                ...childMetadata,
+                forkedFrom: child.id,
+                forkedThroughMessageLocalId: 'restart-chain-tip'
+            }, null, 'default')
+            const hydration = (restarted as any).ensureSharedForkAttachments(
+                child.id,
+                'default',
+                grandchild.id,
+                undefined,
+                'restart-chain-tip'
+            ) as Promise<void>
+            await hydration
+
+            const grandchildMessage = f.store.messages.getAllMessages(grandchild.id)
+                .find((message) => message.localId === 'restart-chain-tip')
+            const grandchildAttachmentId = ((grandchildMessage?.content as any)
+                ?.content?.attachments?.[0] as any)?.attachmentId as string | undefined
+            expect(grandchildAttachmentId).toBeDefined()
+            expect((await f.store.attachments.readForSessionAsync(
+                grandchildAttachmentId!, 'default', grandchild.id
+            ))?.data).toEqual(Buffer.from('restart chain original'))
+
+            const cachedChild = restarted.getSession(child.id)
+            if (cachedChild) cachedChild.active = false
+            await restarted.deleteSession(child.id)
+            expect((await f.store.attachments.readForSessionAsync(
+                grandchildAttachmentId!, 'default', grandchild.id
+            ))?.data).toEqual(Buffer.from('restart chain original'))
+        } finally {
+            restarted?.stop()
             f.cleanup()
         }
     })

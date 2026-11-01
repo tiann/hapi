@@ -205,6 +205,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.forkedThroughMessageLocalId !== undefined) {
         preserved.forkedThroughMessageLocalId = metadata.forkedThroughMessageLocalId
     }
+    if (metadata.sharedForkAttachmentsHydrated !== undefined) {
+        preserved.sharedForkAttachmentsHydrated = metadata.sharedForkAttachmentsHydrated
+    }
     if (metadata.capabilities?.conversationHistory !== undefined) {
         preserved.capabilities = {
             ...preserved.capabilities,

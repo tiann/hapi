@@ -188,6 +188,7 @@ type PendingOutboundEvent = {
 const MAX_PENDING_DROPPABLE_EVENTS = 256
 const MATERIALIZATION_RETRY_MIN_MS = 1_000
 const MATERIALIZATION_RETRY_MAX_MS = 30_000
+const MATERIALIZATION_MAX_ATTEMPTS = 3
 
 function isTransientMaterializationError(error: unknown): boolean {
     if (!axios.isAxiosError(error)) {
@@ -259,7 +260,8 @@ export class ApiSessionClient extends EventEmitter {
     private incomingMessageTail: Promise<void> = Promise.resolve()
     private incomingMessagePending = 0
     private readonly materializingLocalIdCounts = new Map<string, number>()
-    private readonly cancelledMaterializingLocalIds = new Set<string>()
+    private readonly materializingGenerationByLocalId = new Map<string, number>()
+    private readonly cancelledMaterializationThroughGeneration = new Map<string, number>()
     private readonly cancelledIncomingMessageIds = new Set<string>()
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
@@ -503,6 +505,9 @@ export class ApiSessionClient extends EventEmitter {
                         }
                     }
                     if (accepted) {
+                        if (data.body.message.id) {
+                            this.cancelledIncomingMessageIds.delete(data.body.message.id)
+                        }
                         this.handleIncomingMessage(data.body.message, true)
                     }
                     ack?.({ removed: false, accepted })
@@ -524,7 +529,10 @@ export class ApiSessionClient extends EventEmitter {
                         // The prompt has not reached the agent queue yet. Mark it
                         // cancelled so the async attachment download cannot enqueue
                         // it after the Hub has already acknowledged cancellation.
-                        this.cancelledMaterializingLocalIds.add(localId)
+                        const generation = this.materializingGenerationByLocalId.get(localId)
+                        if (generation !== undefined) {
+                            this.cancelledMaterializationThroughGeneration.set(localId, generation)
+                        }
                         removed = true
                     }
                     const cancellation = localId
@@ -536,6 +544,11 @@ export class ApiSessionClient extends EventEmitter {
                     // removed, but also NOT consumed — the hub must neither
                     // delete it nor stamp invoked_at.
                     if (removed && typeof result !== 'string' && data.body.messageId) {
+                        this.cancelledIncomingMessageIds.add(data.body.messageId)
+                    } else if (result === 'indeterminate' && data.body.messageId) {
+                        // An explicit retry may reconcile this outcome. Keep
+                        // ordinary redelivery suppressed until that retry is
+                        // accepted, while force=true bypasses this guard.
                         this.cancelledIncomingMessageIds.add(data.body.messageId)
                     }
                     ack?.({
@@ -866,6 +879,13 @@ export class ApiSessionClient extends EventEmitter {
         message: { id?: string; seq?: number; localId?: string | null; content: unknown },
         force = false
     ): Promise<void> {
+        if (!force && message.localId
+            && this.isMaterializationCancelled(
+                message.localId,
+                this.materializingGenerationByLocalId.get(message.localId) ?? 1
+            )) {
+            return Promise.resolve()
+        }
         const parsed = UserMessageSchema.safeParse(message.content)
         const needsMaterialization = parsed.success
             && (parsed.data.content.attachments?.some((attachment) => Boolean(attachment.attachmentId && !attachment.path)) ?? false)
@@ -877,7 +897,16 @@ export class ApiSessionClient extends EventEmitter {
             return Promise.resolve()
         }
 
-        if (message.localId) {
+        const materializationGeneration = message.localId
+            ? (() => {
+                const previous = this.materializingGenerationByLocalId.get(message.localId)
+                    ?? this.cancelledMaterializationThroughGeneration.get(message.localId)
+                    ?? 0
+                return force ? previous + 1 : previous || 1
+            })()
+            : undefined
+        if (message.localId && materializationGeneration !== undefined) {
+            this.materializingGenerationByLocalId.set(message.localId, materializationGeneration)
             this.materializingLocalIdCounts.set(
                 message.localId,
                 (this.materializingLocalIdCounts.get(message.localId) ?? 0) + 1
@@ -888,7 +917,9 @@ export class ApiSessionClient extends EventEmitter {
             if (this.isClosed()) return
             const userResult = UserMessageSchema.safeParse(message.content)
             if (!userResult.success) {
-                if (message.localId && this.cancelledMaterializingLocalIds.has(message.localId)) return
+                if (message.localId
+                    && materializationGeneration !== undefined
+                    && this.isMaterializationCancelled(message.localId, materializationGeneration)) return
                 this.deliverIncomingMessage(message, null, force)
                 return
             }
@@ -898,7 +929,9 @@ export class ApiSessionClient extends EventEmitter {
                 for (const attachment of userResult.data.content.attachments) {
                     if (this.isClosed()) return
                     let retryDelayMs = MATERIALIZATION_RETRY_MIN_MS
+                    let attempts = 0
                     for (;;) {
+                        attempts += 1
                         try {
                             materializationResults.push({
                                 attachment: await this.attachmentMaterializer.materialize(attachment),
@@ -911,7 +944,8 @@ export class ApiSessionClient extends EventEmitter {
                                 error
                             })
                             if (this.isClosed()) return
-                            if (!isTransientMaterializationError(error)) {
+                            if (!isTransientMaterializationError(error)
+                                || attempts >= MATERIALIZATION_MAX_ATTEMPTS) {
                                 materializationResults.push({
                                     attachment,
                                     failure: `Attachment unavailable: ${attachment.filename}`
@@ -921,7 +955,9 @@ export class ApiSessionClient extends EventEmitter {
                             await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
                             retryDelayMs = Math.min(retryDelayMs * 2, MATERIALIZATION_RETRY_MAX_MS)
                             if (this.isClosed()
-                                || (message.localId && this.cancelledMaterializingLocalIds.has(message.localId))) {
+                                || (message.localId
+                                    && materializationGeneration !== undefined
+                                    && this.isMaterializationCancelled(message.localId, materializationGeneration))) {
                                 return
                             }
                         }
@@ -944,16 +980,25 @@ export class ApiSessionClient extends EventEmitter {
                     }
                 }
                 : userResult.data
-            if (message.localId && this.cancelledMaterializingLocalIds.has(message.localId)) return
+            if (message.localId
+                && materializationGeneration !== undefined
+                && this.isMaterializationCancelled(message.localId, materializationGeneration)) return
             if (this.isClosed()) return
             this.deliverIncomingMessage(message, materializedUser, force)
         }).finally(() => {
             this.incomingMessagePending -= 1
-            if (message.localId) {
+            const generation = materializationGeneration
+            if (message.localId && generation !== undefined) {
                 const remaining = (this.materializingLocalIdCounts.get(message.localId) ?? 1) - 1
                 if (remaining <= 0) {
                     this.materializingLocalIdCounts.delete(message.localId)
-                    this.cancelledMaterializingLocalIds.delete(message.localId)
+                    const cancelledThrough = this.cancelledMaterializationThroughGeneration.get(message.localId)
+                    if (cancelledThrough === undefined || generation > cancelledThrough) {
+                        this.materializingGenerationByLocalId.delete(message.localId)
+                        this.cancelledMaterializationThroughGeneration.delete(message.localId)
+                    } else {
+                        this.materializingGenerationByLocalId.set(message.localId, generation)
+                    }
                 } else {
                     this.materializingLocalIdCounts.set(message.localId, remaining)
                 }
@@ -961,6 +1006,11 @@ export class ApiSessionClient extends EventEmitter {
         })
         this.incomingMessageTail = run.catch(() => {})
         return run
+    }
+
+    private isMaterializationCancelled(localId: string, generation: number): boolean {
+        const cancelledThrough = this.cancelledMaterializationThroughGeneration.get(localId)
+        return cancelledThrough !== undefined && generation <= cancelledThrough
     }
 
     private deliverIncomingMessage(
@@ -1089,6 +1139,19 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    private async drainDeferredLiveMessages(): Promise<void> {
+        // Drain repeatedly because another socket event can arrive while a
+        // deferred attachment is materializing.
+        while (this.deferredLiveMessages.length > 0) {
+            const deferred = this.deferredLiveMessages.splice(0)
+            await Promise.all(deferred.map((message) => (
+                this.handleIncomingMessage(message).catch((error) => {
+                    logger.debug('[API] Failed to materialize deferred live attachment', { error })
+                })
+            )))
+        }
+    }
+
     private async backfillMessages(): Promise<void> {
         if (this.backfillInFlight) {
             await this.backfillInFlight
@@ -1098,6 +1161,7 @@ export class ApiSessionClient extends EventEmitter {
         const startSeq = this.incomingFilter.cursorSeq()
         if (startSeq === null) {
             logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
+            await this.drainDeferredLiveMessages()
             return
         }
 
@@ -1168,16 +1232,7 @@ export class ApiSessionClient extends EventEmitter {
             } finally {
                 if (backfillSucceeded) {
                     // Keep live socket messages behind every fetched backfill page.
-                    // Drain repeatedly because another socket event can arrive while
-                    // a deferred attachment is materializing.
-                    while (this.deferredLiveMessages.length > 0) {
-                        const deferred = this.deferredLiveMessages.splice(0)
-                        await Promise.all(deferred.map((message) => (
-                            this.handleIncomingMessage(message).catch((error) => {
-                                logger.debug('[API] Failed to materialize deferred live attachment', { error })
-                            })
-                        )))
-                    }
+                    await this.drainDeferredLiveMessages()
                 }
             }
         }
@@ -1881,7 +1936,8 @@ export class ApiSessionClient extends EventEmitter {
         this.clearBackfillRetry()
         this.pendingOutboundEvents.length = 0
         this.materializingLocalIdCounts.clear()
-        this.cancelledMaterializingLocalIds.clear()
+        this.materializingGenerationByLocalId.clear()
+        this.cancelledMaterializationThroughGeneration.clear()
         this.cancelledIncomingMessageIds.clear()
         void this.attachmentMaterializer.close()
         this.rpcHandlerManager.onSocketDisconnect()

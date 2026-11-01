@@ -1374,7 +1374,24 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         let committed = false
 
         try {
-            for (const message of source.storedMessages) {
+            const ensureMergeSessionsInactive = () => {
+                if (engine && [source.sessionId, canonical.sessionId].some((sessionId) => (
+                    engine.getSessionByNamespace(sessionId, options.namespace)?.active
+                ))) {
+                    throw new Error('Cannot merge a session that became active')
+                }
+            }
+            ensureMergeSessionsInactive()
+
+            // A duplicate source can itself be a shared-fork child. Wait for
+            // any hydration targeting it before taking the merge snapshot;
+            // otherwise the source message/attachment plan can be stale.
+            if (engine && typeof engine.prepareSessionForDeletion === 'function') {
+                await engine.prepareSessionForDeletion(source.sessionId, { requireTargetHydration: true })
+            }
+            const sourceMessages = options.store.messages.getAllMessages(source.sessionId)
+
+            for (const message of sourceMessages) {
                 const comparableKey = getComparableStoredMessageKey(message)
                 const occurrence = sourceOccurrences.get(comparableKey) ?? 0
                 sourceOccurrences.set(comparableKey, occurrence + 1)
@@ -1423,16 +1440,13 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 latestActivity = Math.max(latestActivity, message.invokedAt ?? message.createdAt)
             }
 
-            if (engine && [source.sessionId, canonical.sessionId].some((sessionId) => (
-                engine.getSessionByNamespace(sessionId, options.namespace)?.active
-            ))) {
-                throw new Error('Cannot merge a session that became active')
-            }
+            ensureMergeSessionsInactive()
 
             const copiedMessages = options.store.commitDuplicateSessionMerge({
                 namespace: options.namespace,
                 sourceSessionId: source.sessionId,
                 targetSessionId: canonical.sessionId,
+                sourceMessageIds: sourceMessages.map((message) => message.id),
                 updates,
                 inserts
             })

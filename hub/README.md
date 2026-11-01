@@ -301,6 +301,9 @@ See `src/store/index.ts` for SQLite persistence:
 - Users table for Telegram bindings (includes namespace).
 - Scratchlist entries/attachments, usage, work graph, and push registrations.
 
+Durable attachment originals are stored under the configured attachments root;
+backups must include that directory together with the SQLite database.
+
 Message content is stored via `src/store/contentCodec.ts`: oversized strings
 inside agent messages (giant tool output) are head+tail truncated at ingest,
 and payloads ≥256 chars are zstd-compressed (TEXT = plaintext JSON, BLOB =

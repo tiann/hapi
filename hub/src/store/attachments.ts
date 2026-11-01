@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Database } from 'bun:sqlite'
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
@@ -54,6 +54,17 @@ type AttachmentRow = {
     created_at: number
 }
 
+type AttachmentCreationRow = {
+    id: string
+    namespace: string
+    session_id: string
+    original_path: string
+    temp_path: string
+    state: 'pending' | 'committed' | 'reconciled'
+    created_at: number
+    resolved_at: number | null
+}
+
 const sanitizeFilename = (filename: string): string => {
     const normalized = basename(filename)
         .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
@@ -93,6 +104,13 @@ export class AttachmentStore {
         const filename = sanitizeFilename(input.filename)
         const sha256 = hashBytes(input.original)
         const originalPath = join(this.root, `${id}.original`)
+        const tempPath = join(this.root, `.${id}.original.${randomUUID()}.tmp`)
+
+        this.db.prepare(`
+            INSERT INTO attachment_creations (
+                id, namespace, session_id, original_path, temp_path, state, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        `).run(id, input.namespace, input.sessionId, originalPath, tempPath, createdAt)
 
         await mkdir(this.root, { recursive: true, mode: 0o700 })
         try {
@@ -101,25 +119,39 @@ export class AttachmentStore {
         }
 
         try {
-            await this.writeAtomically(originalPath, input.original)
-            this.db.prepare(`
-                INSERT INTO attachments (
-                    id, namespace, session_id, filename, mime_type, size,
-                    sha256, original_path, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-                id,
-                input.namespace,
-                input.sessionId,
-                filename,
-                input.mimeType,
-                input.original.length,
-                sha256,
-                originalPath,
-                createdAt
-            )
+            await this.writeAtomically(originalPath, tempPath, input.original)
+            this.db.transaction(() => {
+                this.db.prepare(`
+                    INSERT INTO attachments (
+                        id, namespace, session_id, filename, mime_type, size,
+                        sha256, original_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                    id,
+                    input.namespace,
+                    input.sessionId,
+                    filename,
+                    input.mimeType,
+                    input.original.length,
+                    sha256,
+                    originalPath,
+                    createdAt
+                )
+                this.markCreationState(id, 'committed')
+            })()
         } catch (error) {
-            await this.removeFile(originalPath)
+            const removed = await Promise.all([
+                this.removeCreationFile(originalPath),
+                this.removeCreationFile(tempPath)
+            ])
+            if (removed.every(Boolean)) {
+                try {
+                    this.markCreationState(id, 'reconciled')
+                } catch {
+                    // Keep the pending row for startup reconciliation if the
+                    // failure path cannot update SQLite immediately.
+                }
+            }
             throw error
         }
 
@@ -258,6 +290,44 @@ export class AttachmentStore {
         return cleaned
     }
 
+    /** Reconcile filesystem writes that did not reach the attachment row transaction. */
+    async cleanupPendingCreations(): Promise<number> {
+        const rows = this.db.prepare(`
+            SELECT id, namespace, session_id, original_path, temp_path,
+                   state, created_at, resolved_at
+            FROM attachment_creations
+            WHERE state = 'pending'
+            ORDER BY created_at ASC
+        `).all() as AttachmentCreationRow[]
+        let reconciled = 0
+        let firstError: unknown
+        for (const row of rows) {
+            try {
+                const attachment = this.db.prepare(
+                    'SELECT id FROM attachments WHERE id = ? AND namespace = ? AND session_id = ?'
+                ).get(row.id, row.namespace, row.session_id)
+                if (attachment) {
+                    this.markCreationState(row.id, 'committed')
+                    reconciled += 1
+                    continue
+                }
+                const removed = await Promise.all([
+                    this.removeCreationFile(row.original_path),
+                    this.removeCreationFile(row.temp_path)
+                ])
+                if (!removed.every(Boolean)) {
+                    throw new Error(`Failed to reconcile attachment creation ${row.id}`)
+                }
+                this.markCreationState(row.id, 'reconciled')
+                reconciled += 1
+            } catch (error) {
+                firstError ??= error
+            }
+        }
+        if (firstError) throw firstError
+        return reconciled
+    }
+
     async cloneForSession(
         id: string,
         namespace: string,
@@ -367,8 +437,7 @@ export class AttachmentStore {
         return deleted
     }
 
-    private async writeAtomically(target: string, data: Buffer): Promise<void> {
-        const temp = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`)
+    private async writeAtomically(target: string, temp: string, data: Buffer): Promise<void> {
         try {
             await writeFile(temp, data, { mode: 0o600, flag: 'wx' })
             await rename(temp, target)
@@ -377,11 +446,37 @@ export class AttachmentStore {
         }
     }
 
-    private async removeFile(path: string): Promise<void> {
+    private async removeFile(path: string): Promise<boolean> {
         try {
             await rm(path, { force: true })
+            return true
         } catch {
+            return false
         }
+    }
+
+    private removeCreationFile(path: string): Promise<boolean> {
+        if (!this.isOwnedCreationPath(path)) {
+            return Promise.resolve(false)
+        }
+        return this.removeFile(path)
+    }
+
+    private isOwnedCreationPath(path: string): boolean {
+        const relativePath = relative(this.root, resolve(path))
+        if (!relativePath || isAbsolute(relativePath) || relativePath.startsWith('..')) return false
+        const name = basename(relativePath)
+        if (relativePath !== name) return false
+        return /^[0-9a-f-]{36}\.original$/i.test(name)
+            || /^\.[0-9a-f-]{36}\.original\.[0-9a-f-]{36}\.tmp$/i.test(name)
+    }
+
+    private markCreationState(id: string, state: 'committed' | 'reconciled'): void {
+        this.db.prepare(`
+            UPDATE attachment_creations
+            SET state = ?, resolved_at = ?
+            WHERE id = ? AND state = 'pending'
+        `).run(state, Date.now(), id)
     }
 
     private clearDeletionJournal(originalPath: string): void {

@@ -310,10 +310,12 @@ export class SyncEngine {
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
+            beforeDeleteSession: (sessionId) => this.prepareSessionForDeletionIfNeeded(sessionId),
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
             // dedup alike — so enumeration cleanup rides on one hook.
-            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId),
+            afterDeleteSession: (sessionId) => this.clearSharedForkAttachmentTarget(sessionId),
         })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
@@ -2221,8 +2223,14 @@ export class SyncEngine {
                 })
             }
 
-            this.store.messages.mergeCopiedMessagesToSession(targetSessionId, copiedMessages)
-            if (copiedMessages.length > 0) this.sessionCache.refreshSession(targetSessionId)
+            const changed = this.store.messages.mergeCopiedMessagesToSession(targetSessionId, copiedMessages)
+            if (changed > 0) {
+                this.sessionCache.refreshSession(targetSessionId)
+                this.eventPublisher.emit({
+                    type: 'messages-invalidated',
+                    sessionId: targetSessionId
+                })
+            }
         } catch (error) {
             for (const attachment of clonedAttachments.values()) {
                 await this.store.attachments.deleteForSession(
@@ -2243,19 +2251,27 @@ export class SyncEngine {
         throughMessageLocalId?: string
     ): Promise<void> {
         if (this.sharedForkAttachmentsHydrated.has(targetSessionId)) return Promise.resolve()
+        const target = this.sessionCache.getSessionByNamespace(targetSessionId, namespace)
+            ?? this.sessionCache.refreshSession(targetSessionId)
+        if (target?.metadata?.sharedForkAttachmentsHydrated === true) {
+            this.sharedForkAttachmentsHydrated.add(targetSessionId)
+            return Promise.resolve()
+        }
         const existing = this.sharedForkAttachmentHydrations.get(targetSessionId)
         if (existing) return existing
 
         const priorFailures = this.sharedForkAttachmentFailures.get(sourceSessionId)
         priorFailures?.delete(targetSessionId)
         if (priorFailures?.size === 0) this.sharedForkAttachmentFailures.delete(sourceSessionId)
-        const work = this.hydrateSharedForkAttachments(
+        const sourceHydration = this.ensureSharedForkSourceHydrated(sourceSessionId)
+        const work = sourceHydration.then(() => this.hydrateSharedForkAttachments(
             sourceSessionId,
             namespace,
             targetSessionId,
             messageLocalId,
             throughMessageLocalId
-        ).then(() => {
+        )).then(() => {
+            this.persistSharedForkHydrationCompletion(targetSessionId, namespace)
             this.sharedForkAttachmentsHydrated.add(targetSessionId)
         }).catch((error) => {
             const failure = error instanceof Error ? error : new Error(String(error))
@@ -2273,6 +2289,66 @@ export class SyncEngine {
             () => this.releaseSharedForkHydration(sourceSessionId, targetSessionId, work)
         )
         return work
+    }
+
+    /** Ensure a nested shared fork's source has its own durable attachments first. */
+    private ensureSharedForkSourceHydrated(sourceSessionId: string): Promise<void> {
+        const source = this.sessionCache.getSession(sourceSessionId)
+            ?? this.sessionCache.refreshSession(sourceSessionId)
+        const parentSessionId = source?.metadata?.forkedFrom
+        if (!source
+            || source.metadata?.flavor !== 'codex'
+            || source.metadata.capabilities?.concurrentClients !== true
+            || typeof parentSessionId !== 'string') {
+            return Promise.resolve()
+        }
+        if (source.metadata.sharedForkAttachmentsHydrated === true) {
+            return Promise.resolve()
+        }
+
+        const messageLocalId = source.metadata.forkedAtMessageLocalId
+        const throughMessageLocalId = source.metadata.forkedThroughMessageLocalId
+        if (messageLocalId === undefined && throughMessageLocalId === undefined) {
+            return Promise.reject(new Error(
+                `Cannot hydrate nested shared fork before fork boundary is known: ${sourceSessionId}`
+            ))
+        }
+
+        return this.ensureSharedForkAttachments(
+            parentSessionId,
+            source.namespace,
+            source.id,
+            messageLocalId,
+            throughMessageLocalId
+        )
+    }
+
+    /** Persist successful hydration so later restarts do not depend on ancestors. */
+    private persistSharedForkHydrationCompletion(targetSessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(targetSessionId, namespace)
+                ?? this.sessionCache.refreshSession(targetSessionId)
+            if (!session?.metadata) {
+                throw new Error(`Cannot persist shared fork hydration for missing session: ${targetSessionId}`)
+            }
+            if (session.metadata.sharedForkAttachmentsHydrated === true) return
+            const result = this.store.sessions.updateSessionMetadata(
+                targetSessionId,
+                { ...session.metadata, sharedForkAttachmentsHydrated: true },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(targetSessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error(`Failed to persist shared fork hydration for session: ${targetSessionId}`)
+            }
+            this.sessionCache.refreshSession(targetSessionId)
+        }
+        throw new Error(`Shared fork hydration metadata update kept conflicting: ${targetSessionId}`)
     }
 
     private releaseSharedForkHydration(
@@ -2837,13 +2913,47 @@ export class SyncEngine {
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is pending; reconcile it before deleting the source')
         }
-        await this.ensureSharedForkChildrenBeforeDelete(sessionId)
-        await this.waitForSharedForkAttachmentHydration(sessionId)
-        this.clearSharedForkAttachmentTarget(sessionId)
+        await this.prepareSessionForDeletion(sessionId)
         await this.sessionCache.deleteSession(sessionId)
+        this.clearSharedForkAttachmentTarget(sessionId)
         this.titleTurnCompletedIds.delete(sessionId)
         this.automaticTitleSuggestionService.forgetSession(sessionId)
         this.releaseSessionEnumerations(sessionId)
+    }
+
+    /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
+    async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean }): Promise<void> {
+        await this.ensureSharedForkChildrenBeforeDelete(sessionId)
+        await this.waitForSharedForkAttachmentHydration(sessionId)
+        await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)
+    }
+
+    /** Avoid yielding on ordinary consolidations that have no shared-fork dependency. */
+    private prepareSessionForDeletionIfNeeded(sessionId: string): Promise<void> | undefined {
+        const hasChild = this.sessionCache.getSessions().some((session) => (
+            session.metadata?.forkedFrom === sessionId
+            && session.metadata?.flavor === 'codex'
+            && session.metadata.capabilities?.concurrentClients === true
+        ))
+        if (!hasChild
+            && !this.sharedForkAttachmentHydrations.has(sessionId)
+            && !this.sharedForkAttachmentHydrationsBySource.has(sessionId)
+            && !this.sharedForkAttachmentFailures.has(sessionId)) {
+            return undefined
+        }
+        return this.prepareSessionForDeletion(sessionId)
+    }
+
+    /** Wait for a hydration targeting a child before deleting that child. */
+    private async settleSharedForkAttachmentTarget(targetSessionId: string, requireSuccess = false): Promise<void> {
+        const pending = this.sharedForkAttachmentHydrations.get(targetSessionId)
+        if (pending) await (requireSuccess ? pending : pending.catch(() => {}))
+        if (requireSuccess) {
+            for (const failures of this.sharedForkAttachmentFailures.values()) {
+                const failure = failures.get(targetSessionId)
+                if (failure) throw failure
+            }
+        }
     }
 
     finalizeDeletedSession(
@@ -2852,6 +2962,8 @@ export class SyncEngine {
         scratchlistAttachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[] = []
     ): void {
         this.sessionCache.finalizeDeletedSession(sessionId, namespace, scratchlistAttachments)
+        this.clearSharedForkAttachmentTarget(sessionId)
+        this.releaseSessionEnumerations(sessionId)
     }
 
     async applySessionConfig(

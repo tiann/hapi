@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,6 +35,10 @@ describe('AttachmentStore', () => {
         expect(existsSync(created.originalPath)).toBe(true)
         expect(readFileSync(created.originalPath)).toEqual(original)
         expect(created.sha256).toBe(createHash('sha256').update(original).digest('hex'))
+        const db = (store as unknown as { db: Database }).db
+        expect(db.prepare(
+            'SELECT state, resolved_at FROM attachment_creations WHERE id = ?'
+        ).get(created.id)).toMatchObject({ state: 'committed' })
         expect(store.attachments.getForSession(created.id, 'namespace-b', 'session-a')).toBeNull()
         expect(store.attachments.getForSession(created.id, 'namespace-a', 'session-b')).toBeNull()
 
@@ -50,6 +55,211 @@ describe('AttachmentStore', () => {
         expect(await store.attachments.deleteForSession(created.id, 'namespace-a', 'session-a')).toBe(true)
         expect(existsSync(created.originalPath)).toBe(false)
         expect(await store.attachments.readForSessionAsync(created.id, 'namespace-a', 'session-a')).toBeNull()
+        store.close()
+    })
+
+    it('reconciles a pending creation journal after a write-before-row crash', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.sqlite')
+        const attachmentsRoot = join(dir, 'attachments')
+        const initial = new Store(dbPath, { attachmentsRoot })
+        const db = (initial as unknown as { db: Database }).db
+        const id = randomUUID()
+        const tempPath = join(attachmentsRoot, `.${id}.original.${randomUUID()}.tmp`)
+        const originalPath = join(attachmentsRoot, `${id}.original`)
+        mkdirSync(attachmentsRoot, { recursive: true })
+        writeFileSync(tempPath, 'temporary')
+        writeFileSync(originalPath, 'final')
+        db.prepare(`
+            INSERT INTO attachment_creations (
+                id, namespace, session_id, original_path, temp_path, state, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        `).run(id, 'default', 'crashed-session', originalPath, tempPath, Date.now())
+        initial.close()
+
+        const reopened = new Store(dbPath, { attachmentsRoot })
+        expect(await reopened.cleanupOrphanedAttachments()).toBe(1)
+        expect(await reopened.cleanupOrphanedAttachments()).toBe(0)
+        expect(existsSync(originalPath)).toBe(false)
+        expect(existsSync(tempPath)).toBe(false)
+        const state = (reopened as unknown as { db: Database }).db.prepare(
+            'SELECT state FROM attachment_creations WHERE id = ?'
+        ).get(id) as { state: string }
+        expect(state.state).toBe('reconciled')
+        reopened.close()
+    })
+
+    it('does not reconcile creation paths outside the attachment root', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.sqlite')
+        const attachmentsRoot = join(dir, 'attachments')
+        const nestedRoot = join(attachmentsRoot, 'nested')
+        const initial = new Store(dbPath, { attachmentsRoot })
+        const db = (initial as unknown as { db: Database }).db
+        const id = randomUUID()
+        const tempPath = join(nestedRoot, `.${id}.original.${randomUUID()}.tmp`)
+        const originalPath = join(nestedRoot, `${id}.original`)
+        mkdirSync(nestedRoot, { recursive: true })
+        writeFileSync(tempPath, 'temporary')
+        writeFileSync(originalPath, 'final')
+        db.prepare(`
+            INSERT INTO attachment_creations (
+                id, namespace, session_id, original_path, temp_path, state, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        `).run(id, 'default', 'unsafe-session', originalPath, tempPath, Date.now())
+        initial.close()
+
+        const reopened = new Store(dbPath, { attachmentsRoot })
+        await expect(reopened.cleanupOrphanedAttachments()).rejects.toThrow(
+            `Failed to reconcile attachment creation ${id}`
+        )
+        expect(existsSync(originalPath)).toBe(true)
+        expect(existsSync(tempPath)).toBe(true)
+        reopened.close()
+    })
+
+    it('reconciles the journal when staging fails before the rename', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
+        tempDirs.push(dir)
+        const attachmentsRoot = join(dir, 'attachments')
+        const store = new Store(':memory:', { attachmentsRoot })
+        const writeSpy = spyOn(fsPromises, 'writeFile').mockImplementation(async () => {
+            throw new Error('simulated staging write failure')
+        })
+
+        try {
+            await expect(store.attachments.create({
+                namespace: 'default',
+                sessionId: 'write-failure-session',
+                filename: 'write-failure.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('write failure')
+            })).rejects.toThrow('simulated staging write failure')
+        } finally {
+            writeSpy.mockRestore()
+        }
+
+        const db = (store as unknown as { db: Database }).db
+        expect(db.prepare(
+            "SELECT COUNT(*) AS count FROM attachment_creations WHERE state = 'reconciled'"
+        ).get()).toEqual({ count: 1 })
+        expect(readdirSync(attachmentsRoot)).toEqual([])
+        expect(db.prepare('SELECT COUNT(*) AS count FROM attachments').get()).toEqual({ count: 0 })
+        store.close()
+    })
+
+    it('reconciles the journal when the atomic rename fails', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
+        tempDirs.push(dir)
+        const attachmentsRoot = join(dir, 'attachments')
+        const store = new Store(':memory:', { attachmentsRoot })
+        const renameSpy = spyOn(fsPromises, 'rename').mockImplementation(async () => {
+            throw new Error('simulated atomic rename failure')
+        })
+
+        try {
+            await expect(store.attachments.create({
+                namespace: 'default',
+                sessionId: 'rename-failure-session',
+                filename: 'rename-failure.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('rename failure')
+            })).rejects.toThrow('simulated atomic rename failure')
+        } finally {
+            renameSpy.mockRestore()
+        }
+
+        const db = (store as unknown as { db: Database }).db
+        expect(db.prepare(
+            "SELECT COUNT(*) AS count FROM attachment_creations WHERE state = 'reconciled'"
+        ).get()).toEqual({ count: 1 })
+        expect(readdirSync(attachmentsRoot)).toEqual([])
+        expect(db.prepare('SELECT COUNT(*) AS count FROM attachments').get()).toEqual({ count: 0 })
+        store.close()
+    })
+
+    it('keeps a pending journal when cleanup fails and retries it later', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.sqlite')
+        const attachmentsRoot = join(dir, 'attachments')
+        const store = new Store(dbPath, { attachmentsRoot })
+        const db = (store as unknown as { db: Database }).db
+        const id = randomUUID()
+        const tempPath = join(attachmentsRoot, `.${id}.original.${randomUUID()}.tmp`)
+        const originalPath = join(attachmentsRoot, `${id}.original`)
+        mkdirSync(attachmentsRoot, { recursive: true })
+        writeFileSync(tempPath, 'temporary')
+        writeFileSync(originalPath, 'final')
+        db.prepare(`
+            INSERT INTO attachment_creations (
+                id, namespace, session_id, original_path, temp_path, state, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        `).run(id, 'default', 'retry-session', originalPath, tempPath, Date.now())
+        const originalRm = fsPromises.rm.bind(fsPromises)
+        const rmSpy = spyOn(fsPromises, 'rm').mockImplementation(async (path, options) => {
+            if (String(path) === originalPath || String(path) === tempPath) {
+                throw new Error('simulated cleanup failure')
+            }
+            return await originalRm(path, options)
+        })
+
+        try {
+            await expect(store.attachments.cleanupPendingCreations())
+                .rejects.toThrow(`Failed to reconcile attachment creation ${id}`)
+        } finally {
+            rmSpy.mockRestore()
+        }
+
+        expect(db.prepare('SELECT state FROM attachment_creations WHERE id = ?').get(id))
+            .toEqual({ state: 'pending' })
+        expect(existsSync(originalPath)).toBe(true)
+        expect(existsSync(tempPath)).toBe(true)
+        expect(await store.attachments.cleanupPendingCreations()).toBe(1)
+        expect(db.prepare('SELECT state FROM attachment_creations WHERE id = ?').get(id))
+            .toEqual({ state: 'reconciled' })
+        expect(existsSync(originalPath)).toBe(false)
+        expect(existsSync(tempPath)).toBe(false)
+        store.close()
+    })
+
+    it('handles concurrent attachment creation without leaking staging files', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-stress-'))
+        tempDirs.push(dir)
+        const attachmentsRoot = join(dir, 'attachments')
+        const store = new Store(':memory:', { attachmentsRoot })
+        const originals = Array.from({ length: 128 }, (_, index) => Buffer.from(
+            `concurrent attachment ${index}: ${'x'.repeat(4096)}`
+        ))
+
+        const created = await Promise.all(originals.map((original, index) => store.attachments.create({
+            namespace: 'stress',
+            sessionId: `stress-session-${index % 4}`,
+            filename: `attachment-${index}.bin`,
+            mimeType: 'application/octet-stream',
+            original
+        })))
+
+        expect(new Set(created.map((attachment) => attachment.id)).size).toBe(originals.length)
+        const db = (store as unknown as { db: Database }).db
+        expect(db.prepare('SELECT COUNT(*) AS count FROM attachments').get())
+            .toEqual({ count: originals.length })
+        expect(db.prepare(
+            "SELECT COUNT(*) AS count FROM attachment_creations WHERE state = 'committed'"
+        ).get()).toEqual({ count: originals.length })
+        expect(readdirSync(attachmentsRoot)).toHaveLength(originals.length)
+        expect(readdirSync(attachmentsRoot).some((name) => name.endsWith('.tmp'))).toBe(false)
+
+        const loaded = await Promise.all(created.map((attachment) =>
+            store.attachments.readForSessionAsync(
+                attachment.id,
+                attachment.namespace,
+                attachment.sessionId
+            )
+        ))
+        expect(loaded.map((blob) => blob?.data)).toEqual(originals)
         store.close()
     })
 

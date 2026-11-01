@@ -4,7 +4,7 @@ import { dirname } from 'node:path'
 
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
-import { addMessage } from './messages'
+import { addMessage, mergeSessionMessagesInTransaction } from './messages'
 import { clearCachedStatements } from './statementCache'
 import { backfillLastUserMessageAt } from './sessionUserActivity'
 import type { StoredMessage } from './types'
@@ -17,6 +17,12 @@ import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
 import { AttachmentStore, type StoredAttachment } from './attachments'
+
+type ScratchlistAttachmentMetadata = import('@hapi/protocol').ScratchlistAttachmentMetadata
+type ScratchlistMergeSnapshot = {
+    source: ReadonlyMap<string, string>
+    target: ReadonlyMap<string, string>
+}
 
 export type {
     NativeDevicePlatform,
@@ -64,6 +70,7 @@ export type DuplicateSessionMergePlan = {
     namespace: string
     sourceSessionId: string
     targetSessionId: string
+    sourceMessageIds: string[]
     updates: Array<{ messageId: string; content: unknown }>
     inserts: DuplicateSessionMergeMessage[]
 }
@@ -91,6 +98,7 @@ const REQUIRED_TABLES = [
     'event_links',
     'attachments',
     'attachment_deletions',
+    'attachment_creations',
     'session_turns'
 ] as const
 
@@ -179,6 +187,11 @@ export class Store {
         let deleted = 0
         let firstError: unknown
         try {
+            deleted += await this.attachments.cleanupPendingCreations()
+        } catch (error) {
+            firstError ??= error
+        }
+        try {
             deleted += await this.attachments.cleanupPendingDeletions()
         } catch (error) {
             firstError ??= error
@@ -221,6 +234,14 @@ export class Store {
             }
             if (source.active) {
                 throw new Error('Cannot merge an active duplicate session')
+            }
+
+            const currentSourceMessageIds = new Set(
+                (this.db.prepare('SELECT id FROM messages WHERE session_id = ?').all(plan.sourceSessionId) as Array<{ id: string }>)
+                    .map((message) => message.id)
+            )
+            if (!sameMessageIds(currentSourceMessageIds, new Set(plan.sourceMessageIds))) {
+                throw new Error('Source messages changed during duplicate merge; retry')
             }
 
             const targetMessageIds = new Set(
@@ -392,6 +413,14 @@ export class Store {
         )
         try {
             return this.db.transaction(() => {
+                const currentMessageIds = new Set(
+                    this.messages.getAllMessages(fromSessionId)
+                        .filter((message) => message.invokedAt === null)
+                        .map((message) => message.id)
+                )
+                if (!sameMessageIds(currentMessageIds, prepared.messageIds)) {
+                    throw new Error('Queued messages changed while attachment references were being prepared')
+                }
                 for (const [messageId, content] of prepared.rewrittenContents) {
                     if (!this.messages.updateMessageContent(messageId, content)) {
                         throw new Error(`Failed to rewrite queued message ${messageId}`)
@@ -906,6 +935,18 @@ export class Store {
             CREATE TABLE IF NOT EXISTS attachment_deletions (
                 original_path TEXT PRIMARY KEY
             );
+            CREATE TABLE IF NOT EXISTS attachment_creations (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                temp_path TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending', 'committed', 'reconciled')),
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachment_creations_state
+                ON attachment_creations(state, created_at);
             CREATE TABLE IF NOT EXISTS session_turns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
@@ -1450,24 +1491,7 @@ export class Store {
     }
 
     /** v29→v30: add Hub-resident durable attachment metadata and cleanup journal. */
-    /** v29→v30: add upstream read-state columns. */
     private migrateFromV29ToV30(): void {
-        // Branch databases labeled v28 may predate upstream turn columns.
-        this.migrateFromV27ToV28()
-        const columns = this.getSessionColumnNames()
-        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
-            if (columns.size > 0 && !columns.has(name)) {
-                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
-            }
-        }
-        const messageColumns = this.getMessageColumnNames()
-        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
-            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
-        }
-    }
-
-    /** v30→v31: add Hub-resident durable attachment metadata and cleanup journal. */
-    private migrateFromV30ToV31(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
@@ -1485,6 +1509,179 @@ export class Store {
             CREATE TABLE IF NOT EXISTS attachment_deletions (
                 original_path TEXT PRIMARY KEY
             );
+        `)
+
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) {
+                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+            }
+        }
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+        }
+    }
+
+    /** Merge messages and attachment ownership atomically for session consolidation. */
+    mergeSessionMessagesAndAttachments(
+        namespace: string,
+        fromSessionId: string,
+        toSessionId: string,
+        attachmentIds: readonly string[] | null
+    ): { moved: number; oldMaxSeq: number; newMaxSeq: number; attachmentsMoved: number } {
+        return this.db.transaction(() => {
+            const movedMessages = mergeSessionMessagesInTransaction(
+                this.db,
+                fromSessionId,
+                toSessionId
+            )
+            let attachmentResult
+            if (attachmentIds === null) {
+                attachmentResult = this.db.prepare(`
+                    UPDATE attachments
+                    SET session_id = ?
+                    WHERE namespace = ? AND session_id = ?
+                `).run(toSessionId, namespace, fromSessionId)
+            } else if (attachmentIds.length > 0) {
+                const placeholders = attachmentIds.map(() => '?').join(', ')
+                attachmentResult = this.db.prepare(`
+                    UPDATE attachments
+                    SET session_id = ?
+                    WHERE namespace = ?
+                      AND session_id = ?
+                      AND id IN (${placeholders})
+                `).run(toSessionId, namespace, fromSessionId, ...attachmentIds)
+            } else {
+                return { ...movedMessages, attachmentsMoved: 0 }
+            }
+            return {
+                ...movedMessages,
+                attachmentsMoved: Number(attachmentResult.changes)
+            }
+        })()
+    }
+
+    /** Move all merge-owned rows and delete the source in one SQLite transaction. */
+    mergeSessionMessagesAndAttachmentsAndDeleteSession(
+        namespace: string,
+        fromSessionId: string,
+        toSessionId: string,
+        scratchlistAttachments = new Map<string, ScratchlistAttachmentMetadata[]>(),
+        scratchlistSnapshot?: ScratchlistMergeSnapshot
+    ): {
+        moved: number
+        oldMaxSeq: number
+        newMaxSeq: number
+        attachmentsMoved: number
+        scratchlistMoved: number
+        scratchlistCollided: number
+    } {
+        return this.db.transaction(() => {
+            if (scratchlistSnapshot) {
+                const assertScratchlistUnchanged = (sessionId: string, expected: ReadonlyMap<string, string>) => {
+                    const actual = this.scratchlist.list(sessionId)
+                    if (actual.length !== expected.size) {
+                        throw new Error('Scratchlist changed during session merge; retry')
+                    }
+                    for (const entry of actual) {
+                        const snapshot = JSON.stringify({
+                            text: entry.text,
+                            createdAt: entry.createdAt,
+                            updatedAt: entry.updatedAt,
+                            attachments: entry.attachments,
+                        })
+                        if (expected.get(entry.entryId) !== snapshot) {
+                            throw new Error('Scratchlist changed during session merge; retry')
+                        }
+                    }
+                }
+                assertScratchlistUnchanged(fromSessionId, scratchlistSnapshot.source)
+                assertScratchlistUnchanged(toSessionId, scratchlistSnapshot.target)
+            }
+            const movedMessages = mergeSessionMessagesInTransaction(
+                this.db,
+                fromSessionId,
+                toSessionId
+            )
+            const attachmentResult = this.db.prepare(`
+                UPDATE attachments
+                SET session_id = ?
+                WHERE namespace = ? AND session_id = ?
+            `).run(toSessionId, namespace, fromSessionId)
+            const movedScratchlist = this.scratchlist.transferInTransaction(fromSessionId, toSessionId)
+            for (const [entryId, attachments] of scratchlistAttachments) {
+                if (!this.scratchlist.update(toSessionId, entryId, { attachments })) {
+                    throw new Error(`Failed to update merged scratchlist entry: ${entryId}`)
+                }
+            }
+            this.turns.transferSession(fromSessionId, toSessionId)
+            this.usage.transferSessionInTransaction(fromSessionId, toSessionId)
+            this.workGraph.reassignNotifySession(namespace, fromSessionId, toSessionId)
+            if (!this.sessions.deleteSession(fromSessionId, namespace)) {
+                throw new Error('Failed to delete old session during merge')
+            }
+            return {
+                ...movedMessages,
+                attachmentsMoved: Number(attachmentResult.changes),
+                scratchlistMoved: movedScratchlist.moved,
+                scratchlistCollided: movedScratchlist.collided,
+            }
+        })()
+    }
+
+    /** Transfer uploads that arrived during merge work and delete the source atomically. */
+    transferAttachmentsAndDeleteSession(
+        namespace: string,
+        fromSessionId: string,
+        toSessionId: string
+    ): number {
+        return this.db.transaction(() => {
+            const transferred = this.db.prepare(`
+                UPDATE attachments
+                SET session_id = ?
+                WHERE namespace = ? AND session_id = ?
+            `).run(toSessionId, namespace, fromSessionId)
+            this.turns.transferSession(fromSessionId, toSessionId)
+            if (!this.sessions.deleteSession(fromSessionId, namespace)) {
+                throw new Error('Failed to delete old session during merge')
+            }
+            return Number(transferred.changes)
+        })()
+    }
+
+    /** v30→v31: journal attachment creation before filesystem writes. */
+    private migrateFromV30ToV31(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
+                ON attachments(namespace, session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS attachment_deletions (
+                original_path TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS attachment_creations (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                temp_path TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending', 'committed', 'reconciled')),
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachment_creations_state
+                ON attachment_creations(state, created_at);
         `)
     }
 
