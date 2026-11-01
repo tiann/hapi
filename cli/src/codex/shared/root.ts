@@ -70,6 +70,7 @@ export class SharedCodexRoot {
     private turnRevision = 0;
     private settingsRevision = 0;
     private refreshing?: Promise<void>;
+    private suppressAsyncQuestionResults = false;
     private interrupted = false;
     private closed = false;
     private stopping = false;
@@ -765,15 +766,20 @@ export class SharedCodexRoot {
             await this.notifications;
             const response = record(await this.client.request('thread/read', { threadId: this.threadId, includeTurns: false }));
             this.acceptSettings(response);
-            this.asyncQuestions.reconcileHistory(this.threadId, thread);
-            this.projection = new SharedCodexProjection(this.session, this.threadId, id => this.queue.committed(id), undefined, undefined,
-                (threadId, item) => this.asyncQuestions.observeItem(threadId, item), false);
-            const last = Array.isArray(thread.turns) ? record(thread.turns.at(-1)) : {};
-            const lastId = string(last.id);
-            this.currentTurn = undefined;
-            this.latestTurn = lastId ? { id: lastId, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
-            this.interrupted = last.status === 'interrupted';
-            await this.projection.history(thread, { replayTranscript: false });
+            this.suppressAsyncQuestionResults = true;
+            try {
+                this.asyncQuestions.reconcileHistory(this.threadId, thread, false);
+                this.projection = new SharedCodexProjection(this.session, this.threadId, id => this.queue.committed(id), undefined, undefined,
+                    (threadId, item) => this.asyncQuestions.observeItem(threadId, item, !this.suppressAsyncQuestionResults), false);
+                const last = Array.isArray(thread.turns) ? record(thread.turns.at(-1)) : {};
+                const lastId = string(last.id);
+                this.currentTurn = undefined;
+                this.latestTurn = lastId ? { id: lastId, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
+                this.interrupted = last.status === 'interrupted';
+                await this.projection.history(thread, { replayTranscript: false });
+            } finally {
+                this.suppressAsyncQuestionResults = false;
+            }
             if (await this.session.flush() === false) throw new Error('Hub history reconciliation acknowledgement is unavailable');
             if (this.latestTurn?.planId) await this.queue.rewindPlanImplementation(this.latestTurn.planId);
         });

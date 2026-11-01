@@ -67,7 +67,7 @@ export class SharedCodexAsyncQuestions {
     constructor(private readonly session: ApiSessionClient,
         private readonly submit: (threadId: string, text: string, clientUserMessageId: string) => Promise<void>) {}
 
-    observeItem(threadId: string, value: unknown): void {
+    observeItem(threadId: string, value: unknown, emitResults = true): void {
         if (this.closed) return;
         const item = record(value);
         if (item.type === 'userMessage' && Array.isArray(item.content)) {
@@ -79,14 +79,14 @@ export class SharedCodexAsyncQuestions {
                     const resolution = { status: 'resolved' as const, answer: reply.answer };
                     this.completed.set(id, resolution);
                     const question = this.questions.get(id);
-                    if (question) this.resolve(question, resolution);
+                    if (question) this.resolve(question, resolution, emitResults);
                 }
             }
         }
         for (const question of asyncQuestionsForItem(threadId, item)) {
             this.questions.set(question.id, question);
             const resolution = this.completed.get(question.id);
-            if (resolution) { this.resolve(question, resolution); continue; }
+            if (resolution) { this.resolve(question, resolution, emitResults); continue; }
             if (this.pending.has(question.id)) continue;
             this.pending.set(question.id, { question, submitted: false });
             this.session.updateAgentState(state => {
@@ -101,7 +101,7 @@ export class SharedCodexAsyncQuestions {
     }
 
     /** Reconcile cards whose native items were removed, then pre-scan surviving answers. */
-    reconcileHistory(threadId: string, thread: unknown): void {
+    reconcileHistory(threadId: string, thread: unknown, emitResults = true): void {
         const live = new Map<string, AsyncQuestion>()
         const answered = new Set<string>()
         const turns = record(thread).turns
@@ -153,17 +153,17 @@ export class SharedCodexAsyncQuestions {
                 return { ...state, requests, completedRequests }
             })
         }
-        this.history(threadId, thread)
+        this.history(threadId, thread, emitResults)
     }
 
     /** Read answers first so replay never briefly resurrects answered questions. */
-    history(threadId: string, thread: unknown): void {
+    history(threadId: string, thread: unknown, emitResults = true): void {
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         for (const turn of turns) {
             const items = record(turn).items;
             if (!Array.isArray(items)) continue;
-            for (const item of items) if (record(item).type === 'userMessage') this.observeItem(threadId, item);
+            for (const item of items) if (record(item).type === 'userMessage') this.observeItem(threadId, item, emitResults);
         }
     }
 
