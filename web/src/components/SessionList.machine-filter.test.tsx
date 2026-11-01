@@ -235,6 +235,36 @@ describe('SessionList machine filter', () => {
         expect(screen.queryByTitle('/work/docs')).toBeNull()
     })
 
+    it('excludes the desktop session filter from the mobile toolbar budget', () => {
+        vi.stubGlobal('matchMedia', vi.fn(() => ({
+            matches: false,
+            media: '(min-width: 768px)',
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn()
+        })))
+        try {
+            renderSessionList(multiMachineSessions, {
+                'machine-1': makeMachine({ id: 'machine-1' }),
+                'machine-2': makeMachine({ id: 'machine-2' })
+            })
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+            fireEvent.change(input, { target: { value: 'a very long collapsed session search query' } })
+            fireEvent.blur(input)
+
+            const actions = screen.getByTestId('session-list-header-actions')
+            expect(within(actions).queryByTestId('session-toolbar-slot-session-filter')).toBeNull()
+            expect(document.querySelector('[data-measure-id="session-filter"]')).toBeNull()
+        } finally {
+            vi.unstubAllGlobals()
+        }
+    })
+
     it('combines session and machine options in the mobile filter menu', () => {
         renderSessionList(multiMachineSessions)
 
