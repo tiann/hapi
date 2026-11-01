@@ -17,7 +17,7 @@ export function windowsProcessTableCommand(pids?: number[], includeCommandLine =
             '  try { $p=[System.Diagnostics.Process]::GetProcessById($processId) }',
             '  catch [System.ArgumentException] { continue }',
             '  try {',
-            '    try { $marker=$p.StartTime.ToUniversalTime().ToString("yyyy-MM-dd\'T\'HH:mm:ss.ffffff\'0Z\'") }',
+            '    try { $marker=$p.StartTime.ToUniversalTime().ToString("yyyy-MM-dd\'T\'HH:mm:ss.ffffff\'0Z\'", [System.Globalization.CultureInfo]::InvariantCulture) }',
             '    catch { if($p.HasExited){continue}; throw }',
             '    [pscustomobject]@{ProcessId=$processId;ParentProcessId=0;CreationDate=$marker}',
             '  } finally { if($p){$p.Dispose()} }',

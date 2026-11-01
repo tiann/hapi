@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { readWindowsProcessTable, WINDOWS_PROCESS_TABLE_COMMAND } from './windowsProcessStop'
+import { readWindowsProcessTable, WINDOWS_PROCESS_TABLE_COMMAND, windowsProcessTableCommand } from './windowsProcessStop'
 
 describe.skipIf(process.platform !== 'win32')('Windows native process snapshot', () => {
     it('runs the generated command under Windows PowerShell with matching generation markers', async () => {
@@ -11,6 +11,20 @@ describe.skipIf(process.platform !== 'win32')('Windows native process snapshot',
         expect(table!.get(process.pid)?.name).toBeTruthy()
         const direct = await readWindowsProcessTable(15_000, [process.pid])
         expect(direct?.get(process.pid)?.marker).toBe(table!.get(process.pid)?.marker)
+    }, 40_000)
+
+    it('uses invariant generation markers under a non-Gregorian current culture', () => {
+        const culture = "[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('th-TH')\n"
+        const marker = (command: string): string => {
+            const output = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', culture + command], {
+                windowsHide: true, timeout: 15_000, stdio: 'pipe', encoding: 'utf8',
+            })
+            return JSON.parse(output).processes[0].CreationDate
+        }
+
+        const direct = marker(windowsProcessTableCommand([process.pid]))
+        const cim = marker(windowsProcessTableCommand([process.pid], true))
+        expect(direct).toBe(cim)
     }, 40_000)
 
     it('represents a missing process as a complete empty filtered snapshot', async () => {
