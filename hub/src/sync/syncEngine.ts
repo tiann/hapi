@@ -1713,10 +1713,11 @@ export class SyncEngine {
                 throw new Error('Upgrade the source Runner to fork archived Codex sessions')
             }
             let attempt = metadata.codexArchivedFork
-            if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
-            const turnId = attempt ? attempt.boundaryTurnId : messageLocalId ? metadata.conversationHistoryTurns?.[messageLocalId] : undefined
-            if (messageLocalId) {
-                if (!attempt) this.assertInvokedHistoryBoundary(source.id, messageLocalId)
+            const boundaryLocalId = messageLocalId ?? attempt?.boundaryLocalId
+            if (attempt && attempt.boundaryLocalId !== boundaryLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
+            const turnId = attempt ? attempt.boundaryTurnId : boundaryLocalId ? metadata.conversationHistoryTurns?.[boundaryLocalId] : undefined
+            if (boundaryLocalId) {
+                if (!attempt) this.assertInvokedHistoryBoundary(source.id, boundaryLocalId)
                 if (!turnId) throw new Error('No native history point for this message')
             }
             if (!attempt) {
@@ -1726,6 +1727,13 @@ export class SyncEngine {
             }
             const childId = attempt.childSessionId
             let child = this.sessionCache.refreshSession(childId)
+            const forkAtMessageLocalId = boundaryLocalId
+            const forkThroughMessageLocalId = forkAtMessageLocalId ? undefined
+                : child?.metadata?.forkedThroughMessageLocalId ?? latestForkTranscriptLocalId(this.store.messages.getAllMessages(source.id)) ?? ''
+            if (child) {
+                this.persistSharedForkBoundary(childId, namespace, forkAtMessageLocalId, forkThroughMessageLocalId)
+                child = this.sessionCache.refreshSession(childId)
+            }
             if (child?.active) {
                 if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
                     || child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Archived fork child binding is unconfirmed')
@@ -1738,7 +1746,10 @@ export class SyncEngine {
                 child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
                     path: metadata.path, host: metadata.host, machineId: metadata.machineId, flavor: 'codex',
                     forkedFrom: source.id, startedBy: 'runner',
-                    summary: buildForkSessionSummary(metadata)
+                    summary: buildForkSessionSummary(metadata),
+                    ...(forkAtMessageLocalId
+                        ? { forkedAtMessageLocalId: forkAtMessageLocalId }
+                        : { forkedThroughMessageLocalId: forkThroughMessageLocalId })
                 }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
             } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
             if (attempt.spawnAttempted) {
@@ -1749,7 +1760,7 @@ export class SyncEngine {
                 const result = await this.rpcGateway.forkArchivedCodex(metadata.machineId, {
                     operationId: attempt.operationId, sourceSessionId: source.id,
                     sourceThreadId: metadata.codexSessionId, directory: metadata.path,
-                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
+                    ...(forkAtMessageLocalId ? { boundary: { localId: forkAtMessageLocalId, turnId: turnId! } } : {})
                 })
                 if ('error' in result) {
                     if (result.rollbackSafe) {

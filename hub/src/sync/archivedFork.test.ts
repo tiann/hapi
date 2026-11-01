@@ -332,6 +332,25 @@ describe('archived Codex fork coordination', () => {
         } finally { f.engine.stop() }
     })
 
+    for (const boundary of [undefined, 'boundary'] as const) {
+        it(`persists the archived fork attachment boundary for ${boundary ?? 'the current tip'}`, async () => {
+            const f = fixture()
+            try {
+                const result = await f.engine.forkConversation(f.source.id, 'ns', boundary)
+                expect(result.type).toBe('success')
+                if (result.type !== 'success') throw new Error(result.message)
+                const metadata = f.engine.getSession(result.sessionId)?.metadata
+                if (boundary) {
+                    expect(metadata?.forkedAtMessageLocalId).toBe(boundary)
+                    expect(metadata?.forkedThroughMessageLocalId).toBeUndefined()
+                } else {
+                    expect(metadata?.forkedAtMessageLocalId).toBeUndefined()
+                    expect(metadata?.forkedThroughMessageLocalId).toBe('boundary')
+                }
+            } finally { f.engine.stop() }
+        })
+    }
+
     it('does not complete an active child retry until native readiness is confirmed again', async () => {
         const f = fixture()
         try {

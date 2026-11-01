@@ -70,6 +70,7 @@ final class GeneratedMediaLoader {
         self.fetch = fetch
         self.attachmentFetch = attachmentFetch
         images.countLimit = 40
+        images.totalCostLimit = 64 * 1024 * 1024
         files.countLimit = 8
         files.totalCostLimit = 100 * 1024 * 1024
     }
@@ -104,17 +105,25 @@ final class GeneratedMediaLoader {
         let task = Task {
             let payload = try await attachmentFetch(attachmentId)
             return try await Task.detached(priority: .utility) {
-                guard let image = UIImage(data: payload.data)?.preparingForDisplay() else {
+                guard let image = AttachmentPreparer.decodeDownsampled(
+                    payload.data,
+                    maxDimension: AttachmentPolicy.previewMaxDimension
+                ) else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
-                return image
+                return UIImage(cgImage: image)
             }.value
         }
         imageTasks[key] = task
         defer { imageTasks[key] = nil }
         guard let image = try? await task.value else { return nil }
-        images.setObject(image, forKey: key as NSString)
+        images.setObject(image, forKey: key as NSString, cost: Self.decodedCost(of: image))
         return image
+    }
+
+    private static func decodedCost(of image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else { return 0 }
+        return cgImage.bytesPerRow * cgImage.height
     }
 
     func file(for imageId: String, fileName: String, mimeType: String?) async throws -> GeneratedMediaFile {
