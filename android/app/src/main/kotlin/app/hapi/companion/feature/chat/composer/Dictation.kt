@@ -216,13 +216,39 @@ class DictationController(
         }
     }
 
-    /** Recording chip ✕: discard the take (no upload, no final transcript). */
+    /**
+     * Recording chip ✕ — and the disposal call when the screen goes away
+     * for good: discard the take from any live state, releasing everything
+     * it holds. A flush/upload in flight ([DictationState.Transcribing])
+     * has its job cancelled and its realtime session abandoned (socket +
+     * microphone); a start still connecting ([DictationState.Starting]) has
+     * its job — and with it the in-flight handshake — cancelled. No-op
+     * from [DictationState.Idle].
+     */
     fun cancel() {
-        if (_state.value !is DictationState.Recording) return
-        val session = realtimeSession
-        realtimeSession = null
-        if (session != null) runCatching { session.cancel() } else runCatching { recorder.cancel() }
-        _state.value = DictationState.Idle
+        when (_state.value) {
+            DictationState.Idle -> return
+            is DictationState.Recording -> {
+                val session = realtimeSession
+                realtimeSession = null
+                if (session != null) runCatching { session.cancel() } else runCatching { recorder.cancel() }
+                _state.value = DictationState.Idle
+            }
+            DictationState.Starting -> {
+                job?.cancel()
+                _state.value = DictationState.Idle
+            }
+            DictationState.Transcribing -> {
+                // Finalization cancelled: abort the flush/upload, abandon
+                // the session (its cancel releases socket + microphone; the
+                // recorder seam is a no-op once its take was flushed).
+                job?.cancel()
+                val session = realtimeSession
+                realtimeSession = null
+                if (session != null) runCatching { session.cancel() } else runCatching { recorder.cancel() }
+                _state.value = DictationState.Idle
+            }
+        }
     }
 
     private fun startRecording() {

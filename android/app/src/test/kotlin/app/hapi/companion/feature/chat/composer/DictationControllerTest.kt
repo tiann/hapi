@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package app.hapi.companion.feature.chat.composer
 
 import app.hapi.protocol.wire.TranscriptionProviderInfo
@@ -9,10 +11,12 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.yield
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 
 // ------------------------------------------------------------------ fakes --
 
@@ -25,9 +29,11 @@ private class FakeDictationApi : DictationApi {
     )
     var providersFailure: Exception? = null
     var providersCalls = 0
+    var hangProviders = false
 
     var transcribeResult: TranscriptionResponse = TranscriptionResponse(text = "hello world")
     var transcribeFailure: Exception? = null
+    var hangTranscribe = false
     val transcribeCalls = mutableListOf<TranscribeCall>()
 
     class TranscribeCall(
@@ -40,6 +46,7 @@ private class FakeDictationApi : DictationApi {
 
     override suspend fun transcriptionProviders(): TranscriptionProvidersResponse {
         providersCalls += 1
+        if (hangProviders) awaitCancellation()
         providersFailure?.let { throw it }
         return providersResult
     }
@@ -52,6 +59,7 @@ private class FakeDictationApi : DictationApi {
         language: String?,
     ): TranscriptionResponse {
         transcribeCalls += TranscribeCall(audio, filename, mimeType, provider, language)
+        if (hangTranscribe) awaitCancellation()
         transcribeFailure?.let { throw it }
         return transcribeResult
     }
@@ -107,8 +115,12 @@ private class FakeRealtimeSession(private val callbacks: RealtimeTranscriptionCa
     var pendingFinal: String? = null
     var stopFailure: Exception? = null
 
+    /** Emulates a stop suspended mid-finalization (server never answers). */
+    var hangOnStop = false
+
     override suspend fun stop() {
         stopCalls += 1
+        if (hangOnStop) awaitCancellation()
         stopFailure?.let { throw it }
         pendingFinal?.let { callbacks.onFinal(it) }
     }
@@ -497,6 +509,71 @@ class DictationControllerTest {
         assertEquals(1, engine.sessions.single().cancelCalls)
         assertEquals(0, engine.sessions.single().stopCalls)
         assertEquals(0, harness.recorder.cancelCalls)
+        assertTrue(harness.events.isEmpty())
+    }
+
+    // ------------------------- disposal from every state (mic lifecycle) --
+
+    @Test
+    fun `cancel during realtime finalization abandons the session and returns to idle`() = runTest {
+        val engine = FakeRealtimeEngine()
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "deepgram", label = "Deepgram", modes = listOf("realtime")),
+            ),
+        )
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        val session = engine.sessions.single()
+        session.hangOnStop = true // stop suspends mid-finalization
+
+        harness.controller.toggle()
+        assertIs<DictationState.Transcribing>(harness.controller.state.value)
+        runCurrent() // the stop job suspends inside session.stop()
+
+        harness.controller.cancel() // screen disposed mid-finalize
+
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        assertEquals(1, session.stopCalls)
+        assertEquals(1, session.cancelCalls) // session abandoned: socket + mic released
+        runCurrent()
+        assertTrue(harness.events.isEmpty()) // no transcript, no error
+    }
+
+    @Test
+    fun `cancel during standard finalization aborts the upload and returns to idle`() = runTest {
+        val harness = Harness(this)
+        harness.api.hangTranscribe = true
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        harness.controller.toggle()
+        assertIs<DictationState.Transcribing>(harness.controller.state.value)
+        runCurrent() // recorder stopped; upload suspends
+
+        harness.controller.cancel()
+
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        assertEquals(1, harness.recorder.stopCalls) // the take was flushed
+        runCurrent()
+        assertTrue(harness.events.isEmpty())
+    }
+
+    @Test
+    fun `cancel during start cancels the in-flight discovery`() = runTest {
+        val harness = Harness(this)
+        harness.api.hangProviders = true
+
+        harness.controller.toggle()
+        runCurrent()
+        assertIs<DictationState.Starting>(harness.controller.state.value)
+
+        harness.controller.cancel()
+
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        yield()
         assertTrue(harness.events.isEmpty())
     }
 }

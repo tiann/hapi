@@ -88,8 +88,15 @@ internal class DeepgramRealtimeDictation(
     ) : RealtimeTranscriptionSession {
         private val listener = object : ProviderSocketListener {
             override fun onOpen() {
-                openedSocket = true
-                audio.startCapture { chunk -> if (socket.isOpen) socket.send(chunk) }
+                // The handshake can outlive the take: cancel() (or the
+                // connect timeout) abandons the socket while the handshake
+                // is still in flight, and the provider may deliver onOpen
+                // afterwards. Once `done` is set the session is over — the
+                // late open is rejected so the microphone is never started
+                // after cancellation. [beginCaptureIfLive] makes the
+                // done-check and the capture start atomic against
+                // abandon/finish/fail: no window to race through.
+                if (!beginCaptureIfLive()) return
                 callbacks.onConnected()
                 opened.complete(Unit)
             }
@@ -162,8 +169,18 @@ internal class DeepgramRealtimeDictation(
                 return
             }
             socket.send("""{"type":"Finalize"}""")
-            withTimeoutOrNull(STOP_TIMEOUT_MS) { finishedSignal.await() }
-                ?: finish(joinTranscriptParts(committed, interim))
+            try {
+                withTimeoutOrNull(STOP_TIMEOUT_MS) { finishedSignal.await() }
+                    ?: finish(joinTranscriptParts(committed, interim))
+            } catch (cancellation: CancellationException) {
+                // Finalization was cancelled (owner navigated away
+                // mid-flush): abandon the session — release the microphone,
+                // close the socket, drop the server-side Finalize — then
+                // rethrow so the caller observes the cancellation instead of
+                // leaving a zombie take behind.
+                abandon()
+                throw cancellation
+            }
         }
 
         override fun cancel() = abandon()
@@ -224,6 +241,22 @@ internal class DeepgramRealtimeDictation(
             finishedSignal.complete(Unit)
         }
 
+        /**
+         * Mark the socket live and start microphone capture iff the session
+         * has not ended. Synchronized against abandon/finish/fail so the
+         * cancellation check is taken at the very moment of the capture
+         * start — a cancel that lands first is always observed here (no
+         * TOCTOU gap), and one that lands afterwards releases the capture
+         * through its own cleanup().
+         */
+        @Synchronized
+        private fun beginCaptureIfLive(): Boolean {
+            if (done) return false
+            openedSocket = true
+            audio.startCapture { chunk -> if (socket.isOpen) socket.send(chunk) }
+            return true
+        }
+
         @Synchronized
         private fun cleanup() {
             audio.release()
@@ -276,28 +309,49 @@ internal class OkHttpProviderSocketFactory(private val client: OkHttpClient) : P
             // header form `bearer, <token>`.
             .header("Sec-WebSocket-Protocol", "bearer, $bearerToken")
             .build()
-        val webSocket = client.newWebSocket(
-            request,
-            object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    socket.markOpen()
-                    listener.onOpen()
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) = listener.onMessage(text)
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    socket.markClosed()
-                    listener.onClosed()
-                }
-
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    socket.markClosed()
-                    listener.onFailure(t)
-                }
-            },
-        )
+        val webSocket = client.newWebSocket(request, ProviderWebSocketBridge(socket, listener))
         socket.attach(webSocket)
         return socket
+    }
+}
+
+/**
+ * OkHttp → [ProviderSocketListener] bridge. [onClosing] is a
+ * provider-initiated graceful shutdown: acknowledge it (an unacknowledged
+ * close never completes the handshake, leaving the transport hanging), mark
+ * the socket unavailable, and deliver the terminal
+ * [ProviderSocketListener.onClosed] right away — so a server close mid-take
+ * releases capture and settles the UI instead of waiting on a handshake that
+ * may never drain. OkHttp's follow-up [onClosed] (handshake completion) is
+ * forwarded too; the session's done-guard makes the duplicate a no-op.
+ */
+internal class ProviderWebSocketBridge(
+    private val socket: OkHttpProviderSocket,
+    private val listener: ProviderSocketListener,
+) : WebSocketListener() {
+    override fun onOpen(webSocket: WebSocket, response: Response) {
+        socket.markOpen()
+        listener.onOpen()
+    }
+
+    override fun onMessage(webSocket: WebSocket, text: String) = listener.onMessage(text)
+
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+        // Ack with the provider's code; the reason is dropped so an
+        // over-long provider reason can never reject the ack.
+        webSocket.close(code, null)
+        socket.markClosed()
+        listener.onClosed()
+    }
+
+    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+        socket.markClosed()
+        listener.onClosed()
+    }
+
+    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+        socket.markClosed()
+        listener.onFailure(t)
     }
 }
 
@@ -306,10 +360,13 @@ internal class OkHttpProviderSocketFactory(private val client: OkHttpClient) : P
  * tracks it from the listener callbacks ([markOpen]/[markClosed]) — the same
  * contract the engine's fake socket implements.
  */
-private class OkHttpProviderSocket : ProviderSocket {
+internal class OkHttpProviderSocket : ProviderSocket {
     private var webSocket: WebSocket? = null
 
     @Volatile private var open = false
+
+    /** Distinguishes "handshake still in flight" from "was live, now closed". */
+    @Volatile private var everOpened = false
 
     fun attach(webSocket: WebSocket) {
         this.webSocket = webSocket
@@ -317,6 +374,7 @@ private class OkHttpProviderSocket : ProviderSocket {
 
     fun markOpen() {
         open = true
+        everOpened = true
     }
 
     fun markClosed() {
@@ -328,6 +386,14 @@ private class OkHttpProviderSocket : ProviderSocket {
     override fun send(bytes: ByteArray) { webSocket?.send(bytes.toByteString()) }
     override fun close() {
         open = false
-        webSocket?.close(1000, null)
+        val ws = webSocket ?: return
+        if (everOpened) {
+            ws.close(1000, null)
+        } else {
+            // The handshake is still in flight: a graceful close would only
+            // be queued behind the connect, letting it finish and deliver a
+            // late onOpen — abort the connect outright instead.
+            ws.cancel()
+        }
     }
 }

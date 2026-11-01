@@ -6,6 +6,7 @@ import java.io.IOException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -14,6 +15,11 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okio.ByteString
 
 // ------------------------------------------------------------------ fakes --
 
@@ -311,6 +317,73 @@ class DeepgramRealtimeDictationTest {
         assertEquals(1, rig.audio.released)
     }
 
+    // ------------------------------- maintainer blockers (mic lifecycle) --
+
+    @Test
+    fun `late open after cancel during the handshake never starts capture`() = runTest {
+        val rig = Rig()
+        val deferred = rig.startIn(this)
+        runCurrent() // start(): token → socket → suspended in the connect select
+
+        deferred.cancel() // owning scope cancelled while the handshake is in flight
+        runCurrent()
+
+        // cancel() aborted the session: socket closed, mic never started.
+        assertEquals(1, rig.socket.closeCalls)
+        assertEquals(0, rig.audio.started)
+        assertEquals(1, rig.audio.released)
+
+        // The provider delivers the late open anyway: it must be rejected —
+        // no capture start, no connected/final/error callbacks.
+        rig.socket.fireOpen()
+        assertEquals(0, rig.audio.started)
+        assertEquals(0, rig.callbacks.connected)
+        assertNull(rig.callbacks.finalText)
+        assertNull(rig.callbacks.error)
+    }
+
+    @Test
+    fun `cancelling stop mid-finalization abandons resources and rethrows`() = runTest {
+        val rig = Rig()
+        val session = connectSession(rig)
+        rig.socket.fireMessage(results("hel", isFinal = true))
+
+        val stopping = backgroundScope.async { session.stop() }
+        runCurrent()
+        assertEquals(listOf("""{"type":"Finalize"}"""), rig.socket.textSends)
+        assertEquals(1, rig.audio.stopped)
+
+        // The server never answers the Finalize; the owner cancels
+        // mid-finalization (navigated away).
+        stopping.cancel()
+        runCurrent()
+
+        assertTrue(stopping.isCancelled) // cancellation rethrown, not swallowed
+        assertEquals(1, rig.audio.released) // AudioRecord released
+        assertTrue(rig.socket.textSends.contains("""{"type":"CloseStream"}""")) // finalization abandoned
+        assertEquals(1, rig.socket.closeCalls) // socket closed
+        assertNull(rig.callbacks.finalText) // no transcript surfaced
+        assertNull(rig.callbacks.error) // a cancel is not an error
+    }
+
+    @Test
+    fun `provider close during recording settles the session despite the echoed close handshake`() = runTest {
+        val rig = Rig()
+        connectSession(rig)
+
+        // Provider-initiated close arrives twice in production: once from
+        // the OkHttp adapter's onClosing (immediate terminal notification)
+        // and once from its onClosed (handshake completion).
+        rig.socket.fireClosed()
+        rig.socket.fireClosed()
+
+        val error = rig.callbacks.error
+        assertIs<IOException>(error)
+        assertEquals("Deepgram realtime transcription disconnected", error.message)
+        assertEquals(1, rig.audio.released) // capture released exactly once
+        assertEquals(1, rig.socket.closeCalls)
+    }
+
     @Test
     fun `malformed and non-results messages are ignored`() = runTest {
         val rig = Rig()
@@ -333,5 +406,122 @@ class JoinTranscriptPartsTest {
         assertEquals("a b", joinTranscriptParts(" a ", "", "b"))
         assertEquals("", joinTranscriptParts("  ", ""))
         assertEquals("hello", joinTranscriptParts("hello"))
+    }
+}
+
+// --------------------------- production OkHttp adapter (mic lifecycle) --
+
+private class FakeOkHttpWebSocket : WebSocket {
+    var closeCode: Int? = null
+    var closeReason: String? = null
+    var cancelled = false
+
+    override fun request(): Request = throw UnsupportedOperationException()
+    override fun queueSize(): Long = 0L
+    override fun send(text: String): Boolean = true
+    override fun send(bytes: ByteString): Boolean = true
+    override fun close(code: Int, reason: String?): Boolean {
+        closeCode = code
+        closeReason = reason
+        return true
+    }
+
+    override fun cancel() {
+        cancelled = true
+    }
+}
+
+private class RecordingSocketListener : ProviderSocketListener {
+    val events = mutableListOf<String>()
+
+    override fun onOpen() {
+        events += "open"
+    }
+
+    override fun onMessage(text: String) {
+        events += "message"
+    }
+
+    override fun onClosed() {
+        events += "closed"
+    }
+
+    override fun onFailure(error: Throwable) {
+        events += "failure"
+    }
+}
+
+private fun switchProtocolsResponse(): Response = Response.Builder()
+    .request(Request.Builder().url("https://api.deepgram.com/v1/listen").build())
+    .protocol(Protocol.HTTP_1_1)
+    .code(101)
+    .message("Switching Protocols")
+    .build()
+
+/** The production OkHttp adapter's provider-initiated-close contract. */
+class DeepgramOkHttpSocketBridgeTest {
+
+    @Test
+    fun `provider-initiated close is acknowledged marked unavailable and delivered as terminal`() {
+        val socket = OkHttpProviderSocket()
+        val listener = RecordingSocketListener()
+        val bridge = ProviderWebSocketBridge(socket, listener)
+        val webSocket = FakeOkHttpWebSocket()
+
+        bridge.onOpen(webSocket, switchProtocolsResponse())
+        assertTrue(socket.isOpen)
+        assertEquals(listOf("open"), listener.events)
+
+        bridge.onClosing(webSocket, 1000, "provider shutting down")
+
+        // Acknowledged back to the provider (close frame, no echoed
+        // reason), marked unavailable, terminal notification delivered
+        // synchronously so capture is released and the UI settles.
+        assertEquals(1000, webSocket.closeCode)
+        assertNull(webSocket.closeReason)
+        assertFalse(socket.isOpen)
+        assertEquals(listOf("open", "closed"), listener.events)
+    }
+
+    @Test
+    fun `handshake-completed close after the provider close is still forwarded once more`() {
+        val socket = OkHttpProviderSocket()
+        val listener = RecordingSocketListener()
+        val bridge = ProviderWebSocketBridge(socket, listener)
+        val webSocket = FakeOkHttpWebSocket()
+        bridge.onOpen(webSocket, switchProtocolsResponse())
+
+        bridge.onClosing(webSocket, 1000, "")
+        bridge.onClosed(webSocket, 1000, "") // OkHttp follow-up
+
+        // The bridge forwards both; the session's done-guard dedups.
+        assertEquals(listOf("open", "closed", "closed"), listener.events)
+        assertFalse(socket.isOpen)
+    }
+
+    @Test
+    fun `closing a socket whose handshake never completed aborts the in-flight connect`() {
+        val socket = OkHttpProviderSocket()
+        val webSocket = FakeOkHttpWebSocket()
+        socket.attach(webSocket)
+
+        socket.close() // cancel() racing the handshake
+
+        assertTrue(webSocket.cancelled) // connect aborted outright...
+        assertNull(webSocket.closeCode) // ...not a queued graceful close
+    }
+
+    @Test
+    fun `closing a socket that was live is a graceful close`() {
+        val socket = OkHttpProviderSocket()
+        val webSocket = FakeOkHttpWebSocket()
+        socket.attach(webSocket)
+        socket.markOpen()
+
+        socket.close()
+
+        assertFalse(webSocket.cancelled)
+        assertEquals(1000, webSocket.closeCode)
+        assertFalse(socket.isOpen)
     }
 }
