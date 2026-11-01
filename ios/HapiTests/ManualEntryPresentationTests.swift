@@ -2,17 +2,19 @@ import HapiClient
 import Observation
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import Hapi
 
 @MainActor
 final class ManualEntryPresentationTests: XCTestCase {
-    @Observable
+    @Observable @MainActor
     fileprivate final class Driver {
         var isPairing = false
         var failure: PairingFailure?
         var submissions: [ManualPairingForm.Submission] = []
         var edits = 0
+        var completePaste: ((Data?, Error?) -> Void)?
     }
 
     private struct Harness: View {
@@ -144,21 +146,66 @@ final class ManualEntryPresentationTests: XCTestCase {
         let address = try field(.address, in: window)
         let token = try field(.accessToken, in: window)
         let link = "hapicompanion://bind?hub=https://provider.test&code=token:team"
-        for provider in [NSItemProvider(object: link as NSString), NSItemProvider(object: try XCTUnwrap(URL(string: link)) as NSURL)] {
-            type("", into: address)
-            type("", into: token)
-            try await settle()
-            XCTAssertTrue(address.canPaste([provider]))
-            address.paste(itemProviders: [provider])
-            let clock = ContinuousClock()
-            let deadline = clock.now.advanced(by: .seconds(3))
-            while token.text != "token:team", clock.now < deadline {
-                try await Task.sleep(for: .milliseconds(50))
+        let url = try XCTUnwrap(URL(string: link)) as NSURL
+        let titledURL = NSItemProvider(object: url)
+        titledURL.registerObject("Pairing link" as NSString, visibility: .all)
+        for input in [address, token] {
+            for provider in [NSItemProvider(object: link as NSString), NSItemProvider(object: url), titledURL] {
+                type("", into: address)
+                type("", into: token)
+                try await settle()
+                XCTAssertTrue(input.canPaste([provider]))
+                input.paste(itemProviders: [provider])
+                try await waitForText("token:team", in: token)
+                XCTAssertEqual(address.text, "provider.test")
+                XCTAssertTrue(driver.submissions.isEmpty)
             }
-            XCTAssertEqual(address.text, "provider.test")
-            XCTAssertEqual(token.text, "token:team")
-            XCTAssertTrue(driver.submissions.isEmpty)
         }
+    }
+
+    func testSystemItemProvidersPreserveSelectionAndItemOrderForOrdinaryText() async throws {
+        let driver = Driver()
+        let window = try makeWindow(Harness(driver: driver))
+        defer { window.isHidden = true }
+        try await settle()
+        let address = try field(.address, in: window)
+        type("prefix.test", into: address)
+        try await settle()
+        let end = try XCTUnwrap(address.position(from: address.beginningOfDocument, offset: 6))
+        address.selectedTextRange = address.textRange(from: address.beginningOfDocument, to: end)
+        address.paste(itemProviders: [NSItemProvider(object: "hu" as NSString), NSItemProvider(object: "b" as NSString)])
+        try await waitForText("hub.test", in: address)
+        XCTAssertEqual(try field(.accessToken, in: window).text, "")
+        XCTAssertTrue(driver.submissions.isEmpty)
+    }
+
+    func testSystemItemProviderFinishingAfterPairingStartsDoesNotChangeTheForm() async throws {
+        let driver = Driver()
+        let window = try makeWindow(Harness(driver: driver))
+        defer { window.isHidden = true }
+        try await settle()
+        let address = try field(.address, in: window)
+        let provider = NSItemProvider()
+        let loadStarted = expectation(description: "Provider load started")
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier, visibility: .all) { completion in
+            Task { @MainActor in
+                driver.completePaste = completion
+                loadStarted.fulfill()
+            }
+            return nil
+        }
+        address.paste(itemProviders: [provider])
+        await fulfillment(of: [loadStarted], timeout: 3)
+        driver.isPairing = true
+        try await settle()
+        let edits = driver.edits
+        let completePaste = try XCTUnwrap(driver.completePaste)
+        completePaste(Data("hapicompanion://bind?hub=https://late.test&code=late".utf8), nil)
+        try await settle()
+        XCTAssertEqual(address.text, "")
+        XCTAssertEqual(try field(.accessToken, in: window).text, "")
+        XCTAssertEqual(driver.edits, edits)
+        XCTAssertTrue(driver.submissions.isEmpty)
     }
 
     func testTypingPreservesSelectionAndClearingDoesNotRestoreTheImportedURL() async throws {
@@ -247,6 +294,14 @@ final class ManualEntryPresentationTests: XCTestCase {
             let window = try makeWindow(Harness(driver: driver, locale: Locale(identifier: locale), typeSize: typeSize), width: 320)
             defer { window.isHidden = true }
             try await settle()
+            // Keep 320pt of usable form width when the device has side chrome.
+            let horizontalInsets = window.safeAreaInsets.left + window.safeAreaInsets.right
+            if horizontalInsets > 0 {
+                window.frame.size.width = 320 + horizontalInsets
+                window.layoutIfNeeded()
+                try await settle()
+            }
+            XCTAssertEqual(window.bounds.inset(by: window.safeAreaInsets).width, 320, accuracy: 1)
             let address = try field(.address, in: window)
             let rect = address.convert(address.bounds, to: window)
             XCTAssertGreaterThanOrEqual(rect.height, 44)
@@ -288,6 +343,15 @@ final class ManualEntryPresentationTests: XCTestCase {
     private func type(_ value: String, into field: UITextField) {
         field.text = value
         field.sendActions(for: .editingChanged)
+    }
+
+    private func waitForText(_ text: String, in field: UITextField, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while field.text != text, clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(field.text, text, file: file, line: line)
     }
 
     private func paste(_ value: String, into field: UITextField, range: UITextRange? = nil) throws {

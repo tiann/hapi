@@ -143,17 +143,71 @@ struct AgentReasoningBlockView: View {
 /// switches, errors, turn duration, …); wording via `eventPresentation`.
 struct AgentEventBlockView: View {
     let block: AgentEventBlock
+    @ChatStoredState private var expanded: Bool
+
+    init(block: AgentEventBlock) {
+        self.block = block
+        _expanded = ChatStoredState(wrappedValue: false, id: block.id, field: "expanded")
+    }
 
     var body: some View {
-        let presentation = eventPresentation(block.event)
-        Text([presentation.icon, presentation.text].compactMap { $0 }.joined(separator: " "))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 2)
+        if let compact = compactionPresentation(block.event), compact.hasSummary || compact.tokenDelta != nil {
+            CompactionSummaryCard(id: block.id, presentation: compact, expanded: $expanded)
+        } else {
+            let presentation = eventPresentation(block.event)
+            Text([presentation.icon, presentation.text].compactMap { $0 }.joined(separator: " "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 2)
+        }
+    }
+}
+
+struct CompactionSummaryCard: View {
+    let id: String
+    let presentation: CompactionPresentation
+    @Binding var expanded: Bool
+
+    private var header: some View {
+        HStack {
+            Text(verbatim: "📦 \(presentation.title)")
+                .fixedSize(horizontal: false, vertical: true)
+            if presentation.hasSummary {
+                Spacer(minLength: 4)
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .accessibilityHidden(true)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(verbatim: "📦 \(presentation.title)"))
+        .accessibilityIdentifier("compaction-header-\(id)")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if presentation.hasSummary {
+                Button { expanded.toggle() } label: { header.frame(minHeight: 44) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("compaction-toggle-\(id)")
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            } else {
+                header
+            }
+            if presentation.hasSummary && expanded {
+                CachedMarkdownView(markdown: presentation.summary)
+                    .accessibilityIdentifier("compaction-summary-\(id)")
+            }
+        }
+        .padding(12)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.2)))
     }
 }
 

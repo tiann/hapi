@@ -127,7 +127,7 @@ export function SessionRowSummary(props: {
             ? classifySessionAttention(s, {
                 selected,
                 lastSeenAt: getSessionLastSeenAt(s.id),
-                manualUnreadAt: getSessionManualUnreadAt(s.id),
+                manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
             })
             : null,
         [s, selected, showDetailedStatus, lastSeenVersion]

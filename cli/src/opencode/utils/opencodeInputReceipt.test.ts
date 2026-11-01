@@ -21,6 +21,8 @@ describe('fetchOpencodeUserMessages', () => {
         [{ ...user, parts: undefined }],
         [{ ...user, parts: [null] }],
         [{ ...user, parts: [{ type: 'text', text: 42 }] }],
+        [{ ...user, parts: [{ type: 'text', text: 'correction', synthetic: 'true' }] }],
+        [{ ...user, parts: [{ type: 'text', text: 'correction', ignored: {} }] }],
         [user, user]
     ])('does not treat malformed or duplicate history as an input receipt: %j', async data => {
         await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => Response.json(data) })).resolves.toBeNull();
@@ -29,6 +31,30 @@ describe('fetchOpencodeUserMessages', () => {
     it('returns unknown for an unavailable native endpoint', async () => {
         await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => new Response(null, { status: 404 }) })).resolves.toBeNull();
         await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => { throw new Error('offline'); } })).resolves.toBeNull();
+    });
+
+    it.each(['synthetic', 'ignored'])('retains an internal %s row identity without using its text as input proof', async flag => {
+        const helper = { ...user, parts: [{ type: 'text', text: 'correction', [flag]: true }] };
+        await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => Response.json([helper]) }))
+            .resolves.toEqual([{ id: 'user-1', text: null }]);
+    });
+
+    it('reads only submitted text beside synthetic or ignored helper parts', async () => {
+        const mixed = { ...user, parts: [
+            { type: 'text', text: 'helper', synthetic: true },
+            { type: 'text', text: 'correction' },
+            { type: 'text', text: 'display only', ignored: true }
+        ] };
+        await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => Response.json([mixed]) }))
+            .resolves.toEqual([{ id: 'user-1', text: 'correction' }]);
+    });
+
+    it.each([
+        { parts: [{ type: 'compaction', auto: true }, { type: 'text', text: 'correction' }] },
+        { parts: [{ type: 'text', text: 'correction', metadata: { compaction_continue: true } }] }
+    ])('does not use native compaction controls or continuations as input proof', async ({ parts }) => {
+        await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => Response.json([{ ...user, parts }]) }))
+            .resolves.toEqual([{ id: 'user-1', text: null }]);
     });
 
     it('does not send without a native session context', async () => {

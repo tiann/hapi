@@ -22,7 +22,7 @@ or Apple developer setup is needed on your hub. See [Notifications](#notificatio
 ### Build from source (developers)
 
 The app source is in the repository. Development builds follow the
-[iOS README](https://github.com/tiann/hapi/blob/main/ios/README.md) (Xcode 16
+[iOS README](https://github.com/tiann/hapi/blob/main/ios/README.md) (Xcode 27.1
 or newer, shared `Hapi` scheme; device builds require signing) or the
 [Android README](https://github.com/tiann/hapi/blob/main/android/README.md)
 (JDK 17+, Android SDK, Gradle wrapper). Self-built apps need their own push
@@ -89,12 +89,27 @@ directory browsing and session creation.
 |---|---|
 | Chat and permissions | Streaming messages, history, tool inspection, approvals and question answering on both platforms. |
 | Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. |
+| Android incoming shares | Share files, photos, text or links to HAPI, choose a session and confirm sending from its composer. The picker can switch paired hubs and explicitly restore stopped sessions. |
 | Session controls | Both support pin, rename, stopping a turn and sending to resume an inactive session. Active sessions can be archived; inactive sessions can be reopened explicitly or deleted. |
 | Files and Git | Open **Session files** from the chat menu to browse/search files, inspect Git status and read diffs. |
 | Scratchlist | On iOS, tap the tray beside the composer attachment button to enter **Save draft** mode; Android uses the chat menu. Text and attachments sync within the session. |
 | Dictation | Record audio, transcribe through a configured hub provider, then edit the inserted text before sending. |
 | Usage and storage | Available only to the hub owner (`default` namespace). |
 | Display | English/Simplified Chinese, theme preferences, system text scaling and machine filtering on the session list. |
+
+### Share to an Android session
+
+In another app, choose **Share → HAPI**, then select a session. Use the hub
+menu to choose another paired hub, or search the session list. A stopped
+session asks for restoration before files can upload. HAPI adds the files and
+any accompanying text to the session composer, preserving its existing draft;
+review the content and tap **Send**.
+
+Files use the existing attachment limits and image compression policy. Failed
+files must be retried or removed before continuing. Before import, pending
+content stays in private local storage for up to 24 hours, including while
+pairing or recovering from process recreation. After import, ordinary Android
+attachment behavior applies: leaving the chat discards unsent attachments.
 
 ### Session-list parity
 
@@ -147,8 +162,9 @@ separate from exporting an entire session.
 
 ## Multiple hubs and sign-out
 
-The home screen's hub menu lets you add or switch hubs, open Settings, and
-sign out. You can keep several hubs paired, with one active at a time; session
+On iOS, Settings lists your hubs: add or switch hubs and sign out there. On
+Android, the home screen's hub menu lets you add or switch hubs, open Settings,
+and sign out. You can keep several hubs paired, with one active at a time; session
 lists and drafts belong to their hub. Signing out removes that hub's stored
 credentials and attempts to unregister its push token.
 

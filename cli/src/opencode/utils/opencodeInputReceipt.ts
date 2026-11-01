@@ -1,12 +1,13 @@
 import type { FetchLike } from './opencodeCompactBridge';
 
-export type OpencodeUserMessage = { id: string; text: string };
+/** Null text retains a native identity without treating internal content as input proof. */
+export type OpencodeUserMessage = { id: string; text: string | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Native user entries prove input acceptance independently of model completion. */
+/** Submitted native text can prove acceptance; internal rows retain identity only. */
 export async function fetchOpencodeUserMessages(opts: {
     baseUrl: string | null;
     sessionId: string | null;
@@ -30,14 +31,22 @@ export async function fetchOpencodeUserMessages(opts: {
             const id = entry.info.id;
             if (typeof id !== 'string' || !id || ids.has(id) || !Array.isArray(entry.parts)) return null;
             let text = '';
+            let hasSubmittedText = false;
+            let internal = entry.info.type === 'compaction' || entry.info.summary === true;
             for (const part of entry.parts) {
                 if (!isRecord(part)) return null;
+                if (part.type === 'compaction'
+                    || (isRecord(part.metadata) && part.metadata.compaction_continue === true)) internal = true;
                 if (part.type !== 'text') continue;
                 if (typeof part.text !== 'string') return null;
+                if ((part.synthetic !== undefined && typeof part.synthetic !== 'boolean')
+                    || (part.ignored !== undefined && typeof part.ignored !== 'boolean')) return null;
+                if (part.synthetic === true || part.ignored === true) continue;
+                hasSubmittedText = true;
                 text += part.text;
             }
             ids.add(id);
-            messages.push({ id, text });
+            messages.push({ id, text: !internal && hasSubmittedText ? text : null });
         }
         return messages;
     } catch {

@@ -509,7 +509,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     await restoreQueuedReservation();
                     return { steered: false, error: 'Active turn changed' };
                 }
-                let steer: { dispatched: Promise<void>; completed: Promise<void> };
+                let steer: { dispatched: Promise<void>; completed: Promise<string | null> };
                 try {
                     steer = backend.beginSoftSteerPrompt(acpSessionId, [{
                         type: 'text',
@@ -557,7 +557,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // JSON-RPC rejection means ACP never accepted the instruction
                 // (restore it for the next prompt), while a transport failure
                 // (abort/disconnect) keeps the row reserved — never re-delivered.
-                void steer.completed.then(() => {
+                void steer.completed.then((stopReason) => {
+                    // Abort answers an unfinished soft steer with `cancelled`.
+                    // Cursor may or may not have folded it into the turn, so
+                    // hold it for explicit Retry/Cancel instead of claiming it.
+                    if (stopReason === 'cancelled') {
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        return;
+                    }
                     // Completion means ACP accepted the inject: the ACK must
                     // reach the hub even when an abort reset the queue and
                     // cancelled the reservation in between.

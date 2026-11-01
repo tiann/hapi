@@ -60,6 +60,7 @@ See `src/router.tsx` for route definitions.
 - Pending permission request count.
 - Agent name and model display.
 - Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
+- Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.
 - Machine/project grouping, pinned and in-progress sections, and configurable collapsed previews.
 
 ### Session title lock
@@ -119,7 +120,7 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 Modular session creation:
 
 - Machine selector
-- Directory input with recent paths
+- Directory input with recent paths. The path tail is revealed after loading or selecting a path and after leaving the editor. Unfocused inputs support horizontal touch scrolling; focused inputs retain native editing and text selection.
 - Agent type selector
 - Model selector
 - Per-agent permission, effort, and collaboration controls when supported

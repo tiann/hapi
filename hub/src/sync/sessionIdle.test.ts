@@ -186,9 +186,10 @@ describe('SessionCache.reconcileKeepaliveIdle', () => {
         // Needs a file-backed store so the human-turn clock can be backdated
         // directly; `touchSessionUpdatedAt` is forward-only by design.
         const dir = mkdtempSync(join(tmpdir(), 'hapi-1820-'))
+        let store: Store | undefined
         try {
             const dbPath = join(dir, 'hapi.db')
-            const store = new Store(dbPath)
+            store = new Store(dbPath)
             const cache = new SessionCache(store, createPublisher([]))
             const sessionId = cache.getOrCreateSession(
                 'tag-restart',
@@ -226,6 +227,7 @@ describe('SessionCache.reconcileKeepaliveIdle', () => {
         } finally {
             // finally, not a trailing call: a failing assertion above would
             // otherwise leak the temp DB on every run.
+            store?.close()
             rmSync(dir, { recursive: true, force: true })
         }
     })

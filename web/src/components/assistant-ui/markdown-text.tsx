@@ -38,6 +38,17 @@ import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
 import { DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB, useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
+import { ChatMarkdownImage } from '@/components/assistant-ui/markdown-image'
+import {
+    classifyScheme,
+    denyOnlyTransform,
+    hasScheme,
+    isDeniedScheme,
+    isExternalHttpHref,
+    normalizedScheme,
+} from '@/lib/markdown-uri-policy'
+
+export { classifyScheme, denyOnlyTransform, isExternalHttpHref } from '@/lib/markdown-uri-policy'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
@@ -138,28 +149,8 @@ export const MARKDOWN_COMPONENTS_BY_LANGUAGE = {
     },
 } satisfies NonNullable<MarkdownTextPrimitiveProps['componentsByLanguage']>
 
-// ── URI scheme policy (inlined from url-scheme-policy.ts) ───────────────────
-//
-// IANA-registered safe schemes — mirrors react-markdown defaultUrlTransform exactly.
-// Source: node_modules/react-markdown/lib/index.js:124  /^(https?|ircs?|mailto|xmpp)$/i
-const IANA_SAFE_SCHEMES: ReadonlySet<string> = new Set([
-    'http',
-    'https',
-    'irc',
-    'ircs',
-    'mailto',
-    'xmpp',
-])
-
-// Schemes that must always be blocked regardless of user preference.
-// Includes file: because Chromium denies navigation from http(s) origins.
-const DENY_SCHEMES: ReadonlySet<string> = new Set([
-    'javascript',
-    'data',
-    'vbscript',
-    'file',
-])
-
+// URI classification and deny-only URL transformation live in
+// `markdown-uri-policy.ts` so file assets and chat Markdown share one policy.
 /**
  * Extract the normalised scheme from a URL string.
  *
@@ -175,25 +166,6 @@ const DENY_SCHEMES: ReadonlySet<string> = new Set([
  *
  * Returns null when no valid scheme separator is found.
  */
-function normalizedScheme(url: string): string | null {
-    let value = url.trimStart()
-    for (let i = 0; i < 2; i++) {
-        try {
-            const next = decodeURIComponent(value)
-            if (next === value) break
-            value = next
-        } catch {
-            break
-        }
-    }
-    const colonIndex = value.indexOf(':')
-    if (colonIndex <= 0) return null
-    // Strip ASCII control chars (U+0000–U+001F, DEL U+007F) and all whitespace
-    // from the scheme name. Browsers strip exactly these characters during
-    // navigation, so `java\nscript` navigates as `javascript`.
-    return value.slice(0, colonIndex).replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase()
-}
-
 /**
  * Classify a URL string by its scheme.
  *
@@ -203,14 +175,6 @@ function normalizedScheme(url: string): string | null {
  *
  * @returns 'iana' | 'deny' | 'custom'
  */
-export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
-    const scheme = normalizedScheme(url)
-    if (scheme === null) return 'deny'
-    if (DENY_SCHEMES.has(scheme)) return 'deny'
-    if (IANA_SAFE_SCHEMES.has(scheme)) return 'iana'
-    return 'custom'
-}
-
 /**
  * Returns true when href contains a URL scheme (i.e. a "scheme:" prefix that
  * appears before any path/query/fragment delimiter).
@@ -226,13 +190,6 @@ export function classifyScheme(url: string): 'iana' | 'deny' | 'custom' {
  * as 'iana' so the browser/router can handle them normally (fixing the regression
  * where relative markdown links were silently blocked by the onClick deny guard).
  */
-function hasScheme(href: string): boolean {
-    const colonIdx = href.indexOf(':')
-    if (colonIdx <= 0) return false
-    const boundaryIdx = href.search(/[/?#]/)
-    return boundaryIdx < 0 || colonIdx < boundaryIdx
-}
-
 /**
  * True when href is a genuine external http(s) link — as opposed to a
  * relative/SPA href (no scheme, e.g. `/settings`) or another scheme
@@ -243,13 +200,6 @@ function hasScheme(href: string): boolean {
  * a relative href would open the whole app in a second tab instead of
  * navigating in-app, so this must stay scoped to real http(s) URLs.
  */
-export function isExternalHttpHref(href: string | null | undefined): boolean {
-    if (!href || !hasScheme(href)) return false
-    const colonIdx = href.indexOf(':')
-    const scheme = href.slice(0, colonIdx).toLowerCase()
-    return scheme === 'http' || scheme === 'https'
-}
-
 // ── URL sanitize transform (deny-only) ──────────────────────────────────────
 // Passed as urlTransform to MarkdownTextPrimitive. Only deny-listed schemes
 // are stripped; every other scheme (IANA + custom) passes through so the
@@ -266,17 +216,6 @@ export function isExternalHttpHref(href: string | null | undefined): boolean {
 // <img src> is also stripped because DENY_SCHEMES includes 'data'. However,
 // react-markdown's own defaultUrlTransform strips all data: URLs identically,
 // so this is not a regression introduced by this PR.
-export function denyOnlyTransform(url: string): string {
-    if (!url) return url
-    const trimmed = url.trimStart()
-    const colonIdx = trimmed.indexOf(':')
-    const slashIdx = trimmed.search(/[/?#]/)
-    if (colonIdx < 0 || (slashIdx >= 0 && slashIdx < colonIdx)) {
-        return url
-    }
-    return classifyScheme(url) === 'deny' ? '' : url
-}
-
 // ── Allowed-schemes state (inlined from useAllowedSchemes.ts) ───────────────
 
 const STORAGE_KEY = 'hapi-allowed-schemes'
@@ -305,7 +244,7 @@ function readAllowedFromStorage(): Set<string> {
         return new Set(
             parsed
                 .filter((s): s is string => typeof s === 'string')
-                .filter((s) => !DENY_SCHEMES.has(s))
+                .filter((s) => !isDeniedScheme(s))
         )
     } catch {
         return new Set()
@@ -350,7 +289,7 @@ function useAllowedSchemes() {
     }, [])
 
     const allow = useCallback((scheme: string) => {
-        if (DENY_SCHEMES.has(scheme)) return
+        if (isDeniedScheme(scheme)) return
         setAllowed((prev) => {
             if (prev.has(scheme)) return prev
             const next = new Set(prev)
@@ -362,7 +301,7 @@ function useAllowedSchemes() {
 
     const isAllowed = useCallback(
         (scheme: string): boolean => {
-            if (DENY_SCHEMES.has(scheme)) return false
+            if (isDeniedScheme(scheme)) return false
             return allowed.has(scheme)
         },
         [allowed]
@@ -586,13 +525,14 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & {
 }
 
 function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessionId: string }) {
+    const { targetSessionId, ...anchorProps } = props
     const navigate = useNavigate()
-    const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
+    const rel = anchorProps.target === '_blank' ? (anchorProps.rel ?? 'noreferrer') : anchorProps.rel
     // Preserve Vite BASE_URL for copy / open-in-new-tab (SPA click uses navigate).
     const href = buildSessionReferencePath(props.targetSessionId)
 
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
-        props.onClick?.(event)
+        anchorProps.onClick?.(event)
         if (event.defaultPrevented) return
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
 
@@ -606,7 +546,7 @@ function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessio
 
     return (
         <a
-            {...props}
+            {...anchorProps}
             href={href}
             rel={rel}
             onClick={handleClick}
@@ -936,7 +876,7 @@ function Image(props: ComponentPropsWithoutRef<'img'>) {
     if (fileBase && path) {
         return <SessionFileImage {...props} sessionId={fileBase.sessionId} path={path} />
     }
-    return <img {...props} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
+    return <ChatMarkdownImage {...props} />
 }
 
 type DefaultComponentsMap = {
