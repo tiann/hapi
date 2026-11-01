@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { mergeReadState } from '@hapi/protocol'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
@@ -26,6 +27,7 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
     notFound: boolean
     refetch: () => Promise<unknown>
 } {
+    const queryClient = useQueryClient()
     const resolvedSessionId = sessionId ?? 'unknown'
     const query = useQuery({
         queryKey: queryKeys.session(resolvedSessionId),
@@ -33,7 +35,12 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            return await api.getSession(sessionId)
+            const response = await api.getSession(sessionId)
+            const current = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
+            return { ...response, session: { ...response.session,
+                contentRevision: Math.max(current?.contentRevision ?? 0, response.session.contentRevision ?? 0),
+                readState: mergeReadState(current?.readState, response.session.readState)
+            } }
         },
         enabled: Boolean(api && sessionId),
         staleTime: SESSION_DETAIL_STALE_TIME_MS,

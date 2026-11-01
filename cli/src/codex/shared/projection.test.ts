@@ -1,10 +1,53 @@
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { SharedCodexProjection, inputText } from './projection';
 import { codexPlanProposalId } from './plan';
 import { extractNotifySummary } from '@hapi/protocol/messages';
+import { asyncQuestionsForItem } from './asyncQuestions';
 
 describe('shared history projection', () => {
+    it('displays async answers as readable user messages while preserving native IDs', async () => {
+        const sendUserMessage = vi.fn(); const committed = vi.fn(async () => {});
+        const observe = vi.fn();
+        const session = { getMetadata: () => ({}), updateMetadata: vi.fn(), sendUserMessage , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed, undefined, undefined, observe);
+        const text = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: '["request_user_input_async","call_async",0]', question: 'Which client?', answer: 'Web'
+        }])}\n</send_user_message_question_reply>`;
+        const item = { type: 'userMessage', id: 'native-answer', clientId: 'client-answer', content: [{ type: 'text', text }] };
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        expect(observe).toHaveBeenCalledWith('thread', item);
+        expect(committed).toHaveBeenCalledWith('client-answer');
+        expect(sendUserMessage).toHaveBeenCalledWith('Which client?\nWeb', undefined, 'client-answer', { acknowledgeConsumption: false });
+    });
+    it.each([undefined, 'root'])('projects async questions as actionable cards, including active snapshots (parent: %s)', async parentThreadId => {
+        const send = vi.fn();
+        const observe = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId, undefined, observe);
+        const item = { type: 'agentMessage', id: 'call_async', delivery: 'async', phase: 'final_answer',
+            text: 'Which client?\n- Web\n- Terminal', questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] };
+        await projection.notification('item/started', { threadId: 'thread', turnId: 'turn', item });
+        expect(send).not.toHaveBeenCalled();
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        expect(send).toHaveBeenCalledOnce();
+        const question = asyncQuestionsForItem('thread', item)[0];
+        const body = parentThreadId ? send.mock.calls[0][0].message : send.mock.calls[0][0];
+        expect(body).toMatchObject({ type: 'tool-call', name: 'request_user_input', callId: question.id, input: question.input });
+        expect(observe).toHaveBeenCalledWith('thread', item);
+        const live = send.mock.calls.slice();
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [item] }] });
+        expect(send.mock.calls).toEqual(live);
+        // Async notifications with no questions still render their ordinary text.
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { ...item, id: 'update', text: 'Still working', questions: null } });
+        expect(parentThreadId ? send.mock.lastCall![0].message : send.mock.lastCall![0]).toMatchObject({ type: 'message', message: 'Still working' });
+    });
     it('acknowledges child output after projecting its trace rows', async () => {
         const order: string[] = [];
         const session = { getMetadata: () => ({}),
@@ -24,7 +67,7 @@ describe('shared history projection', () => {
         const session = { emitMessagesConsumed: vi.fn(() => { order.push('ack'); }), getMetadata: () => ({}), updateMetadata: vi.fn(),
             sendUserMessage: () => order.push('user'), sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
         const batch = vi.fn(async () => { order.push('batch'); });
-        const projection = new SharedCodexProjection(session, 'thread', async () => { order.push('commit'); }, undefined, batch);
+        const projection = new SharedCodexProjection(session, 'thread', async () => { order.push('commit'); }, undefined, undefined, undefined, batch);
         await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [
             { id: 'native', type: 'userMessage', content: [{ type: 'text', text: 'first' }] },
             { id: 'remote', clientId: 'local', type: 'userMessage', content: [{ type: 'text', text: 'second' }] }
@@ -241,6 +284,93 @@ describe('shared history projection', () => {
         expect(user).not.toHaveBeenCalled(); expect(committed).not.toHaveBeenCalled();
     });
 
+    it('projects the exact durable summary as a replay-safe enrichment and leaves real output visible', async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'codex-project-summary-'));
+        try {
+            const path = join(directory, 'rollout.jsonl');
+            await writeFile(path, [
+                { type: 'session_meta', payload: { id: 'thread' } },
+                { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn' } },
+                { type: 'compacted', payload: { message: 'Actual native checkpoint body', resume_metadata: { last_started_turn_id: 'turn' } } },
+                { type: 'event_msg', payload: { type: 'item_completed', thread_id: 'thread', turn_id: 'turn', item: { type: 'ContextCompaction', id: 'compact' } } }
+            ].map(x => JSON.stringify(x) + '\n').join(''));
+            const send = vi.fn();
+            const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: vi.fn() , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
+            const source = { id: 'thread', path };
+            const projection = new SharedCodexProjection(session, 'thread', async () => {}, undefined, async () => source);
+            const item = { type: 'contextCompaction', id: 'compact' };
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+            expect(send.mock.calls[0][0]).toMatchObject({ type: 'compact-summary', summary: 'Actual native checkpoint body', compactionId: 'codex:thread:turn:compact:context_compacted' });
+            const live = send.mock.calls[0];
+            projection.reset(); send.mockClear();
+            await projection.history({ ...source, turns: [{ id: 'turn', status: 'completed', items: [item] }] });
+            expect(send.mock.calls).toEqual([live]);
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+            expect(send).toHaveBeenCalledTimes(1);
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: { type: 'agentMessage', id: 'final', text: 'Visible final', phase: 'final_answer' } });
+            expect(send.mock.calls.at(-1)?.[0]).toMatchObject({ type: 'message', message: 'Visible final' });
+        } finally { await rm(directory, { recursive: true, force: true }); }
+    });
+    it('projects a source-proven after estimate without inventing a summary or before delta', async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'codex-project-context-'));
+        try {
+            const path = join(directory, 'rollout.jsonl');
+            await writeFile(path, [
+                { type: 'session_meta', payload: { id: 'thread' } },
+                { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn' } },
+                { type: 'compacted', payload: { message: '', resume_metadata: { last_started_turn_id: 'turn' } } },
+                { type: 'turn_context', payload: { turn_id: 'turn' } },
+                { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 99999 }, last_usage_includes_reasoning: true,
+                    last_token_usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 } } } },
+                { type: 'event_msg', payload: { type: 'item_completed', thread_id: 'thread', turn_id: 'turn', item: { type: 'ContextCompaction', id: 'compact' } } }
+            ].map(x => JSON.stringify(x) + '\n').join(''));
+            const send = vi.fn();
+            const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: vi.fn() , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
+            const projection = new SharedCodexProjection(session, 'thread', async () => {}, undefined, async () => ({ id: 'thread', path }));
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: { type: 'contextCompaction', id: 'compact' } });
+            expect(send.mock.calls[0][0]).toMatchObject({ type: 'compact-summary', summary: '', estimatedTokensAfter: 0, compactionId: 'codex:thread:turn:compact:context_compacted' });
+            expect(send.mock.calls[0][0]).not.toHaveProperty('tokensBefore');
+            expect(send.mock.calls[0][0]).not.toHaveProperty('tokensAfter');
+        } finally { await rm(directory, { recursive: true, force: true }); }
+    });
+    it('keeps native completion identity across duplicates, reset and history, preserving adjacent output', async () => {
+        const send = vi.fn(); const sendEvent = vi.fn(); const user = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent,
+            sendUserMessage: user, updateMetadata: vi.fn() , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        const item = { type: 'contextCompaction', id: 'compact', startedAtMs: 10, completedAtMs: 20 };
+        const params = { threadId: 'thread', turnId: 'turn', item };
+        await projection.notification('item/completed', params);
+        await projection.notification('item/completed', params);
+        expect(send).toHaveBeenCalledTimes(1);
+        const live = send.mock.calls[0];
+        expect(live[0]).toMatchObject({ type: 'context_compacted' });
+        expect(live[0].summary).toBeUndefined();
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [item] }] });
+        expect(send.mock.calls).toEqual([live]);
+        expect(sendEvent).not.toHaveBeenCalled();
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: {
+            type: 'userMessage', id: 'user', content: [{ type: 'text', text: 'Synthetic context summary.' }]
+        } });
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: {
+            type: 'agentMessage', id: 'answer', text: 'Normal answer preserved.', phase: 'final_answer'
+        } });
+        expect(user).toHaveBeenCalledWith('Synthetic context summary.', undefined, 'codex:thread:user:user', { acknowledgeConsumption: false });
+        expect(send.mock.calls.at(-1)?.[0]).toMatchObject({ type: 'message', message: 'Normal answer preserved.' });
+    });
+    it.each(['failed', 'interrupted'])('does not turn a failed or interrupted compaction into a completion (%s)', async status => {
+        const send = vi.fn(); const sendEvent = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('item/started', { threadId: 'thread', turnId: 'failed', item: { type: 'contextCompaction', id: 'attempt' } });
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'failed', status } });
+        // Native thread/read omits unfinished compaction items from terminal turns.
+        await projection.history({ turns: [{ id: 'failed', status, items: [] }] });
+        expect(send.mock.calls.some(([body]) => body.type === 'context_compacted')).toBe(false);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'retry', item: { type: 'contextCompaction', id: 'retry' } });
+        expect(send.mock.calls.filter(([body]) => body.type === 'context_compacted')).toHaveLength(1);
+    });
     it('announces parent compaction start via session event, deduping repeats', async () => {
         const send = vi.fn(); const sendEvent = vi.fn();
         const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;

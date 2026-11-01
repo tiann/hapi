@@ -32,6 +32,7 @@ export const EMPTY_STATE: MessageWindowState = {
 
 export function useMessages(api: ApiClient | null, sessionId: string | null): {
     messages: DecryptedMessage[]
+    readThroughRevision?: number
     warning: string | null
     isSyncingTail: boolean
     isLoadingMore: boolean
@@ -95,6 +96,7 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
 
     return {
         messages: state.messages,
+        readThroughRevision: state.readThroughRevision,
         warning: state.warning,
         isSyncingTail: state.isSyncingTail,
         isLoadingMore: state.isLoadingMore,

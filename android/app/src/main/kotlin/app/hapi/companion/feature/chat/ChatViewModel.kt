@@ -58,6 +58,7 @@ import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
+import app.hapi.protocol.wire.SessionReadState
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.arrayOrNull
@@ -155,6 +156,8 @@ data class ChatUiState(
     val messagesVersion: Long = 0,
     val requiresLatestReset: Boolean = false,
     val processSteps: Map<String, Int> = emptyMap(),
+    val readThroughRevision: Long? = null,
+    val renderedReadState: SessionReadState? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -249,6 +252,7 @@ sealed interface ChatNotice {
     data class SteerFailed(val detail: String?) : ChatNotice
     data class PermissionRequestFailed(val detail: String?) : ChatNotice
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
+    data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
 }
 
@@ -364,7 +368,6 @@ class ChatViewModel(
 
     private var sseJob: Job? = null
     private var initJob: Job? = null
-    private var seenJob: Job? = null
     private var olderJob: Job? = null
     private var jumpJob: Job? = null
     private val mutableHistoryPaging = MutableStateFlow(ChatHistoryPagingState())
@@ -392,6 +395,20 @@ class ChatViewModel(
         if (!visible) {
             historyDemand = false
             cancelHistory()
+        }
+    }
+
+    /** The UI calls only after laying out the observed tail in a resumed screen. */
+    @MainThread
+    internal fun markDisplayed(revision: Long?, serverState: SessionReadState?) {
+        val rendered = uiState.value
+        if (!started || !transcriptVisible || !readerFollowsTail || revision == null ||
+            rendered.isSyncingTail || rendered.isInitialLoading || rendered.loadFailed ||
+            rendered.warning != null || rendered.requiresLatestReset) return
+        scope.launch {
+            try { lastSeenStore.markSeen(sessionId, revision, serverState) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _events.tryEmit(ChatEvent.Notice(ChatNotice.ReadStateFailed(error.message))) }
         }
     }
 
@@ -633,18 +650,6 @@ class ChatViewModel(
         // Badge count + SSE-triggered refetches while this chat is on screen.
         scratchlist?.open(sessionId)
 
-        seenJob = scope.launch {
-            // Watermark = updatedAt currently on screen, from whichever cache
-            // is fresher (summary via global events, detail via this pipe).
-            merge(
-                sessionStore.sessions
-                    .map { list -> list.firstOrNull { it.id == sessionId }?.updatedAt },
-                sessionStore.sessionDetail(sessionId).map { it?.updatedAt },
-            )
-                .filterNotNull()
-                .distinctUntilChanged()
-                .collect { updatedAt -> lastSeenStore.markSeen(sessionId, updatedAt) }
-        }
     }
 
     /** Tears the session pipe down (engine keeps the resume cursor). */
@@ -656,7 +661,6 @@ class ChatViewModel(
         sseJob?.cancel()
         sseJob = null
         initJob?.cancel()
-        seenJob?.cancel()
         cancelHistory()
         jumpJob?.cancel()
         jumpJob = null
@@ -1906,6 +1910,8 @@ class ChatViewModel(
             historyVersion = window.historyVersion,
             messagesVersion = window.messagesVersion,
             requiresLatestReset = window.requiresLatestReset,
+            readThroughRevision = window.readThroughRevision,
+            renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
         )
     }
 
