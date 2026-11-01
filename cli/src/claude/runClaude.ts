@@ -528,10 +528,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return true;
         }
         const removed = messageQueue.cancelByLocalId(localId);
-        if (removed) {
+        // 'in-flight' and 'consumed' are truthy too, but then Claude has or
+        // will still get the prompt, and its transcript echo must stay marked.
+        if (removed === true) {
             session.discardPendingHubPromptEcho(localId);
         }
-        logger.debug(`[claude] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
+        logger.debug(`[claude] cancelByLocalId(${localId}): ${removed === true ? 'removed' : removed || 'not found (best-effort)'}`);
         return removed;
     });
 
