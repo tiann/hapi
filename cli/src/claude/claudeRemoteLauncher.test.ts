@@ -326,6 +326,60 @@ describe('claudeRemoteLauncher resume anchor', () => {
             session.stopKeepAlive()
         }
     })
+    it('does not replace context details with synthetic API errors or failed empty results', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+
+        try {
+            harness.messages = [
+                {
+                    type: 'assistant',
+                    model: 'claude-opus',
+                    context_usage: { total_tokens: 100, raw_max_tokens: 1_000 },
+                    message: {
+                        role: 'assistant',
+                        model: 'claude-opus',
+                        content: [{ type: 'text', text: 'valid' }],
+                        usage: { input_tokens: 100, output_tokens: 5 }
+                    }
+                },
+                {
+                    type: 'assistant',
+                    is_api_error_message: true,
+                    error: 'invalid_request',
+                    message: {
+                        role: 'assistant',
+                        model: '<synthetic>',
+                        content: [{ type: 'text', text: 'Prompt is too long' }],
+                        usage: { input_tokens: 0, output_tokens: 0 }
+                    }
+                },
+                {
+                    type: 'result',
+                    subtype: 'error_during_execution',
+                    is_error: true,
+                    model: '<synthetic>',
+                    usage: { input_tokens: 0, output_tokens: 0 }
+                }
+            ]
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-opus',
+                contextWindow: 1_000,
+                usage: { contextTokens: 100 }
+            })
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
     it('does not let Claude sidechain context details replace parent metadata', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)

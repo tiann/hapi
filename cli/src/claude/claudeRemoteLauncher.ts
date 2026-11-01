@@ -47,6 +47,13 @@ function getRespawnBackoffMs(): number {
     return parsed;
 }
 
+function hasPositiveClaudeUsage(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const usage = value as Record<string, unknown>;
+    return ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
+        .some((key) => typeof usage[key] === 'number' && usage[key] > 0);
+}
+
 class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: Session;
     private abortController: AbortController | null = null;
@@ -180,23 +187,30 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     const assistantMessage = message as SDKAssistantMessage;
                     const rawAssistantPayload = assistantMessage as unknown as Record<string, unknown>;
                     const rawMessage = assistantMessage.message as unknown as Record<string, unknown>;
-                    const details = buildClaudeContextDetails({
-                        contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
-                        messageUsage: rawMessage.usage,
-                        model: assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
-                    });
-                    if (details) {
-                        publishContextDetails(session.client, details);
+                    const isSyntheticApiError = rawAssistantPayload.isApiErrorMessage === true
+                        || rawAssistantPayload.is_api_error_message === true
+                        || typeof rawAssistantPayload.error === 'string';
+                    if (!isSyntheticApiError) {
+                        const details = buildClaudeContextDetails({
+                            contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
+                            messageUsage: rawMessage.usage,
+                            model: assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
+                        });
+                        if (details) {
+                            publishContextDetails(session.client, details);
+                        }
                     }
                 } else if (message.type === 'result') {
                     const resultMessage = message as SDKResultMessage;
-                    const details = buildClaudeContextDetails({
-                        result: resultMessage,
-                        messageUsage: resultMessage.usage,
-                        model: resultMessage.model ?? lastSystemModel
-                    });
-                    if (details) {
-                        publishContextDetails(session.client, details);
+                    if (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage)) {
+                        const details = buildClaudeContextDetails({
+                            result: resultMessage,
+                            messageUsage: resultMessage.usage,
+                            model: resultMessage.model ?? lastSystemModel
+                        });
+                        if (details) {
+                            publishContextDetails(session.client, details);
+                        }
                     }
                 }
             }
