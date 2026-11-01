@@ -120,9 +120,10 @@ internal object MarkdownMath {
     /**
      * `$$` runs: flow math when the run opens a line (after a container
      * prefix or <= 3 spaces) with only whitespace after it, closing on a later
-     * line that is just a `$$` run of >= the opening size; otherwise text math
-     * inside a paragraph, closing on an equal-sized run with no blank line or
-     * protected range in between. Single `$` never opens math.
+     * line inside the same container that is just a `$$` run of >= the opening
+     * size; otherwise text math inside a paragraph, closing on an equal-sized
+     * run with no blank line or protected range in between. Single `$` never
+     * opens math.
      */
     private fun findDollarMath(source: String, mask: BooleanArray): List<MathMatch> {
         val matches = mutableListOf<MathMatch>()
@@ -146,7 +147,7 @@ internal object MarkdownMath {
                 (container.recognized || lineIndent <= 3)
 
             if (atFlowPosition && restOfLineBlank) {
-                val close = findFlowClose(source, mask, size, container.prefix, lineEnd)
+                val close = findFlowClose(source, mask, size, container.prefix, container.recognized, lineEnd)
                 if (close != null) {
                     val value = stripLinePrefix(source.substring(lineEnd + 1, close.start), container.prefix).trim()
                     if (value.isNotEmpty()) {
@@ -176,19 +177,48 @@ internal object MarkdownMath {
 
     private class CloseSpan(val start: Int, val end: Int)
 
-    /** Closing `$$` line for flow math: container prefix / <= 3 spaces, then a `$` run >= [size]. */
+    /**
+     * Closing `$$` line for flow math: container prefix / <= 3 spaces, then a `$` run >= [size].
+     *
+     * Bounded to the opening container (micromark math flow is `concrete` and
+     * ends with its container): when [containerRecognized] the closer must
+     * come from a line that still carries [prefix] — a quoted opener never
+     * pairs with a later top-level or sibling `$$`. A blank line closes a
+     * blockquote (a following `> $$` opens a NEW quote, not a closer), while a
+     * list item may resume after blank lines (loose lists), so blanks are
+     * skipped and the next content line decides. An unrecognized prefix is
+     * plain <= 3 space indentation, not a container: no bounding, blank lines
+     * are math content (web parity with `$$\nx\n\ny\n$$`).
+     */
     private fun findFlowClose(
         source: String,
         mask: BooleanArray,
         size: Int,
         prefix: String,
+        containerRecognized: Boolean,
         openLineEnd: Int,
     ): CloseSpan? {
+        val marker = prefix.trimEnd()
+        val quoted = marker.isNotEmpty() && marker.last() == '>'
         var lineStart = openLineEnd + 1
         while (lineStart < source.length) {
             val lineEnd = source.indexOf('\n', lineStart).let { if (it < 0) source.length else it }
+            val line = source.substring(lineStart, lineEnd)
+            if (containerRecognized && !line.startsWith(prefix)) {
+                when {
+                    // A `>`-only line is a blank line inside the quote: the
+                    // container survives it ("> $$\n> x\n>\n> $$" closes).
+                    quoted && line.trimEnd(' ', '\t') == marker -> Unit
+                    // Blank line: the blockquote dies here, a list item may
+                    // resume after it — keep scanning for the list case only.
+                    line.isBlank() && !quoted -> Unit
+                    else -> return null
+                }
+                lineStart = lineEnd + 1
+                continue
+            }
             var contentStart = lineStart
-            var content = source.substring(lineStart, lineEnd)
+            var content = line
             if (prefix.isNotEmpty() && content.startsWith(prefix)) {
                 contentStart += prefix.length
                 content = content.substring(prefix.length)

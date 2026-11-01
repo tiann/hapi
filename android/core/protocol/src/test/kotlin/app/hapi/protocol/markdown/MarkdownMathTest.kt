@@ -661,6 +661,115 @@ class MarkdownMathTest {
     }
 
     @Test
+    fun `does not close quoted flow math from a later top-level opener`() {
+        // Web parity (remark-math): math flow is concrete and ends with its
+        // container, so the quoted `> $$` opener must not pair with the
+        // top-level `$$` after the blockquote ended — ordinary prose stays
+        // prose and the later equation keeps its own opener.
+        val document = parse(
+            listOf(
+                "> \$\$",
+                "> x",
+                "",
+                "Ordinary prose",
+                "",
+                "\$\$",
+                "y",
+                "\$\$",
+            ).joinToString("\n"),
+        )
+
+        assertEquals(listOf("y"), document.mathBlocks().map { it.latex })
+        val paragraphs = document.collect<Paragraph>().map { it.allText() }
+        assertTrue("Ordinary prose" in paragraphs, "prose after the quote stays a prose paragraph")
+        assertTrue(
+            paragraphs.any { it.startsWith("\$\$") && it.endsWith("x") },
+            "the unclosed quoted opener stays literal text (got: $paragraphs)",
+        )
+        assertEquals(1, document.collect<BlockQuote>().size)
+        assertNoPlaceholderTokens(document)
+    }
+
+    @Test
+    fun `does not close list-contained flow math from a later top-level opener`() {
+        val document = parse(
+            listOf(
+                "- \$\$",
+                "  x",
+                "",
+                "Ordinary prose",
+                "",
+                "\$\$",
+                "y",
+                "\$\$",
+            ).joinToString("\n"),
+        )
+
+        assertEquals(listOf("y"), document.mathBlocks().map { it.latex })
+        val paragraphs = document.collect<Paragraph>().map { it.allText() }
+        assertTrue("Ordinary prose" in paragraphs, "prose after the list stays a prose paragraph")
+        assertTrue(
+            paragraphs.any { it.startsWith("\$\$") && it.endsWith("x") },
+            "the unclosed list opener stays literal text (got: $paragraphs)",
+        )
+        assertNoPlaceholderTokens(document)
+    }
+
+    @Test
+    fun `does not close quoted flow math across a blank line into a new quote`() {
+        // A blank line closes the blockquote; the later `> $$` re-opens a NEW
+        // quote and is not a closer for the first one (remark-math renders
+        // two separate blocks here).
+        val document = parse(
+            listOf(
+                "> \$\$",
+                "> x",
+                "",
+                "> \$\$",
+            ).joinToString("\n"),
+        )
+
+        assertEquals(0, document.mathBlocks().size)
+        assertEquals(0, document.mathInlines().size)
+        assertNoPlaceholderTokens(document)
+    }
+
+    @Test
+    fun `closes list-contained flow math on a prefixed closer line`() {
+        val document = parse(
+            listOf(
+                "- \$\$",
+                "  E = mc^2",
+                "  \$\$",
+            ).joinToString("\n"),
+        )
+
+        // Bounded matching keeps in-container closers working.
+        assertEquals(listOf("E = mc^2"), document.mathBlocks().map { it.latex })
+        val items = document.collect<ListItem>()
+        assertEquals(1, items.size)
+        assertEquals(1, items.single().collect<MathBlockNode>().size)
+        assertNoPlaceholderTokens(document)
+    }
+
+    @Test
+    fun `closes list-contained flow math across a blank line in a loose item`() {
+        val document = parse(
+            listOf(
+                "- \$\$",
+                "  x",
+                "",
+                "  \$\$",
+            ).joinToString("\n"),
+        )
+
+        // A list item may resume after a blank line (loose list), so the
+        // indented closer still pairs — only blockquotes die at blank lines.
+        assertEquals(listOf("x"), document.mathBlocks().map { it.latex })
+        assertNoPlaceholderTokens(document)
+    }
+
+    @Test
     fun `preserves bracket-like TeX commands inside existing dollar math`() {
         val document = parse("\$\$\\verb|\\(x\\)|\$\$")
 
