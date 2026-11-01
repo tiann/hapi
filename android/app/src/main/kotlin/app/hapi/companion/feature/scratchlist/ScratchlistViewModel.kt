@@ -207,6 +207,11 @@ class ScratchlistViewModel(
             notice(ScratchlistNotice.AtCapDeleteFirst)
             return
         }
+        // Busy-promote freeze (web `busyEntryId`): the in-flight send holds
+        // this entry's snapshot and the accepted send deletes it — edits made
+        // now would be dropped undelivered. The card disables itself; this is
+        // the ViewModel half of the guard.
+        if (entry != null && _busyPromoteEntryId.value == entry.entryId) return
         _editor.value = if (entry == null) {
             ScratchlistEditorState()
         } else {
@@ -241,6 +246,10 @@ class ScratchlistViewModel(
      */
     fun saveEditor() {
         val editor = _editor.value ?: return
+        // Same freeze as [openEditor]: an editor opened before the promote
+        // started must not save either — the update would land just before
+        // the accepted send deletes the entry, losing the edits silently.
+        if (editor.entryId != null && _busyPromoteEntryId.value == editor.entryId) return
         val text = editor.text.trim()
         if (text.isEmpty() && editor.attachments.isEmpty()) {
             // Nothing to keep: a new draft just closes; an existing entry

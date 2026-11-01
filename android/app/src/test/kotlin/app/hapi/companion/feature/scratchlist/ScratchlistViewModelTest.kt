@@ -31,6 +31,7 @@ import kotlinx.coroutines.test.runTest
 private class RecordingScratchlist(entries: List<ScratchlistEntry>) : SessionScratchlist {
     val moves = mutableListOf<Triple<String, String, ScratchlistMoveDirection>>()
     val deleted = mutableListOf<String>()
+    val updatedTexts = mutableListOf<Pair<String, String?>>()
     val sessionState = MutableStateFlow(ScratchlistSessionState(entries = entries, loaded = true))
 
     override fun state(sessionId: String): Flow<ScratchlistSessionState> = sessionState
@@ -48,7 +49,10 @@ private class RecordingScratchlist(entries: List<ScratchlistEntry>) : SessionScr
         entryId: String,
         text: String?,
         attachments: List<ScratchlistAttachment>?,
-    ): Boolean = true
+    ): Boolean {
+        updatedTexts += entryId to text
+        return true
+    }
     override suspend fun deleteEntry(sessionId: String, entryId: String): Boolean {
         deleted += entryId
         return true
@@ -208,5 +212,48 @@ class ScratchlistViewModelTest {
 
         assertTrue(store.deleted.isEmpty())
         assertEquals(null, viewModel.busyPromoteEntryId.value)
+    }
+
+    @Test
+    fun `editing is frozen while the entry promote is in flight`() = runTest {
+        val store = RecordingScratchlist(listOf(entry("e1", "one"), entry("e2", "two")))
+        val viewModel = viewModelWith(store)
+        viewModel.start()
+        advanceUntilIdle()
+        val entries = store.currentState("s1").entries
+        // An editor opened before the promote started stays open — its save
+        // must not land while the busy flag points at this entry (the UI
+        // normally keeps the sheet above the cards; the guards hold either way).
+        viewModel.openEditor(entries.first { it.entryId == "e1" })
+        viewModel.setEditorText("edited while busy")
+        val release = CompletableDeferred<Unit>()
+        val sendEntered = CompletableDeferred<Unit>()
+
+        viewModel.promoteToQueue(entry("e1", "one")) {
+            sendEntered.complete(Unit)
+            release.await()
+            true
+        }
+        sendEntered.await()
+
+        // Save against the busy entry is refused: the in-flight send holds
+        // the original snapshot and the accepted-delete would drop the edits.
+        viewModel.saveEditor()
+        assertTrue(viewModel.editor.value?.entryId == "e1", "the editor stays open, unsaved")
+        assertTrue(store.updatedTexts.isEmpty(), "no update may land for the busy entry")
+        // A fresh open of the busy card is refused too.
+        viewModel.dismissEditor()
+        viewModel.openEditor(entries.first { it.entryId == "e1" })
+        assertEquals(null, viewModel.editor.value)
+
+        // Once the promote settles, editing works again (e2 was never busy).
+        release.complete(Unit)
+        viewModel.busyPromoteEntryId.first { it == null }
+        viewModel.openEditor(entries.first { it.entryId == "e2" })
+        viewModel.setEditorText("safe edit")
+        viewModel.saveEditor()
+        testScheduler.runCurrent()
+        advanceUntilIdle()
+        assertEquals(listOf<Pair<String, String?>>("e2" to "safe edit"), store.updatedTexts)
     }
 }

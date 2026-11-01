@@ -19,6 +19,7 @@ import app.hapi.data.store.SessionScratchlist
 import app.hapi.protocol.wire.ScratchlistAttachment
 import app.hapi.protocol.wire.ScratchlistAttachmentLimits
 import app.hapi.protocol.wire.ScratchlistEntry
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -85,6 +86,30 @@ class ScratchlistActionsTest {
         compose.onNodeWithContentDescription("Delete").performClick()
         compose.runOnIdle { assertEquals(listOf("entry"), store.deletes) }
         compose.onNodeWithText("Delete this scratchlist entry? This cannot be undone.").assertDoesNotExist()
+    }
+
+    @Test fun aBusyPromotionFreezesTheCardAgainstEdits() {
+        val store = ActionScratchlist(ScratchlistEntry("entry", "frozen note", createdAt = 1, updatedAt = 1))
+        lateinit var viewModel: ScratchlistViewModel
+        compose.setContent {
+            val scope = rememberCoroutineScope()
+            viewModel = remember { ScratchlistViewModel("session", store, scope) }
+            HapiTheme {
+                ScratchlistScreen(viewModel, ScratchlistMedia(null) { null }, onBack = {})
+            }
+        }
+        compose.onNodeWithText("frozen note").assertIsDisplayed()
+        // A promote that never settles parks the entry in the busy state.
+        compose.runOnIdle {
+            viewModel.promoteToQueue(ScratchlistEntry("entry", "frozen note", createdAt = 1, updatedAt = 1)) {
+                CompletableDeferred<Boolean>().await()
+            }
+        }
+        compose.waitForIdle()
+        // The disabled card surface cannot open the editor (the busy card's
+        // snapshot is being delivered; edits would be lost by the delete).
+        compose.onNodeWithText("frozen note", useUnmergedTree = true).performClick()
+        compose.onNodeWithTag("scratchlist-editor-text").assertDoesNotExist()
     }
 }
 

@@ -332,6 +332,9 @@ private fun ScratchlistEntryCard(
         shape = RoundedCornerShape(14.dp),
         tonalElevation = 1.dp,
         onClick = onOpen,
+        // The busy card is frozen like its actions: opening the editor would
+        // allow edits that the in-flight send's accepted-delete would drop.
+        enabled = !busy,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
