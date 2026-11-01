@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.chat.blocks
 
 import app.hapi.companion.R
+import app.cash.turbine.test
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -8,6 +9,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -252,5 +254,244 @@ class GeneratedMediaTest {
         assertEquals("1:01", formatPlaybackTime(61_000))
         assertEquals("60:00", formatPlaybackTime(3_600_000))
         assertEquals("0:00", formatPlaybackTime(-50))
+    }
+
+    /** Scriptable [GeneratedAudioPlayer] for the session tests below. */
+    private class FakeAudioPlayer : GeneratedAudioPlayer {
+        var dataSourcePath: String? = null
+        var preparedAsyncCalls = 0
+        var starts = 0
+        var pauses = 0
+        var releases = 0
+        val seeks = mutableListOf<Int>()
+        var positionMs = 0
+        var failDataSource = false
+
+        private var onPrepared: ((Int) -> Unit)? = null
+        private var onCompletion: (() -> Unit)? = null
+        private var onError: (() -> Boolean)? = null
+
+        override fun setDataSource(path: String) {
+            check(!failDataSource) { "bad file" }
+            dataSourcePath = path
+        }
+
+        override fun prepareAsync() {
+            preparedAsyncCalls++
+        }
+
+        override fun setOnPreparedListener(onPrepared: (Int) -> Unit) {
+            this.onPrepared = onPrepared
+        }
+
+        override fun setOnCompletionListener(onCompletion: () -> Unit) {
+            this.onCompletion = onCompletion
+        }
+
+        override fun setOnErrorListener(onError: () -> Boolean) {
+            this.onError = onError
+        }
+
+        override fun start() {
+            starts++
+        }
+
+        override fun pause() {
+            pauses++
+        }
+
+        override fun seekTo(positionMs: Int) {
+            seeks += positionMs
+        }
+
+        override fun currentPositionMs(): Int = positionMs
+
+        override fun release() {
+            releases++
+        }
+
+        fun simulatePrepared(durationMs: Int) {
+            onPrepared!!.invoke(durationMs)
+        }
+
+        fun simulateCompletion() {
+            onCompletion!!.invoke()
+        }
+
+        fun simulateError() {
+            onError!!.invoke()
+        }
+    }
+
+    @Test
+    fun audioSessionPreparesOnceAndGatesControlsUntilPrepared() {
+        val player = FakeAudioPlayer()
+        val session = GeneratedAudioSession(player)
+        session.prepare("/cache/generated-media/img-1-voice-memo.m4a")
+        assertEquals("/cache/generated-media/img-1-voice-memo.m4a", player.dataSourcePath)
+        assertEquals(1, player.preparedAsyncCalls)
+
+        // Pre-preparation: toggle and seek stay inert (the row's buttons are
+        // disabled, and the logic underneath refuses too).
+        session.togglePlayPause()
+        session.seekToFraction(0.5f)
+        assertEquals(0, player.starts)
+        assertEquals(0, player.seeks.size)
+
+        player.simulatePrepared(120_000)
+        assertTrue(session.prepared.value)
+        assertEquals(120_000, session.durationMs.value)
+    }
+
+    @Test
+    fun audioSessionTogglesPlayPauseAndStopsOnCompletion() = runTest {
+        val player = FakeAudioPlayer()
+        val session = GeneratedAudioSession(player)
+        session.prepare("memo.m4a")
+        player.simulatePrepared(10_000)
+        session.playing.test {
+            assertFalse(awaitItem()) // initial idle state
+            session.togglePlayPause()
+            assertTrue(awaitItem())
+            assertEquals(1, player.starts)
+            session.togglePlayPause()
+            assertFalse(awaitItem())
+            assertEquals(1, player.pauses)
+            session.togglePlayPause()
+            assertTrue(awaitItem())
+            player.simulateCompletion()
+            assertFalse(awaitItem()) // natural end parks the row
+            assertEquals(2, player.starts) // two plays, one pause between
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun audioSessionSeeksByDurationFractionAndClamps() {
+        val player = FakeAudioPlayer()
+        val session = GeneratedAudioSession(player)
+        session.prepare("memo.m4a")
+        player.simulatePrepared(10_000)
+        player.positionMs = 4_950
+        session.seekToFraction(0.5f)
+        assertEquals(listOf(5_000), player.seeks)
+        assertEquals(4_950, session.positionMs.value) // read back after the seek
+        session.seekToFraction(1.7f)
+        assertEquals(10_000, player.seeks.last())
+        session.seekToFraction(-0.3f)
+        assertEquals(0, player.seeks.last())
+    }
+
+    @Test
+    fun audioSessionPollsPositionOnlyWhilePlaying() {
+        val player = FakeAudioPlayer()
+        val session = GeneratedAudioSession(player)
+        session.prepare("memo.m4a")
+        player.simulatePrepared(10_000)
+        player.positionMs = 1_234
+        session.pollPosition()
+        assertEquals(0, session.positionMs.value) // paused rows do not read
+        session.togglePlayPause()
+        player.positionMs = 2_345
+        session.pollPosition()
+        assertEquals(2_345, session.positionMs.value)
+    }
+
+    @Test
+    fun audioSessionReleaseIsTheDisposeHookAndIdempotent() {
+        val player = FakeAudioPlayer()
+        val session = GeneratedAudioSession(player)
+        session.prepare("memo.m4a")
+        player.simulatePrepared(10_000)
+        session.togglePlayPause()
+        assertTrue(session.playing.value)
+
+        // What the card's onDispose runs: the framework player is released
+        // exactly once, and a double dispose (recomposition races) cannot
+        // double-release it.
+        session.release()
+        assertEquals(1, player.releases)
+        assertFalse(session.playing.value)
+        session.release()
+        assertEquals(1, player.releases)
+
+        // Post-release controls are inert — the real released MediaPlayer
+        // would throw on start/seek/currentPosition.
+        session.togglePlayPause()
+        session.seekToFraction(0.5f)
+        session.pollPosition()
+        assertEquals(1, player.starts)
+        assertEquals(0, player.seeks.size)
+    }
+
+    @Test
+    fun audioSessionMapsPlayerAndDataSourceErrorsToFailed() {
+        val player = FakeAudioPlayer()
+        val session = GeneratedAudioSession(player)
+        session.prepare("memo.m4a")
+        player.simulatePrepared(10_000)
+        session.togglePlayPause()
+        player.simulateError()
+        assertTrue(session.failed.value)
+        assertFalse(session.playing.value)
+        session.togglePlayPause() // failed rows stay inert
+        assertEquals(1, player.starts)
+
+        val brokenPlayer = FakeAudioPlayer().apply { failDataSource = true }
+        val broken = GeneratedAudioSession(brokenPlayer)
+        broken.prepare("memo.m4a")
+        assertTrue(broken.failed.value)
+        broken.togglePlayPause()
+        assertEquals(0, brokenPlayer.starts)
+    }
+
+    @Test
+    fun fileOutletsCarryTheResolvedTypeIntoBothOpenAndSave() {
+        // Open (ACTION_VIEW) and Save (ACTION_CREATE_DOCUMENT) both carry the
+        // type resolved from the filename, never the raw octet-stream wire
+        // value that no viewer matches.
+        val inferred = generatedFileOutlets(null, "report.pdf", extensionTypes::get)
+        assertEquals("application/pdf", inferred.openMimeType)
+        assertEquals("application/pdf", inferred.saveMimeType)
+        assertEquals("report.pdf", inferred.suggestedName)
+
+        val generic = generatedFileOutlets("application/octet-stream", "data.unknown-ext", extensionTypes::get)
+        assertEquals(GENERIC_FILE_MIME_TYPE, generic.openMimeType)
+        assertEquals(GENERIC_FILE_MIME_TYPE, generic.saveMimeType)
+        assertEquals("data.unknown-ext", generic.suggestedName)
+
+        val specific = generatedFileOutlets("text/csv", "report.pdf", extensionTypes::get)
+        assertEquals("text/csv", specific.openMimeType)
+        assertEquals("text/csv", specific.saveMimeType)
+    }
+
+    @Test
+    fun fetchStoresLongUnicodeNamesUnderTheFilesystemByteLimit() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody("pdf-bytes"))
+        server.start()
+        try {
+            val client = OkHttpClient()
+            val dir = File("build/tmp/generated-media-unicode").apply { deleteRecursively() }
+            val uuid = "550e8400-e29b-41d4-a716-446655440000"
+            val file = runBlocking {
+                fetchGeneratedMediaFile(
+                    client,
+                    server.url("/api/media").toString(),
+                    dir,
+                    uuid,
+                    "截图".repeat(40) + ".pdf",
+                )
+            }
+            val componentBytes = file.name.toByteArray(Charsets.UTF_8).size
+            assertTrue(componentBytes <= GENERATED_MEDIA_NAME_MAX_BYTES, "$componentBytes: ${file.name}")
+            assertTrue(file.name.endsWith(".pdf"), file.name)
+            assertEquals("pdf-bytes", file.readText())
+            // Atomic rename left no staging litter: exactly the final file.
+            val entries = file.parentFile.listFiles()
+            assertEquals(listOf(file), entries?.toList())
+        } finally {
+            server.shutdown()
+        }
     }
 }

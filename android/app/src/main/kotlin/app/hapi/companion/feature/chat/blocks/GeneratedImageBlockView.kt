@@ -42,9 +42,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -356,48 +356,37 @@ private fun GeneratedVideoPlayer(file: File, block: GeneratedImageBlock, label: 
 
 /**
  * Audio player — web G12 (`<audio controls preload="metadata">`) degraded to
- * a compact row: play/pause + scrub + m:ss readout. The browser element's
- * volume/speed chrome has no framework-free equivalent here (device volume
- * keys cover volume); no waveform — the web card has none either.
+ * a compact row: play/pause + scrub + m:ss readout. Decisions live in the
+ * JVM-tested [GeneratedAudioSession] over the [MediaPlayer] adapter; the
+ * browser element's volume/speed chrome has no framework-free equivalent
+ * here (device volume keys cover volume); no waveform — the web card has
+ * none either. Disposing the card releases the player.
  */
 @Composable
 private fun GeneratedAudioPlayer(file: File, label: String) {
-    var prepared by remember(file) { mutableStateOf(false) }
-    var playing by remember(file) { mutableStateOf(false) }
-    var durationMs by remember(file) { mutableIntStateOf(0) }
-    var positionMs by remember(file) { mutableIntStateOf(0) }
+    val session = remember(file) { GeneratedAudioSession(MediaPlayerAudioPlayer()) }
+    val prepared by session.prepared.collectAsState()
+    val playing by session.playing.collectAsState()
+    val durationMs by session.durationMs.collectAsState()
+    val positionMs by session.positionMs.collectAsState()
+    val playbackFailed by session.failed.collectAsState()
     var dragging by remember(file) { mutableStateOf(false) }
     var dragFraction by remember(file) { mutableFloatStateOf(0f) }
-    var playbackFailed by remember(file) { mutableStateOf(false) }
 
     if (playbackFailed) {
         GeneratedMediaErrorLine(label, stringResource(R.string.media_playback_failed))
         return
     }
 
-    val player = remember(file) { MediaPlayer() }
-    DisposableEffect(player) {
-        onDispose { player.release() }
+    DisposableEffect(session) {
+        onDispose { session.release() }
     }
-    LaunchedEffect(player) {
-        player.setOnPreparedListener { p ->
-            durationMs = p.duration
-            prepared = true
-        }
-        player.setOnCompletionListener { playing = false }
-        player.setOnErrorListener { _, _, _ ->
-            playing = false
-            playbackFailed = true
-            true
-        }
-        runCatching {
-            player.setDataSource(file.absolutePath)
-            player.prepareAsync()
-        }.onFailure { playbackFailed = true }
+    LaunchedEffect(session) {
+        session.prepare(file.absolutePath)
     }
     LaunchedEffect(playing) {
         while (playing) {
-            positionMs = player.currentPosition
+            session.pollPosition()
             delay(250)
         }
     }
@@ -407,18 +396,7 @@ private fun GeneratedAudioPlayer(file: File, label: String) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        IconButton(
-            enabled = prepared,
-            onClick = {
-                if (playing) {
-                    player.pause()
-                    playing = false
-                } else {
-                    player.start()
-                    playing = true
-                }
-            },
-        ) {
+        IconButton(enabled = prepared, onClick = { session.togglePlayPause() }) {
             if (playing) {
                 Icon(painterResource(R.drawable.ic_pause), stringResource(R.string.media_pause))
             } else {
@@ -440,10 +418,7 @@ private fun GeneratedAudioPlayer(file: File, label: String) {
                 dragFraction = it
             },
             onValueChangeFinished = {
-                if (durationMs > 0) {
-                    player.seekTo((dragFraction * durationMs).toInt().coerceIn(0, durationMs))
-                    positionMs = player.currentPosition
-                }
+                session.seekToFraction(dragFraction)
                 dragging = false
             },
             modifier = Modifier.weight(1f),
@@ -454,6 +429,37 @@ private fun GeneratedAudioPlayer(file: File, label: String) {
             color = MaterialTheme.hapi.hint,
         )
     }
+}
+
+/** App side of the [GeneratedAudioPlayer] seam: framework [MediaPlayer]. */
+private class MediaPlayerAudioPlayer : GeneratedAudioPlayer {
+    private val player = MediaPlayer()
+
+    override fun setDataSource(path: String) = player.setDataSource(path)
+
+    override fun prepareAsync() = player.prepareAsync()
+
+    override fun setOnPreparedListener(onPrepared: (Int) -> Unit) {
+        player.setOnPreparedListener { p -> onPrepared(p.duration) }
+    }
+
+    override fun setOnCompletionListener(onCompletion: () -> Unit) {
+        player.setOnCompletionListener { onCompletion() }
+    }
+
+    override fun setOnErrorListener(onError: () -> Boolean) {
+        player.setOnErrorListener { _, _, _ -> onError() }
+    }
+
+    override fun start() = player.start()
+
+    override fun pause() = player.pause()
+
+    override fun seekTo(positionMs: Int) = player.seekTo(positionMs)
+
+    override fun currentPositionMs(): Int = player.currentPosition
+
+    override fun release() = player.release()
 }
 
 /**
@@ -470,13 +476,13 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
     val scope = rememberCoroutineScope()
     var openFailed by remember(block.id) { mutableStateOf(false) }
     var saveFailed by remember(block.id) { mutableStateOf(false) }
-    val mimeType = remember(block.id, block.mimeType, block.fileName) {
-        resolveFileMimeType(block.mimeType, block.fileName) { extension ->
+    val outlets = remember(block.id, block.mimeType, block.fileName) {
+        generatedFileOutlets(block.mimeType, block.fileName) { extension ->
             MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
         }
     }
     val saveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument(mimeType),
+        ActivityResultContracts.CreateDocument(outlets.saveMimeType),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -537,7 +543,7 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
             openFailed = false
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.attachments", file)
             val open = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, mimeType)
+                setDataAndType(uri, outlets.openMimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             try {
@@ -548,7 +554,7 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
         }) { Text(stringResource(R.string.media_open)) }
         TextButton(onClick = {
             saveFailed = false
-            saveLauncher.launch(block.fileName)
+            saveLauncher.launch(outlets.suggestedName)
         }) { Text(stringResource(R.string.media_save)) }
     }
 }

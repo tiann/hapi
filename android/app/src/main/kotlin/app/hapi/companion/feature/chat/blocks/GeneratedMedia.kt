@@ -5,6 +5,7 @@ import java.io.File
 import java.io.IOException
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -239,3 +240,128 @@ internal fun formatPlaybackTime(millis: Int): String {
 /** Non-image media without a fetcher (previews, unit tests) degrade to this. */
 internal class GeneratedMediaUnavailableException :
     IOException("media client unavailable")
+
+/**
+ * The player surface the audio card needs — [android.media.MediaPlayer]
+ * behind the app-side adapter, a fake in JVM tests — so the play/pause/seek/
+ * release wiring is testable without a device.
+ */
+internal interface GeneratedAudioPlayer {
+    fun setDataSource(path: String)
+
+    fun prepareAsync()
+
+    /** [onPrepared] receives the stream's duration in milliseconds. */
+    fun setOnPreparedListener(onPrepared: (durationMs: Int) -> Unit)
+
+    fun setOnCompletionListener(onCompletion: () -> Unit)
+
+    /** Returns whether the error was handled (the framework contract). */
+    fun setOnErrorListener(onError: () -> Boolean)
+
+    fun start()
+
+    fun pause()
+
+    fun seekTo(positionMs: Int)
+
+    fun currentPositionMs(): Int
+
+    fun release()
+}
+
+/**
+ * State + control core of the audio row (web G12's `<audio controls>` minus
+ * the chrome): owns the play/pause toggle, fraction-to-position seeking, and
+ * position polling over a [GeneratedAudioPlayer], kept free of Compose so
+ * the wiring is JVM-testable — the card collects the flows, [release] is its
+ * dispose hook (idempotent; a released session ignores further control).
+ */
+internal class GeneratedAudioSession(private val player: GeneratedAudioPlayer) {
+    val prepared = MutableStateFlow(false)
+    val playing = MutableStateFlow(false)
+    val durationMs = MutableStateFlow(0)
+    val positionMs = MutableStateFlow(0)
+    val failed = MutableStateFlow(false)
+
+    private var released = false
+
+    fun prepare(dataSource: String) {
+        if (released) return
+        player.setOnPreparedListener { duration ->
+            durationMs.value = duration
+            prepared.value = true
+        }
+        player.setOnCompletionListener { playing.value = false }
+        player.setOnErrorListener {
+            playing.value = false
+            failed.value = true
+            true
+        }
+        runCatching {
+            player.setDataSource(dataSource)
+            player.prepareAsync()
+        }.onFailure { failed.value = true }
+    }
+
+    fun togglePlayPause() {
+        if (released || failed.value || !prepared.value) return
+        if (playing.value) {
+            player.pause()
+            playing.value = false
+        } else {
+            player.start()
+            playing.value = true
+        }
+    }
+
+    /** Scrub-finished handler: commit [fraction] of the duration as a position. */
+    fun seekToFraction(fraction: Float) {
+        if (released || failed.value || !prepared.value) return
+        val duration = durationMs.value
+        if (duration <= 0) return
+        player.seekTo((fraction * duration).toInt().coerceIn(0, duration))
+        positionMs.value = player.currentPositionMs()
+    }
+
+    /** Poll tick from the card's LaunchedEffect while [playing] is true. */
+    fun pollPosition() {
+        if (released || !playing.value) return
+        positionMs.value = player.currentPositionMs()
+    }
+
+    fun release() {
+        if (released) return
+        released = true
+        playing.value = false
+        player.release()
+    }
+}
+
+/**
+ * Pure description of the file card's platform outlets (web G13's single
+ * browser download link): Open fires ACTION_VIEW with [openMimeType] over
+ * the FileProvider uri; Save launches ACTION_CREATE_DOCUMENT suggesting
+ * [suggestedName] and writes with [saveMimeType]. Extracted so the JVM
+ * tests can pin that both outlets carry the *resolved* MIME type (a missing
+ * or octet-stream wire type refined from the filename) without
+ * android.content on the classpath.
+ */
+internal data class GeneratedFileOutlets(
+    val openMimeType: String,
+    val saveMimeType: String,
+    val suggestedName: String,
+)
+
+internal fun generatedFileOutlets(
+    wireMimeType: String?,
+    fileName: String,
+    resolveExtension: (extension: String) -> String?,
+): GeneratedFileOutlets {
+    val resolved = resolveFileMimeType(wireMimeType, fileName, resolveExtension)
+    return GeneratedFileOutlets(
+        openMimeType = resolved,
+        saveMimeType = resolved,
+        suggestedName = fileName,
+    )
+}
