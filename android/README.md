@@ -416,3 +416,7 @@ dependency calling the removed `InputManager.getInstance()` method.
 
 Earlier API 29 checks passed 19 chat/reader regressions. No 60/120 Hz device
 frame-time, memory, or predictive-back measurements are claimed by these checks.
+
+Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
+List selection and metadata updates never acknowledge reading. The resumed chat
+acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.

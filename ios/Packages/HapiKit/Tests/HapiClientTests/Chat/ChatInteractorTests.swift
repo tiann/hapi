@@ -482,6 +482,134 @@ struct ChatInteractorTests {
             + "\"deliveryMode\":\"queue\",\"localId\":\"local-1\",\"text\":\"\(text)\"}"
     }
 
+    @Test func inactiveAttachmentResumesAndRetriesEvenWithStaleActiveState() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(permissionMode: .acceptEdits))
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"error":"Session is inactive","code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/resume") == [#"{"permissionMode":"acceptEdits"}"#])
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 2)
+        #expect(harness.events.isEmpty)
+    }
+
+    @Test func concurrentInactiveAttachmentsShareOneResume() async throws {
+        let harness = try await ChatInteractionHarness()
+        for _ in 0..<2 {
+            await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+                json: #"{"code":"session_inactive"}"#)
+        }
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        await harness.performer.gate("POST", pathSuffix: "/resume")
+        harness.interactor.attachments.add(preparedShot())
+        harness.interactor.attachments.add(preparedShot(id: "att-2", filename: "second.jpg"))
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/upload") == 2 })
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/resume") == 1 })
+        await harness.performer.openGates()
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        #expect(await harness.performer.count("POST", pathSuffix: "/resume") == 1)
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 4)
+    }
+
+    @Test func supersedingUploadHandsOffDraftAndTrayAndReuploadsReadyPaths() async throws {
+        let harness = try await ChatInteractionHarness()
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-2"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-2/upload",
+            json: #"{"success":true,"path":"/new-session/upload"}"#)
+        await harness.performer.gate("POST", pathSuffix: "/resume")
+        var replacement: ChatInteractor?
+        harness.interactor.onAttachmentSessionSuperseded = { target, source in
+            let (tray, text) = source.prepareComposerHandoff()
+            #expect(target == "sess-2")
+            #expect(text == "latest typing")
+            let next = ChatInteractor(sessionId: target, api: harness.api, sessionStore: harness.store,
+                windows: harness.windows, drafts: harness.drafts, attachments: tray)
+            replacement = next
+            harness.interactor.deactivate()
+            next.activate()
+        }
+        harness.interactor.setComposerText("before resume")
+        harness.interactor.attachments.add(preparedShot(id: "att-2", filename: "second.jpg"))
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/resume") == 1 })
+        harness.interactor.setComposerText("latest typing")
+        await harness.performer.openGates()
+        #expect(await eventually { replacement?.attachments.allReady == true && replacement?.composerText == "latest typing" })
+        let next = try #require(replacement)
+        #expect(next.attachments === harness.interactor.attachments)
+        #expect(next.attachments.items.map(\.id) == ["att-1", "att-2"])
+        #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-2/upload") == 2)
+        #expect(harness.drafts.storage["sess-1"] == nil)
+        #expect(harness.drafts.storage["sess-2"] == "latest typing")
+        #expect(harness.events.contains(.sessionSuperseded(sessionId: "sess-2")))
+        next.sendMessage()
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-2/messages") == 1 })
+        let body = try #require(await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-2/messages").first)
+        let request = try HapiJSON.decoder.decode(SendMessageRequest.self, from: Data(body.utf8))
+        #expect(request.attachments?.map(\.path) == ["/new-session/upload", "/new-session/upload"])
+        #expect(request.text == "latest typing")
+        #expect(harness.drafts.storage["sess-2"] == nil)
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/upload/delete") == 1 })
+        #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-2/upload/delete") == 0)
+        next.deactivate()
+    }
+
+    @Test func removingAttachmentDuringResumeDoesNotUploadItAgain() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        await harness.performer.gate("POST", pathSuffix: "/resume")
+        var recovering = false
+        harness.interactor.onAttachmentSessionRecovery = { recovering = $0 }
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { recovering })
+        harness.interactor.attachments.remove("att-1")
+        await harness.performer.openGates()
+        #expect(await eventually { !recovering })
+        #expect(harness.interactor.attachments.items.isEmpty)
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 1)
+    }
+
+    @Test func failedResumeRetainsPayloadAndAllowsManualRetry() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", status: 503,
+            json: #"{"error":"Machine is offline"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.items.first?.status == .failed })
+        #expect(harness.interactor.attachments.items.first?.errorMessage == "HTTP 503 (Machine is offline)")
+        harness.interactor.attachments.retry("att-1")
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        #expect(harness.interactor.attachments.items.first?.errorMessage == nil)
+    }
+
+    @Test func stillInactiveAfterResumeFailsWithoutRecoveryLoop() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.serve("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.items.first?.status == .failed })
+        #expect(await harness.performer.count("POST", pathSuffix: "/resume") == 1)
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 2)
+        #expect(harness.interactor.attachments.items.first?.errorMessage == "HTTP 409 (session_inactive)")
+    }
+
+    @Test func ordinaryUploadFailureDoesNotResumeSession() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 413,
+            json: #"{"error":"File too large"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.items.first?.status == .failed })
+        #expect(await harness.performer.count("POST", pathSuffix: "/resume") == 0)
+    }
+
     @Test func sendRidesReadyAttachmentsAsWireMetadataAndTheOptimisticRowCarriesThem() async throws {
         let harness = try await ChatInteractionHarness()
 

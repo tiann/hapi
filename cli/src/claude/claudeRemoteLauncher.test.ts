@@ -15,7 +15,8 @@ const harness = vi.hoisted(() => ({
     triggerSwitch: null as (() => void) | null,
     switchAfterCall: 2,
     compactContextTokens: null as number | null,
-    remoteImplementation: null as ((opts: any) => Promise<void>) | null
+    remoteImplementation: null as ((opts: any) => Promise<void>) | null,
+    compactSummary: null as { summary: string; tokensBefore?: number; tokensAfter?: number } | null
 }))
 
 vi.mock('./claudeRemote', () => ({
@@ -48,6 +49,7 @@ vi.mock('./claudeRemote', () => ({
         // session id via the SDK's system/init message.
         opts.onSessionFound('captured-session-id')
 
+        if (harness.compactSummary !== null) await opts.onReady(undefined, harness.compactSummary)
         if (harness.compactContextTokens !== null) {
             // Mirrors claudeRemote()'s compact-completion onReady: no
             // completion event or summary, just the boundary's post-tokens.
@@ -115,7 +117,7 @@ function createClientStub() {
         updateMetadata: (mutator: (metadata: any) => any) => { mutator({}) },
         emitMessagesConsumed: () => {},
         sendClaudeSessionMessage: () => {},
-        sendSessionEvent: () => {},
+        sendSessionEvent: (_event: unknown) => {},
         sendAgentMessage: vi.fn(),
         notePendingHubPromptEcho: () => {},
         discardPendingHubPromptEcho: () => {},
@@ -280,6 +282,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.switchAfterCall = 2
         harness.compactContextTokens = null
         harness.remoteImplementation = null
+        harness.compactSummary = null
         vi.clearAllMocks()
     })
 
@@ -536,4 +539,18 @@ describe('claudeRemoteLauncher resume anchor', () => {
             ;(SDKToLogConverter as unknown as { resolvedWindow?: number }).resolvedWindow = undefined
         }
     })
+    it('publishes Claude post_tokens as exact tokensAfter rather than an estimate', async () => {
+        const client = createClientStub();const sendEvent = vi.spyOn(client, 'sendSessionEvent')
+        const { session, queue } = createSession(client, undefined)
+        harness.compactSummary = { summary: 'native summary', tokensBefore: 34492, tokensAfter: 2082 }
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => { client.rpcHandlers.get(RPC_METHODS.Switch)?.() }
+        queue.push('hello', { permissionMode: 'default' }, 'compact-facts')
+        try {
+            await claudeRemoteLauncher(session as never)
+            expect(sendEvent).toHaveBeenCalledWith({ type: 'compact-summary', summary: 'native summary', tokensBefore: 34492, tokensAfter: 2082 })
+            expect(sendEvent.mock.calls.some(([event]) => 'estimatedTokensAfter' in (event as object))).toBe(false)
+        } finally { session.stopKeepAlive() }
+    })
+
 })

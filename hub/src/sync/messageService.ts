@@ -55,6 +55,7 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
     return {
         id: message.id,
         seq: message.seq,
+        ...(message.contentRevision ? { contentRevision: message.contentRevision } : {}),
         localId: message.localId,
         content: message.content,
         createdAt: message.createdAt,
@@ -393,6 +394,7 @@ export class MessageService {
         return {
             messages,
             page: {
+                ...(direction === 'latest' ? { readThroughRevision: this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 } : {}),
                 direction,
                 limit,
                 epoch,
@@ -420,10 +422,13 @@ export class MessageService {
             ? (comparePosition(requestedUntil, currentHead) <= 0 ? requestedUntil : currentHead)
             : requestedUntil ?? currentHead
 
+        const atCurrentHead = !currentHead || (snapshotHead !== null && comparePosition(snapshotHead, currentHead) === 0)
+        const readThroughRevision = atCurrentHead ? this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 : undefined
         if (!snapshotHead || comparePosition(snapshotHead, after) <= 0) {
             return {
                 messages: [],
                 page: {
+                    readThroughRevision,
                     direction: 'after',
                     limit,
                     epoch,
@@ -452,6 +457,7 @@ export class MessageService {
         return {
             messages: toVisibleDecryptedMessages(pageRows),
             page: {
+                ...(!hasMore && readThroughRevision !== undefined ? { readThroughRevision } : {}),
                 direction: 'after',
                 limit,
                 epoch,

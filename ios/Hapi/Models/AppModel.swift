@@ -56,6 +56,8 @@ final class AppModel {
     private let performer: any HTTPPerforming
     private let pairingService: HubPairingService
     @ObservationIgnored private var isForeground = false
+    @ObservationIgnored private var activationTask: Task<Void, Never>?
+    @ObservationIgnored private var activationToken = UUID()
 
     init(
         registry: HubRegistry = HubRegistry(),
@@ -224,8 +226,27 @@ final class AppModel {
     /// Builds (and starts, when foregrounded) the session for `hub`,
     /// replacing any previous one.
     private func activate(hub: String) {
+        let previousStore = session?.lastSeenStore
         session?.shutdown()
         session = nil
+        let token = UUID()
+        activationToken = token
+        if previousStore?.isPersisting == true || activationTask != nil {
+            let previousActivation = activationTask
+            activationTask = Task { [weak self] in
+                await previousActivation?.value
+                await previousStore?.flushPersistence()
+                guard let self, self.activationToken == token else { return }
+                self.activationTask = nil
+                guard self.registry.activeHub == hub else { return }
+                self.buildSession(hub: hub)
+            }
+            return
+        }
+        buildSession(hub: hub)
+    }
+
+    private func buildSession(hub: String) {
         guard let newSession = HubSession(
             hubUrl: hub,
             credentialStore: credentialStore,

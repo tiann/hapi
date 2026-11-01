@@ -231,6 +231,7 @@ class PaginationFixtureTest(private val fixtureName: String) {
 
     private fun projectWindowState(state: MessageWindowState): JsonObject = buildJsonObject {
         put("messages", JsonArray(state.messages.map(::projectMessage)))
+        put("readThroughRevision", state.readThroughRevision?.let(::JsonPrimitive) ?: JsonNull)
         put("hasMore", state.hasMore)
         put("epoch", state.epoch?.let(::JsonPrimitive) ?: JsonNull)
         put("viewMode", state.viewMode.wire)
@@ -239,6 +240,7 @@ class PaginationFixtureTest(private val fixtureName: String) {
     }
 
     private fun projectMessage(message: WindowMessage): JsonObject = buildJsonObject {
+        message.wire.contentRevision?.let { put("contentRevision", it) }
         put("id", message.id)
         put("localId", message.localId?.let(::JsonPrimitive) ?: JsonNull)
         put("seq", message.seq?.let(::JsonPrimitive) ?: JsonNull)
