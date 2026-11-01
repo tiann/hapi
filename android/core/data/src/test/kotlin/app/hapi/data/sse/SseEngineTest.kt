@@ -476,25 +476,6 @@ class SseEngineTest {
         assertEquals("e-1", conn2.lastEventId, "per-key cursor survives unsubscribe/resubscribe")
     }
 
-    @Test
-    fun `null token is a failure that backs off until a token appears`() = runTest {
-        var token: String? = null
-        val h = harness(supplyToken = { token })
-        h.engine.subscribe(SseSubscriptionKey.Global)
-        runCurrent()
-        h.assertNoOpen()
-        // Attempt-0 retry is immediate, so two fetches happen at t=0; the
-        // third waits for the attempt-1 backoff.
-        assertEquals(listOf(false, false), h.tokenCalls)
-
-        token = "jwt-late"
-        advanceTimeBy(1_000)
-        runCurrent()
-        val conn = h.awaitOpen()
-        assertEquals(1_000L, testScheduler.currentTime)
-        assertContains(conn.url, "token=jwt-late")
-    }
-
     // ------------------------------------------------- failure attribution --
     // The banner labels an outage with why the attempt ended
     // (`ConnectionFailure`; web `ReconnectingBanner.tsx` reason strings).
@@ -590,5 +571,84 @@ class SseEngineTest {
         h.awaitOpen().connect()
         runCurrent()
         assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
+    }
+
+    // ----------------------------------------------------- outage visibility --
+    // The banner's visibility is independent of the reason label.
+
+    @Test
+    fun `repeated null-token retries keep the reconnecting notice visible`() = runTest {
+        // Auth-side outage: a stale JWT whose refresh keeps failing cycles
+        // Backoff forever without a transport attempt ever running, so
+        // nothing attributes a failure reason — the notice must still surface
+        // after the grace (reason-less), not collapse to "no banner".
+        val h = harness(supplyToken = { null })
+        val key = SseSubscriptionKey.Global
+        h.engine.connectionOutageNotice(key).test {
+            assertNull(awaitItem())
+            h.engine.subscribe(key)
+            runCurrent()
+            advanceTimeBy(3_999)
+            expectNoEvents()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+
+            // More backoff cycles keep republishing the same outage: the
+            // notice stays up (no re-emit, no collapse).
+            advanceTimeBy(30_000)
+            runCurrent()
+            expectNoEvents()
+        }
+        h.assertNoOpen() // pure auth-side outage: no transport ever opened
+    }
+
+    @Test
+    fun `the outage notice hides while backgrounded and returns with the foreground`() = runTest {
+        val h = harness(supplyToken = { null })
+        val key = SseSubscriptionKey.Global
+        h.engine.connectionOutageNotice(key).test {
+            assertNull(awaitItem())
+            h.engine.subscribe(key)
+            runCurrent()
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+
+            // Backgrounding suspends the pipe — the banner host is
+            // invisible, so the notice hides.
+            h.engine.setLifecycleForeground(false)
+            runCurrent()
+            assertNull(awaitItem())
+
+            // Returning to the foreground releases the deferred retries; the
+            // still-ongoing outage re-shows, re-graced from the return.
+            h.engine.setLifecycleForeground(true)
+            runCurrent()
+            advanceTimeBy(3_999)
+            expectNoEvents()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+        }
+    }
+
+    @Test
+    fun `null token is a failure that backs off until a token appears`() = runTest {
+        var token: String? = null
+        val h = harness(supplyToken = { token })
+        h.engine.subscribe(SseSubscriptionKey.Global)
+        runCurrent()
+        h.assertNoOpen()
+        // Attempt-0 retry is immediate, so two fetches happen at t=0; the
+        // third waits for the attempt-1 backoff.
+        assertEquals(listOf(false, false), h.tokenCalls)
+
+        token = "jwt-late"
+        advanceTimeBy(1_000)
+        runCurrent()
+        val conn = h.awaitOpen()
+        assertEquals(1_000L, testScheduler.currentTime)
+        assertContains(conn.url, "token=jwt-late")
     }
 }

@@ -72,13 +72,23 @@ fun Flow<ConnectionState>.reconnectNotice(nowMs: () -> Long): Flow<Boolean> = tr
 }.distinctUntilChanged()
 
 /**
- * The [reconnectNotice] grace applied to the attributed failure: null until
- * the outage has spanned the 4 s grace (or once recovered), then the current
- * [ConnectionState.lastFailure] so a banner can label the reason. A suspended
- * (backgrounded) pipe is always hidden — its banner host is invisible.
+ * A reconnecting outage that has outlived the [reconnectNotice] grace.
+ * Visibility is independent of the optional failure reason: [failure] is null
+ * when no transport attempt attributed a reason yet — e.g. a stale JWT whose
+ * refresh keeps failing publishes [ConnectionState.Phase.Backoff] cycles
+ * without a transport attempt ever running — and the outage still shows.
+ */
+data class OutageNotice(val failure: ConnectionFailure?)
+
+/**
+ * The [reconnectNotice] grace applied to outage visibility: null until the
+ * outage has spanned the 4 s grace (or once recovered), then an
+ * [OutageNotice] wrapping the current [ConnectionState.lastFailure] so a
+ * banner can label the reason when one is known. A suspended (backgrounded)
+ * pipe is always hidden — its banner host is invisible.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-fun Flow<ConnectionState>.reconnectNoticeFailure(nowMs: () -> Long): Flow<ConnectionFailure?> =
+fun Flow<ConnectionState>.reconnectOutageNotice(nowMs: () -> Long): Flow<OutageNotice?> =
     transformLatest { state ->
         val start = state.outageStartedAtMs
         if (start == null || state.phase == ConnectionState.Phase.Suspended) {
@@ -89,6 +99,6 @@ fun Flow<ConnectionState>.reconnectNoticeFailure(nowMs: () -> Long): Flow<Connec
                 emit(null)
                 delay(remaining)
             }
-            emit(state.lastFailure)
+            emit(OutageNotice(state.lastFailure))
         }
     }.distinctUntilChanged()

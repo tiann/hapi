@@ -142,12 +142,14 @@ class SseEngine(
     fun reconnecting(key: SseSubscriptionKey) = connectionState(key).reconnectNotice(nowMs)
 
     /**
-     * [reconnectNoticeFailure] on this engine's own clock (the grace compares
-     * against `outageStartedAtMs`, which this engine stamped) — banner reason
-     * labeling must not mix clocks.
+     * [reconnectOutageNotice] on this engine's own clock (the grace compares
+     * against `outageStartedAtMs`, which this engine stamped) — banner
+     * visibility/reason labeling must not mix clocks. An auth-side outage
+     * (token refresh keeps failing before any transport attempt) surfaces as
+     * [OutageNotice] with a null failure: visible, reason unknown.
      */
-    fun connectionFailureNotice(key: SseSubscriptionKey): Flow<ConnectionFailure?> =
-        connectionState(key).reconnectNoticeFailure(nowMs)
+    fun connectionOutageNotice(key: SseSubscriptionKey): Flow<OutageNotice?> =
+        connectionState(key).reconnectOutageNotice(nowMs)
 
     /** Cancellation joins the previous attempt before opening another socket. */
     fun requestReconnect(key: SseSubscriptionKey) {

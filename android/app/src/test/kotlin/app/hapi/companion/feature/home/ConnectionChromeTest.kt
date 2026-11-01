@@ -5,47 +5,64 @@ package app.hapi.companion.feature.home
 import app.cash.turbine.test
 import app.hapi.data.sse.ConnectionFailure
 import app.hapi.data.sse.DisconnectReason
+import app.hapi.data.sse.OutageNotice
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
 /**
  * Banner state folding for the global connection chrome (slice C-①): the
  * engine-side grace/attribution is covered by `:core:data` tests — here the
- * failure flow is already post-grace, so these tests pin the chrome's own
- * contract: pass-through, syncing debounce/cap, and syncing precedence.
+ * outage flow is already post-grace, so these tests pin the chrome's own
+ * contract: pass-through (with or without an attributed reason), syncing
+ * debounce/cap, and syncing precedence.
  */
 class ConnectionChromeTest {
 
-    private fun TestScope.chromeFor(failure: MutableStateFlow<ConnectionFailure?>) = ConnectionChrome(
-        globalFailureNotice = failure,
+    private fun TestScope.chromeFor(outage: MutableStateFlow<OutageNotice?>) = ConnectionChrome(
+        globalOutageNotice = outage,
         scope = backgroundScope,
-        nowMs = { testScheduler.currentTime },
+        nowMs = { currentTime },
     )
 
     @Test
     fun `attributed failures surface as the reconnecting notice and clear on recovery`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             val transport = ConnectionFailure(DisconnectReason.TransportError, 502)
-            failure.value = transport
+            outage.value = OutageNotice(transport)
             assertEquals(GlobalConnectionNotice.Reconnecting(transport), awaitItem())
-            failure.value = null
+            outage.value = null
             assertNull(awaitItem())
         }
     }
 
     @Test
+    fun `an outage without a reason still shows the reconnecting banner`() = runTest {
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
+        chrome.notice.test {
+            assertNull(awaitItem())
+            // Auth-side outage: no transport attempt ever ran, so the engine
+            // emits a visible outage with a null failure — the banner must
+            // still show, reason-less (not collapse to no banner).
+            outage.value = OutageNotice(null)
+            assertEquals(GlobalConnectionNotice.Reconnecting(null), awaitItem())
+        }
+    }
+
+    @Test
     fun `a sync shorter than the debounce never shows a banner`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             chrome.onResyncEvent(true)
@@ -62,8 +79,8 @@ class ConnectionChromeTest {
 
     @Test
     fun `a long sync shows after the debounce and hides when it ends`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             chrome.onResyncEvent(true)
@@ -78,8 +95,8 @@ class ConnectionChromeTest {
 
     @Test
     fun `a stuck sync auto-clears after the cap`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             chrome.onResyncEvent(true)
@@ -94,12 +111,12 @@ class ConnectionChromeTest {
 
     @Test
     fun `syncing suppresses the reconnecting banner and it returns after the sync`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             val heartbeat = ConnectionFailure(DisconnectReason.HeartbeatTimeout)
-            failure.value = heartbeat
+            outage.value = OutageNotice(heartbeat)
             assertEquals(GlobalConnectionNotice.Reconnecting(heartbeat), awaitItem())
 
             chrome.onResyncEvent(true)
@@ -114,15 +131,15 @@ class ConnectionChromeTest {
                 awaitItem(),
                 "still disconnected: the reconnecting notice returns once the sync ends",
             )
-            failure.value = null
+            outage.value = null
             assertNull(awaitItem())
         }
     }
 
     @Test
     fun `a resync restart after the debounce keeps the banner up without blinking`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             chrome.onResyncEvent(true)
@@ -144,8 +161,8 @@ class ConnectionChromeTest {
 
     @Test
     fun `overlapping syncs keep one episode and restart the debounce`() = runTest {
-        val failure = MutableStateFlow<ConnectionFailure?>(null)
-        val chrome = chromeFor(failure)
+        val outage = MutableStateFlow<OutageNotice?>(null)
+        val chrome = chromeFor(outage)
         chrome.notice.test {
             assertNull(awaitItem())
             chrome.onResyncEvent(true)

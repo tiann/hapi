@@ -13,6 +13,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
@@ -24,7 +25,7 @@ class RunnerSkewChromeTest {
             machines = machines,
             restartRunner = restart,
             scope = backgroundScope,
-            nowMs = { testScheduler.currentTime },
+            nowMs = { currentTime },
         )
 
     private fun machine(

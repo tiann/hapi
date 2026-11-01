@@ -136,7 +136,7 @@ class HubGraph(
      */
     val connectionChrome: ConnectionChrome =
         ConnectionChrome(
-            globalFailureNotice = sseEngine.connectionFailureNotice(SseSubscriptionKey.Global),
+            globalOutageNotice = sseEngine.connectionOutageNotice(SseSubscriptionKey.Global),
             scope = scope,
         )
 

@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.home
 
 import app.hapi.data.sse.ConnectionFailure
+import app.hapi.data.sse.OutageNotice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -22,8 +23,10 @@ import kotlinx.coroutines.flow.transformLatest
  * Syncing wins while a full resync is in flight (web:
  * `showReconnectingBanner = sseDisconnected && !isSyncing`); otherwise a
  * reconnecting notice appears once the outage has outlived the 4 s grace
- * (`reconnectNoticeFailure` — the flow [ConnectionChrome] consumes), carrying
- * the attributed failure for the reason label (`ReconnectingBanner.tsx`).
+ * (`reconnectOutageNotice` — the flow [ConnectionChrome] consumes), carrying
+ * the attributed failure for the reason label (`ReconnectingBanner.tsx`) —
+ * or showing reason-less when the outage is auth-side (no transport attempt
+ * has run yet, e.g. repeated token-refresh failures).
  */
 sealed interface GlobalConnectionNotice {
     /** Reconnecting after a failure; [failure] labels the reason when known. */
@@ -44,7 +47,7 @@ private data class SyncActivity(
  * notice and the resync lifecycle into the single [notice] the banner renders.
  *
  * The reconnecting half is fed by the engine's
- * `SseEngine.connectionFailureNotice(SseSubscriptionKey.Global)` (grace +
+ * `SseEngine.connectionOutageNotice(SseSubscriptionKey.Global)` (grace +
  * failure attribution computed on the engine's own clock); the syncing half is
  * fed synchronously through [onResyncEvent] — wired via
  * [app.hapi.data.store.StoreSyncTargets]'s `onResyncEvent` hook — so no event
@@ -55,7 +58,7 @@ private data class SyncActivity(
  * guard), and hides the moment the last resync finishes.
  */
 class ConnectionChrome(
-    globalFailureNotice: Flow<ConnectionFailure?>,
+    globalOutageNotice: Flow<OutageNotice?>,
     scope: CoroutineScope,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -65,8 +68,8 @@ class ConnectionChrome(
     /**
      * Resync lifecycle input (true = a full resync started, false = finished).
      * Depth-counted: overlapping resyncs keep one episode open; every start
-     * restarts the debounce/max timers (web `doStartSync` clears and
-     * reschedules on each call), an end with others still running does not.
+     * restarts the debounce/max timers (web `doStartSync` clears and re-arms
+     * on each call), an end with others still running does not.
      *
      * Declared divergence from the web's display policy: `useSyncingState`
      * only shows for the first connect's force resync and for resyncs started
@@ -121,7 +124,11 @@ class ConnectionChrome(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val reconnectingNotice: Flow<GlobalConnectionNotice?> =
-        globalFailureNotice.map { failure -> failure?.let { GlobalConnectionNotice.Reconnecting(it) } }
+        globalOutageNotice.map { outage ->
+            // Outage visibility is independent of the reason: a null failure
+            // still reconnects visibly (auth-side outage, reason unknown).
+            outage?.let { GlobalConnectionNotice.Reconnecting(it.failure) }
+        }
 
     /** The banner state; null = no banner. */
     val notice: StateFlow<GlobalConnectionNotice?> =
