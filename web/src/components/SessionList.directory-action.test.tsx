@@ -440,6 +440,28 @@ describe('SessionList fork session action', () => {
         expect(screen.queryByRole('dialog')).toBeNull()
     })
 
+    it('hides Fork session for locally controlled sessions', () => {
+        const session = {
+            ...makeSession({
+                id: 'locally-controlled',
+                active: true,
+                metadata: {
+                    path: '/work/local',
+                    name: 'Locally controlled session',
+                    flavor: 'claude',
+                    conversationHistory: { forkCurrent: true },
+                },
+            }),
+            agentState: { controlledByUser: true, requests: {} },
+        } as SessionSummary
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation: vi.fn() } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Locally controlled session/ }))
+        expect(screen.queryByRole('menuitem', { name: 'Fork session' })).toBeNull()
+    })
+
     it('hides Fork session when the active session does not advertise current-fork support', () => {
         const session = makeSession({
             id: 'unsupported-source',

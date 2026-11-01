@@ -1220,7 +1220,8 @@ const SessionItem = memo(function SessionItem(props: {
         }
     }
 
-    const supportsCurrentFork = s.active && s.metadata?.conversationHistory?.forkCurrent === true
+    const supportsCurrentFork = s.active && s.metadata?.flavor === 'codex'
+        && s.metadata?.conversationHistory?.forkCurrent === true
     const supportsArchivedFork = !s.active && s.metadata?.flavor === 'codex'
         && s.metadata?.lifecycleState === 'archived'
         && Boolean(s.metadata.agentSessionId && s.metadata.machineId)
