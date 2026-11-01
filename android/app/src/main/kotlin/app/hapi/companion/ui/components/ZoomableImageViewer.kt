@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -409,7 +410,13 @@ private fun ZoomableTitleBar(
     onReset: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Row(
+    // Two rows, not one: the CI device shards run a default-profile AVD with
+    // a 320dp-class screen, and one row of fixed chrome (filename + prev /
+    // counter / next + three zoom buttons + close ≈ 326dp even with the caps
+    // below) starves the weighted filename to zero width. Row 1 gives the
+    // name the full bar minus Close; row 2 carries paging + zoom with a
+    // flexible spacer, so every control stays on screen at any width.
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.Black.copy(alpha = 0.5f))
@@ -417,93 +424,101 @@ private fun ZoomableTitleBar(
             // Device-test handle: the toolbar region the clipped canvas must
             // never paint over.
             .testTag("zoomable-title-bar")
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 4.dp),
     ) {
-        Text(
-            text = fileName,
-            color = Color.White,
-            fontSize = 14.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 8.dp),
-        )
-        if (count > 1) {
-            IconButton(onClick = onPrev, enabled = index > 0) {
-                Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                    tint = Color.White,
-                    contentDescription = stringResource(R.string.files_image_viewer_previous),
-                )
-            }
+        Row(
+            modifier = Modifier.padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                text = stringResource(R.string.files_image_viewer_counter, index + 1, count),
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = 12.sp,
+                text = fileName,
+                color = Color.White,
+                fontSize = 14.sp,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp),
             )
-            IconButton(onClick = onNext, enabled = index < count - 1) {
+            IconButton(onClick = onClose) {
                 Icon(
-                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    Icons.Filled.Close,
                     tint = Color.White,
-                    contentDescription = stringResource(R.string.files_image_viewer_next),
+                    contentDescription = stringResource(R.string.files_image_viewer_close),
                 )
             }
         }
-        val buttonColors = ButtonDefaults.textButtonColors(
-            contentColor = Color.White,
-            disabledContentColor = Color.White.copy(alpha = 0.4f),
-        )
-        // "−"/percent/"+" alone are meaningless to screen readers — the
-        // toolbar review asked for descriptions, so the buttons carry them.
-        // Default TextButtons reserve 58dp each; with paging chrome next to
-        // them the row consumes the whole 360dp-class screen and the filename
-        // collapses to zero width (caught by the CI device shards) — cap the
-        // glyph buttons so the name always keeps a visible strip.
-        val zoomOutDescription = stringResource(R.string.files_image_viewer_zoom_out)
-        val resetDescription = stringResource(R.string.files_image_viewer_reset)
-        val zoomInDescription = stringResource(R.string.files_image_viewer_zoom_in)
-        val zoomPadding = PaddingValues(horizontal = 8.dp)
-        TextButton(
-            onClick = onZoomOut,
-            enabled = scale > ImageViewerMath.MIN_SCALE,
-            colors = buttonColors,
-            contentPadding = zoomPadding,
-            modifier = Modifier
-                .widthIn(max = 44.dp)
-                .semantics { contentDescription = zoomOutDescription },
+        Row(
+            modifier = Modifier.padding(bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "−", fontSize = 18.sp)
-        }
-        TextButton(
-            onClick = onReset,
-            colors = buttonColors,
-            contentPadding = zoomPadding,
-            modifier = Modifier
-                .widthIn(max = 56.dp)
-                .semantics { contentDescription = resetDescription },
-        ) {
-            Text(text = "${ImageViewerMath.zoomPercent(scale)}%", fontSize = 13.sp)
-        }
-        TextButton(
-            onClick = onZoomIn,
-            enabled = scale < ImageViewerMath.MAX_SCALE,
-            colors = buttonColors,
-            contentPadding = zoomPadding,
-            modifier = Modifier
-                .widthIn(max = 44.dp)
-                .semantics { contentDescription = zoomInDescription },
-        ) {
-            Text(text = "+", fontSize = 16.sp)
-        }
-        IconButton(onClick = onClose) {
-            Icon(
-                Icons.Filled.Close,
-                tint = Color.White,
-                contentDescription = stringResource(R.string.files_image_viewer_close),
+            if (count > 1) {
+                IconButton(onClick = onPrev, enabled = index > 0) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                        tint = Color.White,
+                        contentDescription = stringResource(R.string.files_image_viewer_previous),
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.files_image_viewer_counter, index + 1, count),
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                )
+                IconButton(onClick = onNext, enabled = index < count - 1) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        tint = Color.White,
+                        contentDescription = stringResource(R.string.files_image_viewer_next),
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            val buttonColors = ButtonDefaults.textButtonColors(
+                contentColor = Color.White,
+                disabledContentColor = Color.White.copy(alpha = 0.4f),
             )
+            // "−"/percent/"+" alone are meaningless to screen readers — the
+            // toolbar review asked for descriptions, so the buttons carry
+            // them. The caps only bound the percent label as it grows; the
+            // spacer above is what keeps the row fitting narrow screens.
+            val zoomOutDescription = stringResource(R.string.files_image_viewer_zoom_out)
+            val resetDescription = stringResource(R.string.files_image_viewer_reset)
+            val zoomInDescription = stringResource(R.string.files_image_viewer_zoom_in)
+            val zoomPadding = PaddingValues(horizontal = 8.dp)
+            TextButton(
+                onClick = onZoomOut,
+                enabled = scale > ImageViewerMath.MIN_SCALE,
+                colors = buttonColors,
+                contentPadding = zoomPadding,
+                modifier = Modifier
+                    .widthIn(max = 44.dp)
+                    .semantics { contentDescription = zoomOutDescription },
+            ) {
+                Text(text = "−", fontSize = 18.sp)
+            }
+            TextButton(
+                onClick = onReset,
+                colors = buttonColors,
+                contentPadding = zoomPadding,
+                modifier = Modifier
+                    .widthIn(max = 56.dp)
+                    .semantics { contentDescription = resetDescription },
+            ) {
+                Text(text = "${ImageViewerMath.zoomPercent(scale)}%", fontSize = 13.sp)
+            }
+            TextButton(
+                onClick = onZoomIn,
+                enabled = scale < ImageViewerMath.MAX_SCALE,
+                colors = buttonColors,
+                contentPadding = zoomPadding,
+                modifier = Modifier
+                    .widthIn(max = 44.dp)
+                    .semantics { contentDescription = zoomInDescription },
+            ) {
+                Text(text = "+", fontSize = 16.sp)
+            }
         }
     }
 }
