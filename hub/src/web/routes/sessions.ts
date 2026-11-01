@@ -1,5 +1,6 @@
 import { compareSessionSummaries } from '@hapi/protocol'
 import {
+    SessionReadStateRequestSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
@@ -122,6 +123,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({
             sessionIds: engine.getScratchlistSessionIdsByNamespace(c.get('namespace'))
         })
+    })
+
+    app.put('/sessions/:id/read-state', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const access = requireSessionFromParam(c, engine)
+        if (access instanceof Response) return access
+        // A revision belongs to one session ID. Never apply an old ID's
+        // pending operation to a replacement session via alias resolution.
+        if (access.sessionId !== c.req.param('id')) return c.json({ error: 'Session replaced' }, 409)
+        const body = SessionReadStateRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!body.success) return c.json({ error: 'Invalid read state' }, 400)
+        const result = engine.updateReadState(access.sessionId, c.get('namespace'), body.data)
+        if (!result) return c.json({ error: 'Session not found' }, 404)
+        return c.json(result, result.status === 'invalid' ? 400 : result.status === 'conflict' ? 409 : 200)
     })
 
     app.get('/sessions/:id/export', (c) => {
@@ -365,7 +381,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }

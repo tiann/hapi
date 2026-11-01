@@ -2,82 +2,183 @@ import Foundation
 import HapiProtocol
 import Observation
 
-/// Snapshot payload: watermarks + which scopes already got their baseline.
-public struct LastSeenState: Codable, Equatable, Sendable {
-    public var lastSeen: [String: Int]
-    public var baselines: Set<String>
+public struct PendingRead: Codable, Equatable, Sendable {
+    public var id: UUID
+    public var request: SessionReadStateRequest
+}
 
-    public init(lastSeen: [String: Int] = [:], baselines: Set<String> = []) {
-        self.lastSeen = lastSeen
-        self.baselines = baselines
+/// Durable read revisions and outbox, isolated by hub directory and namespace.
+public struct LastSeenState: Codable, Equatable, Sendable {
+    public var lastSeen: [String: Int] = [:]
+    public var server: [String: SessionReadState] = [:]
+    public var pending: [String: PendingRead] = [:]
+    public init() {}
+}
+
+private actor ReadStateWriter {
+    func write(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
     }
 }
 
-/// Per-session last-seen watermarks — port of `web/src/lib/sessionLastSeen.ts`
-/// (localStorage → per-hub JSON snapshot) plus the unread derivation from
-/// `web/src/lib/sessionAttention.ts`, mirroring the Android port
-/// (`LastSeenStore`).
-///
-/// The watermark is the session `updatedAt` the operator last had on screen;
-/// a session is **unread** when its current `updatedAt` moved past it
-/// (``isUnread(_:lastSeenAt:)`` — the reference compares `updatedAt` only;
-/// message `seq` never reaches the summary).
-/// ``initializeBaseline(scopeKey:sessions:)`` seeds missing watermarks from
-/// the first session list so a fresh install does not mark every historical
-/// session unread — once per ``LastSeenState/baselines`` scope, exactly like
-/// the web's per-scope baseline flag.
 @MainActor @Observable
 public final class LastSeenStore {
     public private(set) var state: LastSeenState
+    public private(set) var persistenceError: String?
+    @ObservationIgnored private let directory: URL?
+    @ObservationIgnored private var namespace: String?
+    @ObservationIgnored private let writer = ReadStateWriter()
+    @ObservationIgnored private var mutationTask: Task<Void, Never>?
+    @ObservationIgnored private var mutationToken: UUID?
+    @ObservationIgnored private var syncTask: Task<Void, Never>?
+    @ObservationIgnored private var syncToken: UUID?
+    @ObservationIgnored private var sender: (@Sendable (String, SessionReadStateRequest) async throws -> SessionReadState)?
+    @ObservationIgnored private var foreground = true
+    @ObservationIgnored private var closed = false
+    public var isPersisting: Bool { mutationTask != nil }
 
-    @ObservationIgnored private let snapshot: DiskCache<LastSeenState>?
+    public init(snapshotDirectory: URL? = nil, namespace: String? = "default") {
+        self.directory = snapshotDirectory
+        self.namespace = namespace
+        self.state = Self.load(directory: snapshotDirectory, namespace: namespace)
+    }
 
-    public init(snapshotDirectory: URL? = nil) {
-        let cache = snapshotDirectory.map {
-            DiskCache<LastSeenState>(directory: $0, filename: "last-seen.json")
+    private static func file(directory: URL?, namespace: String?) -> URL? {
+        guard let directory, let namespace else { return nil }
+        let name = namespace.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        return directory.appendingPathComponent("read-state-\(name).json")
+    }
+
+    private static func load(directory: URL?, namespace: String?) -> LastSeenState {
+        guard let url = file(directory: directory, namespace: namespace),
+              let data = try? Data(contentsOf: url),
+              let state = try? HapiJSON.decoder.decode(LastSeenState.self, from: data) else { return LastSeenState() }
+        return state
+    }
+
+    public func configure(namespace: String, sender: @escaping @Sendable (String, SessionReadStateRequest) async throws -> SessionReadState) async {
+        guard !closed else { return }
+        await flushPersistence()
+        if self.namespace != namespace {
+            syncTask?.cancel()
+            syncTask = nil
+            syncToken = nil
+            self.namespace = namespace
+            state = Self.load(directory: directory, namespace: namespace)
         }
-        self.snapshot = cache
-        self.state = cache?.load() ?? LastSeenState()
+        self.sender = sender
+        sync()
     }
 
-    public func lastSeenAt(_ sessionId: String) -> Int {
-        state.lastSeen[sessionId] ?? 0
+    public func setForeground(_ value: Bool) {
+        foreground = value
+        if value { sync() }
     }
 
-    /// Forces the debounced snapshot to disk (app background / tests).
-    public func flushPersistence() async {
-        await snapshot?.flush()
-    }
+    public func shutdown() { closed = true; foreground = false; syncTask?.cancel(); syncTask = nil; syncToken = nil }
 
-    /// `markSessionSeen`: monotonic max — a stale screen never rewinds the
-    /// watermark.
-    public func markSeen(sessionId: String, seenAt: Int) {
-        guard !sessionId.isEmpty else { return }
-        let current = state.lastSeen[sessionId] ?? 0
-        let next = max(current, seenAt)
-        if next == current, state.lastSeen[sessionId] != nil {
-            return
+    public func lastSeenAt(_ sessionId: String) -> Int { state.lastSeen[sessionId] ?? 0 }
+
+    /// Every successful mark is already persisted; this waits for in-flight writes.
+    public func flushPersistence() async { await mutationTask?.value }
+
+    private func commit(namespace expectedNamespace: String? = nil, _ transform: @escaping @MainActor (LastSeenState) -> LastSeenState) async {
+        let previous = mutationTask
+        let identity = expectedNamespace ?? namespace
+        let token = UUID()
+        mutationToken = token
+        let task = Task { @MainActor in
+            await previous?.value
+            guard self.namespace == identity else { return }
+            let next = transform(self.state)
+            guard next != self.state else { return }
+            do {
+                if let url = Self.file(directory: self.directory, namespace: identity) {
+                    let data = try HapiJSON.encoder.encode(next)
+                    try await self.writer.write(data, to: url)
+                }
+                guard self.namespace == identity else { return }
+                self.state = next
+                self.persistenceError = nil
+            } catch { self.persistenceError = error.localizedDescription }
         }
-        state.lastSeen[sessionId] = next
-        snapshot?.scheduleWrite(state)
+        mutationTask = task
+        await task.value
+        if mutationToken == token { mutationTask = nil; mutationToken = nil }
     }
 
-    /// `initializeSessionLastSeen`: on the first list load for `scopeKey`
-    /// (e.g. the hub origin), seed every session without a watermark at its
-    /// current `updatedAt`, then never again for that scope.
-    public func initializeBaseline(scopeKey: String, sessions: [SessionSummary]) {
-        guard !state.baselines.contains(scopeKey) else { return }
-        var next = state
-        for session in sessions where next.lastSeen[session.id] == nil {
-            next.lastSeen[session.id] = session.updatedAt
+    public func markSeen(sessionId: String, revision: Int, serverState: SessionReadState? = nil) async {
+        guard !closed, namespace != nil, !sessionId.isEmpty, revision >= 0 else { return }
+        await commit { current in
+            let server = SessionReadState.merge(current.server[sessionId], serverState) ?? SessionReadState()
+            let seen = max(current.lastSeen[sessionId] ?? 0, server.readRevision)
+            let manual = server.manualUnread && current.pending[sessionId]?.request.expectedVersion != server.version
+            guard seen < revision || manual else { return current }
+            var next = current
+            next.lastSeen[sessionId] = max(seen, revision)
+            next.server[sessionId] = server
+            next.pending[sessionId] = PendingRead(id: UUID(), request: SessionReadStateRequest(
+                readRevision: max(seen, revision), expectedVersion: serverState?.version ?? server.version
+            ))
+            return next
         }
-        next.baselines.insert(scopeKey)
-        state = next
-        snapshot?.scheduleWrite(next)
+        sync()
     }
 
-    /// `sessionIsUnread`: activity newer than the operator's watermark.
-    public static func isUnread(_ summary: SessionSummary, lastSeenAt: Int) -> Bool {
-        summary.updatedAt > lastSeenAt
+    private func sync() {
+        guard !closed, foreground, syncTask == nil, !state.pending.isEmpty, let sender else { return }
+        let identity = namespace
+        let token = UUID()
+        syncToken = token
+        syncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.syncToken == token {
+                    self.syncTask = nil
+                    self.syncToken = nil
+                    if !Task.isCancelled { self.sync() }
+                }
+            }
+            while !Task.isCancelled && self.foreground && self.namespace == identity {
+                guard let (id, pending) = self.state.pending.first else { break }
+                do {
+                    let response = try await sender(id, pending.request)
+                    guard !Task.isCancelled, self.namespace == identity else { break }
+                    await self.commit(namespace: identity) { current in
+                        var next = current
+                        next.server[id] = SessionReadState.merge(current.server[id], response)
+                        if next.pending[id]?.id == pending.id { next.pending[id] = nil }
+                        return next
+                    }
+                    if self.persistenceError != nil { try await Task.sleep(for: .seconds(5)) }
+                } catch is CancellationError { break
+                } catch let error as APIError where [400, 403, 404, 409].contains(error.status) {
+                    guard !Task.isCancelled, self.namespace == identity else { break }
+                    let authoritative = error.body?.data(using: .utf8).flatMap {
+                        try? HapiJSON.decoder.decode(SessionReadStateResponse.self, from: $0).readState
+                    }
+                    await self.commit(namespace: identity) { current in
+                        var next = current
+                        next.server[id] = SessionReadState.merge(current.server[id], authoritative)
+                        if next.pending[id]?.id == pending.id {
+                            next.pending[id] = nil
+                            next.lastSeen[id] = next.server[id]?.readRevision ?? 0
+                        }
+                        return next
+                    }
+                    if self.persistenceError != nil { try? await Task.sleep(for: .seconds(5)) }
+                } catch {
+                    do { try await Task.sleep(for: .seconds(5)) } catch { break }
+                }
+            }
+        }
+    }
+
+    public static func isUnread(_ summary: SessionSummary, state: LastSeenState) -> Bool {
+        let server = SessionReadState.merge(state.server[summary.id], summary.readState) ?? SessionReadState()
+        let manual = server.manualUnread && state.pending[summary.id]?.request.expectedVersion != server.version
+        return manual || (!(summary.active && summary.thinking)
+            && (summary.contentRevision ?? 0) > max(server.readRevision, state.lastSeen[summary.id] ?? 0))
     }
 }
