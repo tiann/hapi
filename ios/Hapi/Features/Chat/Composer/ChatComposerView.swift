@@ -694,22 +694,33 @@ private struct ComposerAttachmentChipView: View {
     let attachment: ComposerAttachmentUI
     let onRetry: () -> Void
     let onRemove: () -> Void
+    @State private var showsUploadError = false
 
     private var failed: Bool { attachment.status == .failed }
 
     var body: some View {
         HStack(spacing: 8) {
-            thumb
-            VStack(alignment: .leading, spacing: 0) {
-                Text(attachment.filename)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                Text(statusLine)
-                    .font(.caption2)
-                    .foregroundStyle(failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
-                    .lineLimit(1)
+            if failed {
+                Button(action: onRetry) {
+                    attachmentLabel
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                attachmentLabel
             }
-            .frame(maxWidth: 132, alignment: .leading)
+            if failed, attachment.errorMessage != nil {
+                Button {
+                    showsUploadError = true
+                } label: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.red)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Details")
+                .accessibilityIdentifier("attachment.error.\(attachment.id)")
+            }
             Button {
                 onRemove()
             } label: {
@@ -726,9 +737,27 @@ private struct ComposerAttachmentChipView: View {
             failed ? AnyShapeStyle(.red.opacity(0.12)) : AnyShapeStyle(.fill.tertiary),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture {
-            if failed { onRetry() }
+        .alert("Error", isPresented: $showsUploadError) {
+            Button("Retry", action: onRetry)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(verbatim: "\(attachment.filename)\n\n\(attachment.errorMessage ?? "")")
+        }
+    }
+
+    private var attachmentLabel: some View {
+        HStack(spacing: 8) {
+            thumb
+            VStack(alignment: .leading, spacing: 0) {
+                Text(attachment.filename)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text(statusLine)
+                    .font(.caption2)
+                    .foregroundStyle(failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: 132, alignment: .leading)
         }
     }
 

@@ -48,6 +48,8 @@ public struct ComposerAttachmentUI: Equatable, Sendable, Identifiable {
     /// JPEG preview bytes for image picks; nil renders a file glyph.
     public let previewBytes: Data?
     public let status: ComposerAttachmentStatus
+    /// Upload failure detail, never the request body or file contents.
+    public let errorMessage: String?
 
     public init(
         id: String,
@@ -55,7 +57,8 @@ public struct ComposerAttachmentUI: Equatable, Sendable, Identifiable {
         mimeType: String,
         sizeBytes: Int,
         previewBytes: Data?,
-        status: ComposerAttachmentStatus
+        status: ComposerAttachmentStatus,
+        errorMessage: String? = nil
     ) {
         self.id = id
         self.filename = filename
@@ -63,16 +66,18 @@ public struct ComposerAttachmentUI: Equatable, Sendable, Identifiable {
         self.sizeBytes = sizeBytes
         self.previewBytes = previewBytes
         self.status = status
+        self.errorMessage = errorMessage
     }
 
-    func with(status: ComposerAttachmentStatus) -> ComposerAttachmentUI {
+    func with(status: ComposerAttachmentStatus, errorMessage: String? = nil) -> ComposerAttachmentUI {
         ComposerAttachmentUI(
             id: id,
             filename: filename,
             mimeType: mimeType,
             sizeBytes: sizeBytes,
             previewBytes: previewBytes,
-            status: status
+            status: status,
+            errorMessage: errorMessage
         )
     }
 }
@@ -131,9 +136,9 @@ public extension AttachmentUploading {
 /// separately track unsaved hub uploads and unconsumed chat uploads.
 ///
 /// - ``add(_:)`` uploads immediately (`POST upload`, JSON + base64) and
-///   tracks the chip through ``ComposerAttachmentStatus``; failures keep the
-///   payload bytes for ``retry(_:)``, successes drop them (only the small
-///   preview stays resident).
+///   tracks the chip through ``ComposerAttachmentStatus``; retains the
+///   payload bytes for ``retry(_:)`` and session-ID migration until send or
+///   removal. Upload paths are session-scoped, so migration must re-upload.
 /// - ``remove(_:)`` deletes the uploaded file best-effort
 ///   (`POST upload/delete`); removing a chip whose upload is still in flight
 ///   lets the upload finish and then deletes the orphan (web
@@ -148,12 +153,10 @@ public extension AttachmentUploading {
 ///   deallocates and `deinit` deletes the un-sent uploads best-effort — the
 ///   Android `discardAllDetached` (holder `onCleared`) analogue.
 ///   ``discardAllDetached()`` stays callable for an explicit discard.
-/// - **Inactive sessions (v1 simplification)**: the hub's upload route
-///   requires an active session, and unlike the web this tray does not
-///   resume-then-upload — a pick on an inactive session settles Failed;
-///   sending any text auto-resumes (A-M3ab), after which the chip's retry
-///   succeeds. Uploaded paths are absolute on the agent machine, so they
-///   stay readable across a resume (even one that supersedes the id).
+/// - **Inactive sessions**: the owning interactor supplies resume recovery.
+///   A `session_inactive` response resumes once, then retries the upload. A
+///   superseding session receives the same tray, with old uploads re-staged
+///   under the new ID and cleanup still scoped to each upload's owner.
 @MainActor @Observable
 public final class ComposerAttachments {
     private struct Entry {
@@ -162,7 +165,7 @@ public final class ComposerAttachments {
         var path: String? = nil
         /// Opaque durable Hub attachment id once Ready.
         var attachmentId: String? = nil
-        /// Upload payload, retained only until the upload succeeds (retry source).
+        /// Retained until consumption/removal for retries and session-ID migration.
         var bytes: Data? = nil
         var scratchlist: ScratchlistAttachment? = nil
         var uploadsToScratchlist = false
@@ -171,11 +174,14 @@ public final class ComposerAttachments {
     private var entries: [Entry] = []
 
     private let api: any AttachmentUploading
-    private let sessionId: String
+    private var sessionId: String
     /// Nonisolated shadow of the Ready chips' hub paths, so `deinit` (which
     /// cannot touch main-actor state) can schedule the orphan cleanup.
-    private let uploadedPaths = UploadedPathBox()
-    private let ownedScratchlistIds = UploadedPathBox()
+    private let uploadedPaths = UploadedPathBox<UploadedReference>()
+    private let ownedScratchlistIds = UploadedPathBox<OwnedUpload>()
+    @ObservationIgnored var resumeInactiveSession: (@MainActor (String) async throws -> String)?
+    @ObservationIgnored private var recoveryTask: Task<String, Error>?
+    private var sessionRevision = 0
 
     public init(api: any AttachmentUploading, sessionId: String) {
         self.api = api
@@ -188,9 +194,8 @@ public final class ComposerAttachments {
         // `discardAllDetached` from the holder's `onCleared`). Only Sendable
         // stored lets are touched here.
         let references = uploadedPaths.drain()
-        Self.deleteDetached(api: api, sessionId: sessionId, references: references)
-        Self.deleteScratchlistDetached(api: api, sessionId: sessionId,
-                                       ids: ownedScratchlistIds.drain().compactMap { $0.attachmentId })
+        Self.deleteDetached(api: api, uploads: references)
+        Self.deleteScratchlistDetached(api: api, uploads: ownedScratchlistIds.drain())
     }
 
     // MARK: - Read surface
@@ -309,21 +314,16 @@ public final class ComposerAttachments {
     /// in-flight upload deletes its result on completion (see `upload`).
     public func remove(_ id: String) {
         guard let index = entries.firstIndex(where: { $0.ui.id == id }) else { return }
-        _ = entries.remove(at: index)
-        if let owned = ownedScratchlistIds.remove(id: id), let attachmentId = owned.attachmentId {
-            Self.deleteScratchlistDetached(api: api, sessionId: sessionId, ids: [attachmentId])
+        let removed = entries.remove(at: index)
+        if let owned = ownedScratchlistIds.remove(id: id) {
+            Self.deleteScratchlistDetached(api: api, uploads: [owned])
         }
         let ownedReference = uploadedPaths.remove(id: id)
         guard let reference = ownedReference,
               reference.path != nil || reference.attachmentId != nil else { return }
         let api = api
-        let sessionId = sessionId
         Task {
-            _ = try? await api.deleteUpload(
-                sessionId: sessionId,
-                path: reference.path,
-                attachmentId: reference.attachmentId
-            )
+            _ = try? await api.deleteUpload(sessionId: reference.sessionId, path: reference.path, attachmentId: reference.attachmentId)
         }
     }
 
@@ -366,98 +366,141 @@ public final class ComposerAttachments {
     public func discardAllDetached() {
         entries = []
         let references = uploadedPaths.drain()
-        Self.deleteDetached(api: api, sessionId: sessionId, references: references)
-        Self.deleteScratchlistDetached(api: api, sessionId: sessionId,
-                                       ids: ownedScratchlistIds.drain().compactMap { $0.attachmentId })
+        Self.deleteDetached(api: api, uploads: references)
+        Self.deleteScratchlistDetached(api: api, uploads: ownedScratchlistIds.drain())
     }
 
     // MARK: - Internals
 
     private func uploadScratchlist(id: String, filename: String, mimeType: String, bytes: Data) {
+        let sessionId = sessionId
         Task {
             let attachment: ScratchlistAttachment?
+            var errorMessage: String?
             do {
                 let result = try await api.uploadScratchlistAttachment(sessionId: sessionId, filename: filename, data: bytes, mimeType: mimeType)
                 attachment = result.success ? result.attachment : nil
-            } catch { attachment = nil }
+                if attachment == nil {
+                    errorMessage = result.error ?? "Invalid upload response"
+                }
+            } catch {
+                attachment = nil
+                errorMessage = error.localizedDescription
+            }
             guard let index = entries.firstIndex(where: { $0.ui.id == id }) else {
                 if let attachment { try? await api.deleteScratchlistAttachment(sessionId: sessionId, attachmentId: attachment.id) }
                 return
             }
-            entries[index].ui = entries[index].ui.with(status: attachment == nil ? .failed : .ready)
+            entries[index].ui = entries[index].ui.with(status: attachment == nil ? .failed : .ready, errorMessage: errorMessage)
             entries[index].scratchlist = attachment
             if let attachment {
                 entries[index].bytes = nil
-                ownedScratchlistIds.set(id: id, path: nil, attachmentId: attachment.id)
+                ownedScratchlistIds.set(id: id, value: OwnedUpload(sessionId: sessionId, path: attachment.id))
             }
         }
     }
 
-    private nonisolated static func deleteScratchlistDetached(api: any AttachmentUploading, sessionId: String, ids: [String]) {
-        guard !ids.isEmpty else { return }
+    private nonisolated static func deleteScratchlistDetached(api: any AttachmentUploading, uploads: [OwnedUpload]) {
+        guard !uploads.isEmpty else { return }
         Task.detached {
-            for id in ids { try? await api.deleteScratchlistAttachment(sessionId: sessionId, attachmentId: id) }
+            for upload in uploads {
+                try? await api.deleteScratchlistAttachment(sessionId: upload.sessionId, attachmentId: upload.path)
+            }
         }
+    }
+
+    /// Called before the navigation handoff. Ready paths from the source
+    /// session cannot be sent or deleted through the replacement session.
+    func retarget(to target: String) {
+        sessionRevision += 1
+        guard target != sessionId else { return }
+        sessionId = target
+        for index in entries.indices where entries[index].path != nil {
+            let entry = entries[index]
+            guard let bytes = entry.bytes else { continue }
+            if let owned = uploadedPaths.remove(id: entry.ui.id) {
+                Self.deleteDetached(api: api, uploads: [owned])
+            }
+            entries[index].path = nil
+            entries[index].ui = entry.ui.with(status: .uploading)
+            upload(id: entry.ui.id, filename: entry.ui.filename, mimeType: entry.ui.mimeType, bytes: bytes)
+        }
+    }
+
+    private func recoverSession(from source: String, revision: Int) async throws -> String {
+        // An older in-flight upload can report 409 after a concurrent pick
+        // already resumed this very ID. Don't start a second agent process.
+        if revision != sessionRevision { return sessionId }
+        if let recoveryTask { return try await recoveryTask.value }
+        guard let resumeInactiveSession else {
+            throw APIError(status: 409, code: "session_inactive")
+        }
+        let task = Task { try await resumeInactiveSession(source) }
+        recoveryTask = task
+        defer { recoveryTask = nil }
+        return try await task.value
     }
 
     private func upload(id: String, filename: String, mimeType: String, bytes: Data) {
-        // Strong self on purpose: the upload finishes (and settles or deletes
-        // its orphan) even while the screen is being dismantled — Android's
-        // scope.launch keeps its ViewModel alive the same way.
+        // Keep the tray alive until completion so removal/deallocation never
+        // leaves a successful in-flight upload without orphan cleanup.
         Task {
-            // `APIClient.uploadFile` is a nonisolated async function, so the
-            // base64 encode of up to 50 MB inside it runs off the main actor
-            // (SE-0338 executor hopping).
+            var target = sessionId
+            let revision = sessionRevision
             var path: String?
             var attachmentId: String?
+            var errorMessage: String?
             do {
-                let response = try await api.uploadFile(
-                    sessionId: sessionId,
-                    filename: filename,
-                    data: bytes,
-                    mimeType: mimeType
-                )
+                let response: UploadFileResponse
+                do {
+                    response = try await api.uploadFile(sessionId: target, filename: filename, data: bytes, mimeType: mimeType)
+                } catch let error as APIError where error.status == 409 && error.code == "session_inactive" && resumeInactiveSession != nil {
+                    target = try await recoverSession(from: target, revision: revision)
+                    // Removal while /resume was in flight must not upload or
+                    // resurrect the cancelled chip.
+                    guard entries.contains(where: { $0.ui.id == id }) else { return }
+                    response = try await api.uploadFile(sessionId: target, filename: filename, data: bytes, mimeType: mimeType)
+                }
+                path = response.success ? response.path : nil
                 path = response.success ? response.path : nil
                 attachmentId = response.success ? response.attachmentId : nil
+                if path?.isEmpty == true { path = nil }
+                if path == nil && attachmentId == nil { errorMessage = response.error ?? "Invalid upload response" }
             } catch {
                 path = nil
                 attachmentId = nil
+                errorMessage = error.localizedDescription
             }
 
-            let applied = settleUpload(id: id, path: path, attachmentId: attachmentId)
-            // Removed while uploading: the hub file just became an orphan.
+            // Another pick may have rotated the ID while this request was
+            // in flight. Re-upload its payload, never publish an old path.
+            if target != sessionId {
+                if path != nil || attachmentId != nil {
+                    Self.deleteDetached(api: api, uploads: [UploadedReference(sessionId: target, path: path, attachmentId: attachmentId)])
+                }
+                if entries.contains(where: { $0.ui.id == id }) {
+                    upload(id: id, filename: filename, mimeType: mimeType, bytes: bytes)
+                }
+                return
+            }
+            let applied = settleUpload(id: id, sessionId: target, path: path, attachmentId: attachmentId, errorMessage: errorMessage)
             if !applied, path != nil || attachmentId != nil {
-                _ = try? await api.deleteUpload(
-                    sessionId: sessionId,
-                    path: path,
-                    attachmentId: attachmentId
-                )
+                _ = try? await api.deleteUpload(sessionId: target, path: path, attachmentId: attachmentId)
             }
         }
     }
 
     /// Applies the upload outcome to the chip; false when the chip is gone.
-    private func settleUpload(id: String, path: String?, attachmentId: String?) -> Bool {
+    private func settleUpload(id: String, sessionId: String, path: String?, attachmentId: String?, errorMessage: String?) -> Bool {
         guard let index = entries.firstIndex(where: { $0.ui.id == id }) else {
             return false
         }
         if path != nil || attachmentId != nil {
-            // Success: drop the payload bytes — only the preview stays.
-            entries[index] = Entry(
-                ui: entries[index].ui.with(status: .ready),
-                path: path,
-                attachmentId: attachmentId,
-                bytes: nil
-            )
-            uploadedPaths.set(id: id, path: path, attachmentId: attachmentId)
+            entries[index] = Entry(ui: entries[index].ui.with(status: .ready), path: path, attachmentId: attachmentId, bytes: nil)
+            uploadedPaths.set(id: id, value: UploadedReference(sessionId: sessionId, path: path, attachmentId: attachmentId))
         } else {
             let bytes = entries[index].bytes
-            entries[index] = Entry(
-                ui: entries[index].ui.with(status: .failed),
-                path: nil,
-                attachmentId: nil,
-                bytes: bytes
-            )
+            entries[index] = Entry(ui: entries[index].ui.with(status: .failed, errorMessage: errorMessage), path: nil, attachmentId: nil, bytes: bytes)
         }
         return true
     }
@@ -466,17 +509,12 @@ public final class ComposerAttachments {
     /// callable from `deinit`.
     private nonisolated static func deleteDetached(
         api: any AttachmentUploading,
-        sessionId: String,
-        references: [UploadedReference]
+        uploads: [UploadedReference]
     ) {
-        guard !references.isEmpty else { return }
+        guard !uploads.isEmpty else { return }
         Task.detached {
-            for reference in references {
-                _ = try? await api.deleteUpload(
-                    sessionId: sessionId,
-                    path: reference.path,
-                    attachmentId: reference.attachmentId
-                )
+            for reference in uploads {
+                _ = try? await api.deleteUpload(sessionId: reference.sessionId, path: reference.path, attachmentId: reference.attachmentId)
             }
         }
     }
@@ -486,17 +524,23 @@ public final class ComposerAttachments {
 /// ``ComposerAttachments/deinit`` can read it. Kept in lockstep with the
 /// entries by every main-actor mutation.
 private struct UploadedReference: Sendable {
+    let sessionId: String
     let path: String?
     let attachmentId: String?
 }
 
-private final class UploadedPathBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var paths: [String: UploadedReference] = [:]
+private struct OwnedUpload: Sendable {
+    let sessionId: String
+    let path: String
+}
 
-    func set(id: String, path: String?, attachmentId: String?) {
+private final class UploadedPathBox<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String: Value] = [:]
+
+    func set(id: String, value: Value) {
         lock.lock()
-        paths[id] = UploadedReference(path: path, attachmentId: attachmentId)
+        paths[id] = value
         lock.unlock()
     }
 
@@ -504,13 +548,13 @@ private final class UploadedPathBox: @unchecked Sendable {
         _ = remove(id: id)
     }
 
-    func remove(id: String) -> UploadedReference? {
+    func remove(id: String) -> Value? {
         lock.lock()
         defer { lock.unlock() }
         return paths.removeValue(forKey: id)
     }
 
-    func drain() -> [UploadedReference] {
+    func drain() -> [Value] {
         lock.lock()
         let values = Array(paths.values)
         paths = [:]
