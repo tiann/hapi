@@ -55,6 +55,9 @@ final class ChatModel {
     private(set) var warning: String?
     /// Bumps on tail-side content changes.
     private(set) var tailRevision = 0
+    private(set) var readThroughRevision: Int?
+    private(set) var renderedReadState: SessionReadState?
+    private var displayedReadRevision: Int?
     /// Bumps when an older page was prepended (drives scroll re-anchoring).
     private(set) var historyVersion = 0
     private(set) var historyPaging = ChatHistoryPagingState()
@@ -317,6 +320,7 @@ final class ChatModel {
     func stop() {
         guard isActive else { return }
         isActive = false
+        displayedReadRevision = nil
         statesTask?.cancel()
         statesTask = nil
         pipelineTask?.cancel()
@@ -351,11 +355,29 @@ final class ChatModel {
 
     // MARK: - Actions
 
+    func resetDisplayedReadReceipt() { displayedReadRevision = nil }
+
+    /// Called by the laid-out transcript, with the revision belonging to its rows.
+    func markDisplayed(revision: Int?, serverState: SessionReadState?) {
+        guard isActive, followsTail, !isInspectingContent, !isSyncingTail,
+              !isInitialLoading, !loadFailed, warning == nil, !hasTrimmedTail,
+              let revision, revision != displayedReadRevision else { return }
+        displayedReadRevision = revision
+        Task {
+            await hub.lastSeenStore.markSeen(sessionId: sessionId, revision: revision, serverState: serverState)
+            if let error = hub.lastSeenStore.persistenceError {
+                displayedReadRevision = nil
+                showNotice(error)
+            }
+        }
+    }
+
     func readingViewportChanged(followsTail: Bool, needsOlder: Bool, isAwayFromBottom: Bool) {
         let followsTail = isInspectingContent ? false : followsTail
         let needsOlder = isInspectingContent ? false : needsOlder
         let changedMode = self.followsTail != followsTail
         self.followsTail = followsTail
+        if !followsTail { displayedReadRevision = nil }
         self.isAwayFromBottom = !followsTail && isAwayFromBottom
         viewportNeedsOlder = needsOlder
         if changedMode, !isJumpingToLatest, let controller = chat.windowController {
@@ -625,13 +647,8 @@ final class ChatModel {
         isInitialLoading = isEmpty && !syncSettled && window.warning == nil
         loadFailed = isEmpty && syncSettled && (window.warning != nil || detailLoadFailed)
 
-        // Watermark = the updatedAt currently on screen, from whichever cache
-        // is fresher (summary via the global pipe, detail via this one).
-        // markSeen is monotonic, so stale inputs cannot rewind it.
-        let updatedAt = max(detail?.updatedAt ?? 0, summary?.updatedAt ?? 0)
-        if updatedAt > 0 && !isInspectingContent {
-            hub.lastSeenStore.markSeen(sessionId: sessionId, seenAt: updatedAt)
-        }
+        readThroughRevision = window.readThroughRevision
+        renderedReadState = SessionReadState.merge(detail?.readState, summary?.readState)
     }
 
     // MARK: - Header derivation (Android `buildHeader` port)

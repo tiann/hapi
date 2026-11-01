@@ -66,6 +66,8 @@ final class HubSession {
     @ObservationIgnored private var consumeTask: Task<Void, Never>?
     @ObservationIgnored private var reportedAuthFailure = false
     @ObservationIgnored private var isShutDown = false
+    @ObservationIgnored private var readStateTask: Task<Void, Never>?
+    @ObservationIgnored private let readNamespace: String?
 
     /// The chat currently on screen (at most one in this UI), forwarded the
     /// scene-phase transitions so its session-scope SSE parks in background.
@@ -100,7 +102,11 @@ final class HubSession {
         let machineStore = MachineStore(api: api, snapshotDirectory: snapshotDirectory)
         self.sessionStore = sessionStore
         self.machineStore = machineStore
-        self.lastSeenStore = LastSeenStore(snapshotDirectory: snapshotDirectory)
+        let storedJWT = (try? credentialStore.credentials(forHub: hubUrl))?.jwt
+        let readNamespace = storedJWT.flatMap { JWT.claims(from: $0)?.ns }
+        self.readNamespace = readNamespace
+        self.lastSeenStore = LastSeenStore(snapshotDirectory: snapshotDirectory,
+                                          namespace: readNamespace)
         self.windows = MessageWindowControllers(
             provider: api,
             snapshots: WindowSnapshotStore(
@@ -196,6 +202,27 @@ final class HubSession {
         }
         activeChat?.enterForeground()
         visibility.setForeground(true)
+        lastSeenStore.setForeground(true)
+        readStateTask?.cancel()
+        readStateTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let namespace: String
+                if let known = readNamespace { namespace = known }
+                else {
+                    let token = try await authManager.validToken()
+                    guard let resolved = JWT.claims(from: token)?.ns else { return }
+                    namespace = resolved
+                }
+                guard !Task.isCancelled else { return }
+                let api = self.api
+                await lastSeenStore.configure(namespace: namespace) { id, state in
+                    let token = try await api.authManager.validToken()
+                    guard JWT.claims(from: token)?.ns == namespace else { throw AuthError.reauthenticationRequired }
+                    return try await api.updateSessionReadState(id: id, state: state).readState
+                }
+            } catch { /* Offline: persisted reads remain queued for the next foreground. */ }
+        }
     }
 
     /// Parks the SSE retry loop; a live connection is left to the OS. Also
@@ -207,6 +234,7 @@ final class HubSession {
         }
         activeChat?.enterBackground()
         visibility.setForeground(false)
+        lastSeenStore.setForeground(false)
         let sessionStore = sessionStore
         let machineStore = machineStore
         let lastSeenStore = lastSeenStore
@@ -220,6 +248,8 @@ final class HubSession {
     /// Tears everything down. The session is unusable afterwards.
     func shutdown() {
         isShutDown = true
+        readStateTask?.cancel()
+        lastSeenStore.shutdown()
         onTerminalAuthFailure = nil
         // Hub switch can outrun the chat view's disappear; stop is idempotent.
         activeChat?.stop()

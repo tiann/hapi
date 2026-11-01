@@ -42,7 +42,7 @@ describe('schema migration v22 to v31', () => {
         expect(links?.name).toBe('event_links')
         const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         expect(columns.map((column) => column.name)).toContain('delivery_state')
-        expect(version.user_version).toBe(31)
+        expect(version.user_version).toBe(32)
         migrated.close()
     })
 })

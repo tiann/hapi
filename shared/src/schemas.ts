@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
@@ -65,6 +66,9 @@ export const MetadataSchema = z.object({
     titleSuggestionAutoAttemptedAt: z.number().int().positive().optional(),
     // Hub-owned lifecycle snapshot used to recognize a first turn after restart.
     titleSuggestionTurn: z.object({ first: z.boolean(), completed: z.boolean() }).optional(),
+    // Hub-owned provisional title from the first user prompt. Shown only until
+    // `name` or `summary` exists; it never blocks generated/native titles.
+    promptTitle: z.string().optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     // Parent HAPI session id when this session was created by message-level fork
@@ -189,6 +193,14 @@ export const MetadataSchema = z.object({
     }).optional(),
     // Set when native rewind succeeded but HAPI truncate/hydrate failed.
     conversationHistoryDiverged: z.boolean().optional(),
+    // Durable cold-fork reservation: retries reuse the same native/Hub child.
+    codexArchivedFork: z.object({
+        operationId: z.string().uuid(), childSessionId: z.string().uuid(),
+        boundaryLocalId: z.string().optional(), boundaryTurnId: z.string().optional(),
+        nativeSessionId: z.string().optional(), spawnAttempted: z.boolean().optional()
+    }).optional(),
+    // A timed-out resume can still activate later; retain until native ready or proven stopped.
+    codexResumePending: z.object({ machineId: z.string(), nativeSessionId: z.string() }).optional(),
     worktree: WorktreeMetadataSchema.optional(),
     // Cached Pi model list — written by CLI, read by web (inactive session fallback).
     // Minimal shape: each entry must have modelId; other fields (provider, name, etc.) pass through.
@@ -338,6 +350,7 @@ export const AttachmentMetadataSchema = z.object({
 export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>
 
 export const DecryptedMessageSchema = z.object({
+    contentRevision: z.number().int().nonnegative().safe().optional(),
     id: z.string(),
     seq: z.number().nullable(),
     localId: z.string().nullable(),
@@ -364,6 +377,8 @@ export const BackgroundTaskSchema = z.object({
 export type BackgroundTask = z.infer<typeof BackgroundTaskSchema>
 
 export const SessionSchema = z.object({
+    contentRevision: z.number().int().nonnegative().safe().optional(),
+    readState: SessionReadStateSchema.optional(),
     lastUserMessageAt: z.number().optional(),
     hasConversationContent: z.boolean().optional(),
     id: z.string(),
@@ -498,6 +513,8 @@ const VersionedAttachedJobPatchSchema = z.object({
 })
 
 export const SessionPatchSchema = z.object({
+    contentRevision: z.number().int().nonnegative().safe().optional(),
+    readState: SessionReadStateSchema.optional(),
     lastUserMessageAt: z.number().optional(),
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),

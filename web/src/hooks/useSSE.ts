@@ -1,3 +1,4 @@
+import { mergeReadState } from '@hapi/protocol'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -145,7 +146,9 @@ export function sameSessionSummaryMetadata(
 }
 
 export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): boolean {
-    return current.active === next.active
+    return current.contentRevision === next.contentRevision
+        && current.readState?.version === next.readState?.version
+        && current.active === next.active
         && current.thinking === next.thinking
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
@@ -492,6 +495,8 @@ export function useSSE(options: {
                     ...toSessionSummary(session),
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
+                    contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
+                    readState: mergeReadState(existing?.readState, session.readState),
                     lastUserMessageAt: session.lastUserMessageAt === undefined
                         ? existing?.lastUserMessageAt
                         : Math.max(existing?.lastUserMessageAt ?? 0, session.lastUserMessageAt),
@@ -529,6 +534,8 @@ export function useSSE(options: {
 
                 const nextSummary: SessionSummary = {
                     ...current,
+                    contentRevision: Math.max(current.contentRevision ?? 0, patch.contentRevision ?? 0),
+                    readState: mergeReadState(current.readState, patch.readState),
                     active: patch.active ?? current.active,
                     thinking: patch.thinking ?? current.thinking,
                     activeAt: patch.activeAt ?? current.activeAt,
@@ -760,7 +767,12 @@ export function useSSE(options: {
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
-                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
+                    const incoming = event.data
+                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
+                        ...incoming,
+                        contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
+                        readState: mergeReadState(previous?.session.readState, incoming.readState)
+                    } }))
                     upsertSessionSummary(event.data)
                 } else {
                     const patch = getSessionPatch(event.data)

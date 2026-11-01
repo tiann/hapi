@@ -50,7 +50,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 31
+const SCHEMA_VERSION: number = 32
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -371,8 +371,9 @@ export class Store {
             // immediate-queue heartbeat index at v25→v26;
             // upstream future-scheduled index at v26→v27;
             // upstream session_turns at v27→v28; last_user_message_at at v28→v29;
-            // #1404 session_jobs at v29→v30; run_id fence at v30→v31
-            // (jobs remapped again after upstream took 28/29).
+            // upstream read-state at v29→v30;
+            // #1404 session_jobs at v30→v31; run_id fence at v31→v32
+            // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
@@ -383,6 +384,7 @@ export class Store {
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
             30: () => this.migrateFromV30ToV31(),
+            31: () => this.migrateFromV31ToV32(),
         })
 
         if (currentVersion === 0) {
@@ -438,6 +440,10 @@ export class Store {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_user_message_at INTEGER,
+                content_revision INTEGER NOT NULL DEFAULT 0,
+                read_revision INTEGER NOT NULL DEFAULT 0,
+                read_state_version INTEGER NOT NULL DEFAULT 0,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -475,6 +481,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
+                content_revision INTEGER NOT NULL DEFAULT 0,
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -1205,13 +1212,40 @@ export class Store {
         `)
     }
 
+    private getSessionColumnNames(): Set<string> {
+        const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
+        return new Set(rows.map((row) => row.name))
+    }
+
+    private getMachineColumnNames(): Set<string> {
+        const rows = this.db.prepare('PRAGMA table_info(machines)').all() as Array<{ name: string }>
+        return new Set(rows.map((row) => row.name))
+    }
+
+    private getMessageColumnNames(): Set<string> {
+        const rows = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
+        return new Set(rows.map((row) => row.name))
+    }
+
+    /** Historical rows start at zero: upgrading never marks the backlog unread. */
+    private migrateFromV29ToV30(): void {
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+        }
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+        }
+    }
+
     /**
-     * v29→v30: #1404 session-attached jobs (after upstream took v28/v29).
+     * v30→v31: #1404 session-attached jobs (after upstream took v28–v30).
      * Also repairs session_turns + last_user_message_at for fork DBs that
      * previously burned those version numbers on an earlier jobs remap —
      * both ensures are idempotent.
      */
-    private migrateFromV29ToV30(): void {
+    private migrateFromV30ToV31(): void {
         this.migrateFromV27ToV28()
         this.migrateFromV28ToV29()
         this.db.exec(`
@@ -1236,27 +1270,17 @@ export class Store {
         `)
     }
 
-    /** v30→v31: supervisor run generation — CAS fence for key reuse (#1424). */
-    private migrateFromV30ToV31(): void {
+    /**
+     * v31→v32: supervisor run generation — CAS fence for key reuse (#1424).
+     * Also ensures upstream read-state columns for fork DBs that already sat
+     * at tip 31 (jobs+run_id) before this merge absorbed v29→v30.
+     */
+    private migrateFromV31ToV32(): void {
+        this.migrateFromV29ToV30()
         const cols = this.db.prepare('PRAGMA table_info(session_jobs)').all() as Array<{ name: string }>
-        if (!cols.some((c) => c.name === 'run_id')) {
+        if (cols.length > 0 && !cols.some((c) => c.name === 'run_id')) {
             this.db.exec('ALTER TABLE session_jobs ADD COLUMN run_id TEXT')
         }
-    }
-
-    private getSessionColumnNames(): Set<string> {
-        const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
-        return new Set(rows.map((row) => row.name))
-    }
-
-    private getMachineColumnNames(): Set<string> {
-        const rows = this.db.prepare('PRAGMA table_info(machines)').all() as Array<{ name: string }>
-        return new Set(rows.map((row) => row.name))
-    }
-
-    private getMessageColumnNames(): Set<string> {
-        const rows = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
-        return new Set(rows.map((row) => row.name))
     }
 
     private getUserVersion(): number {

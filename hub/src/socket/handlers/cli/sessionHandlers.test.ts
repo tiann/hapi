@@ -465,6 +465,7 @@ describe('cli session handlers', () => {
         ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],
         ['titleSuggestionAutoAttemptedAt', 1234],
         ['titleSuggestionTurn', { first: false, completed: true }],
+        ['promptTitle', 'Forged title'],
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
@@ -534,7 +535,8 @@ describe('cli session handlers', () => {
         const session = store.sessions.getOrCreateSession('preserve-auto-title-marker', {
             path: '/tmp/project',
             titleSuggestionAutoAttemptedAt: 1234,
-            titleSuggestionTurn: { first: true, completed: false }
+            titleSuggestionTurn: { first: true, completed: false },
+            promptTitle: 'Fix the login bug'
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -551,7 +553,8 @@ describe('cli session handlers', () => {
 
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             titleSuggestionAutoAttemptedAt: 1234,
-            titleSuggestionTurn: { first: true, completed: false }
+            titleSuggestionTurn: { first: true, completed: false },
+            promptTitle: 'Fix the login bug'
         })
     })
 })

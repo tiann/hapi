@@ -1202,8 +1202,9 @@ export class ApiSessionClient extends EventEmitter {
         type: 'compact-summary'
         summary: string
         tokensBefore?: number
+        tokensAfter?: number
         estimatedTokensAfter?: number
-    }, id?: string): void {
+    }, id?: string, options?: { localId: string }): void {
         const content = {
             role: 'agent',
             content: {
@@ -1216,7 +1217,8 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                ...(options?.localId ? { localId: options.localId } : {})
             })
         }, event.type === 'message' || event.type === 'error' || event.type === 'compact-summary' ? 'lossless' : 'droppable')
     }

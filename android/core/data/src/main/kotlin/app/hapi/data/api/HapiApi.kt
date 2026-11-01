@@ -1,5 +1,7 @@
 package app.hapi.data.api
 
+import app.hapi.protocol.wire.SessionReadStateRequest
+import app.hapi.protocol.wire.SessionReadStateResponse
 import app.hapi.data.auth.HubUrls
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.ApprovePermissionRequest
@@ -199,6 +201,9 @@ class HapiApi internal constructor(
     }
 
     /** `GET /api/sessions/:id`. */
+    suspend fun updateSessionReadState(sessionId: String, state: SessionReadStateRequest): SessionReadStateResponse =
+        request("PUT", url("api", "sessions", sessionId, "read-state").build(), state.toJsonBody())
+
     suspend fun getSession(sessionId: String): SessionResponse =
         request("GET", url("api", "sessions", sessionId).build())
 
