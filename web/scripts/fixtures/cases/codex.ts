@@ -223,7 +223,7 @@ export const codexCases: FixtureCase[] = [
     },
     {
         name: 'codex-context-compacted',
-        description: 'Codex family: context_compacted maps to an agent-event of type compact with trigger and preTokens (accepting the snake_case pre_tokens wire key).',
+        description: 'Codex family: context_compacted preserves reported before tokens in the common compaction presentation without inventing missing content.',
         messages: [
             wireMessage({
                 id: 'msg-user-511',
