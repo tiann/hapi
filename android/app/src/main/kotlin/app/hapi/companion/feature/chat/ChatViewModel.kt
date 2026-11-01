@@ -70,7 +70,7 @@ import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
@@ -251,6 +251,7 @@ sealed interface ChatNotice {
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
     data object QueuedEditScheduleDropped : ChatNotice
+    data object ScheduleAttachmentConflict : ChatNotice
     data object QueuedAlreadyDelivered : ChatNotice
     data object PermissionAlreadyHandled : ChatNotice
 
@@ -485,13 +486,33 @@ class ChatViewModel(
 
     /** The composer clock-button state; collected by [ChatScreen]. */
     val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
+
     /**
-     * Expiry auto-clear job for the pending schedule pick. Atomic: set/clear
-     * race across the main thread (clock pick / send) and the edit-restore
-     * coroutine on [Dispatchers.Default] — a plain `var` could leak a stale
-     * job that clears a newer pick at its deadline.
+     * Monotonic revision of the pending-schedule slot (web
+     * `pendingScheduleRevision`): bumped by EVERY schedule interaction —
+     * picks, clears, send-consume clears, expiry auto-clears and edit
+     * restores. Value equality cannot tell a pick from a pick→clear→re-pick
+     * of the same value; the revision can, which is what the queued-edit
+     * restore guard ([editQueuedMessage]) needs.
      */
-    private val pendingScheduleExpiryJob = AtomicReference<Job?>(null)
+    private val pendingScheduleRevision = AtomicLong(0L)
+
+    /**
+     * Serializes the pending-schedule transition (value swap + expiry
+     * registration) across the Main thread (picker callbacks, send) and the
+     * edit-restore coroutine on the holder's Default scope. Without the lock
+     * an AtomicReference job handle still leaves a window: a restore could
+     * publish pick A, a Main callback could select B before A's expiry job
+     * is stored (B finds no timer to cancel), and A's stale timer would then
+     * clear B at A's deadline — the next Send going out immediately despite
+     * the newer pick. The mutex makes value+timer one critical section; the
+     * revision check inside the timer is the second layer (an obsolete timer
+     * can never clear a newer pick). Guarded by [scheduleMutex].
+     */
+    private val scheduleMutex = Mutex()
+
+    /** Expiry auto-clear job for the current pick; guarded by [scheduleMutex]. */
+    private var pendingScheduleExpiryJob: Job? = null
 
     /**
      * Composer attachment tray (B-M3f). The screen feeds prepared picks in
@@ -1130,16 +1151,48 @@ class ChatViewModel(
 
     /**
      * Schedule-picker selection / clock-button clear (B-M16b). Mirrors the
-     * web SessionChat `updatePendingSchedule`: absolute picks also arm an
+     * web SessionChat `updatePendingSchedule`: every call — including clears
+     * — bumps [pendingScheduleRevision], and absolute picks also arm an
      * expiry auto-clear (a pick whose instant passes stops highlighting the
      * clock instead of silently scheduling into the past; a within-grace
      * past pick — still valid at validation time — clears immediately, the
      * web's exact `remaining <= 0` behavior). Presets are send-relative and
      * never expire on a timer.
+     *
+     * Mutual exclusion (wire: `scheduledAt` excludes attachments): arming a
+     * pick while the tray holds any chip is REJECTED here. The clock button
+     * disables with a non-empty tray, but the picker panel can stay open
+     * across an attachment add and the share-import path can drop a file in
+     * while a pick is armed — the ViewModel transition is the gate the UI
+     * gates only mirror; [sendMessage] validates again before consuming.
+     * Clearing is always allowed.
      */
     fun setPendingSchedule(pending: PendingSchedule?) {
-        pendingScheduleExpiryJob.getAndSet(null)?.cancel()
+        // Fast path: apply inline while uncontended so UI callbacks (and the
+        // JVM tests driving them) stay synchronous. When the edit-restore
+        // coroutine holds the lock, queue behind it on the holder scope.
+        if (scheduleMutex.tryLock()) {
+            try {
+                applyPendingScheduleLocked(pending)
+            } finally {
+                scheduleMutex.unlock()
+            }
+        } else {
+            scope.launch { scheduleMutex.withLock { applyPendingScheduleLocked(pending) } }
+        }
+    }
+
+    /**
+     * The transition itself — caller must hold [scheduleMutex]. Atomic by
+     * construction: the value swap, the revision bump and the expiry-job
+     * registration happen with no interleaving point between them.
+     */
+    private fun applyPendingScheduleLocked(pending: PendingSchedule?) {
+        if (pending != null && attachments.items.value.isNotEmpty()) return
+        pendingScheduleExpiryJob?.cancel()
+        pendingScheduleExpiryJob = null
         mutablePendingSchedule.value = pending
+        val armedRevision = pendingScheduleRevision.incrementAndGet()
         if (!ScheduleSend.shouldAutoClearPendingSchedule(pending)) return
         val ms = (pending as PendingSchedule.Absolute).ms
         val remaining = ms - now()
@@ -1147,10 +1200,17 @@ class ChatViewModel(
             mutablePendingSchedule.value = null
             return
         }
-        pendingScheduleExpiryJob.set(scope.launch {
+        pendingScheduleExpiryJob = scope.launch {
             delay(remaining)
-            mutablePendingSchedule.value = null
-        })
+            // Revision guard: only the timer armed by the CURRENT pick may
+            // clear it. A timer that lost a race (or an obsolete restore)
+            // sees a newer revision and no-ops instead of clobbering.
+            scheduleMutex.withLock {
+                if (pendingScheduleRevision.get() != armedRevision) return@withLock
+                mutablePendingSchedule.value = null
+                pendingScheduleRevision.incrementAndGet()
+            }
+        }
     }
 
     /**
@@ -1198,9 +1258,19 @@ class ChatViewModel(
             return
         }
         val text = composerDraft.value.text.trim()
+        val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
+        // Mutual exclusion, checked BEFORE the draft clears or the tray
+        // consumes: a scheduled send cannot carry attachments on the wire,
+        // and the pre-consume order keeps both recoverable — the chips stay
+        // in the tray and the draft keeps its text so the operator can drop
+        // one side and re-tap Send. (Reaching performSend with the combo
+        // would throw on its invariant before a recoverable row exists.)
+        if (scheduledAt != null && attachments.items.value.isNotEmpty()) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ScheduleAttachmentConflict))
+            return
+        }
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
-        val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
         val deliveryMode = if (steer && scheduledAt == null) "steer" else "queue"
         replaceComposerTextRaw("")
         // 分歧 (same intent as the web, Android-native restore): the web
@@ -1553,19 +1623,23 @@ class ChatViewModel(
      * meanwhile). B-M16b: a future `scheduledAt` re-arms the pending schedule
      * as an absolute pick so a re-send keeps (or adjusts) the fire time;
      * past/null clears it so the re-send goes out immediately (web
-     * `computeEditPendingSchedule`). The restore is guarded twice, like the
-     * web's snapshot+revision check in `onEdit`: a pick made during the
-     * cancel round-trip wins over the restore, and the restore is skipped
-     * (with a notice) when the attachment tray is non-empty — a schedule
-     * cannot carry attachments on the wire and the clock button is disabled
-     * while the tray is non-empty, so re-arming would arm a state the
-     * operator can neither see nor clear, and the send would crash on the
-     * scheduledAt+attachments invariant.
+     * `computeEditPendingSchedule`). The restore is guarded by the schedule
+     * revision, like the web's `pendingScheduleRevisionAtEdit` check in
+     * `onEdit`: every schedule interaction bumps the revision, so a pick —
+     * or a pick and an explicit clear of it — re-made while the cancel
+     * round-trip is in flight wins over the restore even when the slot's
+     * value lands back where it started (value equality cannot see that).
+     * The restore is also skipped (with a notice) when the attachment tray
+     * is non-empty — a schedule cannot carry attachments on the wire and
+     * the clock button is disabled while the tray is non-empty, so
+     * re-arming would arm a state the operator can neither see nor clear,
+     * and the send would crash on the scheduledAt+attachments invariant.
      */
     fun editQueuedMessage(messageId: String) {
-        // Snapshot on the calling thread: a pick re-made after the tap (while
-        // the cancel is in flight) must win over the restore below.
-        val pickAtEdit = mutablePendingSchedule.value
+        // Snapshot on the calling thread: a single atomic read — any
+        // schedule interaction after the tap (pick, clear, expiry) bumps the
+        // revision and must win over the restore below.
+        val revisionAtEdit = pendingScheduleRevision.get()
         scope.launch {
             val store = awaitWindowStore()
             val row = store.state.value.messages.firstOrNull { it.id == messageId } ?: return@launch
@@ -1580,11 +1654,15 @@ class ChatViewModel(
                     } else {
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditKeptDraft))
                     }
-                    if (mutablePendingSchedule.value == pickAtEdit) {
+                    // Check + restore as one critical section, serialized
+                    // against picker picks and expiry timers by the same
+                    // mutex the transitions hold.
+                    scheduleMutex.withLock {
+                        if (pendingScheduleRevision.get() != revisionAtEdit) return@withLock
                         if (restoredSchedule != null && attachments.items.value.isNotEmpty()) {
                             _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditScheduleDropped))
                         } else {
-                            setPendingSchedule(restoredSchedule)
+                            applyPendingScheduleLocked(restoredSchedule)
                         }
                     }
                 }

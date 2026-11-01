@@ -119,6 +119,14 @@ fun ChatComposer(
     // time because the picker composes only while open (web remounts too).
     var schedulePickerOpen by remember { mutableStateOf(false) }
     val hasSchedule = pendingSchedule != null
+    // An open panel stays interactive while the tray fills (the clock button
+    // alone only disables the *entry*): every pick in it would arm the
+    // illegal schedule+attachments combo, so the panel closes the moment a
+    // chip appears. The ViewModel rejects the transition regardless — this
+    // keeps the UI from offering it.
+    LaunchedEffect(attachments.isNotEmpty()) {
+        if (attachments.isNotEmpty()) schedulePickerOpen = false
+    }
     LaunchedEffect(state.focusRequest) {
         if (state.focusRequest != handledFocusRequest) {
             handledFocusRequest = state.focusRequest

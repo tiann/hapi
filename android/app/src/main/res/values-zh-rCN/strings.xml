@@ -299,6 +299,7 @@
     <string name="chat_notice_cancel_failed">取消队列消息失败</string>
     <string name="chat_notice_edit_kept_draft">消息已取消 — 已保留当前草稿</string>
     <string name="chat_notice_edit_schedule_dropped">定时已取消 — 附件不支持定时发送</string>
+    <string name="chat_notice_schedule_attachment_conflict">定时发送不能携带附件 — 请移除附件或取消定时</string>
     <string name="chat_notice_already_delivered">已发送给智能体</string>
     <string name="chat_notice_steer_failed">插入消息失败</string>
     <string name="chat_notice_request_already_handled">该请求已被处理</string>

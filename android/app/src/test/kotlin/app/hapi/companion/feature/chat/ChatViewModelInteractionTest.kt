@@ -174,6 +174,8 @@ private class RecordingChatApi : ChatSessionApi {
 
     var cancelResult: CancelMessageResponse = CancelMessageResponse(status = "cancelled")
     val cancelCalls = MutableStateFlow<List<String>>(emptyList())
+    /** Hold cancel round-trips open to interleave schedule picks mid-edit. */
+    var cancelGate: CompletableDeferred<Unit>? = null
 
     var steerResult: SteerQueuedMessageResponse = SteerQueuedMessageResponse(status = "steered")
     val steerCalls = MutableStateFlow<List<String>>(emptyList())
@@ -215,6 +217,7 @@ private class RecordingChatApi : ChatSessionApi {
 
     override suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse {
         cancelCalls.value = cancelCalls.value + messageId
+        cancelGate?.await()
         return cancelResult
     }
 
@@ -1232,6 +1235,176 @@ class ChatViewModelInteractionTest {
         val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
         assertNotNull(request.scheduledAt)
         assertEquals("queue", request.deliveryMode)
+    }
+
+    // ------------------------------------------- schedule x attachments gate --
+
+    @Test
+    fun `schedule picks are rejected while attachments sit in the tray`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        // The open-picker scenario: the panel stays interactive after "+"
+        // drops a chip; the ViewModel transition — not the disabled clock
+        // button — must refuse to arm over the tray.
+        harness.viewModel.attachments.add(preparedShot())
+        harness.awaitAttachmentsReady()
+
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+30m"))
+        assertNull(harness.viewModel.pendingSchedule.value)
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(999_999))
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        // Clearing stays allowed over a non-empty tray (it only disarms).
+        harness.viewModel.setPendingSchedule(null)
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        // A rejected pick never leaks into the attachment send.
+        harness.viewModel.setComposerText("plain attachment send")
+        harness.viewModel.sendMessage()
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertNull(request.scheduledAt)
+        assertEquals(1, request.attachments?.size)
+    }
+
+    @Test
+    fun `a scheduled send over tray chips blocks before consuming the draft or uploads`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.viewModel.setComposerText("with chips")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+        // The reverse order (pick armed first, chip lands after — share
+        // import or the still-open panel) must refuse BEFORE the draft
+        // clears or the tray consumes, keeping both recoverable instead of
+        // crashing later on the wire invariant.
+        harness.viewModel.attachments.add(preparedShot())
+        harness.awaitAttachmentsReady()
+
+        val notices = mutableListOf<ChatNotice>()
+        val collector = launch { harness.viewModel.events.collect { if (it is ChatEvent.Notice) notices += it.notice } }
+        testScheduler.runCurrent()
+        harness.viewModel.sendMessage()
+        testScheduler.runCurrent()
+        collector.cancel()
+
+        assertEquals<List<ChatNotice>>(listOf(ChatNotice.ScheduleAttachmentConflict), notices)
+        assertEquals("with chips", harness.viewModel.composer.value.text)
+        assertEquals(PendingSchedule.Preset("+5m"), harness.viewModel.pendingSchedule.value)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        assertEquals(1, harness.viewModel.attachments.items.value.size, "the refused send must not consume the chip")
+    }
+
+    // ---------------------------------------------- schedule serialization --
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `rapid consecutive absolute picks keep only the newest expiry alive`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        // now() fixture is 1_000 → first pick fires at t+4_000, second at
+        // t+8_000. Registration is one critical section: the second apply
+        // always observes and cancels the first timer, and the revision
+        // guard is the second layer if it ever raced through.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(5_000))
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(9_000))
+        assertEquals(PendingSchedule.Absolute(9_000), harness.viewModel.pendingSchedule.value)
+
+        testScheduler.advanceTimeBy(4_000)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Absolute(9_000), harness.viewModel.pendingSchedule.value)
+
+        testScheduler.advanceTimeBy(4_001)
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.pendingSchedule.value)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a preset picked after a restored absolute survives the restore's deadline`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-8", "l-8", "stale deadline", scheduledAt = 5_000),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-8" } }
+
+        // The edit re-arms the row's absolute pick (deadline t+4_000), then
+        // the operator re-picks a preset. The restored pick's timer must not
+        // clear the newer preset at its deadline — the review's "next Send
+        // goes out immediately despite the newer preset" symptom.
+        harness.viewModel.editQueuedMessage("srv-8")
+        harness.viewModel.pendingSchedule.first { it == PendingSchedule.Absolute(5_000) }
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+
+        testScheduler.advanceTimeBy(4_100)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Preset("+5m"), harness.viewModel.pendingSchedule.value)
+
+        // And the send under it still resolves the preset, not immediate.
+        harness.viewModel.setComposerText("still scheduled")
+        harness.viewModel.sendMessage()
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertNotNull(request.scheduledAt)
+    }
+
+    @Test
+    fun `edit restore loses to a pick and explicit clear made mid-flight`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-9", "l-9", "pick then clear", scheduledAt = 99_999),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-9" } }
+
+        // Edit taps with no pending pick; while the cancel round-trip hangs,
+        // the operator picks a preset and explicitly clears it. The slot is
+        // null again — value equality would call it "unchanged" and restore
+        // the row's old schedule over the explicit clear.
+        harness.api.cancelGate = CompletableDeferred()
+        harness.viewModel.editQueuedMessage("srv-9")
+        testScheduler.runCurrent()
+        assertEquals(listOf("srv-9"), harness.api.cancelCalls.value)
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+        harness.viewModel.setPendingSchedule(null)
+        harness.api.cancelGate!!.complete(Unit)
+
+        harness.viewModel.composer.first { it.text == "pick then clear" }
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `edit restore loses to a clear and same-preset reselection made mid-flight`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-10", "l-10", "reselect same", scheduledAt = 88_888),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-10" } }
+
+        // The slot starts AND ends at Preset("+1h") — value equal — but the
+        // clear→reselect interactions in between are newer than the Edit
+        // tap, so the revision must keep the restore off the slot.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+        harness.viewModel.editQueuedMessage("srv-10")
+        harness.viewModel.setPendingSchedule(null)
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+
+        harness.viewModel.composer.first { it.text == "reselect same" }
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Preset("+1h"), harness.viewModel.pendingSchedule.value)
     }
 
     // --------------------------------------------------------- permissions --

@@ -292,6 +292,7 @@
     <string name="chat_notice_cancel_failed">Failed to cancel queued message</string>
     <string name="chat_notice_edit_kept_draft">Message cancelled — kept your current draft</string>
     <string name="chat_notice_edit_schedule_dropped">Schedule dropped — attachments cannot be scheduled</string>
+    <string name="chat_notice_schedule_attachment_conflict">Scheduled sends cannot carry attachments — remove the chips or clear the schedule</string>
     <string name="chat_notice_already_delivered">Already delivered to the agent</string>
     <string name="chat_notice_steer_failed">Failed to steer message</string>
     <string name="chat_notice_request_already_handled">Request was already handled</string>
