@@ -301,6 +301,7 @@ public final class ComposerAttachments {
             entries[index].ui = ui.with(status: .uploading)
             entries[index].path = nil
             entries[index].attachmentId = nil
+            entries[index].attachmentId = nil
             entries[index].scratchlist = nil
             uploadScratchlist(id: id, filename: ui.filename, mimeType: ui.mimeType, bytes: bytes)
             return
@@ -415,13 +416,13 @@ public final class ComposerAttachments {
         sessionRevision += 1
         guard target != sessionId else { return }
         sessionId = target
-        for index in entries.indices where entries[index].path != nil {
+        for index in entries.indices where entries[index].path != nil || entries[index].attachmentId != nil {
             let entry = entries[index]
             guard let bytes = entry.bytes else { continue }
             if let owned = uploadedPaths.remove(id: entry.ui.id) {
                 Self.deleteDetached(api: api, uploads: [owned])
             }
-            entries[index].path = nil
+            entries[index].path = nil`r`n            entries[index].attachmentId = nil
             entries[index].ui = entry.ui.with(status: .uploading)
             upload(id: entry.ui.id, filename: entry.ui.filename, mimeType: entry.ui.mimeType, bytes: bytes)
         }
@@ -496,7 +497,7 @@ public final class ComposerAttachments {
             return false
         }
         if path != nil || attachmentId != nil {
-            entries[index] = Entry(ui: entries[index].ui.with(status: .ready), path: path, attachmentId: attachmentId, bytes: nil)
+            entries[index] = Entry(ui: entries[index].ui.with(status: .ready), path: path, attachmentId: attachmentId, bytes: entries[index].bytes)
             uploadedPaths.set(id: id, value: UploadedReference(sessionId: sessionId, path: path, attachmentId: attachmentId))
         } else {
             let bytes = entries[index].bytes
