@@ -118,7 +118,7 @@ function extractChatText(value: unknown): string | null {
     return null
 }
 
-function extractUserText(content: unknown): string | null {
+export function extractUserText(content: unknown): string | null {
     if (Array.isArray(content)) {
         const text = content
             .flatMap((part) => {

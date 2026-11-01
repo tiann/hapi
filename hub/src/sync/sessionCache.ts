@@ -1,3 +1,4 @@
+import { mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -267,6 +268,8 @@ export class SessionCache {
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
+            contentRevision: stored.contentRevision,
+            readState: stored.readState,
             lastUserMessageAt: stored.lastUserMessageAt,
             pinned: stored.pinned,
             globalPinned: stored.globalPinned,
@@ -408,6 +411,8 @@ export class SessionCache {
         if (patch.active !== undefined) session.active = patch.active
         if (patch.thinking !== undefined) session.thinking = patch.thinking
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
+        if (patch.contentRevision !== undefined) session.contentRevision = Math.max(session.contentRevision ?? 0, patch.contentRevision)
+        if (patch.readState) session.readState = mergeReadState(session.readState, patch.readState)
         if (patch.updatedAt !== undefined) session.updatedAt = Math.max(session.updatedAt, patch.updatedAt)
         if (patch.lastUserMessageAt !== undefined) {
             session.lastUserMessageAt = Math.max(session.lastUserMessageAt ?? 0, patch.lastUserMessageAt)
@@ -705,6 +710,18 @@ export class SessionCache {
             namespace: session.namespace,
             data: { lastUserMessageAt: session.lastUserMessageAt } satisfies SessionPatch
         })
+    }
+
+    syncReadState(sessionId: string): void {
+        const stored = this.store.sessions.getSession(sessionId)
+        const session = this.sessions.get(sessionId)
+        if (!stored || !session) return
+        if (session.contentRevision === stored.contentRevision
+            && session.readState?.version === stored.readState?.version) return
+        session.contentRevision = stored.contentRevision
+        session.readState = stored.readState
+        this.publisher.emit({ type: 'session-updated', sessionId, namespace: session.namespace,
+            data: { contentRevision: session.contentRevision, readState: session.readState } })
     }
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
@@ -1292,6 +1309,54 @@ export class SessionCache {
     }
 
     /**
+     * Persist the first prompt as a display-only title while the session is
+     * untitled. It lives outside `summary`, so later title sources still apply.
+     */
+    updatePromptTitle(sessionId: string, text: string): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session?.metadata) return false
+
+            const metadata = session.metadata
+            if (metadata.name?.trim() || metadata.summary?.text?.trim() || metadata.promptTitle) {
+                return false
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...metadata, promptTitle: text },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                const parsed = MetadataSchema.safeParse(result.value)
+                if (!parsed.success) {
+                    this.refreshSession(sessionId)
+                    return true
+                }
+                // A metadata-only patch: this runs while a prompt is being
+                // accepted, so a full snapshot would race the thinking patch.
+                session.metadata = parsed.data
+                session.metadataVersion = result.version
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    namespace: session.namespace,
+                    data: { metadata: { version: result.version, value: parsed.data } } satisfies SessionPatch
+                })
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
+    /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
      *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.
@@ -1574,6 +1639,8 @@ export class SessionCache {
                 newSessionId,
                 referencedAttachmentIds
             )
+            this.syncReadState(newSessionId)
+            this.syncReadState(oldSessionId)
             if (movedMessages.moved > 0) {
                 this.store.usage.transferSession(oldSessionId, newSessionId)
                 this.publisher.emit({ type: 'messages-invalidated', sessionId: oldSessionId, namespace })
@@ -1816,6 +1883,7 @@ export class SessionCache {
                     preparedScratchlistAttachments,
                     scratchlistSnapshot
                 )
+                this.syncReadState(newSessionId)
                 committed = true
                 if (moved.moved > 0) {
                     this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
@@ -1893,6 +1961,11 @@ export class SessionCache {
 
         if (oldObj.titleSuggestionTurn && !newObj.titleSuggestionTurn) {
             merged.titleSuggestionTurn = oldObj.titleSuggestionTurn
+            changed = true
+        }
+
+        if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
+            merged.promptTitle = oldObj.promptTitle
             changed = true
         }
 

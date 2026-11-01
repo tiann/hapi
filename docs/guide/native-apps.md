@@ -162,8 +162,9 @@ separate from exporting an entire session.
 
 ## Multiple hubs and sign-out
 
-The home screen's hub menu lets you add or switch hubs, open Settings, and
-sign out. You can keep several hubs paired, with one active at a time; session
+On iOS, Settings lists your hubs: add or switch hubs and sign out there. On
+Android, the home screen's hub menu lets you add or switch hubs, open Settings,
+and sign out. You can keep several hubs paired, with one active at a time; session
 lists and drafts belong to their hub. Signing out removes that hub's stored
 credentials and attempts to unregister its push token.
 

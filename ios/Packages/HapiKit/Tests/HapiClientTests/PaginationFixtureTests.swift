@@ -310,6 +310,7 @@ struct PaginationFixtureTests {
     private static func projectWindowState(_ state: MessageWindowState) -> JSONValue {
         .object([
             "messages": .array(state.messages.map(projectMessage)),
+            "readThroughRevision": state.readThroughRevision.map { JSONValue.number(Double($0)) } ?? .null,
             "hasMore": .bool(state.hasMore),
             "epoch": state.epoch.map { JSONValue.number(Double($0)) } ?? .null,
             "viewMode": .string(state.viewMode.rawValue),
@@ -328,6 +329,7 @@ struct PaginationFixtureTests {
             "optimistic": .bool(message.isOptimistic),
         ]
         // Wire tri-state: the key appears only when the wire carried it.
+        if let revision = message.contentRevision { projected["contentRevision"] = .number(Double(revision)) }
         switch message.invokedAt {
         case .absent:
             break
