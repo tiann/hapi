@@ -513,3 +513,36 @@ describe('RichComposerInput undo history', () => {
         expect(value.textContent).toBe('ab')
     })
 })
+
+describe('RichComposerInput session drops', () => {
+    it('forwards a HAPI session drag payload', () => {
+        const onSessionMentionDrop = vi.fn()
+        render(
+            <RichComposerInput
+                value=""
+                onValueChange={() => {}}
+                onMirrorChange={() => {}}
+                onSessionMentionDrop={onSessionMentionDrop}
+            />
+        )
+
+        const editor = screen.getByRole('textbox')
+        expect(fireEvent.dragOver(editor, {
+            dataTransfer: { types: ['application/x-hapi-session-mention'] },
+        })).toBe(false)
+
+        fireEvent.drop(editor, {
+            dataTransfer: {
+                types: ['application/x-hapi-session-mention'],
+                getData: (type: string) => type === 'application/x-hapi-session-mention'
+                    ? '{"id":"peer-1","title":"Peer session"}'
+                    : '',
+            },
+        })
+
+        expect(onSessionMentionDrop).toHaveBeenCalledWith({
+            id: 'peer-1',
+            title: 'Peer session',
+        })
+    })
+})
