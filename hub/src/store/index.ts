@@ -75,7 +75,7 @@ function sameMessageIds(left: Set<string>, right: Set<string>): boolean {
     }
     return true
 }
-const SCHEMA_VERSION: number = 30
+const SCHEMA_VERSION: number = 31
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -625,6 +625,7 @@ export class Store {
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
+            30: () => this.migrateFromV30ToV31(),
         })
 
         if (currentVersion === 0) {
@@ -1449,7 +1450,24 @@ export class Store {
     }
 
     /** v29→v30: add Hub-resident durable attachment metadata and cleanup journal. */
+    /** v29→v30: add upstream read-state columns. */
     private migrateFromV29ToV30(): void {
+        // Branch databases labeled v28 may predate upstream turn columns.
+        this.migrateFromV27ToV28()
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) {
+                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+            }
+        }
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+        }
+    }
+
+    /** v30→v31: add Hub-resident durable attachment metadata and cleanup journal. */
+    private migrateFromV30ToV31(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
@@ -1468,17 +1486,6 @@ export class Store {
                 original_path TEXT PRIMARY KEY
             );
         `)
-
-        const columns = this.getSessionColumnNames()
-        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
-            if (columns.size > 0 && !columns.has(name)) {
-                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
-            }
-        }
-        const messageColumns = this.getMessageColumnNames()
-        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
-            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
-        }
     }
 
     private getSessionColumnNames(): Set<string> {

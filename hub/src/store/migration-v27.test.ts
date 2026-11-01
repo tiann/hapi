@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v29 to v30', () => {
+describe('schema migration v29 to v31', () => {
     it('adds the attachment deletion journal table', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v27-'))
         tempDirs.push(dir)
@@ -35,7 +35,7 @@ describe('schema migration v29 to v30', () => {
 
         expect(table?.name).toBe('attachment_deletions')
         expect(columns.map((column) => column.name)).toEqual(['original_path'])
-        expect(version.user_version).toBe(30)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })

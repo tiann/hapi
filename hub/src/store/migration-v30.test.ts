@@ -32,3 +32,27 @@ it('upgrades timestamp-era history to a read baseline exactly once', () => {
         restarted.close()
     } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+it('adds durable attachment tables when upgrading an unmodified v30 database', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-attachment-tables-v31-'))
+    try {
+        const path = join(dir, 'hub.db')
+        new Store(path).close()
+        const legacy = new Database(path)
+        legacy.exec(`
+            DROP TABLE attachment_deletions;
+            DROP TABLE attachments;
+            PRAGMA user_version = 30;
+        `)
+        legacy.close()
+        const migrated = new Store(path)
+        try {
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const tables = internalDb.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('attachments', 'attachment_deletions')"
+            ).all() as Array<{ name: string }>
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+            expect(tables.map((table) => table.name).sort()).toEqual(['attachment_deletions', 'attachments'])
+            expect(version.user_version).toBe(31)
+        } finally { migrated.close() }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+})

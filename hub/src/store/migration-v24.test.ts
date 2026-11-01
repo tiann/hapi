@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v23 to v30', () => {
+describe('schema migration v23 to v31', () => {
     it('adds the durable attachments table when upgrading a V25 database', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v25-'))
         tempDirs.push(dir)
@@ -34,7 +34,7 @@ describe('schema migration v23 to v30', () => {
 
         expect(table?.name).toBe('attachments')
         expect(columns.map((column) => column.name)).not.toContain('thumbnail_path')
-        expect(version.user_version).toBe(30)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 
@@ -65,7 +65,7 @@ describe('schema migration v23 to v30', () => {
             expect(columns.some((col) => col.name === 'push_key')).toBe(true)
             const messageColumns = messageColumnsStatement.all() as Array<{ name: string }>
             expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
 
             // Existing Android rows survive with a NULL push key.
             const devices = migrated.fcm.getDevicesByNamespace('default')
@@ -115,7 +115,7 @@ describe('schema migration v23 to v30', () => {
             const version = versionStatement.get() as { user_version: number }
             const indexes = indexesStatement.all() as Array<{ name: string }>
             expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
             expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
                 'idx_messages_immediate_queued',
                 'idx_messages_future_scheduled_queued'
