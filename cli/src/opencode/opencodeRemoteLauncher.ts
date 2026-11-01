@@ -250,6 +250,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private v2RestInfo: { baseUrl: string; password: string } | null = null;
     private v2Steers = new Map<string, OpencodeV2SteerEntry>();
     private v2AbortInProgress: Promise<void> | null = null;
+    private v2ResetInProgress: Promise<void> | null = null;
 
     constructor(
         session: OpencodeSession,
@@ -1041,7 +1042,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer state is indeterminate' };
                 }
 
-                const restoreQueuedReservation = async (): Promise<boolean> => {
+                const restoreQueuedReservation = async (shouldRestore: () => boolean = () => true): Promise<boolean> => {
+                    // Includes pre-admission and stall restores, whose native
+                    // entry may not yet exist or predate the active Stop.
+                    while (this.v2ResetInProgress) await this.v2ResetInProgress;
+                    if (!shouldRestore()) return false;
                     if (!taken.originIndeterminate) {
                         const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                         if (!persisted) {
@@ -1050,6 +1055,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             return false;
                         }
                     }
+                    while (this.v2ResetInProgress) await this.v2ResetInProgress;
+                    if (!shouldRestore()) return false;
                     if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
                         session.client.emitSteerIndeterminate([localId]);
                         return false;
@@ -1256,7 +1263,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         localId: string,
         taken: QueueReservation<OpencodeMode>,
         release: () => void,
-        restore: () => Promise<boolean>
+        restore: (shouldRestore?: () => boolean) => Promise<boolean>
     ): Promise<{ steered: boolean; error?: string }> {
         const rest = this.v2RestInfo!;
         const opts = { ...rest, sessionId, text: taken.item.message, inputId: opencodeV2InputId({
@@ -1268,6 +1275,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         let abandoned = false;
         let purpose: 'stop' | 'explicit' | 'teardown' = 'stop';
         let cancellation: Promise<OpencodeSteerCancelResult> | null = null;
+        const currentPurpose = () => purpose;
         let resolveDelivered!: () => void;
         const delivered = new Promise<void>(resolve => { resolveDelivered = resolve; });
         const remove = () => { if (this.v2Steers.get(localId) === entry) this.v2Steers.delete(localId); };
@@ -1299,7 +1307,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             cancel: (nextPurpose, resetFinished = Promise.resolve()) => {
                 cancelRequested = true;
                 if (nextPurpose === 'explicit' || purpose !== 'explicit' && nextPurpose === 'teardown') purpose = nextPurpose;
-                cancellation ??= (async (): Promise<OpencodeSteerCancelResult> => {
+                const activeCancellation: Promise<OpencodeSteerCancelResult> = cancellation ?? (async (): Promise<OpencodeSteerCancelResult> => {
                     const admission = await Promise.race([admitted, delivered.then(() => 'delivered' as const)]);
                     if (accepted) return 'consumed';
                     if (!admissionKnown && admission !== 'rejected') {
@@ -1322,20 +1330,36 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         return removed;
                     }
                     if (purpose === 'stop' && !taken.originIndeterminate) {
-                        const restored = await restore();
+                        const restored = await restore(() => purpose === 'stop' && !abandoned);
+                        // Explicit resolution can arrive during the durable
+                        // queued-state await. Remove the actual reservation or
+                        // restored FIFO item before acknowledging removal.
+                        if (currentPurpose() === 'explicit') {
+                            session.queue.markReservationIndeterminate(taken);
+                            const removed = session.queue.cancelByLocalId(localId);
+                            release(); remove();
+                            return removed;
+                        }
+                        if (!restored) unknown();
                         release(); remove();
-                        return restored;
+                        return restored ? true : 'indeterminate';
                     }
                     // Teardown or a previously unknown delivery never becomes
                     // an implicit retry. The durable HAPI row remains unknown.
                     unknown(); remove();
                     return 'indeterminate';
-                })().catch(error => {
+                })().catch((error): OpencodeSteerCancelResult => {
                     logger.debug('[opencode-remote] v2 cancellation could not be verified', error);
                     unknown();
                     return 'indeterminate';
+                }).then((result): OpencodeSteerCancelResult => {
+                    // Unknown is not terminal native evidence. A later user
+                    // Cancel/Retry must be able to reconcile newly admitted input.
+                    if (result === 'indeterminate') cancellation = null;
+                    return result;
                 });
-                return cancellation;
+                cancellation = activeCancellation;
+                return activeCancellation;
             }
         };
         this.v2Steers.set(localId, entry);
@@ -2159,8 +2183,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async performAbort(leavingRemote: boolean): Promise<void> {
-        let finishReset!: () => void;
-        const resetFinished = new Promise<void>(resolve => { finishReset = resolve; });
+        let resolveReset!: () => void;
+        const resetFinished = new Promise<void>(resolve => { resolveReset = resolve; });
+        if (this.majorVersion === 'v2') this.v2ResetInProgress = resetFinished;
+        const finishReset = () => {
+            if (this.v2ResetInProgress === resetFinished) this.v2ResetInProgress = null;
+            resolveReset();
+        };
         const v2Cancellations = Array.from(this.v2Steers.values(), entry => entry.cancel('stop', resetFinished));
         let resetDone = false;
         try {
@@ -2233,7 +2262,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }
             this.messageBuffer.addMessage(decision.message, 'status');
         } finally {
-            if (!resetDone) for (const entry of this.v2Steers.values()) entry.abandon();
+            if (!resetDone) for (const entry of this.v2Steers.values()) void entry.cancel('teardown');
             finishReset();
         }
     }

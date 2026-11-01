@@ -2986,6 +2986,123 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         } finally { releasePost?.(); nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
     });
 
+    it('v2 pre-admission restoration waits for an overlapping Stop reset', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let releaseState!: () => void; let releaseAbort!: () => void;
+        harness.deferSteerState = new Promise<void>(resolve => { releaseState = resolve; });
+        harness.cancelPromptImpl = () => new Promise<void>(resolve => { releaseAbort = resolve; });
+        let steering: Promise<unknown> | undefined; let aborting: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            steering = steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await vi.waitFor(() => expect(harness.steerStateCalls).toHaveLength(1));
+            aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            await vi.waitFor(() => expect(releaseAbort).toBeTypeOf('function'));
+            releaseState();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            releaseAbort();
+            await Promise.all([steering, aborting]);
+            expect(stub.session.queue.peekByLocalId('v2-steer')?.message).toBe('correction');
+            expect(harness.softSteerCalls).toEqual([]);
+        } finally {
+            releaseState?.(); releaseAbort?.(); harness.deferSteerState = null; harness.cancelPromptImpl = null;
+            await Promise.all([steering, aborting]); await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('v2 retries uncertain native cancellation after later positive admission evidence', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let ready = false; let cancelled = false; let deletes = 0;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') { id = JSON.parse(String(init.body)).id; throw new Error('response lost before write is known'); }
+            if (init?.method === 'DELETE') { deletes++; cancelled = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            return String(url).endsWith('/inbox') ? Response.json({ data: ready && !cancelled ? [item] : [] }) : new Response(null, { status: 404 });
+        });
+        let cancel: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null = null;
+        const { stub, releasePrompt, runPromise } = await startTurn({ launcherOptions: { onSteerCancelHandlerChange: value => { cancel = value; } } });
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await expect(cancel!('v2-steer')).resolves.toBe('indeterminate');
+            expect(deletes).toBe(0);
+            ready = true;
+            harness.eventStreamOptions.at(-1)!.onEvent!('session.inbox.enqueued', {
+                sessionID: 'acp-session-1', inboxID: id, item: { type: 'user', payload: { text: 'correction' } }
+            });
+            await expect(cancel!('v2-steer')).resolves.toBe(true);
+            expect(deletes).toBe(1);
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+        } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
+    });
+
+    it('v2 explicit Cancel during queued-state restoration cannot leave a runnable FIFO item', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let cancelled = false;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') id = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') { cancelled = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return String(url).endsWith('/inbox') ? Response.json({ data: cancelled ? [] : [item] }) : new Response(null, { status: 404 });
+        });
+        let cancel: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null = null;
+        const { stub, releasePrompt, runPromise } = await startTurn({ launcherOptions: { onSteerCancelHandlerChange: value => { cancel = value; } } });
+        let releaseState!: () => void; let aborting: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            harness.deferSteerState = new Promise<void>(resolve => { releaseState = resolve; });
+            aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            await vi.waitFor(() => expect(harness.steerStateCalls).toContainEqual({ localIds: ['v2-steer'], state: 'queued' }));
+            const cancelling = cancel!('v2-steer');
+            releaseState();
+            await Promise.all([aborting, expect(cancelling).resolves.toBe(true)]);
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+        } finally {
+            releaseState?.(); harness.deferSteerState = null; await aborting;
+            nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('v2 stall restoration shares the reset barrier of an overlapping user Stop', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let deleted = false; let releaseDelete!: () => void; let releaseStop!: () => void;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') id = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') {
+                await new Promise<void>(resolve => { releaseDelete = resolve; });
+                deleted = true; return new Response(null, { status: 204 });
+            }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return String(url).endsWith('/inbox') ? Response.json({ data: deleted ? [] : [item] }) : new Response(null, { status: 404 });
+        });
+        let cancels = 0;
+        harness.cancelPromptImpl = async () => { if (++cancels > 1) await new Promise<void>(resolve => { releaseStop = resolve; }); };
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let stopping: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            harness.stderrHandler!({ type: 'quota_exceeded', message: 'API quota exceeded. Retrying in 30 seconds', raw: 'quota exceeded' });
+            await vi.waitFor(() => expect(releaseDelete).toBeTypeOf('function'));
+            stopping = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            await vi.waitFor(() => expect(releaseStop).toBeTypeOf('function'));
+            releaseDelete();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            releaseStop(); await stopping;
+            expect(stub.session.queue.peekByLocalId('v2-steer')?.message).toBe('correction');
+        } finally {
+            releaseDelete?.(); releaseStop?.(); harness.cancelPromptImpl = null; await stopping;
+            nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
     it('injects a compatible queued message into the active turn without cancelling it', async () => {
         let releaseSoftSteer!: () => void;
         harness.deferSoftSteer = new Promise<void>((resolve) => { releaseSoftSteer = resolve; });
