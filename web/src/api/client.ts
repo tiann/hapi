@@ -65,7 +65,7 @@ import type {
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
-import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -266,6 +266,21 @@ export class ApiClient {
         }
 
         return await res.json() as AuthResponse
+    }
+
+    getReadStateScope(): string | null {
+        try {
+            const token = this.getToken?.() ?? this.token
+            const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as { ns?: unknown }
+            if (typeof payload.ns !== 'string') return null
+            return JSON.stringify([this.baseUrl ?? window.location.origin, payload.ns])
+        } catch { return null }
+    }
+
+    async updateSessionReadState(sessionId: string, state: SessionReadStateRequest): Promise<{ readState: SessionReadState }> {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/read-state`, {
+            method: 'PUT', body: JSON.stringify(state)
+        })
     }
 
     async getSessions(): Promise<SessionsResponse> {

@@ -167,7 +167,6 @@ struct SessionListView: View {
                 .tag(row.id)
             } else {
                 Button {
-                    model.onSessionOpened(row.id)
                     onOpenSession(row.id)
                 } label: {
                     rowLabel(row, now: now)

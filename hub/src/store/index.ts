@@ -445,6 +445,10 @@ export class Store {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_user_message_at INTEGER,
+                content_revision INTEGER NOT NULL DEFAULT 0,
+                read_revision INTEGER NOT NULL DEFAULT 0,
+                read_state_version INTEGER NOT NULL DEFAULT 0,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -482,6 +486,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
+                content_revision INTEGER NOT NULL DEFAULT 0,
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -1081,34 +1086,45 @@ export class Store {
 
     /** v29→v30: persist scratchlist order for databases that already reached v29. */
     private migrateFromV29ToV30(): void {
-        const columns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
-        if (columns.length === 0) return
-        if (!columns.some((column) => column.name === 'position')) {
-            this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
+        const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
+        if (scratchlistColumns.length > 0) {
+            if (!scratchlistColumns.some((column) => column.name === 'position')) {
+                this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
 
-            const sessionRows = this.db.prepare(
-                'SELECT DISTINCT session_id FROM session_scratchlist'
-            ).all() as Array<{ session_id: string }>
-            const rowsForSession = this.db.prepare(
-                `SELECT entry_id FROM session_scratchlist
-                 WHERE session_id = ?
-                 ORDER BY created_at DESC, entry_id DESC`
-            )
-            const updatePosition = this.db.prepare(
-                'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
-            )
-            for (const { session_id } of sessionRows) {
-                const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
-                rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+                const sessionRows = this.db.prepare(
+                    'SELECT DISTINCT session_id FROM session_scratchlist'
+                ).all() as Array<{ session_id: string }>
+                const rowsForSession = this.db.prepare(
+                    `SELECT entry_id FROM session_scratchlist
+                     WHERE session_id = ?
+                     ORDER BY created_at DESC, entry_id DESC`
+                )
+                const updatePosition = this.db.prepare(
+                    'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+                )
+                for (const { session_id } of sessionRows) {
+                    const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
+                    rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+                }
             }
+
+            this.db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
+                    ON session_scratchlist(session_id, position)
+            `)
         }
 
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
-                ON session_scratchlist(session_id, position)
-        `)
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) {
+                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+            }
+        }
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+        }
     }
-
     /** v28→v29: persist a stable, user-input-only list ordering clock. */
     private migrateFromV28ToV29(): void {
         const columns = this.getSessionColumnNames()
@@ -1229,6 +1245,7 @@ export class Store {
     }
 
     private getUserVersion(): number {
+
         const row = this.db.prepare('PRAGMA user_version').get() as { user_version: number } | undefined
         return row?.user_version ?? 0
     }

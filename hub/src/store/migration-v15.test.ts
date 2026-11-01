@@ -40,7 +40,7 @@ describe('Store V14→V15 migration: scratchlist attachments column', () => {
             expect(cols).toContain('attachments')
             expect(getColumns(store, 'usage_events')).toContain('last_input_tokens')
             expect(getColumns(store, 'usage_scan_state')).toContain('last_seq')
-        expect(getUserVersion(store)).toBe(30)
+            expect(getUserVersion(store)).toBe(30)
         } finally {
             store?.close()
             rmSync(dir, { recursive: true, force: true })
