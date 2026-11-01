@@ -174,10 +174,10 @@ fun ZoomableImageViewerDialog(
                         val backdropMaxMovement = BackdropClickMaxMovement.toPx()
                         val doubleTapTimeoutMillis = viewConfiguration.doubleTapTimeoutMillis
                         val tapMaxMovement = viewConfiguration.touchSlop
+                        val tapTracker = ImageViewerTapTracker(doubleTapTimeoutMillis, tapMaxMovement)
                         var drag: DragGesture? = null
                         var pinch: PinchGesture? = null
                         var backdropPress: BackdropPress? = null
-                        var lastTapAt = -1L
 
                         fun overImage(position: Offset): Boolean {
                             val intrinsicSize = intrinsic ?: return false
@@ -198,12 +198,15 @@ fun ZoomableImageViewerDialog(
                             )
                             drag = null
                             backdropPress = null
+                            // The gesture became a pinch: never a tap now, and
+                            // the remembered tap no longer counts (review
+                            // r4361795975).
+                            tapTracker.onMultiPointer()
                         }
 
                         fun pointerUp(
                             change: PointerInputChange,
                             pointers: LinkedHashMap<Long, Offset>,
-                            gestureStart: Offset,
                             isRelease: Boolean,
                         ) {
                             // The web checks the backdrop close BEFORE dropping the
@@ -229,22 +232,20 @@ fun ZoomableImageViewerDialog(
                                 drag = DragGesture(remaining.key, remaining.value, offset)
                             } else if (pointers.isEmpty()) {
                                 pinch = null
-                                // Double-tap on the image resets (web onDoubleClick).
-                                if (isRelease &&
-                                    ImageViewerMath.isBackdropClick(
-                                        ImageViewerMath.distance(change.position, gestureStart),
-                                        tapMaxMovement,
-                                    ) &&
-                                    overImage(change.position)
+                                // Double-tap on the image resets (web onDoubleClick);
+                                // the tracker owns eligibility — a gesture that
+                                // pinched, dragged, or outlasted the tap limits
+                                // never counts as the second tap.
+                                when (
+                                    tapTracker.classifyRelease(
+                                        releasePosition = change.position,
+                                        releaseUptime = change.uptimeMillis,
+                                        isRelease = isRelease,
+                                        isOverImage = overImage(change.position),
+                                    )
                                 ) {
-                                    val now = change.uptimeMillis
-                                    if (lastTapAt >= 0 && now - lastTapAt <= doubleTapTimeoutMillis) {
-                                        scale = 1f
-                                        offset = Offset.Zero
-                                        lastTapAt = -1L
-                                    } else {
-                                        lastTapAt = now
-                                    }
+                                    TapOutcome.DOUBLE_TAP -> resetView()
+                                    TapOutcome.SINGLE_TAP, TapOutcome.NOT_A_TAP -> Unit
                                 }
                             }
                         }
@@ -253,7 +254,7 @@ fun ZoomableImageViewerDialog(
                             val firstDown = awaitFirstDown(requireUnconsumed = false)
                             val pointers = LinkedHashMap<Long, Offset>()
                             pointers[firstDown.id.value] = firstDown.position
-                            val gestureStart = firstDown.position
+                            tapTracker.beginGesture(firstDown.position, firstDown.uptimeMillis)
                             // Only a press on the exposed backdrop is a close candidate.
                             backdropPress = if (!overImage(firstDown.position)) {
                                 BackdropPress(firstDown.id.value, firstDown.position)
@@ -270,7 +271,9 @@ fun ZoomableImageViewerDialog(
                                 val lifted = ArrayList<PointerInputChange>()
                                 for (change in event.changes) {
                                     if (change.pressed) {
+                                        val wasTracked = pointers.containsKey(change.id.value)
                                         pointers.putIfAbsent(change.id.value, change.position)
+                                        if (!wasTracked) tapTracker.onPointerPosition(change.position)
                                         if (pointers.size >= 2 && pinch == null) beginPinch(pointers)
                                     } else if (pointers.containsKey(change.id.value)) {
                                         lifted.add(change)
@@ -281,11 +284,14 @@ fun ZoomableImageViewerDialog(
                                     // arrive as all-up changes, handled like ups (release-only
                                     // affordances just check [isRelease]).
                                     for (change in lifted) {
-                                        pointerUp(change, pointers, gestureStart, isRelease)
+                                        pointerUp(change, pointers, isRelease)
                                     }
                                 } else {
                                     for (change in event.changes) {
-                                        if (change.pressed) pointers[change.id.value] = change.position
+                                        if (change.pressed) {
+                                            pointers[change.id.value] = change.position
+                                            tapTracker.onPointerPosition(change.position)
+                                        }
                                     }
                                     val activePinch = pinch
                                     if (pointers.size >= 2 && activePinch != null) {
