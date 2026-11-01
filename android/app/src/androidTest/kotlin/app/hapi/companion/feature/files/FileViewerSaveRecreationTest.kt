@@ -3,13 +3,14 @@ package app.hapi.companion.feature.files
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.core.app.ActivityOptionsCompat
@@ -47,7 +48,7 @@ import org.junit.Test
 class FileViewerSaveRecreationTest {
 
     @get:Rule
-    val compose = createComposeRule()
+    val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
@@ -134,13 +135,20 @@ class FileViewerSaveRecreationTest {
             onPendingDownloadChanged = { prefs.setPendingDownload(owner, it) },
         )
 
-        fun mount(scope: CoroutineScope) {
-            compose.setContent {
-                CompositionLocalProvider(LocalActivityResultRegistryOwner provides registryOwner) {
-                    HapiTheme {
-                        val viewModel = remember { buildViewModel(scope) }
-                        FileViewerScreen(viewModel = viewModel, onBack = {})
-                    }
+        // One setContent per test (the Compose test environment forbids a
+        // second call — the first CI round failed with "Cannot call setContent
+        // twice per test!"), so "process death" is simulated by recreating the
+        // activity: the composition (and its `remember { buildViewModel(...) }`)
+        // runs fresh against the same DataStore-backed prefs, exactly the
+        // recovery seam a real relaunch exercises.
+        val firstScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val secondScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        var processScope: CoroutineScope? = firstScope
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides registryOwner) {
+                HapiTheme {
+                    val viewModel = remember { buildViewModel(requireNotNull(processScope)) }
+                    FileViewerScreen(viewModel = viewModel, onBack = {})
                 }
             }
         }
@@ -148,19 +156,17 @@ class FileViewerSaveRecreationTest {
         try {
             // Process #1: content loads, the user taps download, the picker
             // opens — then the process dies with the picker still up.
-            val firstScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-            mount(firstScope)
-            val download = context.getString(R.string.files_download)
             compose.waitUntil(10_000) { gateway.reads.isNotEmpty() }
+            val download = context.getString(R.string.files_download)
             compose.onNodeWithContentDescription(download).performClick()
             compose.waitUntil(10_000) { registry.launches.size == 1 }
             compose.waitUntil(10_000) { persisted.value != null }
             firstScope.cancel()
+            processScope = secondScope
+            compose.activityRule.scenario.recreate()
 
             // Process #2: fresh ViewModel, same DataStore file — the recovery
             // seam re-runs the fetch and the picker relaunches on its own.
-            val secondScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-            mount(secondScope)
             compose.waitUntil(10_000) { registry.launches.size == 2 }
 
             // The user finally returns from the picker with a target: the
@@ -179,6 +185,8 @@ class FileViewerSaveRecreationTest {
             // by the recovery seam in process #2.
             assertEquals(List(4) { "docs/notes.md" }, gateway.reads.toList())
         } finally {
+            firstScope.cancel()
+            secondScope.cancel()
             observerScope.cancel()
             storeScope.cancel()
             storeFile.delete()
