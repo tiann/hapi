@@ -374,17 +374,13 @@ describe('SessionList session filter menu', () => {
     })
 
     it('allows unread and scratchlist filters to be selected together', async () => {
-        window.localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
-            'draft-unread': 0,
-            'draft-seen': 1_000,
-            'plain-unread': 0
-        }))
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
         const getScratchlistSessionIds = vi.fn().mockResolvedValue(['draft-unread', 'draft-seen'])
         const api = { getScratchlistSessionIds } as unknown as ApiClient
         renderSessionList([
-            makeSession({ id: 'draft-unread', updatedAt: 500, metadata: { path: '/work/draft-unread', name: 'Draft unread' } }),
-            makeSession({ id: 'draft-seen', updatedAt: 500, metadata: { path: '/work/draft-seen', name: 'Draft seen' } }),
-            makeSession({ id: 'plain-unread', updatedAt: 500, metadata: { path: '/work/plain-unread', name: 'Plain unread' } })
+            makeSession({ id: 'draft-unread', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/draft-unread', name: 'Draft unread' } }),
+            makeSession({ id: 'draft-seen', updatedAt: 500, contentRevision: 1, readState: readState(1), metadata: { path: '/work/draft-seen', name: 'Draft seen' } }),
+            makeSession({ id: 'plain-unread', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/plain-unread', name: 'Plain unread' } })
         ], api)
 
         fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
@@ -401,13 +397,10 @@ describe('SessionList session filter menu', () => {
     })
 
     it('keeps the existing unread filter behavior behind the unified menu', () => {
-        window.localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
-            'session-unread': 100,
-            'session-seen': 1_000
-        }))
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
         renderSessionList([
-            makeSession({ id: 'session-unread', updatedAt: 500, metadata: { path: '/work/unread', name: 'Unread session' } }),
-            makeSession({ id: 'session-seen', updatedAt: 500, metadata: { path: '/work/seen', name: 'Seen session' } })
+            makeSession({ id: 'session-unread', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/unread', name: 'Unread session' } }),
+            makeSession({ id: 'session-seen', updatedAt: 500, contentRevision: 1, readState: readState(1), metadata: { path: '/work/seen', name: 'Seen session' } })
         ])
 
         fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
