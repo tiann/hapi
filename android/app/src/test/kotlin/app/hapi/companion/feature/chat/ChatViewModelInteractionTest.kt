@@ -1737,6 +1737,40 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `codex fast mode resolves the effective tier from the catalog default without an override`() = runTest {
+        // A priority account: the active model's catalog advertises
+        // defaultServiceTier=priority. The persisted tier is null (no
+        // override) — the sheet must show Fast selected, not Standard-with-
+        // Fast-disabled (web `getEffectiveCodexServiceTier`).
+        val harness = InteractionHarness(this, detail(flavor = "codex", model = "gpt-5.3-pro"))
+        harness.api.codexModelsResult = CodexModelsResponse(
+            success = true,
+            models = listOf(
+                app.hapi.protocol.wire.CodexModelSummary(
+                    id = "gpt-5.3-pro",
+                    displayName = "GPT-5.3 Pro",
+                    isDefault = true,
+                    defaultServiceTier = "priority",
+                    serviceTiers = listOf("standard", "fast"),
+                ),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.fastModeAvailable }
+        assertEquals("priority", config.serviceTier)
+        assertEquals("fast", SessionConfigSections.displayedServiceTier(config.serviceTier))
+
+        // An explicit standard override wins over the catalog default.
+        harness.viewModel.setServiceTier("standard")
+        harness.api.configCalls.first { "serviceTier:standard" in it }
+        assertEquals("standard", harness.viewModel.config.value.serviceTier)
+        assertEquals("standard", SessionConfigSections.displayedServiceTier(harness.viewModel.config.value.serviceTier))
+    }
+
+    @Test
     fun `opencode reasoning options load from the session rpc and route to model-reasoning-effort`() = runTest {
         val harness = InteractionHarness(this, detail(flavor = "opencode", model = "qwen3-coder"))
         harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(

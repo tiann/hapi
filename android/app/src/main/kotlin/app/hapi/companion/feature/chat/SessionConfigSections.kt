@@ -72,6 +72,20 @@ object SessionConfigSections {
      */
     fun displayedServiceTier(serviceTier: String?): String = if (isFastServiceTier(serviceTier)) "fast" else "standard"
 
+    /**
+     * `getEffectiveCodexServiceTier` — the tier the sheet should show: an
+     * explicit session override wins (a persisted `standard` stays standard
+     * even on a priority-default model), else the active catalog model's
+     * `defaultServiceTier` (priority accounts: Fast is selected/enabled with
+     * no override — feeding only the persisted value would render Standard
+     * and show Fast disabled).
+     */
+    fun effectiveServiceTier(
+        serviceTier: String?,
+        sessionModel: String?,
+        models: List<CodexModelSummary>?,
+    ): String? = serviceTier ?: models?.let { activeCodexModel(sessionModel, it)?.defaultServiceTier }
+
     // --------------------------------------------------- reasoning effort --
 
     private val CODEX_EFFORT_PRESETS = listOf("low", "medium", "high", "xhigh")

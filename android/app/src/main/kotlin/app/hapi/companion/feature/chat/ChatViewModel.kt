@@ -237,7 +237,12 @@ data class SessionConfigUi(
     val effort: String?,
     /** null → hide the effort section. */
     val effortOptions: List<CatalogOption>?,
-    /** Codex service tier (Fast mode); null = no override (renders Standard). */
+    /**
+     * Codex service tier (Fast mode) — the EFFECTIVE tier: an explicit
+     * session override, else the active catalog model's `defaultServiceTier`
+     * (web `getEffectiveCodexServiceTier`). Renders Standard when neither
+     * names a tier.
+     */
     val serviceTier: String? = null,
     /** Fast mode section gate: the active codex model advertises a fast tier. */
     val fastModeAvailable: Boolean = false,
@@ -333,7 +338,9 @@ sealed interface PermissionAction {
  *   truth on error; per-flavor catalogs fetched per session
  *   ([loadModelOptions]) — codex models+efforts, opencode/grok dynamic
  *   efforts, pi thinking levels, cursor variants. OpenCode efforts are
- *   keyed by model (invalidated on a session-model change).
+ *   keyed by model (invalidated on a session-model change); the codex
+ *   sheet shows the effective service tier (override, else catalog
+ *   default).
  *
  * B-M3f adds:
  * - **Attachments** ([attachments], a [ComposerAttachments] tray): picks are
@@ -2249,6 +2256,7 @@ class ChatViewModel(
         var modelOptionsLoading = false
         var effort: String? = null
         var effortOptions: List<CatalogOption>? = null
+        var serviceTier: String? = null
         var fastModeAvailable = false
         var variantOptions: List<CatalogOption>? = null
 
@@ -2280,6 +2288,12 @@ class ChatViewModel(
                     models?.let { SessionConfigSections.codexModelReasoningEfforts(it, model) },
                 )
                 fastModeAvailable = SessionConfigSections.advertisesFastTier(model, models)
+                // Web `getEffectiveCodexServiceTier`: an explicit session
+                // override decides, else the active catalog model's
+                // `defaultServiceTier` (e.g. priority accounts show Fast
+                // selected even with no override — passing the raw null here
+                // would wrongly render Standard with Fast disabled).
+                serviceTier = SessionConfigSections.effectiveServiceTier(detail?.serviceTier, model, models)
             }
             "opencode" -> {
                 modelOptions = null // Model picker stays create-form only.
@@ -2335,7 +2349,7 @@ class ChatViewModel(
             modelOptionsLoading = modelOptionsLoading,
             effort = effort,
             effortOptions = effortOptions,
-            serviceTier = detail?.serviceTier,
+            serviceTier = serviceTier,
             fastModeAvailable = fastModeAvailable,
             variantOptions = variantOptions,
         )

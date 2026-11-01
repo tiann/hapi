@@ -26,12 +26,14 @@ class SessionConfigSectionsTest {
         default: Boolean = false,
         efforts: List<String>? = null,
         tiers: List<String>? = null,
+        defaultTier: String? = null,
     ) = CodexModelSummary(
         id = id,
         displayName = id.replaceFirstChar { it.uppercaseChar() },
         isDefault = default,
         supportedReasoningEfforts = efforts,
         serviceTiers = tiers,
+        defaultServiceTier = defaultTier,
     )
 
     // ------------------------------------------------------- fast mode gate --
@@ -66,6 +68,40 @@ class SessionConfigSectionsTest {
         assertEquals("standard", SessionConfigSections.displayedServiceTier(null))
         assertEquals("fast", SessionConfigSections.displayedServiceTier("priority"))
         assertEquals("standard", SessionConfigSections.displayedServiceTier("standard"))
+    }
+
+    @Test
+    fun `effective tier falls back to the active model default without an override`() {
+        // Priority account: defaultServiceTier=priority with no persisted
+        // override — the sheet must resolve Fast (selected/enabled), not
+        // render Standard with Fast disabled.
+        val models = listOf(codexModel("gpt-5.3", default = true, tiers = listOf("standard", "fast"), defaultTier = "priority"))
+        assertEquals("priority", SessionConfigSections.effectiveServiceTier(null, "gpt-5.3", models))
+        assertEquals(
+            "fast",
+            SessionConfigSections.displayedServiceTier(SessionConfigSections.effectiveServiceTier(null, "gpt-5.3", models)),
+        )
+        // Blank/auto session model resolves the default row (web findActiveModel).
+        assertEquals("priority", SessionConfigSections.effectiveServiceTier(null, null, models))
+        // Unloaded catalog (null) has nothing to resolve — stays null.
+        assertNull(SessionConfigSections.effectiveServiceTier(null, "gpt-5.3", null))
+        // A model without a catalog row does not leak another row's default.
+        assertNull(SessionConfigSections.effectiveServiceTier(null, "other", models))
+    }
+
+    @Test
+    fun `explicit tier overrides win over the catalog default`() {
+        val models = listOf(codexModel("gpt-5.3", default = true, defaultTier = "priority"))
+        // Explicit fast/priority overrides pass through verbatim.
+        assertEquals("fast", SessionConfigSections.effectiveServiceTier("fast", "gpt-5.3", models))
+        assertEquals("priority", SessionConfigSections.effectiveServiceTier("priority", null, models))
+        // An explicit standard override survives a priority-default model —
+        // Fast-off must stay distinguishable from an untouched session.
+        assertEquals("standard", SessionConfigSections.effectiveServiceTier("standard", "gpt-5.3", models))
+        assertEquals(
+            "standard",
+            SessionConfigSections.displayedServiceTier(SessionConfigSections.effectiveServiceTier("standard", "gpt-5.3", models)),
+        )
     }
 
     // -------------------------------------------------- codex reasoning effort --
