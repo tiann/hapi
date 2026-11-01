@@ -151,6 +151,39 @@ private class MathWebView(context: Context) : WebView(context) {
 }
 
 /**
+ * Height state for one mounted math WebView, stable across render-spec
+ * changes (the Android view itself is reused by `AndroidView.update`).
+ *
+ * The height callback is installed when the Android view is created, so it
+ * captures whatever state object existed then: keying the Compose state by
+ * the spec (`remember(spec)`) mints a new state on every LaTeX/color/
+ * font-size change while the mounted view keeps feeding the orphaned one,
+ * leaving the block stuck at its minimum height. The holder is remembered
+ * unkeyed and reset explicitly in [onRender] instead, so the creation-time
+ * callback always writes live state. JVM-testable (snapshot state only).
+ */
+internal class MathViewHeightState {
+    /** Latest CSS-px height reported by the mounted view for the current spec. */
+    var heightCssPx by mutableIntStateOf(0)
+        private set
+
+    private var renderedSpec: MathRenderSpec? = null
+
+    /** Called from `AndroidView.update` before each render; a new spec drops the stale height. */
+    fun onRender(spec: MathRenderSpec) {
+        if (spec != renderedSpec) {
+            renderedSpec = spec
+            heightCssPx = 0
+        }
+    }
+
+    /** Height report from the mounted view's JS bridge; zero/invalid reports are ignored. */
+    fun onHeightReported(cssPx: Int) {
+        if (cssPx > 0) heightCssPx = cssPx
+    }
+}
+
+/**
  * Block-level KaTeX math for chat markdown ([app.hapi.protocol.markdown.MathBlockNode]):
  * an offline [MathWebView] sized to the rendered formula, colored with the
  * ambient content color and transparent background so light/dark/OLED themes
@@ -172,27 +205,37 @@ internal fun KaTeXMathBlock(
     val spec = remember(latex, displayMode, contentColor, fontSizePx) {
         MathRenderSpec(latex = latex, displayMode = displayMode, textColorArgb = contentColor.toArgb(), fontSizePx = fontSizePx)
     }
-    var heightPx by remember(spec) { mutableIntStateOf(0) }
+    // One stable holder for the mounted view's height; a spec change resets
+    // it through [MathViewHeightState.onRender] instead of re-keying Compose
+    // state that the creation-time callback would no longer feed.
+    val heightState = remember { MathViewHeightState() }
 
     AndroidView(
         modifier = modifier
             .fillMaxWidth()
             .semantics { contentDescription = latex }
             .then(
-                if (heightPx > 0) {
+                if (heightState.heightCssPx > 0) {
                     // The bridge reports CSS px; at the default WebView scale
                     // (pinned by the document's viewport meta) 1 CSS px = 1 dp.
-                    Modifier.height(cssPxToDp(heightPx).dp)
+                    Modifier.height(cssPxToDp(heightState.heightCssPx).dp)
                 } else {
                     Modifier.defaultMinSize(minHeight = 22.dp)
                 },
             ),
         factory = { context ->
             MathWebView(context).also { view ->
-                view.onHeightChanged = { px -> if (px > 0) heightPx = px }
+                view.onHeightChanged = heightState::onHeightReported
             }
         },
-        update = { it.render(spec) },
+        update = { view ->
+            // The factory runs only when the Android view is created, so
+            // re-point the callback at the live holder and reset the height
+            // for the new spec BEFORE rendering the replacement document.
+            view.onHeightChanged = heightState::onHeightReported
+            heightState.onRender(spec)
+            view.render(spec)
+        },
         onRelease = { it.destroy() },
     )
 }
