@@ -61,6 +61,7 @@ export async function claudeRemote(opts: {
     onPermissionModeRejected?: (mode: PermissionMode, reason: string) => void,
     /** Session modes used to spawn Claude before the first fork child prompt. */
     bootstrapMode?: EnhancedMode,
+    onQueryStarted?: (mode: EnhancedMode) => void,
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
@@ -354,6 +355,7 @@ export async function claudeRemote(opts: {
     };
 
     // Start the loop
+    opts.onQueryStarted?.(mode);
     const response = query({
         prompt: messages,
         options: sdkOptions,

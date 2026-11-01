@@ -412,6 +412,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 let rewindInputAccepted = false;
                 try {
                     await session.prepareHistoryAttempt?.();
+                    // Pending is assigned by nextMessage's closure in a prior attempt.
+                    const parkedMode = (pending as { mode: EnhancedMode } | null)?.mode;
+                    const bootstrapMode: EnhancedMode = session.recoveredRewindInput?.mode ?? parkedMode ?? {
+                        permissionMode: session.getPermissionMode() ?? 'default',
+                        model: session.getModel() ?? undefined,
+                        effort: session.getEffort() ?? undefined,
+                    };
                     await claudeRemote({
                         sessionId: session.sessionId,
                         path: session.path,
@@ -426,10 +433,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
                             session.client.sendSessionEvent({ type: 'message', message: reason });
                         },
-                        bootstrapMode: session.recoveredRewindInput?.mode ?? {
-                            permissionMode: session.getPermissionMode() ?? 'default',
-                            model: session.getModel() ?? undefined,
-                            effort: session.getEffort() ?? undefined,
+                        bootstrapMode,
+                        onQueryStarted: (launchMode) => {
+                            // Eager fork/rewind processes exist before their first
+                            // input. Compare that batch against the actual launch,
+                            // not an empty gate that silently accepts new settings.
+                            modeHash = session.queue.modeHasher(launchMode);
                         },
                         isAborted: (toolCallId: string) => {
                             return permissionHandler.isAborted(toolCallId);
@@ -452,7 +461,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 inFlightMessage = recovered;
                                 rewindInputAccepted = false;
                                 mode = recovered.mode;
-                                modeHash = hashObject(recovered.mode);
+                                modeHash = session.queue.modeHasher(recovered.mode);
                                 permissionHandler.handleModeChange(recovered.mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(recovered.mode.model ?? null);
                                 const ids = recovered.items.flatMap(item => item.localId ? [item.localId] : []);

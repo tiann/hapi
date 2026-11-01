@@ -81,6 +81,39 @@ async function waitFor(condition: () => boolean, timeoutMs = 300, intervalMs = 1
 }
 
 describe('claudeRemote async message handling', () => {
+    it.each([
+        { permissionMode: 'default' as const, model: 'haiku', effort: 'low' },
+        { permissionMode: 'plan' as const, model: 'sonnet', effort: 'high' },
+    ])('binds eager rewind query options to the reported launch mode: $model/$effort', async (launchMode) => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const order: string[] = [];
+        const onQueryStarted = vi.fn(() => { order.push('launch mode'); });
+        queryMock.mockImplementationOnce(() => {
+            order.push('query');
+            return createAsyncStream([]);
+        });
+        try {
+            await claudeRemote({
+                sessionId: 'pending-native-session', path: process.cwd(),
+                mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: ['--resume-session-at', 'kept-boundary'],
+                bootstrapMode: launchMode, onQueryStarted,
+                allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => null, onReady: () => {},
+                isAborted: () => false, onSessionFound: () => {}, onMessage: () => {},
+            });
+            expect(onQueryStarted).toHaveBeenCalledWith(launchMode);
+            expect(order).toEqual(['launch mode', 'query']);
+            expect(queryMock.mock.calls[0][0].options).toMatchObject({
+                resume: 'pending-native-session', resumeSessionAt: 'kept-boundary',
+                model: launchMode.model, effort: launchMode.effort,
+                permissionMode: launchMode.permissionMode,
+            });
+        } finally { queryMock.mockReset(); querySpy.mockRestore(); }
+    });
+
     beforeEach(() => {
         findLatestCompactSummaryMock.mockReset();
         findLatestCompactSummaryMock.mockImplementation(async () => null);

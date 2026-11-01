@@ -76,7 +76,9 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 Both endpoints return the id of the session that now carries the conversation — which **may differ from the id you called them on** (fresh spawn under a new id; the old row is superseded). Clients must migrate composer drafts and replace navigation to the returned id. Reference: `web/src/routes/sessions/followSupersedingSession.ts`; the durable link also appears as `metadata.supersededBySessionId` on the old session.
 :::
 
-Additional session APIs without a current native UI: `POST /api/sessions/:id/fork` `{messageLocalId?}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{success: true}`, `GET /api/sessions/:id/export` (413 when too large). Availability also depends on session history capabilities.
+Additional session APIs: `POST /api/sessions/:id/fork` `{messageLocalId?}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{session}`, `GET /api/sessions/:id/export` (413 when too large). Availability also depends on session history capabilities.
+
+Claude rewind can return HTTP **202** with `{session, pending: true}`. This reserves the operation; it does not delete messages or prove native application. Keep existing history visible, show the pending notice, and allow the next normal input. Competing history actions and destructive commands are blocked while pending. The CLI durably saves the original operation, cutoff and native keep boundary and uses `--resume-session-at` without drop flags. Only exact next-input native branch evidence followed by the Hub's bounded transaction completes the operation. After committed metadata and `messages-invalidated`, reconcile the retained prefix and new tail. Native branch application is separate from the input's actual result/ready completion. UNKNOWN outcomes remain locked until validated application of the same operation is committed; a late rejection or ordinary metadata echo does not unlock them.
 
 ### Messages
 

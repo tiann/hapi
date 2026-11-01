@@ -158,6 +158,44 @@ function createSession(
 }
 
 describe('claudeRemoteLauncher resume anchor', () => {
+    it('restarts a pending rewind with the first prompt launch settings before staging it', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, ['--resume-session-at', 'kept-boundary'])
+        const selected: EnhancedMode = { permissionMode: 'plan', model: 'sonnet', effort: 'high' }
+        queue.push('first post-rewind prompt', selected, 'q')
+        const staged = vi.fn(async () => true)
+        session.stageRewindInput = staged
+        const launchModes: EnhancedMode[] = []
+        const delivered: string[] = []
+        let firstAttemptDelivery: unknown
+        let stagedBeforeRestart = 0
+        harness.remoteImplementation = async opts => {
+            launchModes.push(opts.bootstrapMode)
+            opts.onQueryStarted?.(opts.bootstrapMode)
+            const first = await opts.nextMessage()
+            if (harness.callCount === 1) {
+                firstAttemptDelivery = first
+                stagedBeforeRestart = staged.mock.calls.length
+                if (first) void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+                return
+            }
+            expect(opts.bootstrapMode).toEqual(selected)
+            expect(first.mode).toEqual(selected)
+            delivered.push(first.message)
+            await opts.onReady()
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(firstAttemptDelivery).toBeNull()
+            expect(stagedBeforeRestart).toBe(0)
+            expect(launchModes).toEqual([{ permissionMode: 'default' }, selected])
+            expect(delivered).toEqual(['first post-rewind prompt'])
+            expect(staged).toHaveBeenCalledTimes(1)
+            expect(queue.size()).toBe(0)
+        } finally { session.stopKeepAlive() }
+    })
+
     it('never submits an authoritatively cancelled staged Q and permits new R', async () => {
         const client = createClientStub()
         client.notePendingHubPromptEcho = vi.fn()
