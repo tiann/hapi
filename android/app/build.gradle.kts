@@ -212,5 +212,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
     // Generated media fetch tests: real HTTP round-trip against localhost.
+    // Realtime dictation tests drive the PRODUCTION OkHttp websocket adapter
+    // against a loopback MockWebServer (same wiring as :core:data's JVM tests).
     testImplementation(libs.okhttp.mockwebserver)
 }
