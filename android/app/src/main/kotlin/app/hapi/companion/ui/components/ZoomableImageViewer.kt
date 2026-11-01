@@ -43,7 +43,10 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -161,6 +164,9 @@ fun ZoomableImageViewerDialog(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    // Device-test handle for gesture injection (the gallery
+                    // itself has no semantic role to target).
+                    .testTag("zoomable-canvas")
                     // The transformed image draws after ZoomableTitleBar in
                     // this Column, so an unclipped canvas lets a zoomed
                     // portrait image or an upward pan paint over the filename
@@ -406,6 +412,9 @@ private fun ZoomableTitleBar(
             .fillMaxWidth()
             .background(Color.Black.copy(alpha = 0.5f))
             .statusBarsPadding()
+            // Device-test handle: the toolbar region the clipped canvas must
+            // never paint over.
+            .testTag("zoomable-title-bar")
             .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -445,20 +454,31 @@ private fun ZoomableTitleBar(
             contentColor = Color.White,
             disabledContentColor = Color.White.copy(alpha = 0.4f),
         )
+        // "−"/percent/"+" alone are meaningless to screen readers — the
+        // toolbar review asked for descriptions, so the buttons carry them.
+        val zoomOutDescription = stringResource(R.string.files_image_viewer_zoom_out)
+        val resetDescription = stringResource(R.string.files_image_viewer_reset)
+        val zoomInDescription = stringResource(R.string.files_image_viewer_zoom_in)
         TextButton(
             onClick = onZoomOut,
             enabled = scale > ImageViewerMath.MIN_SCALE,
             colors = buttonColors,
+            modifier = Modifier.semantics { contentDescription = zoomOutDescription },
         ) {
             Text(text = "−", fontSize = 18.sp)
         }
-        TextButton(onClick = onReset, colors = buttonColors) {
+        TextButton(
+            onClick = onReset,
+            colors = buttonColors,
+            modifier = Modifier.semantics { contentDescription = resetDescription },
+        ) {
             Text(text = "${ImageViewerMath.zoomPercent(scale)}%", fontSize = 13.sp)
         }
         TextButton(
             onClick = onZoomIn,
             enabled = scale < ImageViewerMath.MAX_SCALE,
             colors = buttonColors,
+            modifier = Modifier.semantics { contentDescription = zoomInDescription },
         ) {
             Text(text = "+", fontSize = 16.sp)
         }
