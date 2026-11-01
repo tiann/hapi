@@ -1611,6 +1611,7 @@ describe('Codex Desktop import routes', () => {
 
         let sourceActive = false
         let preparationCalls = 0
+        let preparationOptions: { requireTargetHydration?: boolean } | undefined
         const engine = {
             getSessionsByNamespace: () => [],
             getSessionByNamespace: (sessionId: string) => ({
@@ -1618,7 +1619,8 @@ describe('Codex Desktop import routes', () => {
                 namespace: 'default',
                 active: sessionId === source.id && sourceActive
             }),
-            prepareSessionForDeletion: async () => {
+            prepareSessionForDeletion: async (_sessionId: string, options?: { requireTargetHydration?: boolean }) => {
+                preparationOptions = options
                 preparationCalls += 1
                 sourceActive = true
             }
@@ -1641,6 +1643,7 @@ describe('Codex Desktop import routes', () => {
             expect(body.success).toBe(false)
             expect(body.error).toContain('became active')
             expect(preparationCalls).toBe(1)
+            expect(preparationOptions).toEqual({ requireTargetHydration: true })
             expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
             expect(store.attachments.getForSession(attachment.id, 'default', source.id)).not.toBeNull()
             const db = (store as unknown as { db: Database }).db

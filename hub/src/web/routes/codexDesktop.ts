@@ -1387,7 +1387,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // any hydration targeting it before taking the merge snapshot;
             // otherwise the source message/attachment plan can be stale.
             if (engine && typeof engine.prepareSessionForDeletion === 'function') {
-                await engine.prepareSessionForDeletion(source.sessionId)
+                await engine.prepareSessionForDeletion(source.sessionId, { requireTargetHydration: true })
             }
             const sourceMessages = options.store.messages.getAllMessages(source.sessionId)
 

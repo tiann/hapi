@@ -2922,10 +2922,10 @@ export class SyncEngine {
     }
 
     /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
-    async prepareSessionForDeletion(sessionId: string): Promise<void> {
+    async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean }): Promise<void> {
         await this.ensureSharedForkChildrenBeforeDelete(sessionId)
         await this.waitForSharedForkAttachmentHydration(sessionId)
-        await this.settleSharedForkAttachmentTarget(sessionId)
+        await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)
     }
 
     /** Avoid yielding on ordinary consolidations that have no shared-fork dependency. */
@@ -2945,9 +2945,15 @@ export class SyncEngine {
     }
 
     /** Wait for a hydration targeting a child before deleting that child. */
-    private async settleSharedForkAttachmentTarget(targetSessionId: string): Promise<void> {
+    private async settleSharedForkAttachmentTarget(targetSessionId: string, requireSuccess = false): Promise<void> {
         const pending = this.sharedForkAttachmentHydrations.get(targetSessionId)
-        if (pending) await pending.catch(() => {})
+        if (pending) await (requireSuccess ? pending : pending.catch(() => {}))
+        if (requireSuccess) {
+            for (const failures of this.sharedForkAttachmentFailures.values()) {
+                const failure = failures.get(targetSessionId)
+                if (failure) throw failure
+            }
+        }
     }
 
     finalizeDeletedSession(

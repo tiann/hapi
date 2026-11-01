@@ -1653,6 +1653,23 @@ export class Store {
     /** v30→v31: journal attachment creation before filesystem writes. */
     private migrateFromV30ToV31(): void {
         this.db.exec(`
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
+                ON attachments(namespace, session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS attachment_deletions (
+                original_path TEXT PRIMARY KEY
+            );
             CREATE TABLE IF NOT EXISTS attachment_creations (
                 id TEXT PRIMARY KEY,
                 namespace TEXT NOT NULL,

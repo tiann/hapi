@@ -97,7 +97,7 @@ describe('shared Codex hub binding', () => {
     it('uses the already-bound fork child without spawning a second engine', async () => {
         const f = fixture()
         try {
-            const source = f.create('source'); const child = f.create('child', { forkedFrom: source.id })
+            const source = f.create('source', { name: 'Source title' }); const child = f.create('child', { forkedFrom: source.id })
             f.rpc.forkConversation = async () => ({ nativeSessionId: 'native-child', sessionId: child.id })
             expect(await f.engine.forkConversation(source.id, 'default')).toEqual({ type: 'success', sessionId: child.id })
             expect(f.engine.getSession(source.id)?.metadata?.codexSessionId).toBe('native-source')
