@@ -2932,6 +2932,7 @@ export class SyncEngine {
     async deleteSession(sessionId: string): Promise<void> {
         this.assertSessionDeletionAllowed(sessionId)
         await this.prepareSessionForDeletion(sessionId)
+        this.assertSessionDeletionAllowed(sessionId)
         await this.sessionCache.deleteSession(sessionId)
         this.clearSharedForkAttachmentTarget(sessionId)
         this.titleTurnCompletedIds.delete(sessionId)
