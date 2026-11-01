@@ -42,6 +42,7 @@ export async function runCopilot(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    effort?: string;
     copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode;
     resumeSessionId?: string;
     existingSessionId?: string;
@@ -81,7 +82,8 @@ export async function runCopilot(opts: {
             workingDirectory,
             agentState: initialState,
             model: persistedModel,
-            reservedSessionId: opts.reservedSessionId
+            reservedSessionId: opts.reservedSessionId,
+            effort: opts.effort
         });
     const { api, session } = bootstrap;
 
@@ -93,6 +95,7 @@ export async function runCopilot(opts: {
     const messageQueue = new MessageQueue2<CopilotMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
         model: mode.model,
+        effort: mode.effort,
         agentMode: mode.agentMode
     }));
 
@@ -100,6 +103,7 @@ export async function runCopilot(opts: {
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentAgentMode = opts.copilotAgentMode ?? 'interactive';
     let sessionModel: string | null = persistedModel ?? null;
+    let sessionEffort: string | null | undefined = opts.effort;
     let resolvedModel = sessionModel ?? runtimeConfig.model ?? null;
 
     const lifecycle = createRunnerLifecycle({
@@ -119,6 +123,11 @@ export async function runCopilot(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+        if (sessionEffort === undefined) {
+            sessionEffort = sessionInstance.getEffort();
+        } else {
+            sessionInstance.setEffort(sessionEffort);
+        }
         sessionInstance.setAgentMode(currentAgentMode);
         sessionInstance.pushKeepAlive();
 
@@ -128,6 +137,7 @@ export async function runCopilot(opts: {
     const buildMode = (): CopilotMode => ({
         permissionMode: currentPermissionMode,
         model: resolvedModel ?? undefined,
+        effort: sessionEffort,
         agentMode: currentAgentMode
     });
 
@@ -277,7 +287,7 @@ export async function runCopilot(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown; copilotAgentMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown; copilotAgentMode?: unknown };
         const applied: Record<string, unknown> = {};
 
         if (config.permissionMode !== undefined) {
@@ -295,6 +305,22 @@ export async function runCopilot(opts: {
             sessionModel = resolveModel(config.model);
             resolvedModel = resolveCopilotQueueModel(sessionModel);
             applied.model = sessionModel;
+        }
+
+        if (config.effort !== undefined) {
+            if (sessionWrapperRef.current?.mode === 'local') {
+                throw new Error('Copilot effort can only be changed for remote sessions');
+            }
+            if (config.effort !== null && (typeof config.effort !== 'string' || config.effort.trim().length === 0)) {
+                throw new Error('Invalid effort');
+            }
+            const nextEffort = config.effort === null ? null : config.effort.trim();
+            const activeSession = sessionWrapperRef.current;
+            if (!activeSession) {
+                throw new Error('Copilot remote session is not ready for effort switching');
+            }
+            sessionEffort = await activeSession.applyRemoteEffort(nextEffort);
+            applied.effort = sessionEffort;
         }
 
         if (config.copilotAgentMode !== undefined) {
@@ -328,6 +354,7 @@ export async function runCopilot(opts: {
             api,
             permissionMode: currentPermissionMode,
             model: runtimeConfig.model,
+            effort: opts.effort,
             copilotAgentMode: currentAgentMode,
             resumeSessionId: opts.resumeSessionId,
             onModeChange: createModeChangeHandler(session),
@@ -338,6 +365,9 @@ export async function runCopilot(opts: {
             onModelRollback: (model) => {
                 sessionModel = model;
                 resolvedModel = resolveCopilotQueueModel(model);
+            },
+            onEffortChange: (effort) => {
+                sessionEffort = effort;
             }
         });
     } catch (error) {
