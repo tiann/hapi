@@ -347,4 +347,14 @@ describe('summary derivation helpers', () => {
         })
         expect(summary?.agentSessionId).toBe('cursor-xyz')
     })
+
+    it('carries current-fork capability into list summaries', () => {
+        const summary = toSessionSummaryMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'codex',
+            capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } }
+        })
+        expect(summary?.conversationHistory).toEqual({ forkCurrent: true, forkAtMessage: true })
+    })
 })

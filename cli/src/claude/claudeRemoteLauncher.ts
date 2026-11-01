@@ -14,6 +14,7 @@ import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { hashObject } from '@/utils/deterministicJson';
+import { ClaudeToolResultImages } from './utils/toolResultImages';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
@@ -157,8 +158,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const permissionHandler = new PermissionHandler(session);
         this.permissionHandler = permissionHandler;
 
+        const toolResultImages = new ClaudeToolResultImages();
         const messageQueue = new OutgoingMessageQueue(
-            (logMessage) => session.client.sendClaudeSessionMessage(logMessage)
+            (logMessage) => toolResultImages.send(session.client, logMessage)
         );
 
         permissionHandler.setOnPermissionRequest((toolCallId: string) => {

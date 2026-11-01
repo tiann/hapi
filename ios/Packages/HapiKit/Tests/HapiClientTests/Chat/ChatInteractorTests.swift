@@ -221,7 +221,11 @@ private final class ChatInteractionHarness {
 
     let sessionID: String
 
-    init(detail: Session = chatDetail(), activate: Bool = true) async throws {
+    init(
+        detail: Session = chatDetail(),
+        activate: Bool = true,
+        directSendGrace: Duration = .seconds(5)
+    ) async throws {
         sessionID = detail.id
         let performer = ChatRoutingPerformer()
         self.performer = performer
@@ -291,6 +295,7 @@ private final class ChatInteractionHarness {
             windows: windows,
             drafts: drafts,
             draftSaveDebounce: .milliseconds(10),
+            directSendGrace: directSendGrace,
             now: { 1_000 },
             makeLocalId: {
                 localIdCounter += 1
@@ -739,6 +744,36 @@ struct ChatInteractorTests {
     }
 
     // MARK: Queued bar
+
+    @Test func idleSendSkipsTheQueuedBarUntilTheGraceExpires() async throws {
+        let harness = try await ChatInteractionHarness(directSendGrace: .milliseconds(500))
+
+        harness.interactor.setComposerText("go now")
+        harness.interactor.sendMessage()
+
+        #expect(await eventually {
+            await harness.row(localId: "local-1")?.status == .sent
+        })
+        #expect(harness.interactor.directSendLocalIds == ["local-1"])
+        #expect(harness.interactor.queuedRows.isEmpty)
+        // Still uninvoked after the grace: genuinely waiting, so it queues.
+        #expect(await eventually {
+            harness.interactor.queuedRows.contains { $0.id == "local-1" }
+        })
+        #expect(harness.interactor.directSendLocalIds.isEmpty)
+    }
+
+    @Test func sendWhileThinkingGoesStraightToTheQueuedBar() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
+
+        harness.interactor.setComposerText("later")
+        harness.interactor.sendMessage()
+
+        #expect(await eventually {
+            harness.interactor.queuedRows.contains { $0.id == "local-1" }
+        })
+        #expect(harness.interactor.directSendLocalIds.isEmpty)
+    }
 
     @Test func queuedCancelInvokedRaceIngestsTheAuthoritativeRowAsSent() async throws {
         let harness = try await ChatInteractionHarness()
