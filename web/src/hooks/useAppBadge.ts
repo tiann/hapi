@@ -5,7 +5,7 @@ import { shouldShowSessionInSidebar } from '@/components/SessionList'
 import {
     getSessionLastSeenSnapshot,
     getSessionManualUnreadSnapshot,
-    initializeSessionLastSeen,
+    observeSessionReadStates,
     useSessionLastSeenVersion,
 } from '@/lib/sessionLastSeen'
 
@@ -51,13 +51,13 @@ export function canUseAppBadging(): boolean {
 export function countUnreadSessions(
     sessions: readonly SessionSummary[],
     lastSeenById: Readonly<Record<string, number>>,
-    manualUnreadById: Readonly<Record<string, number>> = {},
+    manualUnreadById: Readonly<Record<string, number | null>> = {},
 ): number {
     return sessions.reduce(
         (count, session) => count + (
             sessionIsUnread(session, {
                 lastSeenAt: lastSeenById[session.id] ?? 0,
-                manualUnreadAt: manualUnreadById[session.id] ?? null
+                manualUnreadAt: manualUnreadById[session.id]
             })
                 ? 1
                 : 0
@@ -139,13 +139,12 @@ export function useAppBadge(options: UseAppBadgeOptions): void {
         // it can show a count nothing in the UI is able to clear (hapi#1845).
         const eligibleSessions = options.sessions.filter(session => shouldShowSessionInSidebar(session))
 
-        // Match the session list's first-load baseline so existing sessions do
-        // not all appear unread when a user installs the PWA for the first time.
-        initializeSessionLastSeen(options.scope, eligibleSessions)
+        // Reconcile the shared read state before deriving the icon badge.
+        observeSessionReadStates(eligibleSessions)
         const count = countUnreadSessions(
             eligibleSessions,
             getSessionLastSeenSnapshot(),
-            getSessionManualUnreadSnapshot()
+            getSessionManualUnreadSnapshot(eligibleSessions)
         )
         syncBadge(appBadgeNavigator, count, lastAppliedCountRef)
     }, [

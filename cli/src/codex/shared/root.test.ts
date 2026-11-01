@@ -77,6 +77,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const events = vi.fn();
     const consumed = vi.fn();
     const uncertain = vi.fn();
+    const sessionReady = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
@@ -91,7 +92,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady() {},
+        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
@@ -114,7 +115,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
-        root, native, rpc, send, events, consumed, uncertain,
+        root, native, rpc, send, events, consumed, uncertain, sessionReady,
         ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
         retry: (id: string) => retryMessage?.(id),
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
@@ -125,6 +126,29 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         end,
     };
 }
+
+describe('native readiness after Hub reconnect', () => {
+    it('replays readiness only after an activated root revalidates native history', async () => {
+        const f = await fixture()
+        f.reconnect()
+        await vi.waitFor(() => expect(f.state().steeringActive).toBe(false))
+        expect(f.sessionReady).not.toHaveBeenCalled()
+        await f.root.activate()
+        expect(f.sessionReady).toHaveBeenCalledTimes(1)
+        f.reconnect()
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2))
+    })
+
+    it('does not replay readiness if native revalidation fails', async () => {
+        const f = await fixture()
+        await f.root.activate()
+        const read = vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('native unavailable'))
+        f.reconnect()
+        await vi.waitFor(() => expect(read).toHaveBeenCalledWith('thread/read', expect.anything()))
+        await new Promise(resolve => setTimeout(resolve, 10))
+        expect(f.sessionReady).toHaveBeenCalledTimes(1)
+    })
+})
 
 async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'input', turnId = 'compacting-turn') {
     f.native.queue = [{ id: `native-${id}`, clientUserMessageId: id, input: [{ type: 'text', text: id }] }];

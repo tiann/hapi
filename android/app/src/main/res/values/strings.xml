@@ -210,7 +210,8 @@
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
     <string name="sessions_search_hint">Search sessions</string>
-    <string name="sessions_search_clear">Clear search</string>
+    <string name="sessions_search_open">Search sessions</string>
+    <string name="sessions_search_close">Close search</string>
     <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
     <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
@@ -582,13 +583,17 @@
     <string name="chat_reconnecting_retry">Reconnecting… Tap to retry</string>
     <string name="sessions_filters">Filters</string>
     <string name="sessions_filters_active">Filters applied</string>
-    <string name="sessions_clear_filter">Clear filter</string>
+    <string name="sessions_filters_reset">Reset</string>
+    <string name="sessions_filters_done">Done</string>
+    <string name="sessions_filter_machines">Machines</string>
+    <string name="sessions_filter_dates">Activity dates</string>
+    <string name="sessions_filter_any_date">Any date</string>
+    <string name="sessions_filter_clear_dates">Clear date filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_filter_summary">Filtered by: %1$s</string>
     <string name="sessions_time_filter_label">Filter sessions by last activity</string>
     <string name="sessions_time_filter_apply">Apply</string>
     <string name="sessions_time_filter_clear">Clear</string>
-    <string name="sessions_time_filter_summary">Activity: %1$s – %2$s</string>
+    <string name="sessions_time_filter_summary">%1$s – %2$s</string>
     <string name="sessions_time_filter_empty_title">No sessions in this date range</string>
     <string name="sessions_time_filter_empty_hint">Adjust or clear the date filter to see more sessions.</string>
     <string name="sessions_time_filter_recent_activity">Recent activity</string>
@@ -622,4 +627,5 @@
     <string name="share_error_title">Share unavailable</string>
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
+    <string name="chat_notice_read_state_failed">Couldn’t save read status</string>
 </resources>

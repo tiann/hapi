@@ -294,6 +294,7 @@ object MessageWindowLogic {
             else -> responseOldest ?: previous.oldestPosition
         }
         return previous.withMessages(kept).copy(
+            readThroughRevision = maxOf(previous.readThroughRevision ?: 0, page.readThroughRevision ?: 0, kept.maxOfOrNull { it.wire.contentRevision ?: 0 } ?: 0),
             hasMore = page.hasMore || (!replaceServerRows && previous.hasMore) || dropped.isNotEmpty(),
             epoch = page.epoch,
             oldestPosition = oldest,
@@ -347,6 +348,7 @@ object MessageWindowLogic {
         }
         val newest = maxPosition(nextAfter, merged.newestPosition)
         return merged.copy(
+            readThroughRevision = maxOf(merged.readThroughRevision ?: 0, page.readThroughRevision ?: 0, merged.messages.maxOfOrNull { it.wire.contentRevision ?: 0 } ?: 0),
             epoch = page.epoch,
             newestPosition = newest,
             warning = null,
@@ -535,7 +537,8 @@ object MessageWindowLogic {
         } else {
             currentNewest
         }
-        return merged.copy(newestPosition = newest)
+        return merged.copy(newestPosition = newest,
+            readThroughRevision = merged.readThroughRevision?.let { revision -> maxOf(revision, incoming.maxOfOrNull { it.wire.contentRevision ?: 0 } ?: 0) })
     }
 
     /** Optimistic append (web `appendOptimisticMessage`): never advances the newest cursor. */
@@ -730,7 +733,7 @@ object MessageWindowLogic {
      */
     fun seededState(source: MessageWindowState, target: MessageWindowState): MessageWindowState =
         createState(target.sessionId)
-            .withMessages(source.messages.toList())
+            .withMessages(source.messages.map { it.copy(wire = it.wire.copy(contentRevision = null)) })
             .copy(
                 hasMore = source.hasMore,
                 tailRevision = source.tailRevision,

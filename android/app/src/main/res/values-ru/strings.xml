@@ -210,7 +210,8 @@
     <string name="sessions_filter_unknown_machine">Неизвестная машина</string>
     <string name="sessions_offline_banner">Офлайн — показаны кешированные сессии</string>
     <string name="sessions_search_hint">Поиск сессий</string>
-    <string name="sessions_search_clear">Очистить поиск</string>
+    <string name="sessions_search_open">Поиск сессий</string>
+    <string name="sessions_search_close">Закрыть поиск</string>
     <string name="sessions_search_no_results">Нет сессий, подходящих под запрос «%1$s»</string>
     <string name="sessions_search_no_results_hint">Попробуйте другой запрос или очистите поиск.</string>
     <string name="sessions_empty_loading_title">Загрузка сессий…</string>
@@ -582,13 +583,17 @@
     <string name="chat_reconnecting_retry">Переподключение… Нажмите, чтобы повторить</string>
     <string name="sessions_filters">Фильтры</string>
     <string name="sessions_filters_active">Фильтры применены</string>
-    <string name="sessions_clear_filter">Сбросить фильтр</string>
+    <string name="sessions_filters_reset">Сбросить</string>
+    <string name="sessions_filters_done">Готово</string>
+    <string name="sessions_filter_machines">Машины</string>
+    <string name="sessions_filter_dates">Даты активности</string>
+    <string name="sessions_filter_any_date">Любая дата</string>
+    <string name="sessions_filter_clear_dates">Сбросить фильтр по дате</string>
     <string name="sessions_machine_fallback">Машина · %1$s</string>
-    <string name="sessions_filter_summary">Фильтр: %1$s</string>
     <string name="sessions_time_filter_label">Фильтр сессий по последней активности</string>
     <string name="sessions_time_filter_apply">Применить</string>
     <string name="sessions_time_filter_clear">Очистить</string>
-    <string name="sessions_time_filter_summary">Активность: %1$s – %2$s</string>
+    <string name="sessions_time_filter_summary">%1$s – %2$s</string>
     <string name="sessions_time_filter_empty_title">В этом диапазоне дат нет сессий</string>
     <string name="sessions_time_filter_empty_hint">Измените или сбросьте фильтр по дате, чтобы увидеть больше сессий.</string>
     <string name="sessions_time_filter_recent_activity">Недавняя активность</string>
@@ -622,4 +627,5 @@
     <string name="share_error_title">Не удалось поделиться</string>
     <string name="share_ok">ОК</string>
     <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
+    <string name="chat_notice_read_state_failed">Не удалось сохранить статус прочтения</string>
 </resources>

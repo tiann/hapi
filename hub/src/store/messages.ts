@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { getLiveReasoningStreamId } from '@hapi/protocol/messages'
+import { hasUnreadMessageContent, getLiveReasoningStreamId } from '@hapi/protocol/messages'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
 
 type DbMessageRow = {
+    content_revision: number
     id: string
     session_id: string
     // TEXT (plaintext JSON, legacy rows) or BLOB (zstd-compressed JSON) — see contentCodec.ts
@@ -89,6 +90,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
     return {
         id: row.id,
         sessionId: row.session_id,
+        ...(row.content_revision > 0 ? { contentRevision: row.content_revision } : {}),
         content: decodeMessageContent(row.content),
         createdAt: row.created_at,
         seq: row.seq,
@@ -173,6 +175,10 @@ export function addMessage(
             scheduled_at: scheduledAt ?? null
         })
 
+        if (hasUnreadMessageContent(content)) {
+            prepareCached(db, 'UPDATE sessions SET content_revision = content_revision + 1 WHERE id = ?').run(sessionId)
+            prepareCached(db, 'UPDATE messages SET content_revision = (SELECT content_revision FROM sessions WHERE id = ?) WHERE id = ?').run(sessionId, id)
+        }
         recordUserMessage(db, sessionId, content, stampedAt)
         const positionAt = invokedAt ?? stampedAt
         if (previousHead && positionAt < previousHead.at) bumpMessageEpoch(db, sessionId)
@@ -1117,9 +1123,29 @@ export function mergeSessionMessages(
             ).run(fromSessionId, ...localIds)
         }
 
-        const result = prepareCached(db, 
+        // Revisions belong to a session, unlike stable message IDs. Translate
+        // only unread source outputs above the destination head; already-read
+        // history is a baseline and must not light up the destination.
+        const source = prepareCached(db, 'SELECT content_revision, read_revision, manual_unread FROM sessions WHERE id = ?')
+            .get(fromSessionId) as { content_revision: number; read_revision: number; manual_unread: number }
+        const target = prepareCached(db, 'SELECT content_revision FROM sessions WHERE id = ?')
+            .get(toSessionId) as { content_revision: number }
+        prepareCached(db, `UPDATE messages SET content_revision = CASE WHEN content_revision > ?
+            THEN ? + content_revision - ? ELSE 0 END WHERE session_id = ?`)
+            .run(source.read_revision, target.content_revision, source.read_revision, fromSessionId)
+        const additional = Math.max(0, source.content_revision - source.read_revision)
+        prepareCached(db, `UPDATE sessions SET content_revision = content_revision + ?,
+            manual_unread = MAX(manual_unread, ?),
+            read_state_version = read_state_version + CASE WHEN manual_unread < ? THEN 1 ELSE 0 END WHERE id = ?`)
+            .run(additional, source.manual_unread, source.manual_unread, toSessionId)
+        const result = prepareCached(db,
             'UPDATE messages SET session_id = ? WHERE session_id = ?'
         ).run(toSessionId, fromSessionId)
+        // History moves can keep the source session alive. Retire its old
+        // unread state as well, so a second merge cannot count it again.
+        prepareCached(db, `UPDATE sessions SET read_revision = content_revision, manual_unread = 0,
+            read_state_version = read_state_version + 1 WHERE id = ?
+            AND (read_revision < content_revision OR manual_unread = 1)`).run(fromSessionId)
 
         if (result.changes > 0) {
             prepareCached(db, `
@@ -1202,6 +1228,12 @@ export function truncateMessagesFromLocalId(
             inserted += 1
         }
 
+        // If rewind removed all unread output, retire that activity without
+        // reusing its revision numbers. Explicit manual-unread survives.
+        prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
+            WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
+                SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
+            )`).run(sessionId)
         const epoch = bumpMessageEpoch(db, sessionId)
         return { deleted: deleted.changes, inserted, epoch }
     })()
