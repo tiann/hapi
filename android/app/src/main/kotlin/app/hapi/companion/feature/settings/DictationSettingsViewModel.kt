@@ -4,12 +4,14 @@ import app.hapi.companion.feature.chat.composer.DictationApi
 import app.hapi.companion.feature.chat.composer.DictationPrefs
 import app.hapi.companion.feature.chat.composer.resolveStandardProvider
 import app.hapi.protocol.wire.TranscriptionProviderInfo
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** One language option (web `Language`, `web/src/lib/languages.ts`). */
@@ -111,20 +113,29 @@ class DictationSettingsViewModel(
 
     val state: StateFlow<DictationSettingsUiState> = mutableState.asStateFlow()
 
-    private var started = false
+    private val started = AtomicBoolean(false)
 
-    /** Idempotent entry-point call from the screen (`UsageViewModel.start` twin). */
+    /**
+     * Idempotent entry-point call from the screen (`UsageViewModel.start`
+     * twin). Both launched loads mutate the same state flow concurrently
+     * (the holder scope is multithreaded), so every write goes through
+     * `update{}` (CAS): a plain read-copy-write could interleave with the
+     * other load's write and land a stale snapshot — e.g. the prefs
+     * collector reverting `loaded`/`providers` after the fetch settled, with
+     * no re-emission to repair it.
+     */
     fun start() {
-        if (started) return
-        started = true
+        if (!started.compareAndSet(false, true)) return
         scope.launch {
             combine(prefs.providerId, prefs.language) { provider, language -> provider to language }
                 .collect { (provider, language) ->
-                    mutableState.value = mutableState.value.copy(
-                        storedProviderId = provider,
-                        language = language,
-                        resolvedProviderId = resolveStandardProvider(provider, mutableState.value.providers)?.id,
-                    )
+                    mutableState.update { current ->
+                        current.copy(
+                            storedProviderId = provider,
+                            language = language,
+                            resolvedProviderId = resolveStandardProvider(provider, current.providers)?.id,
+                        )
+                    }
                 }
         }
         scope.launch {
@@ -134,14 +145,17 @@ class DictationSettingsViewModel(
                 throw cancellation
             } catch (_: Exception) {
                 // Hub unreachable / not configured: dictation is unavailable;
-                // the section stays hidden. Retried on the next settings visit.
+                // the section stays hidden. Retried on the next settings visit
+                // (a hub switch builds a fresh holder bound to that hub's api).
                 emptyList()
             }
-            mutableState.value = mutableState.value.copy(
-                loaded = true,
-                providers = providers,
-                resolvedProviderId = resolveStandardProvider(mutableState.value.storedProviderId, providers)?.id,
-            )
+            mutableState.update { current ->
+                current.copy(
+                    loaded = true,
+                    providers = providers,
+                    resolvedProviderId = resolveStandardProvider(current.storedProviderId, providers)?.id,
+                )
+            }
         }
     }
 

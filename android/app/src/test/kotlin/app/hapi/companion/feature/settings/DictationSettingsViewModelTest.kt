@@ -11,9 +11,13 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -170,6 +174,112 @@ class DictationSettingsViewModelTest {
         advanceUntilIdle()
 
         assertEquals(1, harness.api.calls)
+    }
+
+    @Test
+    fun `preference load racing the provider load keeps both updates`() = runTest {
+        // Regression for the read-copy-write races in start(): the prefs
+        // collector and the provider fetch both wrote
+        // `state.value = state.value.copy(...)` from the holder's
+        // multithreaded scope, so a fetch result could be clobbered by a
+        // stale snapshot (or vice versa) with no re-emission to repair it.
+        // Real threads (not the test scheduler) + a wide resolve window
+        // (stored pick dead last in a big catalog) + a hammered language
+        // pref maximise the interleavings; update{} must keep every round's
+        // terminal state fully consistent.
+        val catalog = buildList {
+            repeat(1_500) { i -> add(provider("bulk-$i", "standard")) }
+            add(provider("browser-local", "standard")) // stored pick: last → full scan
+        }
+
+        repeat(200) {
+            val prefs = FakeDictationPrefs().apply { providerValue.value = "browser-local" }
+            val api = FakeDictationApi(catalog)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            try {
+                val viewModel = DictationSettingsViewModel(prefs, api, scope)
+                viewModel.start()
+                // Race pref emissions through the in-flight fetch. The final
+                // "zh-CN" never occurs mid-hammer, so the predicate below can
+                // only match once both loads' writes have landed.
+                repeat(24) { i -> prefs.languageValue.value = if (i % 2 == 0) "en-US" else "en-GB" }
+                prefs.languageValue.value = "zh-CN"
+
+                viewModel.state.first {
+                    it.loaded && it.storedProviderId == "browser-local" && it.language == "zh-CN"
+                }
+
+                val state = viewModel.state.value
+                assertTrue(state.loaded)
+                assertEquals(catalog.size, state.providers.size)
+                assertEquals("browser-local", state.storedProviderId)
+                assertEquals("zh-CN", state.language)
+                assertEquals("browser-local", state.resolvedProviderId)
+            } finally {
+                scope.coroutineContext[Job]?.cancelAndJoin()
+            }
+        }
+    }
+
+    @Test
+    fun `hub switch keeps discovery retry and scoping keys usable after a failure`() = runTest {
+        val prefs = FakeDictationPrefs().apply {
+            providerValue.value = "browser-local"
+            languageValue.value = "zh-CN"
+        }
+
+        // Hub A: fetch fails → section hides, but the app-wide (cross-hub)
+        // scoping keys stay visible in the state.
+        val hubA = FakeDictationApi(emptyList()).apply { failure = RuntimeException("hub A unreachable") }
+        val onA = DictationSettingsViewModel(
+            prefs = prefs,
+            api = hubA,
+            scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+        )
+        onA.start()
+        advanceUntilIdle()
+        assertTrue(onA.state.value.loaded)
+        assertTrue(onA.state.value.providers.isEmpty())
+        assertEquals(null, onA.state.value.resolvedProviderId)
+        assertEquals("browser-local", onA.state.value.storedProviderId)
+        assertEquals("zh-CN", onA.state.value.language)
+
+        // Hub switch (fresh per-hub holder, same app-wide prefs, hub B's
+        // api): hub B's first visit also fails — that error state must not
+        // wedge anything either.
+        val hubB = FakeDictationApi(
+            listOf(provider("openai", "standard"), provider("browser-local", "standard")),
+        ).apply { failure = RuntimeException("hub B unreachable") }
+        val firstVisit = DictationSettingsViewModel(
+            prefs = prefs,
+            api = hubB,
+            scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+        )
+        firstVisit.start()
+        advanceUntilIdle()
+        assertTrue(firstVisit.state.value.loaded)
+        assertTrue(firstVisit.state.value.providers.isEmpty())
+
+        // Retry on the next settings visit (hub B reachable now): discovery
+        // works, hub B's providers replace — not blend with — any earlier
+        // state, and the app-wide keys survived every hub transition.
+        hubB.failure = null
+        val retry = DictationSettingsViewModel(
+            prefs = prefs,
+            api = hubB,
+            scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+        )
+        retry.start()
+        advanceUntilIdle()
+
+        val state = retry.state.value
+        assertTrue(state.loaded)
+        assertEquals(listOf("openai", "browser-local"), state.providers.map { it.id })
+        assertEquals("browser-local", state.storedProviderId)
+        assertEquals("zh-CN", state.language)
+        assertEquals("browser-local", state.resolvedProviderId)
+        assertEquals(1, hubA.calls)
+        assertEquals(2, hubB.calls)
     }
 }
 
