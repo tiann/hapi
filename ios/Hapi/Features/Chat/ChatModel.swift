@@ -194,6 +194,8 @@ final class ChatModel {
     @ObservationIgnored private var lastEpoch: Int?
     @ObservationIgnored private var historyPumpScheduled = false
     @ObservationIgnored private var isActive = false
+    @ObservationIgnored private var wantsTailFollowing = false
+    @ObservationIgnored private var registeredTailFollowing = false
     @ObservationIgnored private var everStarted = false
 
     init(session: HubSession, sessionId: String) {
@@ -259,6 +261,7 @@ final class ChatModel {
         guard !isActive else { return }
         let preservingHistory = everStarted && (!followsTail || hasTrimmedTail)
         isActive = true
+        syncTailFollowing()
         if everStarted {
             // Coming back from a stop (e.g. a full-screen cover fired the
             // screen's disappear): fresh wiring, resumed at the saved cursor.
@@ -320,6 +323,7 @@ final class ChatModel {
     func stop() {
         guard isActive else { return }
         isActive = false
+        syncTailFollowing()
         displayedReadRevision = nil
         statesTask?.cancel()
         statesTask = nil
@@ -357,11 +361,28 @@ final class ChatModel {
 
     func resetDisplayedReadReceipt() { displayedReadRevision = nil }
 
+    /// The conditions under which `markDisplayed` acknowledges new tail output.
+    var followsReadableTail: Bool {
+        followsTail && !isInspectingContent && !isSyncingTail && !isInitialLoading
+            && !loadFailed && warning == nil && !hasTrimmedTail
+    }
+
+    /// Hides this session's list dot while output it will acknowledge renders.
+    func setTailFollowing(_ value: Bool) {
+        wantsTailFollowing = value
+        syncTailFollowing()
+    }
+
+    private func syncTailFollowing() {
+        let value = wantsTailFollowing && isActive
+        guard value != registeredTailFollowing else { return }
+        registeredTailFollowing = value
+        hub.lastSeenStore.setFollowingTail(sessionId, value)
+    }
+
     /// Called by the laid-out transcript, with the revision belonging to its rows.
     func markDisplayed(revision: Int?, serverState: SessionReadState?) {
-        guard isActive, followsTail, !isInspectingContent, !isSyncingTail,
-              !isInitialLoading, !loadFailed, warning == nil, !hasTrimmedTail,
-              let revision, revision != displayedReadRevision else { return }
+        guard isActive, followsReadableTail, let revision, revision != displayedReadRevision else { return }
         displayedReadRevision = revision
         Task {
             await hub.lastSeenStore.markSeen(sessionId: sessionId, revision: revision, serverState: serverState)

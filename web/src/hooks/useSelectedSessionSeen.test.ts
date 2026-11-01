@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { getSessionLastSeenAt, getSessionManualUnreadAt, observeSessionReadStates } from '@/lib/sessionLastSeen'
+import { getSessionLastSeenAt, getSessionManualUnreadAt, getUnreadSessionCount, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { useSelectedSessionSeen } from './useSelectedSessionSeen'
 
 function setVisibility(state: DocumentVisibilityState): void {
@@ -51,6 +51,25 @@ describe('rendered read receipt', () => {
         rerender({ revision: 3 })
         await settle()
         expect(getSessionLastSeenAt('s')).toBe(3)
+    })
+
+    it('hides output that arrives ahead of the rendered tail only while following it', async () => {
+        const view = viewport(false)
+        const head = { id: 's', contentRevision: 4 }
+        const { rerender, unmount } = renderHook(({ revision }: { revision?: number }) => useSelectedSessionSeen('s', revision, 0, view, content), {
+            initialProps: { revision: 3 as number | undefined },
+        })
+        expect(getUnreadSessionCount([head])).toBe(0)
+        rerender({ revision: undefined })
+        expect(getUnreadSessionCount([head])).toBe(1)
+        rerender({ revision: 3 })
+        act(() => setVisibility('hidden'))
+        expect(getUnreadSessionCount([head])).toBe(1)
+        act(() => setVisibility('visible'))
+        expect(getUnreadSessionCount([head])).toBe(0)
+        unmount()
+        expect(getUnreadSessionCount([head])).toBe(1)
+        expect(getSessionLastSeenAt('s')).toBe(0)
     })
 
     it('read-state SSE alone cannot clear a manual unread choice', async () => {

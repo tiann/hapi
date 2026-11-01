@@ -93,7 +93,6 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 QueuedMessagesBarView(interactor: model.interactor)
-                    .hapiReadingColumn()
                 ChatComposerView(
                     interactor: model.interactor,
                     dictation: model.dictation,
@@ -315,6 +314,9 @@ struct ChatView: View {
         }
         .onChange(of: scenePhase) {
             if scenePhase != .active { model.resetDisplayedReadReceipt() }
+        }
+        .onChange(of: scenePhase == .active && model.followsReadableTail, initial: true) { _, following in
+            model.setTailFollowing(following)
         }
     }
 

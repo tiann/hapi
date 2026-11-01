@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-    configureSessionReadState, flushSessionReadState, getSessionLastSeenAt,
+    configureSessionReadState, flushSessionReadState, followSessionTail, getSessionLastSeenAt,
     getSessionManualUnreadAt, getUnreadSessionCount, markAllSessionsSeen,
     markSessionSeen, markSessionUnread, observeSessionReadStates,
 } from './sessionLastSeen'
@@ -49,14 +49,21 @@ describe('durable session read state', () => {
         expect(getUnreadSessionCount([{ id: 's', contentRevision: 3, readState: server(3, 3, true) }])).toBe(1)
     })
 
-    it('suppresses running content without discarding it or manual unread', () => {
+    it('counts running output and hides only a followed tail until it is acknowledged', () => {
         const row = { id: 's', contentRevision: 2, active: true, thinking: true }
+        expect(getUnreadSessionCount([row])).toBe(1)
+        const release = followSessionTail('s')
+        const again = followSessionTail('s')
         expect(getUnreadSessionCount([row])).toBe(0)
-        expect(getUnreadSessionCount([{ ...row, active: false }])).toBe(1)
+        expect(markAllSessionsSeen([row])).toBe(0)
+        expect(getSessionLastSeenAt('s')).toBe(0)
         markSessionUnread('s')
         expect(getUnreadSessionCount([row])).toBe(1)
+        release()
+        again()
         expect(markAllSessionsSeen([row])).toBe(1)
         expect(getSessionLastSeenAt('s')).toBe(2)
+        expect(getUnreadSessionCount([{ ...row, contentRevision: 3 }])).toBe(1)
     })
 
     it('does not claim a read when durable storage fails', () => {
