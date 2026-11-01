@@ -18,15 +18,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.IntrinsicMeasureScope
+import androidx.compose.ui.layout.IntrinsicMeasurable
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.MeasurePolicy
+import androidx.compose.ui.layout.MeasureResult
+import androidx.compose.ui.layout.MeasureScope
+import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isFinite
+import kotlin.math.ceil
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.ui.theme.hapi
@@ -190,6 +201,72 @@ internal fun markdownImageInlineContent(
     }
 }
 
+// ── Intrinsic-safe sizing boundary ───────────────────────────────────────────
+
+/**
+ * Width intrinsic answer for an image-bearing span: every image reserves its
+ * unbounded box width (the same width [markdownImageInlineContent] falls back
+ * to when constraints are unbounded). Consumers cap it — TableGrid caps columns
+ * at 320.dp — so over-reporting per image is the safe direction.
+ */
+internal fun intrinsicImageSpanWidthPx(imageCount: Int, density: Density): Int =
+    with(density) { INLINE_IMAGE_UNBOUNDED_WIDTH.roundToPx() } * imageCount
+
+/**
+ * Height intrinsic answer at the given available width: every image reserves
+ * its fixed-aspect box ([INLINE_IMAGE_BOX_ASPECT]) of the width it would be
+ * measured at. Text lines around the images are not included — nothing in the
+ * markdown tree consumes span height intrinsics (the blockquote bar is drawn,
+ * not intrinsic-sized), so this stays a conservative degraded answer for any
+ * future consumer.
+ */
+internal fun intrinsicImageSpanHeightPx(availableWidth: Int, imageCount: Int, density: Density): Int {
+    val capped = with(density) { INLINE_IMAGE_UNBOUNDED_WIDTH.roundToPx() }
+    val width = if (availableWidth == Constraints.Infinity || availableWidth < 0) capped else availableWidth.coerceAtMost(capped)
+    val perImage = ceil(width * INLINE_IMAGE_BOX_ASPECT).toInt()
+    return perImage * imageCount
+}
+
+/**
+ * Intrinsic-safe sizing boundary around the image-bearing subcompose.
+ *
+ * BoxWithConstraints is a [androidx.compose.ui.layout.SubcomposeLayout], whose
+ * measure policy is a NoIntrinsicsMeasurePolicy — any intrinsic query reaching
+ * it throws IllegalStateException during layout. Two markdown containers do
+ * exactly that: TableGrid sizes columns with `maxIntrinsicWidth` on cells, and
+ * blockquote content used to sit under `height(IntrinsicSize.Min)`. This
+ * pass-through [Layout] answers those queries itself (degraded constants
+ * above) so the subcompose only ever sees real measure passes; its normal
+ * measurement is a straight pass-through of the incoming constraints.
+ */
+@Composable
+internal fun IntrinsicSafeImageSpan(
+    imageCount: Int,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Layout(content = content, modifier = modifier, measurePolicy = imageSpanMeasurePolicy(imageCount))
+}
+
+private fun imageSpanMeasurePolicy(imageCount: Int): MeasurePolicy = object : MeasurePolicy {
+    override fun MeasureScope.measure(measurables: List<Measurable>, constraints: Constraints): MeasureResult {
+        val placeable = measurables.single().measure(constraints)
+        return layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+    }
+
+    override fun IntrinsicMeasureScope.minIntrinsicWidth(measurables: List<IntrinsicMeasurable>, height: Int): Int =
+        intrinsicImageSpanWidthPx(imageCount, this)
+
+    override fun IntrinsicMeasureScope.maxIntrinsicWidth(measurables: List<IntrinsicMeasurable>, height: Int): Int =
+        intrinsicImageSpanWidthPx(imageCount, this)
+
+    override fun IntrinsicMeasureScope.minIntrinsicHeight(measurables: List<IntrinsicMeasurable>, width: Int): Int =
+        intrinsicImageSpanHeightPx(width, imageCount, this)
+
+    override fun IntrinsicMeasureScope.maxIntrinsicHeight(measurables: List<IntrinsicMeasurable>, width: Int): Int =
+        intrinsicImageSpanHeightPx(width, imageCount, this)
+}
+
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 /**
@@ -213,12 +290,15 @@ internal fun InlineMarkdownImage(
     // third-party host (the web sends no headers either).
     val loader = (if (spec.authed) media.imageLoader else null) ?: LocalContext.current.imageLoader
     val colors = MaterialTheme.hapi
+    // Coil applies the contentDescription only in its default success content;
+    // the custom loading/error states below announce the alt themselves.
+    val description = spec.alt.ifBlank { null }
     var attempt by remember(spec.id) { mutableStateOf(0) }
     key(attempt) {
         SubcomposeAsyncImage(
             model = spec.url,
             imageLoader = loader,
-            contentDescription = spec.alt.ifBlank { null },
+            contentDescription = description,
             contentScale = ContentScale.Inside,
             modifier = modifier,
         ) {
@@ -228,7 +308,8 @@ internal fun InlineMarkdownImage(
                         .fillMaxSize()
                         .clip(RoundedCornerShape(12.dp))
                         .background(colors.codeBackground)
-                        .clickable { attempt += 1 },
+                        .clickable { attempt += 1 }
+                        .semantics { description?.let { contentDescription = it } },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -245,7 +326,8 @@ internal fun InlineMarkdownImage(
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(colors.codeBackground),
+                        .background(colors.codeBackground)
+                        .semantics { description?.let { contentDescription = it } },
                 )
             }
         }

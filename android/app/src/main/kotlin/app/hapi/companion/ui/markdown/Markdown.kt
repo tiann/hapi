@@ -6,10 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -30,6 +27,9 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.Placeable
@@ -243,18 +243,23 @@ private fun headingStyle(level: Int): TextStyle {
 @Composable
 private fun MarkdownBlockQuote(node: BlockQuote, parsed: ParsedMarkdown) {
     val colors = MaterialTheme.hapi
+    // The bar is drawn instead of intrinsic-sized: `height(IntrinsicSize.Min)`
+    // walks intrinsic height into the children, which crashes on
+    // image-bearing spans (SubcomposeLayout cannot answer intrinsics) and
+    // coerces the quote to the intrinsic estimate even without images.
     Row(
         modifier = Modifier
-            .height(IntrinsicSize.Min)
             .clip(RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp))
-            .background(colors.blockquoteBackground),
+            .background(colors.blockquoteBackground)
+            .drawBehind {
+                drawRect(
+                    color = colors.blockquoteBar,
+                    topLeft = Offset.Zero,
+                    size = Size(3.dp.toPx(), size.height),
+                )
+            },
     ) {
-        Box(
-            Modifier
-                .width(3.dp)
-                .fillMaxHeight()
-                .background(colors.blockquoteBar),
-        )
+        Box(Modifier.width(3.dp))
         CompositionLocalProvider(LocalContentColor provides colors.blockquoteForeground) {
             Column(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -479,13 +484,17 @@ private fun MarkdownInlineText(
         return
     }
     // Inline image placeholders adapt to the measured column width (web
-    // `max-w-full`); the subcompose only exists for image-bearing spans.
-    BoxWithConstraints {
-        val density = LocalDensity.current
-        val inlineContent = remember(images, maxWidth, density, media) {
-            markdownImageInlineContent(images, maxWidth, density, media)
+    // `max-w-full`); the subcompose only exists for image-bearing spans, and
+    // the boundary keeps container intrinsic passes (table column sizing,
+    // blockquote bars) off the subcompose — its intrinsics policy throws.
+    IntrinsicSafeImageSpan(imageCount = images.size) {
+        BoxWithConstraints {
+            val density = LocalDensity.current
+            val inlineContent = remember(images, maxWidth, density, media) {
+                markdownImageInlineContent(images, maxWidth, density, media)
+            }
+            Text(text = annotated, style = resolvedStyle, inlineContent = inlineContent)
         }
-        Text(text = annotated, style = resolvedStyle, inlineContent = inlineContent)
     }
 }
 

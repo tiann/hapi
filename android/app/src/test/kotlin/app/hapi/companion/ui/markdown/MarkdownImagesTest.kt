@@ -1,5 +1,7 @@
 package app.hapi.companion.ui.markdown
 
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import app.hapi.protocol.markdown.MarkdownTransforms
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -117,6 +119,30 @@ class MarkdownImagesTest {
         // the kept one stays at ordinal 1 in both parses.
         assertEquals(listOf(null, "hapi-md-img:1"), specIdsWithDegradation(doc))
         assertEquals(specIdsWithDegradation(MarkdownTransforms.parse(text)), specIdsWithDegradation(doc))
+    }
+
+    // ── intrinsic-safe boundary math ──────────────────────────────────────────
+
+    @Test
+    fun `span width intrinsics reserve the unbounded box per image`() {
+        val density = Density(1f)
+        assertEquals(320, intrinsicImageSpanWidthPx(1, density))
+        assertEquals(640, intrinsicImageSpanWidthPx(2, density))
+        // Scales with density like every other px conversion.
+        assertEquals(480, intrinsicImageSpanWidthPx(1, Density(1.5f)))
+    }
+
+    @Test
+    fun `span height intrinsics keep the fixed aspect and cap at the unbounded width`() {
+        val density = Density(1f)
+        // Available width below the cap reserves aspect × that width, rounded up.
+        assertEquals(75, intrinsicImageSpanHeightPx(100, 1, density))
+        assertEquals(76, intrinsicImageSpanHeightPx(101, 1, density))
+        // Per image, summed.
+        assertEquals(150, intrinsicImageSpanHeightPx(100, 2, density))
+        // Wider or unbounded containers cap the box at the unbounded fallback.
+        assertEquals(240, intrinsicImageSpanHeightPx(1000, 1, density))
+        assertEquals(240, intrinsicImageSpanHeightPx(Constraints.Infinity, 1, density))
     }
 
     // ── helpers (mirror the production walker's document-order traversal) ─────

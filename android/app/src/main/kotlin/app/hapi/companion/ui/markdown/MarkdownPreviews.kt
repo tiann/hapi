@@ -53,10 +53,12 @@ hub-relative ![chart](/api/sessions/demo/generated-images/plot) and a denied ![d
 2. second with `a/b.ts:12`
 
 > Quoted wisdom with **bold** and a [link](https://example.com).
+> With an inline ![quote shot](https://example.com/shot.png) too.
 
 | Column A | Column B | Column C |
 | --- | --- |
 | left | 2 | `x|y` |
+| ![cell shot](https://example.com/cell.png) | two rows | 4 |
 
 The plan is ${'$'}200/mo — currency stays prose — and inline \(a^2 + b^2\) degrades to TeX.
 
