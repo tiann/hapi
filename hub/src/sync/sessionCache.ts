@@ -66,7 +66,7 @@ export class SessionCache {
         private readonly store: Store,
         private readonly publisher: EventPublisher,
         private readonly lifecycleHooks: {
-            beforeDeleteSession?: (sessionId: string) => Promise<void> | undefined
+            beforeDeleteSession?: (sessionId: string, options?: { allowLifecycleGuard?: boolean }) => Promise<void> | undefined
             /** Revalidate lifecycle guards after asynchronous deletion preparation. */
             assertDeleteSession?: (sessionId: string) => void
             afterDeleteSession?: (sessionId: string) => void
@@ -1571,8 +1571,16 @@ export class SessionCache {
         this.publisher.emit({ type: 'session-removed', sessionId, namespace })
     }
 
-    async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
-        await this.mergeSessionData(oldSessionId, newSessionId, namespace, { deleteOldSession: true })
+    async mergeSessions(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { allowLifecycleDeletionGuard?: boolean } = {}
+    ): Promise<void> {
+        await this.mergeSessionData(oldSessionId, newSessionId, namespace, {
+            deleteOldSession: true,
+            allowLifecycleDeletionGuard: options.allowLifecycleDeletionGuard
+        })
     }
 
     async mergeSessionHistory(
@@ -1591,7 +1599,7 @@ export class SessionCache {
         oldSessionId: string,
         newSessionId: string,
         namespace: string,
-        options: { deleteOldSession: boolean; mergeAgentState?: boolean }
+        options: { deleteOldSession: boolean; mergeAgentState?: boolean; allowLifecycleDeletionGuard?: boolean }
     ): Promise<void> {
         if (oldSessionId === newSessionId) {
             return
@@ -1871,11 +1879,13 @@ export class SessionCache {
             try {
                 // Wait for all shared-fork preservation and late uploads, then
                 // recheck activity before moving any source history or ownership.
-                const preparation = this.lifecycleHooks.beforeDeleteSession?.(oldSessionId)
+                const preparation = this.lifecycleHooks.beforeDeleteSession?.(oldSessionId, {
+                    allowLifecycleGuard: options.allowLifecycleDeletionGuard === true
+                })
                 if (preparation) {
                     await preparation
                 }
-                this.lifecycleHooks.assertDeleteSession?.(oldSessionId)
+                if (!options.allowLifecycleDeletionGuard) this.lifecycleHooks.assertDeleteSession?.(oldSessionId)
                 if (this.sessions.get(oldSessionId)?.active) {
                     throw new Error('Cannot merge a session that became active')
                 }
@@ -2200,6 +2210,7 @@ export class SessionCache {
                 })
                 const targetId = candidates[0].id
                 const targetNamespace = candidates[0].session.namespace
+                const targetActive = candidates[0].session.active
 
                 for (const { id } of candidates.slice(1)) {
                     if (id === targetId) continue
@@ -2214,7 +2225,9 @@ export class SessionCache {
                                 mergeAgentState: false
                             })
                         } else {
-                            await this.mergeSessions(id, targetId, targetNamespace)
+                            await this.mergeSessions(id, targetId, targetNamespace, {
+                                allowLifecycleDeletionGuard: targetActive
+                            })
                         }
                     } catch {
                         // best-effort: duplicate remains if merge fails

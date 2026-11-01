@@ -310,7 +310,7 @@ export class SyncEngine {
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
-            beforeDeleteSession: (sessionId) => this.prepareSessionForDeletionIfNeeded(sessionId),
+            beforeDeleteSession: (sessionId, options) => this.prepareSessionForDeletionIfNeeded(sessionId, options),
             assertDeleteSession: (sessionId) => this.assertSessionDeletionAllowed(sessionId),
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
@@ -2942,15 +2942,15 @@ export class SyncEngine {
     }
 
     /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
-    async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean }): Promise<void> {
-        this.assertSessionDeletionAllowed(sessionId)
+    async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean; allowLifecycleGuard?: boolean }): Promise<void> {
+        if (!options?.allowLifecycleGuard) this.assertSessionDeletionAllowed(sessionId)
         await this.ensureSharedForkChildrenBeforeDelete(sessionId)
         await this.waitForSharedForkAttachmentHydration(sessionId)
         await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)
     }
 
     /** Avoid yielding on ordinary consolidations that have no shared-fork dependency. */
-    private prepareSessionForDeletionIfNeeded(sessionId: string): Promise<void> | undefined {
+    private prepareSessionForDeletionIfNeeded(sessionId: string, options?: { allowLifecycleGuard?: boolean }): Promise<void> | undefined {
         const hasChild = this.sessionCache.getSessions().some((session) => (
             session.metadata?.forkedFrom === sessionId
             && session.metadata?.flavor === 'codex'
@@ -2962,7 +2962,7 @@ export class SyncEngine {
             && !this.sharedForkAttachmentFailures.has(sessionId)) {
             return undefined
         }
-        return this.prepareSessionForDeletion(sessionId)
+        return this.prepareSessionForDeletion(sessionId, options)
     }
 
     /** Wait for a hydration targeting a child before deleting that child. */
@@ -4434,7 +4434,9 @@ export class SyncEngine {
                     try {
                         // Enumeration cleanup for the deleted old row fires via
                         // the onSessionMergedAway hook wired in the constructor.
-                        await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
+                        await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace, {
+                            allowLifecycleDeletionGuard: true
+                        })
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
                         return { type: 'error', message, code: 'resume_failed' }
