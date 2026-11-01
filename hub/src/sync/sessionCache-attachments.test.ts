@@ -32,6 +32,7 @@ function setup() {
 function setupWithDeleteHooks(hooks: {
     beforeDeleteSession?: (sessionId: string) => Promise<void> | undefined
     assertDeleteSession?: (sessionId: string) => void
+    isResumeRotation?: (sourceSessionId: string, targetSessionId: string) => boolean
     afterDeleteSession?: (sessionId: string) => void
 }) {
     const root = mkdtempSync(join(tmpdir(), 'hapi-session-attachments-hooks-'))
@@ -342,6 +343,45 @@ describe('durable attachment session lifecycle', () => {
         expect(store.messages.getAllMessages(oldSession.id).map((row) => row.id)).toEqual([message.id])
         expect(store.attachments.getForSession(attachment.id, 'default', oldSession.id)).not.toBeNull()
         expect(store.attachments.getForSession(attachment.id, 'default', newSession.id)).toBeNull()
+    })
+
+    it('does not let an active dedup target bypass an independent source resume guard', async () => {
+        let store!: Store
+        let cache!: SessionCache
+        const context = setupWithDeleteHooks({
+            beforeDeleteSession: async (sessionId) => {
+                const latest = store.sessions.getSessionByNamespace(sessionId, 'default')!
+                store.sessions.updateSessionMetadata(sessionId, {
+                    ...(latest.metadata as Record<string, unknown>),
+                    codexResumePending: { machineId: 'machine', nativeSessionId: 'native-independent' }
+                }, latest.metadataVersion, 'default')
+                cache.refreshSession(sessionId)
+            },
+            assertDeleteSession: (sessionId) => {
+                const metadata = store.sessions.getSessionByNamespace(sessionId, 'default')?.metadata as {
+                    codexResumePending?: unknown
+                } | undefined
+                if (metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed')
+            },
+            isResumeRotation: () => false
+        })
+        store = context.store
+        cache = context.cache
+        const source = cache.getOrCreateSession('dedup-source-resume', {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'dedup-resume-thread'
+        }, null, 'default')
+        const target = cache.getOrCreateSession('dedup-active-target', {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'dedup-resume-thread'
+        }, null, 'default')
+        cache.markSessionActive(target.id)
+
+        await cache.deduplicateByAgentSessionId(target.id)
+
+        expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
+        expect((store.sessions.getSessionByNamespace(source.id, 'default')?.metadata as {
+            codexResumePending?: unknown
+        }).codexResumePending).toBeDefined()
+        expect(store.sessions.getSessionByNamespace(target.id, 'default')).not.toBeNull()
     })
 
     it('aborts when scratchlist content changes during attachment preparation', async () => {

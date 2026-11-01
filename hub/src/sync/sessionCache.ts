@@ -69,6 +69,8 @@ export class SessionCache {
             beforeDeleteSession?: (sessionId: string, options?: { allowLifecycleGuard?: boolean }) => Promise<void> | undefined
             /** Revalidate lifecycle guards after asynchronous deletion preparation. */
             assertDeleteSession?: (sessionId: string) => void
+            /** True only when this pair is the source/new target of the same resume. */
+            isResumeRotation?: (sourceSessionId: string, targetSessionId: string) => boolean
             afterDeleteSession?: (sessionId: string) => void
             /** Fires after a merge deletes a session row. Dedup collisions and
              *  resume-id rotation both land in `mergeSessionData`, so this is
@@ -2210,7 +2212,6 @@ export class SessionCache {
                 })
                 const targetId = candidates[0].id
                 const targetNamespace = candidates[0].session.namespace
-                const targetActive = candidates[0].session.active
 
                 for (const { id } of candidates.slice(1)) {
                     if (id === targetId) continue
@@ -2226,7 +2227,7 @@ export class SessionCache {
                             })
                         } else {
                             await this.mergeSessions(id, targetId, targetNamespace, {
-                                allowLifecycleDeletionGuard: targetActive
+                                allowLifecycleDeletionGuard: this.lifecycleHooks.isResumeRotation?.(id, targetId) === true
                             })
                         }
                     } catch {

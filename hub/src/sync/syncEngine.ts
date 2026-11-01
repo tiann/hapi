@@ -266,6 +266,7 @@ export class SyncEngine {
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Coalesce concurrent resume/reopen requests so parallel callers share in-flight startup. */
     private readonly resumeTails = new Map<string, Promise<ResumeSessionResult>>()
+    private readonly resumeSpawnStates = new Map<string, { activeBefore: Set<string>; targets: Set<string> }>()
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
@@ -312,6 +313,9 @@ export class SyncEngine {
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
             beforeDeleteSession: (sessionId, options) => this.prepareSessionForDeletionIfNeeded(sessionId, options),
             assertDeleteSession: (sessionId) => this.assertSessionDeletionAllowed(sessionId),
+            isResumeRotation: (sourceSessionId, targetSessionId) => (
+                this.resumeSpawnStates.get(sourceSessionId)?.targets.has(targetSessionId) === true
+            ),
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
             // dedup alike — so enumeration cleanup rides on one hook.
@@ -715,7 +719,15 @@ export class SyncEngine {
             this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
         }
         this.sessionCache.handleSessionAlive(payload)
-        this.maybeHydrateSharedForkAttachments(this.sessionCache.getSession(payload.sid))
+        const aliveSession = this.sessionCache.getSession(payload.sid)
+        for (const [sourceSessionId, state] of this.resumeSpawnStates) {
+            const sourceSession = this.sessionCache.getSession(sourceSessionId)
+            if (!state.activeBefore.has(payload.sid)
+                && sourceSession?.metadata?.codexSessionId === aliveSession?.metadata?.codexSessionId) {
+                state.targets.add(payload.sid)
+            }
+        }
+        this.maybeHydrateSharedForkAttachments(aliveSession)
         if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -4244,6 +4256,10 @@ export class SyncEngine {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
             }
+            this.resumeSpawnStates.set(access.sessionId, {
+                activeBefore: new Set(this.sessionCache.getSessions().filter((candidate) => candidate.active).map((candidate) => candidate.id)),
+                targets: new Set()
+            })
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
                 directory,
@@ -4464,6 +4480,7 @@ export class SyncEngine {
             }
             return { type: 'success', sessionId: spawnResult.sessionId }
         } finally {
+            this.resumeSpawnStates.delete(access.sessionId)
             if (resumedStartingMode === 'pty') {
                 this.ptyResumeInFlightIds.delete(access.sessionId)
                 // Do not clear a deliberate fail-closed `resuming` marker left
