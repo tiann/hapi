@@ -1568,6 +1568,52 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('refuses to merge a duplicate source whose Codex resume startup is unconfirmed', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-resume-pending-merge-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const codexSessionId = 'codex-thread-resume-pending-merge'
+        const canonical = engine.getOrCreateSession(
+            'canonical-resume-pending-session',
+            { path: 'C:/work/project', host: 'test-host', machineId: 'machine', codexSessionId },
+            {},
+            'default'
+        )
+        const source = engine.getOrCreateSession(
+            'source-resume-pending-session',
+            {
+                path: 'C:/work/project', host: 'test-host', machineId: 'machine', codexSessionId,
+                codexResumePending: { machineId: 'machine', nativeSessionId: codexSessionId }
+            },
+            {},
+            'default'
+        )
+        store.messages.addMessage(canonical.id, { role: 'user', content: { type: 'text', text: 'merge me' } }, 'canonical-resume-1')
+        store.messages.addMessage(canonical.id, { role: 'user', content: { type: 'text', text: 'canonical-only' } }, 'canonical-resume-2')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'merge me' } }, 'source-resume-1')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: [codexSessionId] })
+            })
+            expect(response.status).toBe(200)
+            expect(await response.json()).toMatchObject({
+                success: false,
+                error: expect.stringContaining('resume startup is unconfirmed')
+            })
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
+            expect(store.messages.getAllMessages(source.id)).toHaveLength(1)
+        } finally {
+            engine.stop()
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
     it('rechecks duplicate-session activity after attachment deletion preparation', async () => {
         const root = mkdtempSync(join(tmpdir(), 'hapi-codex-attachment-merge-activity-race-'))
         const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })

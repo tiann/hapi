@@ -2934,6 +2934,7 @@ export class SyncEngine {
 
     /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
     async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean }): Promise<void> {
+        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
         await this.ensureSharedForkChildrenBeforeDelete(sessionId)
         await this.waitForSharedForkAttachmentHydration(sessionId)
         await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)
