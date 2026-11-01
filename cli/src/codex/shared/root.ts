@@ -77,6 +77,7 @@ export class SharedCodexRoot {
     private closing?: Promise<void>;
     private readonly controls = new Set<Promise<unknown>>();
     private reconnecting = false;
+    private reconnectDeferred = false;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private settingsNotification?: Record<string, unknown>;
@@ -129,7 +130,7 @@ export class SharedCodexRoot {
             const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
             this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => logger.debug('[Codex shared] projection', error));
         });
-        this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
+        this.client.setTransportAbandonedHandler(() => this.requestReconnect());
         this.session.onUserMessage((message, localId) => {
             let release: () => void;
             try { release = this.rewindBarrier.enter(); }
@@ -492,6 +493,21 @@ export class SharedCodexRoot {
             threadId: this.threadId, threadSettings: this.settingsNotification
         } }] : [];
     }
+    private requestReconnect(): void {
+        if (this.closed || this.stopping || !this.threadId || this.reconnecting) return;
+        if (this.rewindBarrier.blocked) {
+            this.reconnectDeferred = true;
+            return;
+        }
+        void this.reconnect().catch(error => logger.debug('[Codex shared] reconnect request', error));
+    }
+
+    private reconnectAfterBarrier(): void {
+        if (!this.reconnectDeferred) return;
+        this.reconnectDeferred = false;
+        this.requestReconnect();
+    }
+
     private async reconnect(): Promise<void> {
         if (this.closed || this.stopping || this.reconnecting || !this.threadId || this.rewindBarrier.blocked) return;
         // The new connection replays authoritative pending native requests.
@@ -731,7 +747,7 @@ export class SharedCodexRoot {
                     // Transport loss while the barrier was closed deferred its
                     // callback. Pre-dispatch rejection is safe to reconnect;
                     // never take this path after native mutation was dispatched.
-                    void this.reconnect().catch(reconnectError => logger.debug('[Codex shared] rejected rewind reconnect', reconnectError));
+                    this.reconnectAfterBarrier();
                 } else {
                     await this.replayDeferredRequests();
                     await this.refresh().catch(refreshError => logger.debug('[Codex shared] rejected rewind refresh', refreshError));
@@ -783,6 +799,7 @@ export class SharedCodexRoot {
             if (await this.session.flush() === false) throw new Error('Hub history reconciliation acknowledgement is unavailable');
             if (this.latestTurn?.planId) await this.queue.rewindPlanImplementation(this.latestTurn.planId);
         });
+        this.reconnectAfterBarrier();
         this.deferredRequests = [];
         this.publishPlan(); return { success: true };
     }

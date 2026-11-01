@@ -669,6 +669,27 @@ describe('shared conversation rewind', () => {
         await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'reconnected' })).resolves.toBeDefined();
     });
 
+    it('reconnects after native transport loss during successful rewind completion', async () => {
+        const f = await history()
+        const request = f.root.client.request.bind(f.root.client)
+        const requestSpy = vi.spyOn(f.root.client, 'request').mockImplementation(request)
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        const flushSpy = vi.spyOn(f.root.session, 'flush').mockImplementation(async () => {
+            f.native.initialized = false
+            f.native.abandoned()
+            return true
+        })
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+        flushSpy.mockRestore()
+
+        await vi.waitFor(() => expect(f.native.initialized).toBe(true))
+        expect(requestSpy.mock.calls.some(([method]) => method === 'thread/resume')).toBe(true)
+        expect(f.metadata().conversationHistoryTurns).toEqual({ one: 'one' })
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'reconnected' })).resolves.toBeDefined()
+    })
+
     it('retires native approval resolutions arriving while the rewind marker is being written', async () => {
         const f = await history();
         f.native.thread.turns[2]!.status = 'inProgress';
