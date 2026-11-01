@@ -1394,7 +1394,9 @@ export class MessageService {
     /** Replay durable immediate prompts whenever their CLI session attaches. */
     replayImmediateQueuedMessages(sessionId: string): number {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
-        if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
+        if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)
+            || this.matureReleaseInFlightSessions.has(sessionId)
+            || this.pendingOrderedDeliverableReleaseSessions.has(sessionId)) return 0
 
         // Keep reconnect replay behind any earlier mature scheduled row. During
         // an OpenCode clear handoff, an attachment row may still be awaiting

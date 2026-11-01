@@ -3128,6 +3128,8 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
             status: 'cancelled',
             localId: 'cancelled-handoff-a',
         })
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(cliEmitted).toHaveLength(0)
         await service.releaseMatureScheduledMessages(Date.now())
         expect(cliEmitted).toHaveLength(0)
 

@@ -31,6 +31,7 @@ function createLegacy(version: number, hasPositions = false) {
     const path = join(directory, 'hapi.db')
     const original = new Store(path)
     const session = original.sessions.getOrCreateSession('migration', { path: '/tmp', host: 'test' }, null, 'default')
+    original.sessions.updateReadState(session.id, 'default', { type: 'unread', expectedVersion: 0 })
     original.close()
     const legacy = new Database(path)
     legacy.exec('DROP INDEX idx_session_scratchlist_session_position')
@@ -43,8 +44,8 @@ function createLegacy(version: number, hasPositions = false) {
     return { path, sessionId: session.id }
 }
 
-describe('scratchlist order schema v29 to v30', () => {
-    for (const version of [25, 26, 27, 28, 29]) {
+describe('scratchlist order schema through v31', () => {
+    for (const version of [25, 26, 27, 28, 29, 30]) {
         it(`upgrades v${version} without reordering the existing newest-first draft list`, () => {
             const { path, sessionId } = createLegacy(version)
             const store = new Store(path)
@@ -53,7 +54,8 @@ describe('scratchlist order schema v29 to v30', () => {
                     ['newer', 0, 'keep new draft'], ['older', 1, 'keep old draft'],
                 ])
                 const db = (store as unknown as { db: Database }).db
-                expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 30 })
+                expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 31 })
+                expect(store.sessions.getSession(sessionId)?.readState).toEqual({ readRevision: 0, manualUnread: true, version: 1 })
                 expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_session_scratchlist_session_position'").get()).not.toBeNull()
             } finally { store.close() }
         })

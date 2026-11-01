@@ -47,7 +47,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 30
+const SCHEMA_VERSION: number = 31
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -390,6 +390,7 @@ export class Store {
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
+            30: () => this.migrateFromV30ToV31(),
         })
 
         if (currentVersion === 0) {
@@ -1084,36 +1085,8 @@ export class Store {
         `)
     }
 
-    /** v29→v30: persist scratchlist order for databases that already reached v29. */
+    /** v29→v30: add read-state revisions. */
     private migrateFromV29ToV30(): void {
-        const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
-        if (scratchlistColumns.length > 0) {
-            if (!scratchlistColumns.some((column) => column.name === 'position')) {
-                this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
-
-                const sessionRows = this.db.prepare(
-                    'SELECT DISTINCT session_id FROM session_scratchlist'
-                ).all() as Array<{ session_id: string }>
-                const rowsForSession = this.db.prepare(
-                    `SELECT entry_id FROM session_scratchlist
-                     WHERE session_id = ?
-                     ORDER BY created_at DESC, entry_id DESC`
-                )
-                const updatePosition = this.db.prepare(
-                    'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
-                )
-                for (const { session_id } of sessionRows) {
-                    const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
-                    rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
-                }
-            }
-
-            this.db.exec(`
-                CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
-                    ON session_scratchlist(session_id, position)
-            `)
-        }
-
         const columns = this.getSessionColumnNames()
         for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
             if (columns.size > 0 && !columns.has(name)) {
@@ -1125,6 +1098,37 @@ export class Store {
             this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
         }
     }
+
+    /** v30→v31: persist scratchlist order and add its lookup index. */
+    private migrateFromV30ToV31(): void {
+        const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
+        if (scratchlistColumns.length === 0) return
+        if (!scratchlistColumns.some((column) => column.name === 'position')) {
+            this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
+
+            const sessionRows = this.db.prepare(
+                'SELECT DISTINCT session_id FROM session_scratchlist'
+            ).all() as Array<{ session_id: string }>
+            const rowsForSession = this.db.prepare(
+                `SELECT entry_id FROM session_scratchlist
+                 WHERE session_id = ?
+                 ORDER BY created_at DESC, entry_id DESC`
+            )
+            const updatePosition = this.db.prepare(
+                'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+            )
+            for (const { session_id } of sessionRows) {
+                const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
+                rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+            }
+        }
+
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
+                ON session_scratchlist(session_id, position)
+        `)
+    }
+
     /** v28→v29: persist a stable, user-input-only list ordering clock. */
     private migrateFromV28ToV29(): void {
         const columns = this.getSessionColumnNames()

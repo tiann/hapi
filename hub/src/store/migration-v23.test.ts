@@ -44,7 +44,7 @@ describe('schema migration v22 through v28', () => {
         expect(columns.map((column) => column.name)).toContain('delivery_state')
         const scratchlistColumns = internalDb.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
         expect(scratchlistColumns.map((column) => column.name)).toContain('position')
-        expect(version.user_version).toBe(30)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })
