@@ -1,1 +1,1 @@
-export { buildForkSessionSummary } from '@hapi/protocol'
+export { buildForkSessionSummary, type ForkSessionSummary } from '@hapi/protocol'

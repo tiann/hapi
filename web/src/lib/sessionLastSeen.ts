@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { EMPTY_READ_STATE, mergeReadState, type SessionReadState, type SessionReadStateRequest } from '@hapi/protocol'
 
-type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState; active?: boolean; thinking?: boolean }
+type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState }
 type Pending = { id: string; request: SessionReadStateRequest }
 type Entry = { server: SessionReadState; pending?: Pending }
 type Store = Record<string, Entry>
@@ -13,6 +13,7 @@ let sender: Sender | null = null
 let changeVersion = 0
 let running = false
 let retry: ReturnType<typeof setTimeout> | undefined
+const tailFollowers = new Map<string, number>()
 
 function readStore(key = scope): Store {
     try { return JSON.parse(localStorage.getItem(PREFIX + key) ?? '{}') as Store } catch { return {} }
@@ -134,6 +135,23 @@ function enqueue(sessionId: string, request: SessionReadStateRequest): void {
     if (save(store)) { notify(); void flushSessionReadState() }
 }
 
+/** A visible chat following its tail acknowledges output as it renders. Until
+ * that lands, hide the session's ordinary dot rather than flash it per message. */
+export function followSessionTail(sessionId: string): () => void {
+    tailFollowers.set(sessionId, (tailFollowers.get(sessionId) ?? 0) + 1)
+    notify()
+    return () => {
+        const remaining = (tailFollowers.get(sessionId) ?? 1) - 1
+        if (remaining > 0) tailFollowers.set(sessionId, remaining)
+        else tailFollowers.delete(sessionId)
+        notify()
+    }
+}
+/** Display only; running sessions count too. Never acknowledges content. */
+export function hasUnseenContent(session: SessionInput, readRevision: number): boolean {
+    return !tailFollowers.has(session.id) && (session.contentRevision ?? 0) > readRevision
+}
+
 export function getSessionLastSeenAt(sessionId: string): number { return effective(readStore()[sessionId]).readRevision }
 export function getSessionManualUnreadAt(sessionId: string, serverState?: SessionReadState): number | null {
     return effective(readStore()[sessionId], serverState).manualUnread ? 0 : null
@@ -162,7 +180,7 @@ export function markAllSessionsSeen(sessions: Iterable<SessionInput>): number {
     let count = 0
     for (const session of list) {
         const state = effective(readStore()[session.id], session.readState)
-        if (state.manualUnread || (!(session.active && session.thinking) && (session.contentRevision ?? 0) > state.readRevision)) {
+        if (state.manualUnread || hasUnseenContent(session, state.readRevision)) {
             markSessionSeen(session.id, session.contentRevision ?? 0)
             count += 1
         }
@@ -174,8 +192,8 @@ export function getUnreadSessionCount(sessions: Iterable<SessionInput>): number 
     const unique = new Map([...sessions].map(session => [session.id, session]))
     return [...unique.values()].filter(session => {
         const state = effective(store[session.id], session.readState)
-        return state.manualUnread || (!(session.active && session.thinking)
-            && (session.contentRevision ?? 0) > Math.max(state.readRevision, session.readState?.readRevision ?? 0))
+        return state.manualUnread
+            || hasUnseenContent(session, Math.max(state.readRevision, session.readState?.readRevision ?? 0))
     }).length
 }
 function subscribe(listener: () => void): () => void {

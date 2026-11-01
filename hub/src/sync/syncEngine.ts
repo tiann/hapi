@@ -1385,6 +1385,28 @@ export class SyncEngine {
         return false
     }
 
+    private restoreForkSummaryMetadata(
+        childId: string,
+        namespace: string,
+        summary: NonNullable<Session['metadata']>['summary']
+    ): void {
+        if (!summary) return
+        for (let retry = 0; retry < 5; retry++) {
+            const current = this.sessionCache.refreshSession(childId)
+            if (!current?.metadata) return
+            if (current.metadata.name?.trim()) return
+            const updated = this.store.sessions.updateSessionMetadata(
+                childId,
+                { ...current.metadata, summary },
+                current.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (updated.result === 'success') { this.sessionCache.refreshSession(childId); return }
+            if (updated.result === 'error') return
+        }
+    }
+
     /**
      * A native fork may be created before its runner child has loaded it. Wait
      * for the exact persisted native id; Pi additionally requires its
@@ -1772,7 +1794,9 @@ export class SyncEngine {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
             if (!child || child.metadata?.forkedFrom !== sessionId) return { type: 'error', message: 'Invalid shared-runtime fork binding' }
             const currentSource = this.sessionCache.refreshSession(sessionId)
-            await this.sessionCache.seedForkTitle(child.id, buildForkSessionSummary(currentSource?.metadata ?? source.metadata))
+            const forkSummary = buildForkSessionSummary(currentSource?.metadata ?? source.metadata)
+            await this.sessionCache.seedForkTitle(child.id, forkSummary)
+            this.restoreForkSummaryMetadata(child.id, namespace, forkSummary)
             void this.generateForkTitle(child.id)
             return { type: 'success', sessionId: child.id }
         }
@@ -1893,6 +1917,10 @@ export class SyncEngine {
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
             }
+            // CLI bootstrap can replace the provisional fork metadata before
+            // the child becomes ready. Restore the generated fork title only
+            // when startup left the child without an explicit title or summary.
+            this.restoreForkSummaryMetadata(childId, namespace, forkSummary)
 
             // Claude fork is spawn+flag, not an RPC-time snapshot. Keep the
             // source history lock (caller holds historyActionsInFlight) until

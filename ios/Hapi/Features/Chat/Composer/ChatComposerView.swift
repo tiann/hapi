@@ -33,6 +33,10 @@ struct ChatComposerView: View {
     @FocusState private var textFocused: Bool
     @State private var preparingAttachment = false
     @State private var schedulePickerOpen = false
+    // Secondary tools are bare symbols; only the primary action is a filled
+    // circle (Messages / ChatGPT / Claude). Both follow Dynamic Type.
+    @ScaledMetric(relativeTo: .body) private var toolGlyphSize: CGFloat = 20
+    @ScaledMetric(relativeTo: .body) private var primaryDiameter: CGFloat = 32
 
     private var scratchlistMode: Bool { interactor.composerDestination == .scratchlist }
     private var composerPrompt: LocalizedStringKey {
@@ -61,6 +65,7 @@ struct ChatComposerView: View {
         let composer = interactor.composer
         let attachments = interactor.attachments.items
         let slashSuggestions = interactor.slashSuggestions
+        let collapsed = isCollapsed(composer, attachments: attachments)
         VStack(spacing: 0) {
             if !slashSuggestions.isEmpty {
                 SlashCommandList(commands: slashSuggestions, surface: composerSurfaceColor) { command in
@@ -98,41 +103,38 @@ struct ChatComposerView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
                 }
-                TextField(composerPrompt, text: text, prompt: Text(composerPrompt).foregroundColor(.secondary), axis: .vertical)
-                    .focused($textFocused)
-                    .font(typography.bodyFont)
-                    .lineLimit(1...6)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
-                HStack(spacing: 2) {
-                    addAttachmentButton
-                    if interactor.scratchlist != nil { scratchlistButton }
-                    if !scratchlistMode { scheduleButton(hasAttachments: !attachments.isEmpty) }
-                    Spacer()
-                    if scratchlistMode, composer.canSteer {
-                        Button { interactor.abortSession() } label: {
-                            Image(systemName: "stop.fill").foregroundStyle(.red).frame(width: 44, height: 44)
-                        }.accessibilityLabel("Stop the current turn")
-                    }
-                    if let dictation, dictation.isAvailable {
-                        micButton(dictation)
-                    }
-                    if scratchlistMode { parkButton }
-                    else { primaryActionButton(composer, attachments: attachments) }
+                // The field keeps one structural identity across the compact
+                // and expanded layouts so focus survives the switch.
+                HStack(spacing: 0) {
+                    if collapsed { addAttachmentButton }
+                    TextField(composerPrompt, text: text, prompt: Text(composerPrompt).foregroundColor(.secondary), axis: .vertical)
+                        .focused($textFocused)
+                        .font(typography.bodyFont)
+                        .lineLimit(1...6)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, collapsed ? 2 : 14)
+                        .padding(.top, collapsed ? 0 : 12)
+                        .padding(.bottom, collapsed ? 0 : 4)
+                    if collapsed { trailingActions(composer, attachments: attachments) }
                 }
-                // 44 pt touch slot with a centered 38 pt circle:
-                // 9 + 3 = the shared 12 pt visual inset.
-                .padding(.horizontal, 9)
-                .padding(.bottom, 4)
+                .padding(.horizontal, collapsed ? 4 : 0)
+                .padding(.vertical, collapsed ? 4 : 0)
+                if !collapsed {
+                    HStack(spacing: 0) {
+                        addAttachmentButton
+                        if interactor.scratchlist != nil { scratchlistButton }
+                        if !scratchlistMode { scheduleButton(hasAttachments: !attachments.isEmpty) }
+                        Spacer()
+                        trailingActions(composer, attachments: attachments)
+                    }
+                    // 44 pt slots: a 20 pt glyph sits ~12 pt in, so 4 pt
+                    // aligns it with the field's 14 pt text inset.
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 4)
+                }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(composerSurfaceColor)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
+            .modifier(ComposerCardSurface(fill: composerSurfaceColor))
+            .animation(.snappy, value: collapsed)
         }
         .hapiReadingColumn()
         .padding(.top, 8)
@@ -142,6 +144,28 @@ struct ChatComposerView: View {
         .animation(.snappy, value: hugsBottomEdge && !textFocused)
         .onChange(of: interactor.composerFocusRequest) {
             textFocused = true
+        }
+        // Hardware keyboard: ⌘↩ sends, matching the Send button's gate.
+        .background {
+            Button("Send") { interactor.sendMessage() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(scratchlistMode || !primaryAction(composer, attachments: attachments).canSend)
+                .opacity(0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
+            Button("Photo library") {
+                photosPickerOpen = true
+            }
+            if CameraCaptureView.isAvailable {
+                Button("Camera") {
+                    cameraOpen = true
+                }
+            }
+            Button("Files") {
+                filePickerOpen = true
+            }
         }
         .sheet(isPresented: $schedulePickerOpen) {
             ScheduleTimeSheet { date in
@@ -284,14 +308,12 @@ struct ChatComposerView: View {
                 }
             }
         } label: {
-            actionCircle(
-                background: active ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.fill.tertiary),
-                foreground: active ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary)
-            ) {
-                Image(systemName: "clock")
-                    .font(.system(size: 15, weight: .medium))
-            }
+            toolGlyph("clock", active: active ? AnyShapeStyle(.tint) : nil)
         }
+        // Menu labels inherit the accent as their foreground, which tints
+        // the relative `.secondary` style and reads as "on".
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .disabled(hasAttachments || interactor.scratchlistBusy)
         .accessibilityLabel("Schedule send")
         .accessibilityIdentifier("chat.schedule-send")
@@ -301,48 +323,30 @@ struct ChatComposerView: View {
         Button {
             attachDialogOpen = true
         } label: {
-            actionCircle(
-                background: AnyShapeStyle(.fill.tertiary),
-                foreground: AnyShapeStyle(.secondary)
-            ) {
-                Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .medium))
-            }
+            toolGlyph("plus")
         }
         .buttonStyle(.plain)
         .disabled(preparingAttachment || interactor.scratchlistBusy)
         .accessibilityLabel("Add attachment")
         .accessibilityIdentifier("chat.add-attachment")
-        .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
-            Button("Photo library") {
-                photosPickerOpen = true
-            }
-            if CameraCaptureView.isAvailable {
-                Button("Camera") {
-                    cameraOpen = true
-                }
-            }
-            Button("Files") {
-                filePickerOpen = true
-            }
-        }
     }
 
     private var scratchlistButton: some View {
         Button {
             interactor.setComposerDestination(scratchlistMode ? .chat : .scratchlist)
         } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "tray")
+            toolGlyph("tray", active: scratchlistMode ? AnyShapeStyle(.orange) : nil)
+            .overlay(alignment: .topTrailing) {
                 if interactor.scratchlistCount > 0 {
                     Text(verbatim: interactor.scratchlistCount > 99 ? "99+" : "\(interactor.scratchlistCount)")
-                        .font(.caption.weight(.medium)).monospacedDigit()
+                        .font(.caption2.weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .background(scratchlistMode ? AnyShapeStyle(.orange) : AnyShapeStyle(.gray), in: Capsule())
+                        .offset(x: -2, y: 4)
                 }
             }
-            .foregroundStyle(scratchlistMode ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
-            .padding(.horizontal, 6)
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(interactor.scratchlistBusy || interactor.isSending || preparingAttachment)
@@ -380,19 +384,12 @@ struct ChatComposerView: View {
         return Button {
             toggleDictation(dictation)
         } label: {
-            actionCircle(
-                background: recording
-                    ? AnyShapeStyle(.red.opacity(0.15))
-                    : AnyShapeStyle(.fill.tertiary),
-                foreground: recording ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary)
-            ) {
-                if busy {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 15))
-                }
+            if busy {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 44, height: 44)
+            } else {
+                toolGlyph(recording ? "stop.circle" : "mic", active: recording ? AnyShapeStyle(.red) : nil)
             }
         }
         .buttonStyle(.plain)
@@ -427,8 +424,35 @@ struct ChatComposerView: View {
 
     // MARK: - Buttons
 
+    /// Empty, unfocused chat composer: one compact row (+, field, primary
+    /// action) instead of the field above a tool row. Anything in flight —
+    /// a draft, chips, a schedule, recording, the scratchlist — expands it.
+    private func isCollapsed(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> Bool {
+        let recording: Bool = {
+            if let dictation, case .recording = dictation.state { return true }
+            return false
+        }()
+        return !textFocused && !scratchlistMode && composer.text.isEmpty && attachments.isEmpty
+            && interactor.pendingSchedule == nil && interactor.scratchlistError == nil && !recording
+    }
+
     @ViewBuilder
-    private func primaryActionButton(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> some View {
+    private func trailingActions(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> some View {
+        if scratchlistMode, composer.canSteer {
+            Button { interactor.abortSession() } label: {
+                toolGlyph("stop.circle")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop the current turn")
+        }
+        if let dictation, dictation.isAvailable {
+            micButton(dictation)
+        }
+        if scratchlistMode { parkButton }
+        else { primaryActionButton(composer, attachments: attachments) }
+    }
+
+    private func primaryAction(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> ComposerPrimaryAction {
         let hasText = !composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasDraft = hasText || !attachments.isEmpty
         let scheduled = interactor.pendingSchedule != nil
@@ -441,15 +465,19 @@ struct ChatComposerView: View {
         let canSubmit = scheduled
             ? hasText && attachments.isEmpty && !composer.isSending
             : (hasText || attachmentsReady) && !attachmentsBusy && !composer.isSending
-        let action: ComposerPrimaryAction = if composer.isSending {
+        return if composer.isSending {
             .sending
         } else if composer.canSteer && !hasDraft {
             .stop
         } else {
             .send(enabled: canSubmit)
         }
+    }
 
-        switch action {
+    @ViewBuilder
+    private func primaryActionButton(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> some View {
+        let scheduled = interactor.pendingSchedule != nil
+        switch primaryAction(composer, attachments: attachments) {
         case .sending:
             Button {} label: {
                 actionCircle(
@@ -468,11 +496,11 @@ struct ChatComposerView: View {
                 interactor.abortSession()
             } label: {
                 actionCircle(
-                    background: AnyShapeStyle(.red),
+                    background: AnyShapeStyle(.tint),
                     foreground: AnyShapeStyle(.white)
                 ) {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: 15))
+                        .font(.system(size: primaryDiameter * 0.36))
                 }
             }
             .buttonStyle(.plain)
@@ -499,6 +527,8 @@ struct ChatComposerView: View {
                 } primaryAction: {
                     interactor.sendMessage()
                 }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .accessibilityLabel("Send — long-press to steer")
             } else {
                 Button {
@@ -519,23 +549,59 @@ struct ChatComposerView: View {
             foreground: enabled ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary)
         ) {
             Image(systemName: "arrow.up")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: primaryDiameter * 0.47, weight: .semibold))
         }
     }
 
-    // Icon-only controls keep their 38pt visuals / 44pt hit areas. Their
-    // symbols use fixed sizes; editable text remains fully Dynamic Type.
+    /// Bare secondary tool symbol in a 44 pt slot; `active` recolors it for
+    /// a state (scheduled, held, recording) without changing its shape.
+    private func toolGlyph(_ name: String, active: AnyShapeStyle? = nil) -> some View {
+        Image(systemName: name)
+            .font(.system(size: toolGlyphSize, weight: .medium))
+            .foregroundStyle(active ?? AnyShapeStyle(.secondary))
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+    }
+
+    /// The primary action (send / stop / sending): a filled circle in a
+    /// 44 pt slot.
     private func actionCircle<Content: View>(
         background: AnyShapeStyle,
         foreground: AnyShapeStyle,
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .frame(width: 38, height: 38)
+            .frame(width: primaryDiameter, height: primaryDiameter)
             .background(background, in: Circle())
             .foregroundStyle(foreground)
-            .frame(width: 44, height: 44)
+            .frame(minWidth: 44, minHeight: 44)
             .contentShape(Rectangle())
+    }
+}
+
+/// The composer floats over the transcript (bottom safe-area inset): Liquid
+/// Glass on iOS 26 to match the glass navigation controls, otherwise the
+/// elevated surface with a hairline edge so it separates from white rows.
+private struct ComposerCardSurface: ViewModifier {
+    let fill: Color
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        if #available(iOS 26.0, *) {
+            // A short pill mostly refracts rather than blurs, so transcript
+            // text would read through the placeholder; a partial surface
+            // keeps the glass edge while damping what shows through.
+            content
+                .background(shape.fill(fill.opacity(0.7)))
+                .clipShape(shape)
+                .glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(shape.fill(fill))
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(Color(uiColor: .separator), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        }
     }
 }
 
@@ -543,6 +609,11 @@ private enum ComposerPrimaryAction {
     case sending
     case stop
     case send(enabled: Bool)
+
+    var canSend: Bool {
+        if case .send(true) = self { return true }
+        return false
+    }
 }
 
 // MARK: - Attachment chip

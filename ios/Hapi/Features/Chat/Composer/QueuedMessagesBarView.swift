@@ -2,11 +2,15 @@ import HapiClient
 import HapiUI
 import SwiftUI
 
-/// Floating bar above the composer for queued (uninvoked) sends — the
-/// SwiftUI twin of `QueuedMessagesBar.tsx` via the Android port. Per row:
-/// Steer (while a turn is active), Edit (cancel + prefill composer) and
-/// Cancel. Rows without a server echo yet (`id == localId`) keep their
-/// actions disabled until the SSE echo lands.
+/// Queued (uninvoked) sends, stacked as a compact card on top of the
+/// composer — the agent-tool convention (Codex, Claude Code, Cursor) rather
+/// than chat-app "unsent" bubbles, so a queued message never reads as a
+/// failed delivery. Same data and actions as the web `QueuedMessagesBar`:
+/// icon actions per row (Steer while a turn is active, Retry for an
+/// unknown outcome, Cancel); tapping the row edits it (cancel +
+/// prefill composer) and the context menu carries everything. Rows without
+/// a server echo yet (`id == localId`) keep their actions disabled until the
+/// SSE echo lands.
 struct QueuedMessagesBarView: View {
     let interactor: ChatInteractor
     @Environment(\.hapiTheme) private var theme
@@ -14,28 +18,33 @@ struct QueuedMessagesBarView: View {
 
     var body: some View {
         let rows = interactor.queuedRows
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(rows.count == 1
-                    ? String(localized: "1 queued message")
-                    : String(format: String(localized: "%lld queued messages"), Int64(rows.count)))
-                    .font(typography.captionFont)
-                    .foregroundStyle(theme.textSecondary)
-                    .padding(.horizontal, 10)
+        VStack(spacing: 0) {
+            if !rows.isEmpty {
                 ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(rows) { row in
+                    VStack(spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            if index > 0 { Divider().padding(.leading, 14) }
                             QueuedRowView(row: row, interactor: interactor)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
                     }
-                    .padding(.horizontal, 10)
                 }
-                .frame(maxHeight: 160)
+                // About three rows; further ones scroll inside the card.
+                .frame(maxHeight: 140)
                 .scrollBounceBehavior(.basedOnSize)
+                .modifier(QueuedCardSurface())
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(rows.count == 1
+                    ? String(localized: "1 queued message")
+                    : String(format: String(localized: "%lld queued messages"), Int64(rows.count)))
+                // Inset from the composer edges so the card reads as stacked
+                // on it rather than as a second input.
+                .padding(.horizontal, 8)
+                .hapiReadingColumn()
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            .padding(.vertical, 4)
-            .background(.bar)
         }
+        .animation(.snappy, value: rows.map(\.id))
     }
 }
 
@@ -47,85 +56,140 @@ struct QueuedRowView: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                preview.frame(minWidth: 120, alignment: .leading)
-                Spacer(minLength: 0)
-                HStack(spacing: 4) { actions(horizontal: true) }
-                    .fixedSize(horizontal: true, vertical: true)
+            HStack(spacing: 4) {
+                // A fixed ideal width: long status lines wrap in place instead
+                // of pushing the actions onto their own line.
+                preview.frame(minWidth: 120, idealWidth: 120, maxWidth: .infinity, alignment: .leading)
+                actions
             }
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .trailing, spacing: 0) {
                 preview.frame(maxWidth: .infinity, alignment: .leading)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 4) { actions(horizontal: true) }
-                    VStack(spacing: 4) { actions(horizontal: false) }
-                }
+                actions
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(theme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.leading, 14)
+        .padding(.trailing, 4)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if row.canAct { interactor.editQueuedMessage(row.id) }
+        }
+        .contextMenu { menuActions }
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: Text("Edit")) {
+            if row.canAct { interactor.editQueuedMessage(row.id) }
+        }
     }
 
     private var preview: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(row.text.isEmpty ? row.attachmentNames.joined(separator: ", ") : row.text)
-                .font(typography.toolSubtitleFont)
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(2)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(typography.captionFont)
+                .foregroundStyle(theme.textSecondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.text.isEmpty ? row.attachmentNames.joined(separator: ", ") : row.text)
+                    .font(typography.toolSubtitleFont)
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+                if row.indeterminate {
+                    Text("Delivery outcome unknown")
+                        .font(typography.captionFont)
+                        .foregroundStyle(theme.danger)
+                }
+                if let scheduledAt = row.scheduledAt {
+                    Text("Scheduled · \(Self.timeLabel(scheduledAt))")
+                        .font(typography.captionFont)
+                        .foregroundStyle(theme.textSecondary)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var actions: some View {
+        HStack(spacing: 0) {
             if row.indeterminate {
-                Text("Delivery outcome unknown")
-                    .font(typography.captionFont)
-                    .foregroundStyle(theme.danger)
+                iconAction("arrow.clockwise", label: "Retry", id: "retry", tint: theme.danger) {
+                    interactor.retryIndeterminateMessage(row.id)
+                }
+            } else if row.canSteer {
+                iconAction("bolt", label: "Steer", id: "steer", tint: theme.link) {
+                    interactor.steerQueuedMessage(row.id)
+                }
             }
-            if let scheduledAt = row.scheduledAt {
-                Text("Scheduled · \(Self.timeLabel(scheduledAt))")
-                    .font(typography.captionFont)
-                    .foregroundStyle(theme.textSecondary)
+            iconAction("xmark", label: "Cancel", id: "cancel", tint: theme.textSecondary) {
+                interactor.cancelQueuedMessage(row.id)
             }
         }
+        .fixedSize()
     }
 
-    @ViewBuilder
-    private func actions(horizontal: Bool) -> some View {
-        if row.indeterminate {
-            action("Retry", id: "retry", horizontal: horizontal) {
-                interactor.retryIndeterminateMessage(row.id)
-            }
-        } else if row.canSteer {
-            action("Steer", id: "steer", horizontal: horizontal) {
-                interactor.steerQueuedMessage(row.id)
-            }
-        }
-        action("Edit", id: "edit", horizontal: horizontal) {
-            interactor.editQueuedMessage(row.id)
-        }
-        action("Cancel", id: "cancel", horizontal: horizontal, destructive: true) {
-            interactor.cancelQueuedMessage(row.id)
-        }
-    }
-
-    private func action(
-        _ title: LocalizedStringKey, id: String, horizontal: Bool,
-        destructive: Bool = false, perform: @escaping () -> Void
+    /// Bare symbol in a 44 pt hit target; the label is for VoiceOver.
+    private func iconAction(
+        _ systemImage: String, label: LocalizedStringKey, id: String, tint: Color,
+        perform: @escaping () -> Void
     ) -> some View {
         Button(action: perform) {
-            Text(title)
-                .font(typography.toolTitleFont)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: horizontal, vertical: true)
-                .padding(.horizontal, 8)
-                .frame(minWidth: 44, maxWidth: horizontal ? nil : .infinity, minHeight: 44)
+            Image(systemName: systemImage)
+                .font(typography.bodyFont.weight(.semibold))
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(destructive ? theme.danger : theme.link)
+        .foregroundStyle(tint.opacity(row.canAct ? 1 : 0.4))
         .disabled(!row.canAct)
-        .opacity(row.canAct ? 1 : 0.5)
+        .accessibilityLabel(label)
         .accessibilityIdentifier("queued-\(id)-\(row.id)")
+    }
+
+    @ViewBuilder
+    private var menuActions: some View {
+        if row.indeterminate {
+            Button("Retry", systemImage: "arrow.clockwise") {
+                interactor.retryIndeterminateMessage(row.id)
+            }
+            .disabled(!row.canAct)
+        } else if row.canSteer {
+            Button("Steer", systemImage: "bolt") {
+                interactor.steerQueuedMessage(row.id)
+            }
+        }
+        Button("Edit", systemImage: "pencil") {
+            interactor.editQueuedMessage(row.id)
+        }
+        .disabled(!row.canAct)
+        Button("Cancel", systemImage: "xmark", role: .destructive) {
+            interactor.cancelQueuedMessage(row.id)
+        }
+        .disabled(!row.canAct)
     }
 
     private static func timeLabel(_ epochMs: Int) -> String {
         Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000)
             .formatted(date: .omitted, time: .shortened)
+    }
+}
+
+/// Matches the composer card (`ComposerCardSurface`): Liquid Glass on
+/// iOS 26, otherwise the elevated surface with a hairline edge.
+private struct QueuedCardSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        let fill = Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white
+        })
+        if #available(iOS 26.0, *) {
+            content
+                .background(shape.fill(fill.opacity(0.7)))
+                .clipShape(shape)
+                .glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(shape.fill(fill))
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(Color(uiColor: .separator), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        }
     }
 }
