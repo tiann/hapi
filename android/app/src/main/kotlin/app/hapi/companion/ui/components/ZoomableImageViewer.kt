@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -160,6 +161,12 @@ fun ZoomableImageViewerDialog(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    // The transformed image draws after ZoomableTitleBar in
+                    // this Column, so an unclipped canvas lets a zoomed
+                    // portrait image or an upward pan paint over the filename
+                    // and the Close/reset controls (review r4361795961):
+                    // clip all drawing to the canvas below the toolbar.
+                    .clipToBounds()
                     // Unit-keyed on purpose: the gesture state lives in the
                     // composable states (scale/offset/intrinsic), so a parent
                     // recomposition must not cancel an in-flight pinch.
