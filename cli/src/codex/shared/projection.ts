@@ -7,6 +7,7 @@ import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
 import { codexPlanProposalId } from './plan';
 import { CodexCompactionSummaryLookup } from '../utils/codexCompactionSummary';
+import { asyncQuestionReplies, asyncQuestionsForItem } from './asyncQuestions';
 
 export function inputText(input: unknown): string {
     if (!Array.isArray(input)) return '';
@@ -49,7 +50,8 @@ export class SharedCodexProjection {
     private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
-        private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>) {
+        private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
+        private readonly observeItem?: (threadId: string, item: unknown) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
@@ -114,6 +116,17 @@ export class SharedCodexProjection {
         const send = (body: Record<string, unknown>, key: string) => this.send({
             ...body, ...(turnId ? { turn_id: turnId } : {})
         }, key);
+        const asyncQuestions = asyncQuestionsForItem(this.threadId, item);
+        if (asyncQuestions.length) {
+            if (method === 'item/completed') {
+                for (const question of asyncQuestions) {
+                    send({ type: 'tool-call', name: 'request_user_input', callId: question.id, input: question.input }, question.id);
+                }
+                this.observeItem?.(this.threadId, item);
+            }
+            return;
+        }
+        if (method === 'item/completed') this.observeItem?.(this.threadId, item);
         // Settings may already describe the next turn by the time queued
         // notifications are projected. Never attribute usage to that model.
         if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
@@ -131,7 +144,9 @@ export class SharedCodexProjection {
                     const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
                     if (turnId) this.turns.set(member.id, turnId);
                     const text = inputText(member.input);
-                    if (text) this.session.sendUserMessage(text, undefined, member.id);
+                    const replies = asyncQuestionReplies(text);
+                    const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+                    if (displayText) this.session.sendUserMessage(displayText, undefined, member.id);
                     this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                         ...(turnId && (!firstInTurn || firstInTurn === member.id) ? {
                             conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [member.id]: true }
@@ -248,7 +263,8 @@ export class SharedCodexProjection {
                 await this.project('item/started', params, undefined, true);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
-                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
+                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
+                    || asyncQuestionsForItem(this.threadId, item).length > 0) {
                     if (!this.parentThreadId) {
                         const title = successfulTitle(record(item));
                         if (title && string(record(item).id)) {

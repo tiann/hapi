@@ -2,7 +2,8 @@
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native
 clients share one app-server. No local/remote ownership switch. Both can send
-messages, approve tools and answer `request_user_input`.
+messages, approve tools and answer `request_user_input`. Codex versions with
+`request_user_input_async` also expose their queued follow-up questions in HAPI.
 
 ```bash
 hapi codex                          # launch an execution owned by this terminal
@@ -77,12 +78,20 @@ confirms consumption. Compaction completion, turn completion/interruption or a
 native disconnect withdraws this temporary status. Unconfirmed input retains
 the existing unknown-delivery recovery controls and is never automatically replayed.
 
-Codex arbitrates terminal/Web answers. A submitted Web answer is only a
+For blocking `request_user_input`, Codex arbitrates terminal/Web answers. A submitted Web answer is only a
 candidate. Native `serverRequest/resolved` closes the prompt with neutral
 **Resolved in Codex** status; HAPI does not invent the winner or their answer.
 Disconnect withdraws the old controls; reconnect replays native pending requests.
-Canceling a question interrupts its native turn instead of sending an empty
+Canceling a blocking question interrupts its native turn instead of sending an empty
 fabricated answer. Unknown side-client request types remain terminal-only.
+
+`request_user_input_async` uses a separate path: Codex publishes structured
+questions in an async assistant message and continues working. HAPI shows each
+question as an answerable card, including choices and free text. Answers are
+sent as native user input during the active turn or in a new turn when idle;
+native input/history confirms completion. Unanswered questions survive turn
+completion and reconnect. Dismissing one in HAPI does not interrupt Codex or
+dismiss the terminal's local question.
 
 Each root has its own HAPI socket, MCP bridge and shell `HAPI_SESSION_ID`.
 Child-agent traces/permissions are attributed by native ancestry, not merely by
