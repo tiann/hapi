@@ -1,5 +1,7 @@
 package app.hapi.companion.ui.markdown
 
+import kotlin.math.roundToInt
+
 /**
  * Pure (JVM-testable) HTML document builder for the offline KaTeX WebView.
  *
@@ -20,9 +22,36 @@ internal data class MathRenderSpec(
     val displayMode: Boolean,
     /** ARGB color the formula text should inherit (KaTeX uses currentColor). */
     val textColorArgb: Int,
-    /** Body font size in px; 16sp chat text at the current density. */
+    /** Body font size in CSS px (density-independent like dp); see [spFontToCssPx]. */
     val fontSizePx: Int,
 )
+
+// ── CSS px <-> Android unit conversions (WebView boundary) ────────────────
+
+/**
+ * Chat font size (sp) -> CSS px for the document body.
+ *
+ * CSS px and sp are both density-independent units, so only the user's
+ * font-scale preference crosses the WebView boundary — never the screen
+ * density. Converting through physical pixels (sp x density) instead would
+ * inflate the formula by the density factor: 16sp chat text would inject
+ * `font-size: 48px` on a density-3 screen and render ~3x too large.
+ */
+internal fun spFontToCssPx(fontSizeSp: Float, fontScale: Float): Int =
+    (fontSizeSp * fontScale).roundToInt().coerceAtLeast(1)
+
+/**
+ * Document-reported height (CSS px) -> dp height for the Compose modifier.
+ *
+ * The document pins `width=device-width, initial-scale=1`, so at the default
+ * WebView scale 1 CSS px covers exactly 1 dp; [webViewScale] (from
+ * `WebView.scale`, non-1.0 only when zoomed) multiplies each CSS px by the
+ * dp it occupies. Treating the reported CSS px as Android physical px and
+ * dividing by density instead would shrink the block by the density factor:
+ * 90 reported CSS px would become a 30dp view on a density-3 screen.
+ */
+internal fun cssPxToDp(reportedCssPx: Int, webViewScale: Float = 1f): Float =
+    reportedCssPx * webViewScale.coerceAtLeast(0f)
 
 internal fun buildMathDocument(spec: MathRenderSpec): String {
     // The TeX payload is substituted last so a formula that happens to contain
@@ -70,6 +99,7 @@ private val MATH_DOCUMENT_TEMPLATE = """
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="katex.min.css">
 <script src="katex.min.js"></script>
 <style>

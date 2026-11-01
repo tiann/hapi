@@ -98,4 +98,43 @@ class MathDocumentTest {
         val html = buildMathDocument(MathRenderSpec("a \"quoted\" \\frac{1}{2}", displayMode = true, textColorArgb = 0xFF000000.toInt(), fontSizePx = 16))
         assertTrue(html.contains("var latex = \"a \\\"quoted\\\" \\\\frac{1}{2}\";"))
     }
+
+    // ── CSS px <-> Android unit conversions at the WebView boundary ─────────
+
+    @Test
+    fun spToCssPxKeepsFontScaleButIgnoresScreenDensity() {
+        // CSS px are density-independent like dp, so only the user's
+        // font-scale preference crosses the WebView boundary. The signature
+        // carries no density parameter on purpose: the pre-fix code converted
+        // through physical px (16sp -> 48 at density 3) and injected
+        // `font-size: 48px`, rendering formulas ~3x too large on dense screens.
+        assertEquals(16, spFontToCssPx(fontSizeSp = 16f, fontScale = 1f))
+        // Font scale 1.3 (Android "Large") scales the CSS size with the
+        // preference: 16sp * 1.3 = 20.8 -> 21.
+        assertEquals(21, spFontToCssPx(fontSizeSp = 16f, fontScale = 1.3f))
+        // Tiny sizes clamp to 1px rather than collapsing to zero.
+        assertEquals(1, spFontToCssPx(fontSizeSp = 0f, fontScale = 1f))
+    }
+
+    @Test
+    fun cssPxToDpTreatsReportedHeightsAsDensityIndependent() {
+        // The document reports scrollHeight in CSS px; at the default WebView
+        // scale these map 1:1 to dp. The pre-fix code treated the value as
+        // Android physical px and divided by density, shrinking a 90 CSS px
+        // block to 30dp on a density-3 screen.
+        assertEquals(90f, cssPxToDp(90))
+        assertEquals(1f, cssPxToDp(1))
+        // A zoomed WebView multiplies the dp each CSS px covers.
+        assertEquals(180f, cssPxToDp(90, webViewScale = 2f))
+        assertEquals(45f, cssPxToDp(90, webViewScale = 0.5f))
+    }
+
+    @Test
+    fun documentPinsDefaultWebViewScaleToOneCssPixelPerDp() {
+        // cssPxToDp's 1:1 mapping holds because the document explicitly pins
+        // the viewport; without this meta tag WebView defaults could lay the
+        // page out at another scale.
+        val html = buildMathDocument(MathRenderSpec("x", displayMode = true, textColorArgb = 0xFF000000.toInt(), fontSizePx = 16))
+        assertTrue(html.contains("""content="width=device-width, initial-scale=1""""))
+    }
 }

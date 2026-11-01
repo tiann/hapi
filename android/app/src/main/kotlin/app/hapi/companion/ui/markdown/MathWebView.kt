@@ -165,12 +165,14 @@ internal fun KaTeXMathBlock(
     val contentColor = LocalContentColor.current
     val style = LocalTextStyle.current
     val fontSize: TextUnit = if (style.fontSize != TextUnit.Unspecified) style.fontSize else 16.sp
-    val fontSizePx = with(LocalDensity.current) { fontSize.toPx() }.toInt()
+    val density = LocalDensity.current
+    // CSS px are density-independent like dp: sp crosses the WebView boundary
+    // scaled by the user font scale only, never by screen density.
+    val fontSizePx = spFontToCssPx(fontSize.value, density.fontScale)
     val spec = remember(latex, displayMode, contentColor, fontSizePx) {
         MathRenderSpec(latex = latex, displayMode = displayMode, textColorArgb = contentColor.toArgb(), fontSizePx = fontSizePx)
     }
     var heightPx by remember(spec) { mutableIntStateOf(0) }
-    val density = LocalDensity.current
 
     AndroidView(
         modifier = modifier
@@ -178,7 +180,9 @@ internal fun KaTeXMathBlock(
             .semantics { contentDescription = latex }
             .then(
                 if (heightPx > 0) {
-                    Modifier.height(with(density) { heightPx.toDp() })
+                    // The bridge reports CSS px; at the default WebView scale
+                    // (pinned by the document's viewport meta) 1 CSS px = 1 dp.
+                    Modifier.height(cssPxToDp(heightPx).dp)
                 } else {
                     Modifier.defaultMinSize(minHeight = 22.dp)
                 },
