@@ -144,6 +144,28 @@ export function probeRecoveredProcessGeneration(
   return classifyRecoveredProcessGeneration(true, getProcessStartMarker(pid), record.processStartMarker, evidence);
 }
 
+/** Heartbeat snapshots are the only process probe on Windows. */
+export function classifyObservedRecoveredProcessGeneration(
+  pid: number,
+  record: { processStartMarker: string; bootId?: string },
+  observation: HeartbeatProcessState,
+): 'verified' | 'quarantined' | 'exited' {
+  // Preserve Linux boot/thread-group evidence without re-running the Windows
+  // tasklist/CIM probes that the caller already completed as one snapshot.
+  const evidence = isWindows() ? undefined : {
+    pid,
+    threadGroupId: getProcessThreadGroupId(pid),
+    currentBootId: getSystemBootId(),
+    persistedBootId: record.bootId,
+  };
+  return classifyRecoveredProcessGeneration(
+    observation.alive,
+    observation.startMarker,
+    record.processStartMarker,
+    evidence,
+  );
+}
+
 export function releaseRecoveredSpawnDedupe(
   pid: number,
   existingSessionIdByChildPid: Map<number, string>,
@@ -1900,7 +1922,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           continue;
         }
         if (persisted) {
-          const generation = probeRecoveredProcessGeneration(pid, persisted);
+          const generation = classifyObservedRecoveredProcessGeneration(pid, persisted, observation);
           if (generation === 'exited') {
             logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
             discardStaleProcess(pid);

@@ -11,6 +11,10 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
+    windows: vi.fn(() => false),
+    startMarker: vi.fn(() => 'generation'),
+    threadGroupId: vi.fn(() => 42),
+    bootId: vi.fn(() => 'boot'),
 }))
 
 vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
@@ -37,16 +41,39 @@ vi.mock('@/runner/orphanReap', () => ({
 }))
 vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
-    isWindows: () => false,
+    isWindows: mocks.windows,
     isProcessAlive: () => true,
-    getProcessStartMarker: () => 'generation',
+    getProcessStartMarker: mocks.startMarker,
+    getProcessThreadGroupId: mocks.threadGroupId,
+    getSystemBootId: mocks.bootId,
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
 }))
 
 import { configuration } from '@/configuration'
-import { startRunner } from './run'
+import { classifyObservedRecoveredProcessGeneration, startRunner } from './run'
+
+describe('persisted session heartbeat generation', () => {
+    it('classifies Windows persisted sessions from the heartbeat snapshot without per-PID probes', () => {
+        mocks.windows.mockReturnValue(true)
+        mocks.startMarker.mockClear()
+        mocks.threadGroupId.mockClear()
+        mocks.bootId.mockClear()
+        try {
+            expect(classifyObservedRecoveredProcessGeneration(
+                42,
+                { processStartMarker: 'generation', bootId: 'recorded-boot' },
+                { alive: true, startMarker: 'generation' },
+            )).toBe('verified')
+            expect(mocks.startMarker).not.toHaveBeenCalled()
+            expect(mocks.threadGroupId).not.toHaveBeenCalled()
+            expect(mocks.bootId).not.toHaveBeenCalled()
+        } finally {
+            mocks.windows.mockReturnValue(false)
+        }
+    })
+})
 
 describe('runner stop confirmation after shared Codex tracking loss', () => {
     let stopSession: Parameters<typeof startRunnerControlServer>[0]['stopSession']
