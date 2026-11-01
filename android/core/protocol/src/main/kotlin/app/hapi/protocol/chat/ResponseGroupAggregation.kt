@@ -141,12 +141,17 @@ private fun VisibleChatBlock.idValue(): String = when (this) {
 /**
  * Walk the visible block list, identify response groups, and return a map
  * keyed by each group's first visible block id holding the summed
- * metadata. Only groups spanning two or more distinct turns — or carrying
- * a round summary — produce an entry, so single-turn groups are untouched.
+ * metadata. Groups spanning two or more distinct turns — or carrying a round
+ * summary — produce an entry. A single-turn group that STARTS with a tool
+ * group also emits: the transcript projection (app module) strips the member
+ * tools that carry the turn's usage/model, so without an entry the details
+ * would be inaccessible. Other single-turn groups are untouched (their first
+ * block keeps its own metadata fields).
  */
 fun aggregateResponseGroups(blocks: List<VisibleChatBlock>): Map<String, AggregatedAssistantMeta> {
     val aggregates = LinkedHashMap<String, AggregatedAssistantMeta>()
     var groupFirstBlockId: String? = null
+    var groupFirstIsToolGroup = false
     // Ordering-based turn dedup: only the immediately previous turn's key
     // dedups. A set of all seen keys would collapse a third turn whose
     // fingerprint matches a non-adjacent earlier turn, under-counting the
@@ -179,7 +184,12 @@ fun aggregateResponseGroups(blocks: List<VisibleChatBlock>): Map<String, Aggrega
             roundSummary
         }
         val firstBlockId = groupFirstBlockId
-        if (firstBlockId != null && (groupTurnCount >= 2 || roundSummary != null)) {
+        // A single-turn tool-group-led group has no aggregate of its own, but
+        // projection removes the member tools holding the turn's usage/model —
+        // salvage that signal into an entry before it becomes unreachable.
+        val salvageToolGroupTurn = groupFirstIsToolGroup && groupTurnCount < 2 &&
+            synthesized == null && (groupUsage != null || seenModels.isNotEmpty())
+        if (firstBlockId != null && (groupTurnCount >= 2 || synthesized != null || salvageToolGroupTurn)) {
             aggregates[firstBlockId] = AggregatedAssistantMeta(
                 usage = groupUsage,
                 model = if (seenModels.isNotEmpty()) seenModels.joinToString(", ") else null,
@@ -190,6 +200,7 @@ fun aggregateResponseGroups(blocks: List<VisibleChatBlock>): Map<String, Aggrega
             )
         }
         groupFirstBlockId = null
+        groupFirstIsToolGroup = false
         prevTurnKey = null
         seenModels.clear()
         groupInvokedAt = null
@@ -212,6 +223,7 @@ fun aggregateResponseGroups(blocks: List<VisibleChatBlock>): Map<String, Aggrega
 
         if (groupFirstBlockId == null) {
             groupFirstBlockId = block.idValue()
+            groupFirstIsToolGroup = block is ToolGroupBlock
             groupStartedAt = latestUserInvokedAt
         }
         groupCompletedAt = maxOf(groupCompletedAt ?: 0L, getBlockPresentationTimestamp(block))

@@ -45,6 +45,48 @@ class ResponseGroupAggregationTest {
             text = "u-$id", attachments = null, status = null, originalText = null, meta = null,
         )
 
+    private fun tool(
+        id: String,
+        createdAt: Long = 0,
+        localId: String? = null,
+        invokedAt: Long? = null,
+        model: String? = null,
+        usage: UsageData? = null,
+        completedAt: Double? = null,
+    ) = ToolCallBlock(
+        id = id, localId = localId, createdAt = createdAt, invokedAt = invokedAt,
+        durationMs = null, usage = usage, model = model,
+        tool = ChatToolCall(
+            id, "Read", "completed", input = null, createdAt = createdAt,
+            completedAt = completedAt, description = null,
+        ),
+        children = emptyList(), meta = null,
+    )
+
+    private fun group(
+        id: String,
+        members: List<ToolCallBlock>,
+        createdAt: Long = members.first().createdAt,
+    ) = ToolGroupBlock(
+        id = id, createdAt = createdAt, invokedAt = members.first().invokedAt,
+        firstToolId = members.first().id, lastToolId = members.last().id,
+        tools = members, defaultOpen = false,
+        historyState = "complete", needsOlderHistory = false, activityTitle = null,
+        presentationMode = "default",
+        summary = ToolGroupSummary(
+            totalTools = members.size, countsByKind = emptyMap(), fileTargets = emptyList(),
+            commandTargets = emptyList(), searchTargets = emptyList(), urlTargets = emptyList(),
+            otherTargets = emptyList(), errorCount = 0, runningCount = 0, pendingCount = 0,
+        ),
+    )
+
+    /** The projected form the transcript renders: member payloads stripped. */
+    private fun ToolGroupBlock.stripped() = ToolGroupBlock(
+        id, createdAt, invokedAt, firstToolId, lastToolId, emptyList(), defaultOpen,
+        historyState, needsOlderHistory, activityTitle, presentationMode,
+        roundSummary, summary,
+    )
+
     private fun aggregates(vararg blocks: VisibleChatBlock) = aggregateResponseGroups(blocks.toList())
 
     @Test fun `adjacent duplicate turns collapse to one`() {
@@ -153,6 +195,104 @@ class ResponseGroupAggregationTest {
 
     @Test fun `single-turn groups produce no entry`() {
         assertTrue(aggregateResponseGroups(listOf(text("a", createdAt = 100, localId = "L", model = "m", usage = usage(1.0, 2.0)))).isEmpty())
+    }
+
+    @Test fun `a single-turn tool group salvages the shared turn's metadata`() {
+        // One assistant message → several groupable tool calls sharing one
+        // source (localId + usage). Projection will strip the members, so the
+        // group block itself must carry the turn's metadata.
+        val u = usage(10.0, 20.0)
+        val members = listOf(
+            tool("t1", createdAt = 100, localId = "L", model = "m", usage = u),
+            tool("t2", createdAt = 100, localId = "L", model = "m", usage = u),
+            tool("t3", createdAt = 100, localId = "L", model = "m", usage = u),
+        )
+        val result = aggregates(group("g", members))
+        val entry = result.getValue("g")
+        // The members share one turn: usage counts once, not three times.
+        assertEquals(usage(10.0, 20.0), entry.usage)
+        assertEquals("m", entry.model)
+        assertEquals(1, entry.turnCount)
+        assertNull(entry.roundSummary)
+    }
+
+    @Test fun `a salvaged tool group keeps its details after projection strips members`() {
+        val u = usage(10.0, 20.0)
+        val members = listOf(
+            tool("t1", createdAt = 100, localId = "L", model = "m", usage = u),
+            tool("t2", createdAt = 100, localId = "L", model = "m", usage = u),
+        )
+        val full = group("g", members)
+        val aggregates = aggregateResponseGroups(listOf(full))
+        // The transcript renders the stripped form; the metadata map must
+        // still resolve it to a non-empty label set.
+        val metadata = messageMetadataForBlock(full.stripped(), aggregates)
+        assertEquals(u, metadata?.usage)
+        assertEquals("m", metadata?.model)
+        assertTrue(metadata?.let(::buildMessageMetadataLabels).orEmpty().isNotEmpty())
+    }
+
+    @Test fun `a tool group without local ids dedups its turn by fingerprint`() {
+        // No CLI-stamped localId: members of one message share (model, usage,
+        // createdAt) and collapse to one salvaged turn.
+        val u = usage(10.0, 20.0)
+        val result = aggregates(
+            group(
+                "g",
+                listOf(
+                    tool("t1", createdAt = 100, model = "m", usage = u),
+                    tool("t2", createdAt = 100, model = "m", usage = u),
+                ),
+            ),
+        )
+        assertEquals(1, result.getValue("g").turnCount)
+        assertEquals(u, result.getValue("g").usage)
+    }
+
+    @Test fun `a multi-turn tool group aggregates instead of salvaging`() {
+        // Distinct source messages inside one group: the normal >=2-turn
+        // aggregation path sums both turns.
+        val result = aggregates(
+            group(
+                "g",
+                listOf(
+                    tool("t1", createdAt = 100, localId = "L1", model = "m", usage = usage(10.0, 20.0)),
+                    tool("t2", createdAt = 200, localId = "L2", model = "m", usage = usage(1.0, 2.0)),
+                ),
+            ),
+        )
+        val entry = result.getValue("g")
+        assertEquals(2, entry.turnCount)
+        assertEquals(11.0, entry.usage?.inputTokens)
+    }
+
+    @Test fun `a silent single-turn tool group salvages nothing`() {
+        // Members without usage, model or ids carry nothing to preserve.
+        val result = aggregates(
+            group("g", listOf(tool("t1", createdAt = 100), tool("t2", createdAt = 100))),
+        )
+        assertTrue(result.isEmpty())
+        assertNull(messageMetadataForBlock(group("g", listOf(tool("t1"))).stripped(), result))
+    }
+
+    @Test fun `a single-turn group led by text stays untouched`() {
+        // Text first: the block keeps its own metadata (duration included);
+        // no salvage entry replaces it.
+        val block = text("a", createdAt = 100, localId = "L", model = "m", usage = usage(1.0, 2.0))
+        block.durationMs = 111.0
+        val result = aggregates(
+            block,
+            group(
+                "g",
+                listOf(
+                    tool("t1", createdAt = 100, localId = "L", model = "m", usage = usage(1.0, 2.0)),
+                    tool("t2", createdAt = 100, localId = "L", model = "m", usage = usage(1.0, 2.0)),
+                ),
+            ),
+        )
+        assertTrue(result.isEmpty())
+        val metadata = messageMetadataForBlock(block, result)
+        assertEquals(111.0, metadata?.durationMs)
     }
 
     @Test fun `a round summary alone emits an entry`() {
