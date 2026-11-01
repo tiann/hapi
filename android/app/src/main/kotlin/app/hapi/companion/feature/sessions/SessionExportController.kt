@@ -53,9 +53,10 @@ sealed class SessionExportFailure {
  * `handleDownload`: persist the format on the action click, fetch
  * (force=true once the over-limit warning is showing), map the warning /
  * too-large / failure outcomes, and hand a ready artifact back for the
- * outlet. Artifact assembly runs off the main dispatcher; the in-flight
- * request dies with the caller's scope when the dialog leaves composition
- * (the web twin aborts on close).
+ * outlet. The fetch (which body-reads and JSON-decodes inside the seam, like
+ * the web twin's `await res.json()`) and artifact assembly both run off the
+ * main dispatcher; the in-flight request dies with the caller's scope when
+ * the dialog leaves composition (the web twin aborts on close).
  */
 class SessionExportController(
     private val sessionId: String,
@@ -64,6 +65,13 @@ class SessionExportController(
     private val scope: CoroutineScope,
     /** Where artifact text is built; tests swap in a deterministic dispatcher. */
     private val artifactDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /**
+     * Where the response is fetched, body-read and decoded (OkHttp resumes
+     * the caller's context inside `await()`, so the blocking `body.string()`
+     * and `decodeFromString` run wherever `fetch` runs); tests observe the
+     * dispatcher with real threads.
+     */
+    private val fetchDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val mutableState = MutableStateFlow<SessionExportUiState>(SessionExportUiState.Idle)
     val state: StateFlow<SessionExportUiState> = mutableState.asStateFlow()
@@ -92,7 +100,12 @@ class SessionExportController(
             mutableState.value = SessionExportUiState.Exporting(outlet)
             try {
                 formatStore.write(format)
-                when (val response = fetcher.fetch(sessionId, force)) {
+                // Off-main for the whole fetch: the blocking body read and
+                // JSON decode inside the seam must not stall the UI thread.
+                val response = withContext(fetchDispatcher) {
+                    fetcher.fetch(sessionId, force)
+                }
+                when (response) {
                     is SessionExportResponse.Warning ->
                         mutableState.value = SessionExportUiState.Warned(response.warning, outlet)
                     is SessionExportResponse.Full -> {

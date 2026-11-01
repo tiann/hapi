@@ -3,13 +3,27 @@ package app.hapi.companion.feature.sessions
 import app.hapi.data.api.ApiError
 import app.hapi.protocol.chat.SessionExportFormat
 import app.hapi.protocol.wire.SessionExportResponse
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * [SessionExportController] — the dialog's state machine against the web
@@ -62,12 +76,39 @@ class SessionExportControllerTest {
         """.trimIndent(),
     )
 
+    /** A big export payload the streaming fake serves chunk by chunk. */
+    private fun streamedBody(messages: Int, marker: String): String {
+        val messageJson = (0 until messages).joinToString(",") { seq ->
+            """{"id":"m$seq","createdAt":1700000000000,"content":{""" +
+                """"role":"user","content":{"type":"text","text":"$marker $seq"}}}"""
+        }
+        return """
+            {
+              "schemaVersion": 2,
+              "exportedAt": 1700000000123,
+              "session": {
+                "id": "abcdefgh1234", "namespace": "test", "seq": 1,
+                "createdAt": 1700000000000, "updatedAt": 1700000000000, "active": false,
+                "metadataVersion": 1, "agentStateVersion": 1,
+                "thinking": false, "thinkingAt": 0,
+                "metadata": { "path": "/home/u/proj", "host": "mac", "name": "Fixture Stream" }
+              },
+              "messages": [$messageJson],
+              "scratchlist": []
+            }
+        """.trimIndent()
+    }
+
     private fun controller(
         fetcher: SessionExportFetcher,
         store: SessionExportFormatStore,
         scope: CoroutineScope,
         artifactDispatcher: CoroutineDispatcher,
-    ) = SessionExportController("sess-1", fetcher, store, scope, artifactDispatcher)
+        // Eager by default so the pre-existing synchronous assertions keep
+        // their step-by-step semantics; the streamed-response test injects
+        // the real single threads it asserts about.
+        fetchDispatcher: CoroutineDispatcher = artifactDispatcher,
+    ) = SessionExportController("sess-1", fetcher, store, scope, artifactDispatcher, fetchDispatcher)
 
     /** Unconfined scope + artifact dispatcher: every step runs to completion synchronously. */
     private fun eagerDispatcher() = UnconfinedTestDispatcher()
@@ -168,5 +209,90 @@ class SessionExportControllerTest {
         }
         controller.reset()
         assertIs<SessionExportUiState.Idle>(controller.state.value)
+    }
+
+    /**
+     * Review r4367883580: only artifact formatting ran off main — the fetch
+     * (blocking body read + JSON decode happen inside the seam, like
+     * `HapiApi`'s `body.string()` → `decodeFromString`) ran on the
+     * controller's scope, i.e. the UI dispatcher. A large body streamed in
+     * slow chunks must neither block the main dispatcher nor lose bytes on
+     * the way through the decode.
+     */
+    @Test
+    fun `streamed large export body decodes without blocking the main dispatcher`() {
+        // Real single threads stand in for Main (the controller scope's
+        // dispatcher in production) and the fetch pool: blocking reads parked
+        // on the main one starve the probe queued behind them.
+        val main = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "export-main-under-test").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
+        val fetch = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "export-fetch-under-test").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
+        val firstChunk = CountDownLatch(1)
+        val fetchThreads = mutableSetOf<String>()
+
+        val body = streamedBody(messages = 3_000, marker = "streamed-chunk-marker-xyz")
+        val fetcher = SessionExportFetcher { _, _ ->
+            // The fake server: the body arrives like a slow socket — many
+            // small chunk reads with blocking pauses, decoded only after the
+            // last one (the real seam decodes inside fetch too).
+            fetchThreads += Thread.currentThread().name
+            val text = buildString {
+                var cursor = 0
+                while (cursor < body.length) {
+                    val end = minOf(cursor + 512, body.length)
+                    append(body, cursor, end)
+                    cursor = end
+                    Thread.sleep(2)
+                    firstChunk.countDown()
+                }
+            }
+            SessionExportResponse.parse(text)
+        }
+
+        val scope = CoroutineScope(SupervisorJob() + main)
+        try {
+            val controller = SessionExportController(
+                sessionId = "sess-1",
+                fetcher = fetcher,
+                formatStore = FakeStore(),
+                scope = scope,
+                artifactDispatcher = fetch,
+                fetchDispatcher = fetch,
+            )
+
+            controller.requestExport(SessionExportOutlet.SAVE)
+            assertTrue(firstChunk.await(5, TimeUnit.SECONDS), "streamed body never started")
+
+            // While the body is still streaming, Main must stay responsive:
+            // this probe is queued behind the export on Main's only thread.
+            val mainProbe = CompletableDeferred<Unit>()
+            scope.launch { mainProbe.complete(Unit) }
+            assertNotNull(
+                runBlocking { withTimeoutOrNull(500) { mainProbe.await() } },
+                "main dispatcher was blocked while the export body streamed",
+            )
+
+            // …and the streamed body decodes into the exact artifact.
+            val ready = runBlocking {
+                withTimeout(30_000) {
+                    while (controller.state.value !is SessionExportUiState.Ready) delay(10)
+                    controller.state.value as SessionExportUiState.Ready
+                }
+            }
+            assertEquals(3_000, ready.artifact.messageCount)
+            assertTrue(ready.artifact.text.contains("streamed-chunk-marker-xyz"))
+            assertTrue(ready.artifact.byteCount > 0)
+            assertTrue(
+                "export-main-under-test" !in fetchThreads,
+                "fetch ran on the main dispatcher: $fetchThreads",
+            )
+        } finally {
+            scope.cancel()
+            main.close()
+            fetch.close()
+        }
     }
 }
