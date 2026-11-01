@@ -6,6 +6,7 @@ import { io, type Socket } from 'socket.io-client'
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { logger } from '@/ui/logger'
+import { ForkArchivedCodexRequestSchema } from '@hapi/protocol/apiTypes'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
 import {
@@ -456,6 +457,11 @@ export class ApiMachineClient {
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.ForkArchivedCodex, async (raw: unknown) => {
+            const request = ForkArchivedCodexRequestSchema.parse(raw)
+            const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
+            return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
+        })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
             const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
 
