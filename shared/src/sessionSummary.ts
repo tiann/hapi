@@ -4,6 +4,25 @@ import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
 import type { AgentFlavor } from './modes'
 
+export type ForkSessionSummary = {
+    text: string
+    updatedAt: number
+}
+
+/** Seed a fork's generated/native title without claiming manual-name ownership. */
+export function buildForkSessionSummary(
+    metadata: { name?: string; summary?: { text?: string } | null } | null | undefined,
+    updatedAt: number = Date.now()
+): ForkSessionSummary | undefined {
+    const sourceTitle = metadata?.name?.trim() || metadata?.summary?.text?.trim()
+    if (!sourceTitle) return undefined
+
+    return {
+        text: `Fork: ${sourceTitle}`,
+        updatedAt
+    }
+}
+
 export type PendingRequestKind = 'permission' | 'input'
 
 const INPUT_REQUEST_TOOLS = new Set([
