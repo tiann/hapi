@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test'
 import {
     SESSION_REFERENCE_STEER_SUFFIX,
+    PEER_DELIVERY_MODE_DESCRIPTION,
+    PING_PEER_TOOL_DESCRIPTION,
     buildSessionCitationSteerInstruction,
     extractSessionCitationIds,
     normalizeSessionIdPrefix,
@@ -98,6 +100,24 @@ describe('normalizeSessionIdPrefix', () => {
 })
 
 describe('buildSessionCitationSteerInstruction', () => {
+    it('guides collaboration toward auto and preserves explicit modes and retry safety', () => {
+        const text = buildSessionCitationSteerInstruction({ inspectTool: 'inspect_peer', pingTool: 'ping_peer' })
+        expect(text).toContain(PEER_DELIVERY_MODE_DESCRIPTION)
+        expect(PING_PEER_TOOL_DESCRIPTION).toContain(PEER_DELIVERY_MODE_DESCRIPTION)
+        expect(text).toContain('auto (default)')
+        expect(text).toContain('active Codex turn')
+        expect(text).toContain('Auto currently queues for other agent flavors')
+        expect(text).toContain('Prefer auto for routine collaboration when queueing is an acceptable fallback')
+        expect(text).toContain('queue: explicitly defer non-urgent updates')
+        expect(text).toContain('steer: use for important, time-sensitive findings the peer needs to know now')
+        expect(text).toContain('not after finishing its current turn')
+        expect(text).toContain('State why the finding matters now and what the peer should adjust')
+        expect(text).toContain('Steer requires insertion')
+        expect(text).toContain('does not abort the current turn or guarantee an immediate response')
+        expect(text).toContain('do not resend automatically')
+        expect(text).toContain('hapi ping-peer <id> <message> --delivery-mode auto')
+    })
+
     it('mentions both citation forms and forbids local FS search', () => {
         const text = buildSessionCitationSteerInstruction({
             inspectTool: 'mcp__hapi__inspect_peer',

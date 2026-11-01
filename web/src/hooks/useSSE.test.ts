@@ -48,7 +48,6 @@ class FakeEventSource {
 
 function renderUseSSE(options?: {
     onDisconnect?: (reason: string) => void
-    fixedSessionOrder?: boolean
 }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
@@ -59,8 +58,7 @@ function renderUseSSE(options?: {
         baseUrl: 'http://hub.test',
         subscription: { all: true },
         onEvent: () => {},
-        onDisconnect: options?.onDisconnect,
-        fixedSessionOrder: options?.fixedSessionOrder
+        onDisconnect: options?.onDisconnect
     }), { wrapper })
     return { ...hook, queryClient }
 }
@@ -439,142 +437,49 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
     })
 })
 
-describe('useSSE fixed session order (固定会话顺序)', () => {
+describe('useSSE user-activity ordering', () => {
     beforeEach(() => {
         FakeEventSource.instances = []
         vi.stubGlobal('EventSource', FakeEventSource)
     })
+    afterEach(() => vi.unstubAllGlobals())
 
-    afterEach(() => {
-        vi.unstubAllGlobals()
-    })
-
-    function seedSessions(queryClient: QueryClient, sessions: SessionSummary[]) {
-        queryClient.setQueryData(queryKeys.sessions, { sessions: [...sessions] })
-    }
-
-    function readSessionOrder(queryClient: QueryClient): string[] {
-        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
-        return data?.sessions.map((session) => session.id) ?? []
-    }
-
-    // Three unpinned sessions whose createdAt order is deliberately OPPOSITE
-    // their initial updatedAt order, so whichever key wins is observable.
-    function makeFixedOrderFixtures(): SessionSummary[] {
-        return [
-            makeSummary({ id: 'old-created-newest-activity', createdAt: 1_000, updatedAt: 9_000 }),
-            makeSummary({ id: 'mid-created-mid-activity', createdAt: 2_000, updatedAt: 5_000 }),
-            makeSummary({ id: 'new-created-oldest-activity', createdAt: 3_000, updatedAt: 1_000 })
-        ]
-    }
-
-    it('re-sorts by activity in the default mode (regression anchor)', () => {
+    it('ignores agent/status updates, promotes new input, and rejects stale replay', () => {
         const { queryClient, unmount } = renderUseSSE()
-        seedSessions(queryClient, makeFixedOrderFixtures())
-        // Seed order already reflects the cache-layer activity sort.
-
-        act(() => { FakeEventSource.instances[0]?.simulateOpen() })
-        // The least-recently-updated session gets fresh activity: it must
-        // jump to the top of the activity sort.
-        act(() => {
-            FakeEventSource.instances[0]?.simulateMessage({
-                type: 'session-updated',
-                sessionId: 'new-created-oldest-activity',
-                data: { updatedAt: 10_000 }
-            })
+        const sessions = [
+            makeSummary({ id: 'new', createdAt: 3_000, lastUserMessageAt: 8_000 }),
+            makeSummary({ id: 'old', createdAt: 1_000, lastUserMessageAt: 5_000 })
+        ]
+        queryClient.setQueryData(queryKeys.sessions, { sessions })
+        const patch = (sessionId: string, data: Record<string, unknown>) => act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId, data })
         })
-
-        expect(readSessionOrder(queryClient)).toEqual([
-            'new-created-oldest-activity',
-            'old-created-newest-activity',
-            'mid-created-mid-activity'
-        ])
-
+        const read = () => queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)!.sessions
+        for (let i = 0; i < 10; i++) {
+            patch('old', { updatedAt: 90_000 + i, thinking: true, active: true })
+            patch('new', { updatedAt: 100_000 + i, thinking: false, active: false })
+            expect(read().map(s => s.id)).toEqual(['new', 'old'])
+        }
+        patch('old', { lastUserMessageAt: 200_000 })
+        expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        patch('old', { lastUserMessageAt: 4_000 })
+        expect(read()[0]!.lastUserMessageAt).toBe(200_000)
+        expect(read().map(s => s.id)).toEqual(['old', 'new'])
         unmount()
     })
 
-    it('keeps creation order when fixedSessionOrder is on', () => {
-        const { queryClient, unmount } = renderUseSSE({ fixedSessionOrder: true })
-        // Seed in activity order (old first); the fixed-order sort applied on
-        // the first patch below must flip it to creation order.
-        seedSessions(queryClient, [
-            makeSummary({ id: 'old-created-newest-activity', createdAt: 1_000, updatedAt: 9_000 }),
-            makeSummary({ id: 'mid-created-mid-activity', createdAt: 2_000, updatedAt: 5_000 }),
-            makeSummary({ id: 'new-created-oldest-activity', createdAt: 3_000, updatedAt: 1_000 })
-        ])
-
-        act(() => { FakeEventSource.instances[0]?.simulateOpen() })
-        act(() => {
-            FakeEventSource.instances[0]?.simulateMessage({
-                type: 'session-updated',
-                sessionId: 'old-created-newest-activity',
-                data: { updatedAt: 99_000, active: true, thinking: true }
-            })
-        })
-
-        // The session just became the most active AND went thinking — under
-        // activity sort it would sit first. Fixed order keeps it LAST because
-        // it is the oldest-created.
-        expect(readSessionOrder(queryClient)).toEqual([
-            'new-created-oldest-activity',
-            'mid-created-mid-activity',
-            'old-created-newest-activity'
-        ])
-
-        unmount()
-    })
-
-    it('places a newly added session first when fixedSessionOrder is on', () => {
-        const { queryClient, unmount } = renderUseSSE({ fixedSessionOrder: true })
-        seedSessions(queryClient, makeFixedOrderFixtures())
-
-        act(() => { FakeEventSource.instances[0]?.simulateOpen() })
-        act(() => {
-            FakeEventSource.instances[0]?.simulateMessage({
-                type: 'session-added',
-                sessionId: 'brand-new',
-                data: {
-                    id: 'brand-new',
-                    namespace: 'default',
-                    seq: 1,
-                    createdAt: 4_000,
-                    updatedAt: 4_000,
-                    active: false,
-                    activeAt: null,
-                    metadata: null,
-                    metadataVersion: 0,
-                    agentState: null,
-                    agentStateVersion: 0,
-                    thinking: false,
-                    thinkingAt: 0
-                }
-            })
-        })
-
-        expect(readSessionOrder(queryClient)[0]).toBe('brand-new')
-        expect(readSessionOrder(queryClient)).toHaveLength(4)
-
-        unmount()
-    })
-
-    it('falls back to updatedAt for summaries without createdAt (older hub)', () => {
-        const { queryClient, unmount } = renderUseSSE({ fixedSessionOrder: true })
-        seedSessions(queryClient, [
-            makeSummary({ id: 'b-no-created', createdAt: undefined, updatedAt: 8_000 }),
-            makeSummary({ id: 'a-no-created', createdAt: undefined, updatedAt: 1_000 })
-        ])
-
-        act(() => { FakeEventSource.instances[0]?.simulateOpen() })
-        act(() => {
-            FakeEventSource.instances[0]?.simulateMessage({
-                type: 'session-updated',
-                sessionId: 'a-no-created',
-                data: { updatedAt: 20_000 }
-            })
-        })
-
-        expect(readSessionOrder(queryClient)).toEqual(['a-no-created', 'b-no-created'])
-
+    it('preserves the user timestamp through a stale full-session event', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({ id: 'session-1', lastUserMessageAt: 9_000 })] })
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0, lastUserMessageAt: 1_000
+            }
+        }))
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.lastUserMessageAt).toBe(9_000)
         unmount()
     })
 })

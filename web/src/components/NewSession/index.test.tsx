@@ -264,16 +264,26 @@ vi.mock('./OpencodeModelSelector', () => ({
     )
 }))
 vi.mock('./AgyModelSelector', () => ({
-    AgyModelSelector: (props: { selectedModel: string | null; onModelChange: (model: string | null) => void }) => (
+    AgyModelSelector: (props: { selectedModel: string | null; availableModels: Array<{ modelId: string; name?: string }>; onModelChange: (model: string | null) => void }) => (
+        <>
+        <select data-testid="agy-model-select" value={props.selectedModel ?? ''} onChange={(event) => props.onModelChange(event.target.value || null)}>
+            <option value="">Default</option>
+            {props.availableModels.map((model) => <option key={model.modelId} value={model.modelId}>{model.name}</option>)}
+        </select>
         <button type="button" data-testid="agy-model" onClick={() => props.onModelChange('gemini-3.6-flash-low')}>
             {props.selectedModel ?? 'auto'}
         </button>
+        </>
     )
 }))
 vi.mock('./EffortField', () => ({
-    EffortField: (props: { effort: string; reasoningEffort: string; opencodeVariantOptions?: string[] | null; onReasoningEffortChange: (v: string) => void }) => (
+    EffortField: (props: { effort: string; reasoningEffort: string; agyOptions?: Array<{ value: string; label: string }>; onEffortChange: (value: string) => void; opencodeVariantOptions?: string[] | null; onReasoningEffortChange: (v: string) => void }) => (
         <>
             <div data-testid="launch-effort">{props.effort}</div>
+            {props.agyOptions?.length ? <select data-testid="agy-effort-options" value={props.effort} onChange={(event) => props.onEffortChange(event.target.value)}>
+                <option value="auto">Default</option>
+                {props.agyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select> : null}
             <div data-testid="opencode-variants">{props.opencodeVariantOptions?.join(',') ?? 'static'}</div>
             <button type="button" data-testid="reasoning" onClick={() => props.onReasoningEffortChange('max')}>
                 {props.reasoningEffort}
@@ -1108,6 +1118,49 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
         expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'agy', model: 'gemini-3.6-flash-low' }))
         expect(loadPreferredLaunchSettings('machine-1', 'agy')?.model).toBe('gemini-3.6-flash-low')
+    })
+
+    it('launches and persists an AGY model family and effort independently', async () => {
+        savePreferredAgent('agy')
+        mocks.agyModels = [
+            { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+            { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+            { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        fireEvent.change(screen.getByTestId('agy-model-select'), { target: { value: 'gemini-4-argon' } })
+        expect(screen.getByRole('option', { name: 'Gemini 4 Argon' })).toBeTruthy()
+        expect(screen.queryByRole('option', { name: 'Gemini 4 Argon (High)' })).toBeNull()
+        fireEvent.change(screen.getByTestId('agy-effort-options'), { target: { value: 'high' } })
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-4-argon', effort: 'high' }))
+        expect(loadPreferredLaunchSettings('machine-1', 'agy')).toMatchObject({ model: 'gemini-4-argon', effort: 'high' })
+    })
+
+    it.each([
+        ['gemini-4-argon-medium', 'auto', 'medium'],
+        ['gemini-4-argon-medium', 'high', 'high'],
+        ['gemini-4-argon', 'high', 'high'],
+    ])('restores AGY %s with saved effort %s as %s and clears it for a fixed model', async (savedModel, savedEffort, expectedEffort) => {
+        savePreferredAgent('agy')
+        savePreferredLaunchSettings('machine-1', 'agy', { model: savedModel, cursorSelectedBase: 'auto', effort: savedEffort, modelReasoningEffort: 'default' })
+        mocks.agyModels = [
+            { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+            { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+            { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('agy-model-select')).toHaveValue('gemini-4-argon'))
+        expect(screen.getByTestId('agy-effort-options')).toHaveValue(expectedEffort)
+        fireEvent.change(screen.getByTestId('agy-model-select'), { target: { value: 'gpt-oss-120b-medium' } })
+        expect(screen.queryByTestId('agy-effort-options')).toBeNull()
+        expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-oss-120b-medium', effort: undefined }))
     })
 
     it('does not overwrite AGY model preference after a failed launch', async () => {

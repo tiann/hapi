@@ -111,7 +111,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, active, pending-request priority among active sessions, then `updatedAt` descending; `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
+- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, then `lastUserMessageAt ?? createdAt` descending (creation time and ID break ties); `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.
@@ -157,6 +157,10 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 ### Usage (`src/web/routes/usage.ts`)
 
 - `GET /api/usage/summary` - Get cache-aware token usage for the owner namespace (`range=7d|30d|all`).
+
+### Activity (`src/web/routes/activity.ts`)
+
+- `GET /api/activity` - When agents in the caller's namespace were working (`since`/`until` epoch ms, default last 24 h, max 31 days): each session's turns from the `session_turns` table, plus the permission prompts and questions it waited on. Used by `hapi usage`.
 
 ### Storage (`src/web/routes/storage.ts`)
 

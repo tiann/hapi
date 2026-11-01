@@ -8,8 +8,7 @@ import Observation
 /// `SessionListStore`).
 @MainActor
 public protocol SessionListStoring: AnyObject {
-    /// Sorted with `sortSessionSummaries` (globalPinned > pinned > active >
-    /// pending > recency).
+    /// Sorted with `sortSessionSummaries` (manual pins, then user-input recency).
     var sessions: [SessionSummary] { get }
 
     /// `GET /api/sessions` — replaces the list wholesale. Throws on failure.
@@ -134,7 +133,9 @@ public final class SessionListStore: SessionListStoring {
     /// `GET /api/sessions/:id` into the detail cache (chat open / resync).
     @discardableResult
     public func loadSessionDetail(_ sessionId: String) async throws -> Session {
-        let session = try await api.session(id: sessionId)
+        var session = try await api.session(id: sessionId)
+        session.contentRevision = [details[sessionId]?.contentRevision, session.contentRevision].compactMap { $0 }.max()
+        session.readState = SessionReadState.merge(details[sessionId]?.readState, session.readState)
         details[sessionId] = session
         return session
     }
@@ -169,7 +170,18 @@ public final class SessionListStore: SessionListStoring {
         // A later-started refresh already applied fresher server truth.
         guard generation > lastAppliedRefresh else { return }
         lastAppliedRefresh = generation
-        setSessions(sortSessionSummaries(list))
+        // A user-input SSE patch can overtake an in-flight REST snapshot.
+        let cachedRows = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let reconciled = list.map { row in
+            var next = row
+            next.contentRevision = [cachedRows[row.id]?.contentRevision, row.contentRevision].compactMap { $0 }.max()
+            next.readState = SessionReadState.merge(cachedRows[row.id]?.readState, row.readState)
+            if let cached = cachedRows[row.id]?.lastUserMessageAt, cached > (row.lastUserMessageAt ?? Int.min) {
+                next.lastUserMessageAt = cached
+            }
+            return next
+        }
+        setSessions(sortSessionSummaries(reconciled))
     }
 
     public func scheduleRefresh() {
@@ -333,8 +345,11 @@ public final class SessionListStore: SessionListStoring {
         // already encodes the session-vs-strict-patch discrimination.
         switch data {
         case .session(let full) where full.id == sessionId:
-            details[full.id] = full
-            upsertSummary(full)
+            var merged = full
+            merged.contentRevision = [details[full.id]?.contentRevision, full.contentRevision].compactMap { $0 }.max()
+            merged.readState = SessionReadState.merge(details[full.id]?.readState, full.readState)
+            details[full.id] = merged
+            upsertSummary(merged)
         case .patch(let patch) where patch != SessionPatch():
             patchDetail(sessionId: sessionId, patch: patch)
             if !patchSummary(sessionId: sessionId, patch: patch) {
@@ -369,6 +384,9 @@ public final class SessionListStore: SessionListStoring {
         var summary = SummaryPatching.toSessionSummary(session)
         summary.futureScheduledMessageCount = existing?.futureScheduledMessageCount ?? 0
         summary.nextScheduledAt = existing?.nextScheduledAt
+        summary.contentRevision = [existing?.contentRevision, session.contentRevision].compactMap { $0 }.max()
+        summary.readState = SessionReadState.merge(existing?.readState, session.readState)
+        summary.lastUserMessageAt = session.lastUserMessageAt.map { max(existing?.lastUserMessageAt ?? 0, $0) } ?? existing?.lastUserMessageAt
         if let index {
             list[index] = summary
         } else {

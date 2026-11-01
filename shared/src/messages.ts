@@ -179,6 +179,36 @@ export function extractAssistantPlainText(content: unknown): string | null {
     return null
 }
 
+/** Output a reader can consume. Bookkeeping, reasoning and tool traffic do not
+ * create unread activity. Run at durable ingest, never on heartbeat/metadata. */
+export function hasUnreadMessageContent(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isObject(record.content)) return false
+    const content = record.content
+    if (isRedundantGoalStatusEventContent(value)) return false
+    const data = isObject(content.data) ? content.data : null
+    if (!data) return false
+    if (content.type === 'output' && (data.isMeta || data.isCompactSummary
+        || !isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype }))) return false
+    if (extractAssistantPlainText(content)?.trim()) return true
+    if (content.type === 'output') {
+        if (data.type === 'assistant' && typeof data.error === 'string' && data.error.trim()) return true
+        if (data.type === 'assistant' && isObject(data.message) && typeof data.message.content === 'string') {
+            return data.message.content.trim().length > 0
+        }
+        if (data.type === 'result') return data.is_error === true || (typeof data.result === 'string' && data.result.trim().length > 0)
+        return data.type === 'system' && data.subtype === 'api_error'
+    }
+    if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
+        if (data.type === 'error') return typeof data.message === 'string' && data.message.trim().length > 0
+        if (data.type === 'generated-image') {
+            const id = data.imageId ?? data.image_id
+            return typeof id === 'string' && id.trim().length > 0
+        }
+    }
+    return false
+}
+
 function hasConversationBlock(value: unknown): boolean {
     if (typeof value === 'string') return value.trim().length > 0
     if (Array.isArray(value)) return value.some(hasConversationBlock)

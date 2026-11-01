@@ -16,4 +16,13 @@ interface ChatDrafts {
 
     /** Resume/reopen returned a different id: carry the draft across. */
     suspend fun move(fromSessionId: String, toSessionId: String)
+
+    /** Append once, atomically persisting both the draft and the handoff receipt. */
+    suspend fun appendSharedText(sessionId: String, requestId: String, currentText: String, text: String): String
+}
+
+fun appendSharedText(current: String, shared: String): String = when {
+    shared.isBlank() -> current
+    current.isBlank() -> shared
+    else -> "${current.trimEnd()}\n$shared"
 }

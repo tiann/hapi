@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
+import { readFileSync } from 'node:fs';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -69,6 +70,34 @@ export function windowsProcessMarkerCimCommand(pid: number): string {
     `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; `
     + `if ($p -and $p.CreationDate) { ${expr} }`
   );
+}
+
+/** Linux boot and thread identity are independent of a potentially reused PID. */
+export function normalizeBootId(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())
+    ? value.trim().toLowerCase()
+    : null;
+}
+
+export function getSystemBootId(): string | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    return normalizeBootId(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export function getProcessThreadGroupId(pid: number): number | null {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+    const match = /^Tgid:[ \t]+([0-9]+)[ \t]*$/m.exec(status);
+    const tgid = match ? Number(match[1]) : 0;
+    return Number.isSafeInteger(tgid) && tgid > 0 ? tgid : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Stable marker for one OS PID generation; null means the platform probe failed. */
