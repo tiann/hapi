@@ -167,7 +167,7 @@ final class ChatModel {
     /// Transcripts append to the composer; failures surface as notices.
     let dictation: DictationController
     @ObservationIgnored private let pipeline = ChatPipeline()
-    @ObservationIgnored let imageLoader: GeneratedImageLoader
+    @ObservationIgnored let mediaLoader: GeneratedMediaLoader
     @ObservationIgnored let presentationState = ChatPresentationState()
     @ObservationIgnored let markdownCache = MarkdownRenderCache()
     @ObservationIgnored private var previousMarkdownSources: Set<String> = []
@@ -205,7 +205,7 @@ final class ChatModel {
             api: session.api,
             recorder: AVAudioRecorderDictation()
         )
-        self.imageLoader = GeneratedImageLoader(api: session.api, sessionId: sessionId)
+        self.mediaLoader = GeneratedMediaLoader(api: session.api, sessionId: sessionId)
         self.scratchlistAttachments = ScratchlistAttachmentLoader(api: session.api, sessionId: sessionId)
         self.header = ChatHeaderUI(
             title: String(sessionId.prefix(8)),
