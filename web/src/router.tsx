@@ -57,8 +57,7 @@ import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
 import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
-import { initializeSessionLastSeen } from '@/lib/sessionLastSeen'
-import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
+import { configureSessionReadState, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
@@ -187,14 +186,22 @@ function SessionsPage() {
         () => selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null,
         [selectedSessionId, sessions]
     )
+    const readStateScope = api?.getReadStateScope()
+    useEffect(() => {
+        const scope = readStateScope
+        if (!api || !scope) return
+        return configureSessionReadState(scope, (id, request) => {
+            if (api.getReadStateScope() !== scope) return Promise.reject(new Error('Read-state identity changed'))
+            return api.updateSessionReadState(id, request)
+        })
+    }, [api, readStateScope])
     useEffect(() => {
         if (isLoading || error) {
             return
         }
-        initializeSessionLastSeen(baseUrl, sessions)
+        observeSessionReadStates(sessions)
         setInitializedHub(baseUrl)
     }, [baseUrl, error, isLoading, sessions])
-    useSelectedSessionSeen(selectedSessionId, selectedSession?.updatedAt)
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebarSearch = useLocation({ select: location => location.search })
     const [isSidebarVisible, setIsSidebarVisible] = useState(
@@ -405,6 +412,7 @@ function SessionPage() {
         messagesVersion,
         historyVersion,
         tailRevision,
+        readThroughRevision,
         setViewMode,
     } = useMessages(api, sessionId)
 
@@ -849,6 +857,7 @@ function SessionPage() {
 
     return (
         <SessionChat
+            readThroughRevision={readThroughRevision}
             api={api}
             titleSuggestionAvailable={titleSuggestionAvailable}
             session={session}

@@ -39,6 +39,8 @@ data class SessionSummary(
     val model: String? = null,
     val modelReasoningEffort: String? = null,
     val effort: String? = null,
+    val contentRevision: Long? = null,
+    val readState: SessionReadState? = null,
 )
 
 /** `SessionSummaryMetadata` — list-sized metadata projection. */

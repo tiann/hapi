@@ -52,11 +52,14 @@ export function HappyUserMessage() {
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
 
-    const history = ctx.metadata?.capabilities?.conversationHistory
+    const history = ctx.allowInactiveFork
+        ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
+        : ctx.metadata?.capabilities?.conversationHistory
     const hasNativePoint = typeof localId === 'string'
         && localId.length > 0
         && ctx.metadata?.conversationHistoryPoints?.[localId] === true
     const isLatestBoundary = ctx.isLatestCompletedBoundary?.(messageId) === true
+    const forkEnabled = !ctx.disabled || ctx.allowInactiveFork === true
     // A user-only finished turn can be the latest completed boundary while
     // another turn runs. Branch before that user turn, never from the live tail.
     const runningCodex = threadIsRunning && ctx.metadata?.flavor === 'codex'
@@ -64,14 +67,14 @@ export function HappyUserMessage() {
         history?.forkCurrent
         && isLatestBoundary
         && !runningCodex
-        && !ctx.disabled
+        && forkEnabled
         && ctx.onForkConversation
     )
     const showHistoricalFork = Boolean(
         history?.forkAtMessage
         && hasNativePoint
         && (!isLatestBoundary || runningCodex)
-        && !ctx.disabled
+        && forkEnabled
         && ctx.onForkConversation
     )
     const showFork = showCurrentFork || showHistoricalFork

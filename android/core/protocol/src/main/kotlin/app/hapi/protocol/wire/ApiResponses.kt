@@ -24,6 +24,7 @@ data class MessagesPage(
     val snapshotHeadSeq: Long? = null,
     val snapshotHeadAt: Long? = null,
     val hasMore: Boolean,
+    val readThroughRevision: Long? = null,
 )
 
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */

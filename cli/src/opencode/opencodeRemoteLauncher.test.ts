@@ -53,6 +53,7 @@ const harness = vi.hoisted(() => ({
         directory: string;
         sessionId: string;
         onRetry: (retry: { attempt: number; message: string }) => void;
+        onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
     }>,
     eventStreamCloseCount: 0,
     // v2-compat harness: flavor detection + port/password discovery stubs.
@@ -248,6 +249,16 @@ const compactHarness = vi.hoisted(() => ({
     >)
 }));
 
+// Native network reads are controlled independently of the stream fixture.
+vi.mock('./utils/opencodeNativeTranscript', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./utils/opencodeNativeTranscript')>();
+    return { OpencodeNativeTranscript: class extends actual.OpencodeNativeTranscript {
+        constructor(options: ConstructorParameters<typeof actual.OpencodeNativeTranscript>[0]) {
+            super({ ...options, fetchImpl: (async () => Response.json([])) });
+        }
+    } };
+});
+
 // Partial: only the subscription is stubbed. The retry formatter is pure and
 // its output is part of what this launcher is asserted to forward.
 vi.mock('./utils/opencodeEventStream', async (importOriginal) => ({
@@ -257,6 +268,7 @@ vi.mock('./utils/opencodeEventStream', async (importOriginal) => ({
         directory: string;
         sessionId: string;
         onRetry: (retry: { attempt: number; message: string }) => void;
+        onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
     }) => {
         harness.eventStreamOptions.push(options);
         return {
@@ -407,7 +419,7 @@ function createSessionStub(
                 rpcHandlers.set(method, handler);
             }
         },
-        sendAgentMessage(_message: unknown) {},
+        sendAgentMessage(message: unknown) { sentAgentMessages.push(message); },
         sendClaudeSessionMessage(message: unknown) {
             claudeSessionMessages.push(message);
         },
@@ -879,7 +891,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             }
         ]);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
-        expect(messages).toEqual(['📦 Compaction started', '📦 Compaction completed']);
+        expect(messages).toEqual(['📦 Compaction started']);
 
         // The REST bridge call must run inside suppressUpdatesDuring so any
         // session/update notifications OpenCode streams while it's in
@@ -1239,11 +1251,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    it('sends the verified compaction summary as a reasoning-type agent message', async () => {
+    it('sends the verified compaction summary as the common collapsed card', async () => {
         compactHarness.compactionResult = { status: 'success', text: '## Objective\n- Did the thing' };
         harness.sessionModelsMetadata = { currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp', availableModels: [] };
 
-        const { session, sentAgentMessages } = createSessionStub([
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([
             { message: '', mode: createCompactMode() }
         ]);
 
@@ -1257,9 +1269,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 signal: expect.any(AbortSignal)
             }
         ]);
-        expect(sentAgentMessages).toEqual([
-            { type: 'reasoning', message: '## Objective\n- Did the thing', id: expect.any(String) }
-        ]);
+        expect(sentAgentMessages).toHaveLength(1);
+        expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: '## Objective\n- Did the thing' });
     });
 
     it('does not report completion when HTTP success resolves to the observed empty terminal summary failure', async () => {
@@ -1375,7 +1386,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await opencodeRemoteLauncher(session as never, { isLocalIdCancelled });
 
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
-        expect(messages).toEqual(['📦 Compaction started', '📦 Compaction completed']);
+        expect(messages).toEqual(['📦 Compaction started']);
     });
 
     it('a plain Stop during an in-flight compact does not unblock the dequeue loop until the operation actually settles server-side, and suppresses the eventual result', async () => {
@@ -1697,7 +1708,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         // which would otherwise clear it before it's ever dequeued (an
         // orthogonal, pre-existing behavior — see the plain-Stop-blocking
         // test above's comment on the same point).
-        const { session, sessionEvents, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        const { session, sessionEvents, sentAgentMessages, rpcHandlers } = createSessionStub([], { keepOpen: true });
         session.queue.pushIsolated('', createCompactMode('ollama/x'), 'compact-1');
 
         const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
@@ -1711,6 +1722,17 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await abortHandler!();
 
         session.queue.pushIsolated('', createCompactMode('ollama/x'), 'compact-2');
+        harness.promptImpl = async () => {
+            const event = harness.eventStreamOptions[0].onEvent!;
+            for (const [id, auto] of [['canceled', false], ['automatic', true]] as const) {
+                event('message.updated', { info: { id, sessionID: 'acp-session-1', role: 'user' } });
+                event('message.part.updated', { part: { id: `${id}-marker`, messageID: id, sessionID: 'acp-session-1', type: 'compaction', auto } });
+                event('message.updated', { info: { id: `${id}-summary`, sessionID: 'acp-session-1', role: 'assistant', summary: true, parentID: id } });
+                event('message.part.updated', { part: { id: `${id}-text`, messageID: `${id}-summary`, sessionID: 'acp-session-1', type: 'text', text: `${id} summary`, time: { end: 1 } } });
+                event('message.updated', { info: { id: `${id}-summary`, sessionID: 'acp-session-1', role: 'assistant', summary: true, parentID: id, finish: 'stop' } });
+            }
+        };
+        session.queue.push('after', createMode());
         session.queue.close();
 
         // Compact #1 genuinely finishes now — its result must stay suppressed.
@@ -1722,11 +1744,14 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
         await launcherPromise;
 
+        expect(sentAgentMessages).not.toContainEqual({ type: 'compact-summary', summary: 'canceled summary' });
+        expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: 'automatic summary' });
+        expect(sentAgentMessages.filter((m: unknown) => (m as { type?: string }).type === 'compact-summary')).toHaveLength(2);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
         expect(messages).toEqual([
             '📦 Compaction started', // compact #1
             '📦 Compaction started', // compact #2
-            '📦 Compaction completed' // compact #2's result, NOT suppressed by #1's Stop
+            // compact #2's structured result is asserted below
         ]);
     });
 
@@ -2440,32 +2465,21 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
-    it('skips interim idle text snapshots in the local log while still forwarding them to the hub', async () => {
+    it('uses native IDs for text snapshots and does not forward unclassified v1 ACP text', async () => {
         const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
-        const { session, agentMessages } = createSessionStub([
-            { message: 'first', mode: createMode() }
-        ]);
-
+        const { session, agentMessages } = createSessionStub([{ message: 'first', mode: createMode() }]);
         const launcherPromise = opencodeRemoteLauncher(session as never);
-
-        while (!harness.events.includes('prompt:start')) {
-            await new Promise<void>((resolve) => setImmediate(resolve));
-        }
-
-        const onMessage = harness.promptOnMessage;
-        if (!onMessage) {
-            throw new Error('prompt() was not called with a message callback');
-        }
-        onMessage({ type: 'text', text: 'partial', id: 'stream-1', streamSnapshot: true, live: true });
-        onMessage({ type: 'text', text: 'partial settled', id: 'stream-1', streamSnapshot: true });
-
-        // The idle snapshot must reach the hub (web reducer keeps one block per
-        // stream id) but must not duplicate the answer in the local terminal log.
+        while (!harness.events.includes('prompt:start')) await new Promise<void>(resolve => setImmediate(resolve));
+        harness.promptOnMessage!({ type: 'text', text: 'unclassified ACP summary' });
+        const event = harness.eventStreamOptions[0].onEvent!;
+        event('message.updated', { info: { id: 'answer', role: 'assistant', sessionID: 'acp-session-1' } });
+        event('message.part.updated', { part: { id: 'stream-1', messageID: 'answer', sessionID: 'acp-session-1', type: 'text', text: 'partial' } });
+        event('message.part.updated', { part: { id: 'stream-1', messageID: 'answer', sessionID: 'acp-session-1', type: 'text', text: 'partial settled', time: { end: 1 } } });
         expect(agentMessages).toContainEqual({ type: 'message', message: 'partial', id: 'stream-1', streamSnapshot: true });
         expect(agentMessages).toContainEqual({ type: 'message', message: 'partial settled', id: 'stream-1', streamSnapshot: true });
+        expect(agentMessages.some((message: unknown) => JSON.stringify(message).includes('unclassified ACP summary'))).toBe(false);
         expect(addMessage).not.toHaveBeenCalledWith('partial', 'assistant');
         expect(addMessage).toHaveBeenCalledWith('partial settled', 'assistant');
-
         await launcherPromise;
         addMessage.mockRestore();
     });
@@ -2577,6 +2591,27 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         }
     });
 
+    it('v2: reports one automatic application start without changing turn thinking for preparation', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents, thinkingChangeCalls } = createSessionStub([{ message: 'normal', mode: createMode() }]);
+        harness.promptImpl = async () => {
+            const event = harness.eventStreamOptions[0].onEvent!;
+            const before = [...thinkingChangeCalls];
+            event('session.usage.recorded', { sessionID: 'acp-session-1', source: 'compaction' }, 'evt_preparation');
+            expect(sessionEvents.filter(e => e.message === '📦 Compaction started')).toHaveLength(0);
+            event('session.compaction.started', { sessionID: 'other', reason: 'auto' }, 'evt_foreign');
+            event('session.compaction.started', { sessionID: 'acp-session-1', reason: 'manual' }, 'evt_manual');
+            event('session.compaction.started', { sessionID: 'acp-session-1', reason: 'auto' }, 'evt_application');
+            event('session.compaction.started', { sessionID: 'acp-session-1', reason: 'auto' }, 'evt_application');
+            expect(thinkingChangeCalls).toEqual(before);
+        };
+        await opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+        expect(sessionEvents.filter(e => e.message === '📦 Compaction started')).toHaveLength(1);
+    });
+
     it('v2: spawns with only [acp] args + majorVersion and discovers the REST port after the session is established', async () => {
         harness.detectedVersion = 'v2';
         harness.loopbackListeners = [1000];
@@ -2618,7 +2653,7 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         compactHarness.preExistingCompactionIds = [];
         compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: 'msg_1' });
         compactHarness.pollImpl = async () => ({ status: 'success', text: 'v2 summary text' });
-        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
 
         await opencodeRemoteLauncher(session as never, {});
 
@@ -2629,7 +2664,7 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         // descendants).
         expect(harness.servePidCalls).toEqual([[4242]]);
         expect(harness.v2DiscoveryCalls.at(-1)?.ownerPids).toEqual([999]);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+        expect(sentAgentMessages.some((event) => (event as { type?: string }).type === 'compact-summary')).toBe(true);
     });
 
     it('v2: falls back to compact-unavailable when port discovery or password lookup fails', async () => {
@@ -2725,8 +2760,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(compactHarness.markerSnapshotCalls).toHaveLength(0);
         expect(compactHarness.resultCalls).toHaveLength(0);
         expect(compactHarness.operationEvents).toEqual(['triggerV2', 'verifyV2']);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
-        expect(JSON.stringify(sentAgentMessages)).toContain('v2 summary text');
+        expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: 'v2 summary text' });
     });
 
     it('v2: the poll signal stays live between POST admission and verification start (no spurious abort)', async () => {
@@ -2747,7 +2781,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
             signalsByPhase.push({ phase: 'poll', aborted: opts.signal!.aborted });
             return Promise.resolve({ status: 'success', text: 'v2 summary text' });
         };
-        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
 
         await opencodeRemoteLauncher(session as never, {});
 
@@ -2755,7 +2789,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
             { phase: 'trigger', aborted: false },
             { phase: 'poll', aborted: false }
         ]);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+        expect(sentAgentMessages.some((event) => (event as { type?: string }).type === 'compact-summary')).toBe(true);
     });
 
     it('v2: a plain Stop during the poll holds the barrier — waiting message, thinking kept, no abort; the suppressed outcome never renders', async () => {
@@ -2775,7 +2809,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
             pollSignal = opts.signal;
             resolvePoll = resolve as typeof resolvePoll;
         });
-        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const { session, sessionEvents, rpcHandlers, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
         const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
 
         while (!pollSignal) {
@@ -2807,7 +2841,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
             launcherPromise,
             new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after suppressed poll')), 5000))
         ]);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+        expect(sentAgentMessages.some((event) => (event as { type?: string }).type === 'compact-summary')).toBe(false);
         expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('late v2 summary'))).toBe(false);
     });
 
@@ -2829,7 +2863,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
             pollStarted = true;
             return Promise.resolve({ status: 'success', text: 'v2 summary text' });
         };
-        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const { session, sessionEvents, rpcHandlers, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
         const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
 
         while (!postGate.resolve) {
@@ -2856,7 +2890,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
 
         // The terminal outcome is suppressed (Stop asked for that), but the
         // barrier was held through the poll — no early 'idle' release.
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+        expect(sentAgentMessages.some((event) => (event as { type?: string }).type === 'compact-summary')).toBe(false);
     });
 
     it('v2: recovers the admitted compaction via the pre-POST snapshot when the POST body is unreadable — barrier held, no guessing', async () => {
@@ -2881,8 +2915,7 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
 
         await opencodeRemoteLauncher(session as never, {});
 
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
-        expect(JSON.stringify(sentAgentMessages)).toContain('recovered summary');
+        expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: 'recovered summary' });
     });
 
     it('v2: a failed pre-POST snapshot refuses admission — no POST, no poll, failure reported', async () => {
@@ -2904,14 +2937,14 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
             pollCalled = true;
             return Promise.resolve({ status: 'success', text: 'should never be used' });
         };
-        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
 
         await opencodeRemoteLauncher(session as never, {});
 
         expect(postCalled).toBe(false);
         expect(pollCalled).toBe(false);
         expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('identity snapshot failed'))).toBe(true);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+        expect(sentAgentMessages.some((event) => (event as { type?: string }).type === 'compact-summary')).toBe(false);
     });
 
     it('v2: a plain Stop during the identity snapshot exits cancelled — no POST, no refusal failure rendered', async () => {
@@ -2958,12 +2991,12 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         harness.discoveredPassword = 'pw-secret';
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         compactHarness.v2VerifyResult = { status: 'failed', reason: 'provider exploded' };
-        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
 
         await opencodeRemoteLauncher(session as never, {});
 
         expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction failed: provider exploded')).toBe(true);
-        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+        expect(sentAgentMessages.some((event) => (event as { type?: string }).type === 'compact-summary')).toBe(false);
     });
 
     it('v2: notifies the session once when discovery fails, without compact availability', async () => {

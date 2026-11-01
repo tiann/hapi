@@ -6,6 +6,7 @@ import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { asyncQuestionsForItem } from './asyncQuestions';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -68,6 +69,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const create = vi.fn<RootHost['create']>(opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }));
     const consumed = vi.fn();
     const uncertain = vi.fn();
+    const sessionReady = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
@@ -80,7 +82,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
+        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady: sessionReady,
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
@@ -103,7 +105,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
-        root, native, rpc, send, create, consumed, uncertain, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, create, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -111,6 +113,77 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         end,
     };
 }
+
+describe('native readiness after Hub reconnect', () => {
+    it('replays readiness only after an activated root revalidates native history', async () => {
+        const f = await fixture()
+        f.reconnect()
+        await vi.waitFor(() => expect(f.state().steeringActive).toBe(false))
+        expect(f.sessionReady).not.toHaveBeenCalled()
+        await f.root.activate()
+        expect(f.sessionReady).toHaveBeenCalledTimes(1)
+        f.reconnect()
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2))
+    })
+
+    it('does not replay readiness if native revalidation fails', async () => {
+        const f = await fixture()
+        await f.root.activate()
+        const read = vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('native unavailable'))
+        f.reconnect()
+        await vi.waitFor(() => expect(read).toHaveBeenCalledWith('thread/read', expect.anything()))
+        await new Promise(resolve => setTimeout(resolve, 10))
+        expect(f.sessionReady).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('async question delivery', () => {
+    const item = { type: 'agentMessage', id: 'async_call', delivery: 'async', text: 'Which client?',
+        questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] };
+
+    it.each([false, true])('routes question answers through native user input (active: %s)', async active => {
+        const f = await fixture(); await f.root.activate();
+        if (active) f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn', status: 'inProgress' } });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        await f.drain();
+        const q = asyncQuestionsForItem('thread', item)[0];
+        expect(f.state().requests![q.id].tool).toBe('request_user_input');
+        const method = active ? 'turn/steer' : 'turn/start';
+        const original = f.root.client.request.bind(f.root.client);
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (name, params) => {
+            if (name !== method) return original(name, params);
+            const p = params as Record<string, unknown>;
+            f.native.notify('item/completed', { threadId: 'thread', turnId: 'answer-turn', item: {
+                type: 'userMessage', id: 'native-answer', clientId: p.clientUserMessageId, content: p.input
+            } });
+            return {};
+        });
+        try {
+            await f.rpc.get(RPC_METHODS.Permission)!({ id: q.id, approved: true, answers: { [q.questionItemId]: ['Web'] } });
+            await f.drain();
+            expect(request).toHaveBeenCalledWith(method, expect.objectContaining({ threadId: 'thread',
+                ...(active ? { expectedTurnId: 'turn' } : {}), input: [expect.objectContaining({ text: expect.stringContaining(q.questionItemId.replaceAll('"', '\\"')) })] }));
+            expect(f.native.responses).toEqual([]);
+            expect(f.state().requests![q.id]).toBeUndefined();
+            expect(f.state().completedRequests![q.id]).toMatchObject({ status: 'resolved' });
+        } finally { request.mockRestore(); }
+    });
+
+    it('retains unanswered questions across turn completion and native reconnect', async () => {
+        const f = await fixture(); await f.root.activate();
+        f.native.thread.turns = [{ id: 'turn', status: 'completed', items: [item] }];
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: f.native.thread.turns[0] });
+        await f.drain();
+        const q = asyncQuestionsForItem('thread', item)[0];
+        expect(f.state().requests![q.id]).toBeDefined();
+        f.native.initialized = false; f.native.abandoned();
+        await vi.waitFor(() => expect(f.native.initialized).toBe(true));
+        await f.root.refresh();
+        expect(f.state().requests![q.id]).toBeDefined();
+        expect(f.state().completedRequests?.[q.id]).toBeUndefined();
+    });
+});
 
 async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'input', turnId = 'compacting-turn') {
     f.native.queue = [{ id: `native-${id}`, clientUserMessageId: id, input: [{ type: 'text', text: id }] }];
