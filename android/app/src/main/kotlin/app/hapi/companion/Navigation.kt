@@ -86,6 +86,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -639,6 +640,26 @@ fun HapiNavigation() {
                 // hub accepted.
                 onSendToQueue = chatHolder?.let { chat -> chat.viewModel::sendScratchlistEntryToQueue },
             )
+            // Session supersession from the scratchlist route: a queue
+            // promote on an inactive session can resume into a different
+            // session id. ChatHost's event collector is out of composition
+            // while this destination covers it (no-replay SharedFlow), so
+            // the chat ViewModel retains the id as consumable state and it
+            // is handled here — after the promote settles (staging, send
+            // and the accepted entry delete all live under the busy flag),
+            // replace the chat stack with the superseding session so Back
+            // never returns to the obsolete id.
+            val supersededChat = chatHolder?.viewModel
+            val supersededBy = supersededChat?.supersededBySessionId?.collectAsState()?.value
+            LaunchedEffect(supersededBy) {
+                if (supersededBy != null && supersededChat != null) {
+                    holder.viewModel.busyPromoteEntryId.first { it == null }
+                    navController.navigate(Routes.chat(supersededBy)) {
+                        popUpTo(Routes.CHAT) { inclusive = true }
+                    }
+                    supersededChat.consumeSupersededBySessionId()
+                }
+            }
         }
 
         composable(

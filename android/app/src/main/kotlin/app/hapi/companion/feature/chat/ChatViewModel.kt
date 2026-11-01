@@ -641,6 +641,30 @@ class ChatViewModel(
     /** One-shot effects: renavigation on supersede, snackbar notices. */
     val events: SharedFlow<ChatEvent> = _events.asSharedFlow()
 
+    /**
+     * Last session id a resume superseded this session with, retained as
+     * consumable state: [events] is a no-replay SharedFlow collected only in
+     * ChatHost, which is out of composition while the scratchlist route
+     * covers it — a queue promote from there would lose the event. The
+     * scratchlist navigation flow reads this instead (and clears it via
+     * [consumeSupersededBySessionId] once it has replaced the route).
+     */
+    private val _supersededBySessionId = MutableStateFlow<String?>(null)
+
+    /** See [_supersededBySessionId]. */
+    val supersededBySessionId: StateFlow<String?> = _supersededBySessionId.asStateFlow()
+
+    /** Record a supersession for both consumers — the event flow and the retained state. */
+    private fun emitSuperseded(sessionId: String) {
+        _supersededBySessionId.value = sessionId
+        _events.tryEmit(ChatEvent.SessionSuperseded(sessionId))
+    }
+
+    /** The scratchlist route handled the replacement — clear the retained id. */
+    fun consumeSupersededBySessionId() {
+        _supersededBySessionId.value = null
+    }
+
     // Pipeline memo state — touched only inside the single uiState map stage.
     private val normalizeCache = HashMap<String, NormalizeCacheEntry>()
     private var previousGroups: List<ToolGroupBlock> = emptyList()
@@ -1608,7 +1632,7 @@ class ChatViewModel(
                     sendInFlight.value = true
                     try {
                         val result = api.clearConversation(sessionId)
-                        _events.tryEmit(ChatEvent.SessionSuperseded(result.sessionId))
+                        emitSuperseded(result.sessionId)
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (error: Exception) {
@@ -1792,7 +1816,7 @@ class ChatViewModel(
             targetStore.updateStatus(localId, MessageStatus.Failed)
         }
         if (targetSessionId != sessionId) {
-            _events.tryEmit(ChatEvent.SessionSuperseded(targetSessionId))
+            emitSuperseded(targetSessionId)
         }
         return accepted
     }
@@ -1863,7 +1887,7 @@ class ChatViewModel(
                 if (response.sessionId != sessionId) {
                     messageWindows.seed(sessionId, response.sessionId)
                     drafts?.let { runCatching { it.move(sessionId, response.sessionId) } }
-                    _events.tryEmit(ChatEvent.SessionSuperseded(response.sessionId))
+                    emitSuperseded(response.sessionId)
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
@@ -1961,7 +1985,9 @@ class ChatViewModel(
             }
             historyDialog.value = null
             rewindFallbackLocalId.value = null
-            _events.tryEmit(ChatEvent.SessionSuperseded(response.sessionId))
+            // Retained like every supersession: an in-flight fork can return
+            // after the operator left the chat for the scratchlist route.
+            emitSuperseded(response.sessionId)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {

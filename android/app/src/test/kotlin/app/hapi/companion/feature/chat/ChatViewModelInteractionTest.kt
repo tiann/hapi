@@ -2428,6 +2428,34 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `promote to queue supersession is retained for the scratchlist route`() = runTest {
+        // The scratchlist route covers ChatHost, whose SharedFlow collector
+        // is out of composition — the replacement id must survive as
+        // consumable state for the navigation owner that is still active.
+        val harness = InteractionHarness(this, detail(active = false))
+        harness.api.sendFailures += ApiError(409, code = "session_inactive")
+        harness.api.resumeResult = ResumeSessionResponse(sessionId = "sess-2")
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+        val vm = harness.viewModel
+        var event: ChatEvent.SessionSuperseded? = null
+        val collector = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            event = vm.events.filterIsInstance<ChatEvent.SessionSuperseded>().first()
+        }
+
+        val accepted = vm.sendScratchlistEntryToQueue(ScratchlistEntry("e1", "route me", 1, 1))
+
+        assertTrue(accepted)
+        collector.join()
+        assertEquals("sess-2", event?.sessionId, "the event keeps its ChatHost contract")
+        assertEquals("sess-2", vm.supersededBySessionId.value, "the id is retained for the scratchlist route")
+        assertEquals("sess-2", harness.api.sendCalls.value.last().first, "the retry targeted the replacement")
+
+        vm.consumeSupersededBySessionId()
+        assertNull(vm.supersededBySessionId.value)
+    }
+
+    @Test
     fun `send and park wait while promoted attachments rehydrate and then deliver together`() = runTest {
         val fetchGate = CompletableDeferred<Unit>()
         val harness = InteractionHarness(
