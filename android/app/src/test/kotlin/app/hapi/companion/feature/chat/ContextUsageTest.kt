@@ -118,9 +118,29 @@ class ContextUsageTest {
     }
 
     @Test fun claudeBudgetReadsPresetAndPrefixedModelIds() {
-        assertEquals(190_000.0, ContextUsage.contextBudgetTokens("sonnet", "claude"))
-        assertEquals(190_000.0, ContextUsage.contextBudgetTokens("opus", "claude"))
+        // Picker aliases resolve to models with a native 1M window — mirrors
+        // the web fallback (web/src/chat/modelConfig.ts).
+        assertEquals(990_000.0, ContextUsage.contextBudgetTokens("sonnet", "claude"))
+        assertEquals(990_000.0, ContextUsage.contextBudgetTokens("opus", "claude"))
+        assertEquals(990_000.0, ContextUsage.contextBudgetTokens("fable", "claude"))
+        assertEquals(990_000.0, ContextUsage.contextBudgetTokens("haiku", "claude"))
+        // Full claude- ids keep the 200k default.
         assertEquals(190_000.0, ContextUsage.contextBudgetTokens("claude-sonnet-4-6", "claude"))
+        assertEquals(190_000.0, ContextUsage.contextBudgetTokens("claude-opus-4-6", "claude"))
+    }
+
+    @Test fun presetSessionModelsKeepMostOfTheirWindowInUse() {
+        // 200k of context against the 990k preset budget: ~80% left, not the
+        // 0% a 190k misestimate would report.
+        val sonnet = ContextUsage.indicator(usage(200_000.0), "sonnet", "claude")
+        assertEquals("990k", sonnet?.budget)
+        assertEquals(20, sonnet?.usedPercent)
+        assertEquals(80, sonnet?.remainingPercent)
+        assertEquals(ContextUsageWarning.NORMAL, sonnet?.warning)
+
+        // The previously-missing haiku alias also keeps its percentage.
+        val haiku = ContextUsage.indicator(usage(200_000.0), "haiku", "claude")
+        assertEquals(80, haiku?.remainingPercent)
     }
 
     @Test fun claudeBudgetGrowsForLargeWindowModels() {

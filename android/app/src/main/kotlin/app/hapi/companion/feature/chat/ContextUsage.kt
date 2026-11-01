@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.chat
 
+import app.hapi.protocol.catalog.ClaudeModels
 import app.hapi.protocol.chat.LatestUsage
 import java.util.Locale
 import kotlin.math.max
@@ -76,10 +77,6 @@ object ContextUsage {
 
     /** Conservative default for multi-provider sessions. */
     private const val DEFAULT_PI_CONTEXT_WINDOW_TOKENS = 200_000.0
-
-    /** Shorthand model ids that resolve to a Claude window. */
-    private val CLAUDE_MODEL_PRESETS =
-        setOf("sonnet", "sonnet[1m]", "opus", "opus[1m]", "fable", "fable[1m]")
 
     private val CURSOR_MODEL_SEGMENT = Regex("\\[([^]]+)]")
     private val LEADING_DIGITS = Regex("(\\d+)")
@@ -208,16 +205,22 @@ object ContextUsage {
 
     private fun usableWindow(windowTokens: Double): Double = max(1.0, windowTokens - HEADROOM_TOKENS)
 
+    /**
+     * Claude window for a model id, mirroring the web fallback
+     * (`web/src/chat/modelConfig.ts`): the picker aliases from
+     * [ClaudeModels.PRESETS] (opus/fable/sonnet/haiku) resolve to models with
+     * a native 1M window, `claude-` ids get the 200k default unless Fable
+     * (1M even under its prefixed ids), and any `[1m]`-suffixed id is large.
+     * Unrecognized foreign ids carry no estimate.
+     */
     private fun claudeContextWindow(model: String?): Double? {
-        if (model.isNullOrEmpty()) return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
-        if (model !in CLAUDE_MODEL_PRESETS && !model.startsWith("claude-")) return null
-        val largeWindow = model.endsWith("[1m]") || isFableModel(model)
+        val trimmed = model?.trim()
+        if (trimmed.isNullOrEmpty()) return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
+        val isPreset = trimmed in ClaudeModels.PRESETS
+        if (!isPreset && !trimmed.startsWith("claude-") && !trimmed.endsWith("[1m]")) return null
+        val largeWindow = isPreset || trimmed.endsWith("[1m]") || trimmed.startsWith("claude-fable")
         return if (largeWindow) LARGE_CLAUDE_CONTEXT_WINDOW_TOKENS else DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
     }
-
-    /** Fable models ship a large window even under their bare shorthand id. */
-    private fun isFableModel(model: String): Boolean =
-        model == "fable" || model == "fable[1m]" || model.startsWith("claude-fable")
 
     /**
      * Window encoded inside a model name, e.g. `provider-x [context=200k]`.
