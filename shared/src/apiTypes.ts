@@ -125,6 +125,8 @@ export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
+        /** Readable revision covered by this tail snapshot; absent on history pages. */
+        readThroughRevision?: number
         direction: 'latest' | 'before' | 'after'
         limit: number
         epoch: number
@@ -653,6 +655,17 @@ export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     /** Serialized CLI handler failure returned through the generic RPC layer. */
     error: string
 }
+
+/** Machine-scoped native history operation; never sends a source prompt. */
+export const ForkArchivedCodexRequestSchema = z.object({
+    operationId: z.string().uuid(),
+    sourceSessionId: z.string().uuid(),
+    sourceThreadId: z.string().min(1),
+    directory: z.string().min(1),
+    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional()
+})
+export type ForkArchivedCodexRequest = z.infer<typeof ForkArchivedCodexRequestSchema>
+export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: string; rollbackSafe: boolean }
 
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
