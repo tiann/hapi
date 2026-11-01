@@ -6,11 +6,13 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -456,21 +458,32 @@ private fun ZoomableTitleBar(
         )
         // "−"/percent/"+" alone are meaningless to screen readers — the
         // toolbar review asked for descriptions, so the buttons carry them.
+        // Default TextButtons reserve 58dp each; with paging chrome next to
+        // them the row consumes the whole 360dp-class screen and the filename
+        // collapses to zero width (caught by the CI device shards) — cap the
+        // glyph buttons so the name always keeps a visible strip.
         val zoomOutDescription = stringResource(R.string.files_image_viewer_zoom_out)
         val resetDescription = stringResource(R.string.files_image_viewer_reset)
         val zoomInDescription = stringResource(R.string.files_image_viewer_zoom_in)
+        val zoomPadding = PaddingValues(horizontal = 8.dp)
         TextButton(
             onClick = onZoomOut,
             enabled = scale > ImageViewerMath.MIN_SCALE,
             colors = buttonColors,
-            modifier = Modifier.semantics { contentDescription = zoomOutDescription },
+            contentPadding = zoomPadding,
+            modifier = Modifier
+                .widthIn(max = 44.dp)
+                .semantics { contentDescription = zoomOutDescription },
         ) {
             Text(text = "−", fontSize = 18.sp)
         }
         TextButton(
             onClick = onReset,
             colors = buttonColors,
-            modifier = Modifier.semantics { contentDescription = resetDescription },
+            contentPadding = zoomPadding,
+            modifier = Modifier
+                .widthIn(max = 56.dp)
+                .semantics { contentDescription = resetDescription },
         ) {
             Text(text = "${ImageViewerMath.zoomPercent(scale)}%", fontSize = 13.sp)
         }
@@ -478,7 +491,10 @@ private fun ZoomableTitleBar(
             onClick = onZoomIn,
             enabled = scale < ImageViewerMath.MAX_SCALE,
             colors = buttonColors,
-            modifier = Modifier.semantics { contentDescription = zoomInDescription },
+            contentPadding = zoomPadding,
+            modifier = Modifier
+                .widthIn(max = 44.dp)
+                .semantics { contentDescription = zoomInDescription },
         ) {
             Text(text = "+", fontSize = 16.sp)
         }
