@@ -93,7 +93,6 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 QueuedMessagesBarView(interactor: model.interactor)
-                    .hapiReadingColumn()
                 ChatComposerView(
                     interactor: model.interactor,
                     dictation: model.dictation,
@@ -304,7 +303,7 @@ struct ChatView: View {
         .toolPresentations(model: model, session: session, owner: "chat") { path in
             viewerRoute = FileViewerRoute(sessionId: sessionId, path: path, mode: .file)
         }
-        .environment(\.chatMedia, model.imageLoader)
+        .environment(\.chatMedia, model.mediaLoader)
         .environment(\.chatPresentationState, model.presentationState)
         .environment(\.hapiMarkdownCache, model.markdownCache)
         .environment(\.chatInteractions, model.interactor)
@@ -315,6 +314,9 @@ struct ChatView: View {
         }
         .onChange(of: scenePhase) {
             if scenePhase != .active { model.resetDisplayedReadReceipt() }
+        }
+        .onChange(of: scenePhase == .active && model.followsReadableTail, initial: true) { _, following in
+            model.setTailFollowing(following)
         }
     }
 

@@ -11,10 +11,12 @@ import SwiftUI
 ///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
-/// - per row: flavor brand icon + title, trailing relative `updatedAt` and
-///   an optional unread dot; a quiet second line has project left and a small status
-///   indicator right. No preview, task progress, machine/path details or badges.
-///   Disconnected titles/icons are secondary, without dimming attention;
+/// - per row: a two-line-tall flavor icon whose presence badge marks
+///   connected sessions (pulsing while running); title with trailing
+///   relative `updatedAt` (unread: semibold title + accent time, no dot so
+///   the badge stays the only dot); a quiet second line has project left and an attention symbol right. No preview, task progress,
+///   machine/path details or spinners. Disconnected rows are not dimmed;
+/// - swipe actions: leading pin/mark-read, trailing archive or delete/reopen;
 /// - long-press context menu → rename, pin (none/project/global), then
 ///   archive for active sessions or reopen/delete for inactive ones (web
 ///   `SessionActionMenu`), with optimistic store updates; failures land in
@@ -115,10 +117,12 @@ struct SessionListView: View {
         let pinnedCount = SessionListModel.pinnedCount(of: rows)
         return List(selection: selection) {
             if pinnedCount > 0 {
-                Section("Pinned") {
+                Section {
                     ForEach(rows.prefix(pinnedCount)) { row in
                         rowCell(row, now: now)
                     }
+                } header: {
+                    sectionHeader("Pinned")
                 }
                 .listSectionSeparator(.hidden, edges: .top)
             }
@@ -127,10 +131,13 @@ struct SessionListView: View {
                 // header still reserves a blank sticky band above the list
                 // (device feedback: "一片空白").
                 if pinnedCount > 0 {
-                    Section(String(localized: "Sessions")) {
+                    Section {
                         ForEach(rows.dropFirst(pinnedCount)) { row in
                             rowCell(row, now: now)
                         }
+                    } header: {
+                        // Not "Sessions": the navigation title already says so.
+                        sectionHeader("Recent")
                     }
                     .listSectionSeparator(.hidden, edges: .top)
                 } else {
@@ -146,6 +153,9 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        // The default plain header height leaves a blank band between
+        // Pinned and Recent; headers size to their compact text instead.
+        .environment(\.defaultMinListHeaderHeight, 0)
         // An explicit filter change starts at the top. SSE/count/name changes
         // keep this identity (and the reading position), as does chat return.
         .id(model.filters)
@@ -178,8 +188,75 @@ struct SessionListView: View {
         // Default separator color reads heavy against these rows; the theme
         // divider is the WeChat-style faint hairline.
         .listRowSeparatorTint(theme.divider)
+        .swipeActions(edge: .leading) {
+            leadingSwipeActions(row)
+        }
+        .swipeActions(edge: .trailing) {
+            trailingSwipeActions(row)
+        }
         .contextMenu {
             contextMenuActions(row)
+        }
+    }
+
+    /// Compact header (Mail-style) instead of the large plain-list default.
+    private func sectionHeader(_ title: LocalizedStringKey) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(theme.textSecondary)
+            .textCase(nil)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    }
+
+    /// Leading swipe: the quick toggles (pin, read), as in Mail.
+    @ViewBuilder
+    private func leadingSwipeActions(_ row: SessionRowUI) -> some View {
+        let isPinned = row.summary.pinned == true || row.summary.globalPinned == true
+        Button {
+            model.setPinMode(sessionId: row.id, mode: isPinned ? .none : .project)
+        } label: {
+            Label(isPinned ? "Unpin" : "Pin to Project",
+                  systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
+        }
+        .tint(.orange)
+        if row.unread {
+            Button {
+                model.markRead(sessionId: row.id)
+            } label: {
+                Label("Mark as Read", systemImage: "envelope.open.fill")
+            }
+            .tint(theme.accent)
+        }
+    }
+
+    /// Trailing swipe mirrors the context menu's lifecycle actions: the hub
+    /// archives live sessions only; inactive ones are deleted or reopened.
+    @ViewBuilder
+    private func trailingSwipeActions(_ row: SessionRowUI) -> some View {
+        if row.summary.active {
+            Button {
+                model.archiveSession(sessionId: row.id)
+            } label: {
+                Label("Archive", systemImage: "archivebox.fill")
+            }
+            .tint(.indigo)
+        } else {
+            // Not role: .destructive — that removes the row before the
+            // confirmation alert has a chance to cancel.
+            Button {
+                deleteTarget = row
+            } label: {
+                Label("Delete…", systemImage: "trash.fill")
+            }
+            .tint(.red)
+            Button {
+                model.reopenSession(sessionId: row.id) { sessionId in
+                    onOpenSession(sessionId)
+                }
+            } label: {
+                Label("Reopen", systemImage: "arrow.clockwise")
+            }
+            .tint(.gray)
         }
     }
 
@@ -281,97 +358,96 @@ struct SessionListView: View {
 
 struct SessionRowView: View {
     @Environment(\.hapiTheme) private var theme
+    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 30
     @ScaledMetric(relativeTo: .footnote) private var statusSlotSize: CGFloat = 16
 
     let row: SessionRowUI
     let now: Date
 
-    // The agent owns the leading column; one quiet line of secondary text
-    // keeps the row focused on the title rather than a stack of indicators.
-    private let textInset: CGFloat = 24
+    private let iconSpacing: CGFloat = 12
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            titleLine
-            detailLine
-                .padding(.leading, textInset)
+        HStack(alignment: .center, spacing: iconSpacing) {
+            agentIcon
+            VStack(alignment: .leading, spacing: 3) {
+                titleLine
+                detailLine
+            }
         }
-        .alignmentGuide(.listRowSeparatorLeading) { _ in textInset }
+        // Separators start under the text column, as in Mail and Messages.
+        .alignmentGuide(.listRowSeparatorLeading) { _ in iconSize + iconSpacing }
         .accessibilityElement(children: .combine)
+        .accessibilityValue(row.unread ? Text("Unread") : Text(verbatim: ""))
         .accessibilityIdentifier("home.session.\(row.id)")
+    }
+
+    /// The agent owns the leading column; a presence badge marks connected
+    /// sessions (pulsing while the agent works) instead of dimming the rest.
+    private var agentIcon: some View {
+        AgentFlavorIconView(flavor: row.flavor, size: iconSize * 0.8)
+            .frame(width: iconSize, height: iconSize)
+            .overlay(alignment: .bottomTrailing) {
+                if row.summary.active {
+                    presenceBadge
+                }
+            }
+    }
+
+    private var presenceBadge: some View {
+        let isRunning = row.status == .running
+        return Image(systemName: "circle.fill")
+            .font(.system(size: iconSize * 0.3))
+            .foregroundStyle(theme.success)
+            .symbolEffect(.pulse, options: .repeating, isActive: isRunning)
+            .padding(2)
+            .background(Circle().fill(theme.background))
+            .offset(x: 2, y: 2)
+            .accessibilityLabel(isRunning ? Text("Running") : Text("Connected"))
     }
 
     private var titleLine: some View {
         HStack(spacing: 8) {
-            AgentFlavorIconView(flavor: row.flavor)
-                .foregroundStyle(row.summary.active ? theme.textPrimary : theme.textSecondary)
-                .opacity(row.summary.active ? 1 : 0.5)
             Text(verbatim: row.title)
                 .font(.body)
                 .fontWeight(row.unread ? .semibold : .regular)
-                .foregroundStyle(row.summary.active ? theme.textPrimary : theme.textSecondary)
+                .foregroundStyle(theme.textPrimary)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            HStack(spacing: 6) {
-                Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
-                    .font(.caption2)
-                    .foregroundStyle(theme.textSecondary)
-                    .monospacedDigit()
-                    .fixedSize()
-                // Unread dots always occupy the trailing edge. Read rows
-                // remove the slot so the timestamp itself aligns right.
-                if row.unread {
-                    Circle()
-                        .fill(theme.accent)
-                        .frame(width: 8, height: 8)
-                        .frame(width: 12)
-                        .accessibilityLabel("Unread")
-                }
-            }
-            .fixedSize()
+            // Unread is a semibold title plus an accent timestamp, not a
+            // dot: the presence badge is the row's only dot.
+            Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
+                .font(.footnote)
+                .fontWeight(row.unread ? .semibold : .regular)
+                .foregroundStyle(row.unread ? theme.accent : theme.textSecondary)
+                .monospacedDigit()
+                .fixedSize()
         }
     }
 
-    @ViewBuilder
+    /// Project left; only states that need the user (reply/approval) get a
+    /// trailing symbol. Routine activity lives on the icon badge.
     private var detailLine: some View {
-        if row.project != nil || row.status != nil {
-            HStack(alignment: .center, spacing: 0) {
-                // Keep the same text line height when metadata is missing,
-                // so the symbol does not jump vertically at large text sizes.
-                Text(verbatim: row.project ?? " ")
-                    .lineLimit(1)
-                    .accessibilityHidden(row.project == nil)
-                Spacer(minLength: 12)
-                if let status = row.status {
-                    statusIndicator(status)
-                }
-            }
-            .font(.footnote)
-            .foregroundStyle(theme.textSecondary)
-        }
-    }
-
-    private func statusIndicator(_ status: SessionRowStatus) -> some View {
-        Group {
-            if let symbol = status.symbolName {
+        HStack(alignment: .center, spacing: 0) {
+            // Keep the same text line height when metadata is missing,
+            // so the row height does not jump.
+            Text(verbatim: row.project ?? " ")
+                .lineLimit(1)
+                .accessibilityHidden(row.project == nil)
+            Spacer(minLength: 12)
+            if let status = row.status, let symbol = status.symbolName {
                 Image(systemName: symbol)
                     .symbolVariant(.none)
                     .symbolRenderingMode(.monochrome)
                     .foregroundStyle(attentionColor)
-            } else {
-                ProgressView()
-                    // Native small loading already scales with Dynamic Type;
-                    // an extra scaleEffect would overflow the shared slot.
-                    .controlSize(.small)
-                    .tint(theme.textSecondary)
+                    // One slot keeps every attention symbol aligned.
+                    .frame(width: statusSlotSize, height: statusSlotSize)
+                    .fixedSize()
+                    .layoutPriority(1)
+                    .accessibilityLabel(statusAccessibilityText(status))
             }
         }
-        // One shared slot keeps attention symbols and loading aligned.
-        // Footnote is 13pt at the default size and scales for AX.
-        .frame(width: statusSlotSize, height: statusSlotSize)
-        .fixedSize()
-        .layoutPriority(1)
-        .accessibilityLabel(statusAccessibilityText(status))
+        .font(.footnote)
+        .foregroundStyle(theme.textSecondary)
     }
 
     // Darker amber keeps thin strokes visible on white without a filled

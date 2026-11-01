@@ -162,6 +162,31 @@ describe('shared history projection', () => {
             }
         }
     });
+    it('keeps a preseeded fork title when inherited history replays a successful rename', async () => {
+        const summary = { text: 'Fork: Source title', updatedAt: 123 };
+        let metadata: { name?: string; summary?: typeof summary } = { summary };
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (fn: (value: typeof metadata) => typeof metadata) => { metadata = fn(metadata) },
+            sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'child', async () => {});
+
+        await projection.history({
+            id: 'child',
+            turns: [{
+                id: 'turn',
+                status: 'completed',
+                items: [{
+                    id: 'rename', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
+                    status: 'completed', arguments: { title: 'Source title' }, result: { Ok: { title: 'Source title' } }
+                }]
+            }]
+        });
+
+        expect(metadata).toEqual({ summary });
+    });
+
     it('persists a live duration once and never times history snapshots', async () => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
