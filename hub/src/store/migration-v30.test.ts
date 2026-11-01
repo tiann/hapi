@@ -13,8 +13,8 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v29 to v30', () => {
-    it('skips the v30 ALTER when a partial legacy database has no sessions table', () => {
+describe('schema migration v29 to v31', () => {
+    it('skips the task-source ALTER when a partial legacy database has no sessions table', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v30-partial-'))
         tempDirs.push(dir)
         const dbPath = join(dir, 'hapi.db')
@@ -67,7 +67,7 @@ describe('schema migration v29 to v30', () => {
                 'todos_source_at',
                 'todos_source_seq'
             ]))
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
         } finally {
             migrated.close()
         }
@@ -108,7 +108,7 @@ describe('schema migration v29 to v30', () => {
             'todos_source_at',
             'todos_source_seq'
         ]))
-        expect(version.user_version).toBe(30)
+        expect(version.user_version).toBe(31)
         const markerStatement = internalDb.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_state'"
         )
@@ -147,9 +147,44 @@ describe('schema migration v29 to v30', () => {
         const version = versionStatement.get() as { user_version: number }
         versionStatement.finalize()
 
-        expect(version.user_version).toBe(30)
+        expect(version.user_version).toBe(31)
         expect(migrated.turns.open(session.id, 'default', 1_000, 'agent')).toBe(true)
         migrated.close()
+    })
+    it('upgrades an unmodified V30 database with the task-source migration', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v30-base-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+
+        const initial = new Store(dbPath)
+        initial.sessions.getOrCreateSession('base-v30-session', { path: '/tmp', host: 'h' }, null, 'default')
+        initial.close()
+        const base = new Database(dbPath)
+        base.exec(`
+            DROP TABLE migration_state;
+            ALTER TABLE sessions DROP COLUMN todos_source_seq;
+            ALTER TABLE sessions DROP COLUMN todos_source_at;
+            PRAGMA user_version = 30;
+        `)
+        base.close()
+
+        const migrated = new Store(dbPath)
+        try {
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const columns = internalDb.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+            const marker = internalDb.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_state'"
+            ).get()
+            expect(version.user_version).toBe(31)
+            expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+                'todos_source_at',
+                'todos_source_seq'
+            ]))
+            expect(marker).not.toBeNull()
+        } finally {
+            migrated.close()
+        }
     })
 })
 

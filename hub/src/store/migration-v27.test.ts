@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v26 through v30', () => {
+describe('schema migration v26 through v31', () => {
     it('preserves the upstream scheduled index and adds task backfill state to a V26 database', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v27-'))
         tempDirs.push(dir)
@@ -46,7 +46,7 @@ describe('schema migration v26 through v30', () => {
         const index = indexStatement.get()
         indexStatement.finalize()
         expect(index).not.toBeNull()
-        expect(version.user_version).toBe(30)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })
