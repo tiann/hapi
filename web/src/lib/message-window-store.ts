@@ -5,7 +5,7 @@ import { reduceChatBlocks, type LatestUsage } from '@/chat/reducer'
 import { buildVisibleChatBlocks, isEligibleForToolGrouping } from '@/chat/toolGroups'
 import type { NormalizedMessage } from '@/chat/types'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
-import { isQueuedForInvocation, isUserMessage, mergeMessages } from '@/lib/messages'
+import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 
 export type MessageViewMode = 'tail' | 'history'
 
@@ -572,8 +572,6 @@ function trimNavigationRegularWindow(
     const tailStart = regular.length - NAVIGATION_TAIL_LIMIT
     // Keep the input of the turn the tail starts in, so its first retained
     // response still links to a prompt instead of dead-ending at the gap.
-    // Failed sends never reached the agent, so they do not start a turn.
-    const isPrompt = (message: DecryptedMessage) => isUserMessage(message) && message.status !== 'failed'
     let promptIndex = tailStart
     while (promptIndex >= NAVIGATION_HEAD_LIMIT && !isPrompt(regular[promptIndex]!)) promptIndex -= 1
     const prompt = promptIndex >= NAVIGATION_HEAD_LIMIT && promptIndex < tailStart ? regular[promptIndex]! : null
@@ -592,7 +590,7 @@ function trimNavigationRegularWindow(
             continue
         }
         if (omitted.length > 0) {
-            result.push(...markOmitted(omitted, result.at(-1) ?? null, message, prompt))
+            result.push(...markOmitted(omitted, result.at(-1) ?? null, message))
             omitted = []
         }
         result.push(message)
@@ -603,16 +601,24 @@ function trimNavigationRegularWindow(
 /** Marks rows omitted inside one turn: unlike a plain gap it keeps the prompt association. */
 export const TRANSCRIPT_TURN_GAP_SUFFIX = '~turn'
 
+// Same rule as buildAssistantReplyTargets: a turn starts at any row that
+// renders in the user lane (including agent-wrapped user text), except a
+// failed send, which never reached the agent.
+function isPrompt(message: DecryptedMessage): boolean {
+    return message.status !== 'failed' && normalizeDecryptedMessage(message)?.role === 'user'
+}
+
 function markOmitted(
     omitted: DecryptedMessage[],
     last: DecryptedMessage | null,
-    next: DecryptedMessage,
-    prompt: DecryptedMessage | null
+    next: DecryptedMessage
 ): DecryptedMessage[] {
     // Nothing new dropped: keep the existing markers untouched.
     if (omitted.every(isTranscriptGap)) return omitted
-    const withinTurn = last !== null && last === prompt
-        && omitted.every(message => !isTranscriptGap(message) || message.id.endsWith(TRANSCRIPT_TURN_GAP_SUFFIX))
+    // No input among the dropped rows: the turn continues across the gap.
+    const withinTurn = last !== null && omitted.every(message => isTranscriptGap(message)
+        ? message.id.endsWith(TRANSCRIPT_TURN_GAP_SUFFIX)
+        : !isPrompt(message))
     const gap = makeTranscriptGapMessage(last?.seq ?? null, next.seq ?? null, last ? (last.invokedAt ?? last.createdAt) : 0)
     return [{ ...gap, id: gap.id + (withinTurn ? TRANSCRIPT_TURN_GAP_SUFFIX : '') }]
 }

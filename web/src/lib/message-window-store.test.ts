@@ -3070,6 +3070,51 @@ describe('explicit history navigation', () => {
         releaseNavigation()
     })
 
+    it('marks the gap inside one long turn whose prompt is in the head', () => {
+        const id = sessionId('navigation-long-turn')
+        const releaseNavigation = beginNavigation(id)
+        setMessageViewMode(id, 'history')
+        const total = HISTORY_WINDOW_SIZE + VISIBLE_WINDOW_SIZE + 50
+        ingestIncomingMessages(id, [
+            makeUserMessage({ id: 'only-prompt', seq: 1, createdAt: 1, invokedAt: 1 }),
+            ...Array.from({ length: total }, (_, index) =>
+                makeAgentMessage({ id: `overflow-${index}`, seq: index + 2, at: index + 2 })
+            )
+        ])
+
+        const gaps = getMessageWindowState(id).messages.filter((message) => message.id.startsWith('__transcript-gap__'))
+        expect(gaps.map((message) => message.id)).toEqual([expect.stringMatching(/~turn$/)])
+        releaseNavigation()
+    })
+
+    it('treats agent-wrapped user text as a turn prompt', () => {
+        const id = sessionId('navigation-wrapped-prompt')
+        const releaseNavigation = beginNavigation(id)
+        setMessageViewMode(id, 'history')
+        const total = HISTORY_WINDOW_SIZE + VISIBLE_WINDOW_SIZE + 50
+        // A prompt typed in the terminal arrives as agent output but renders as user text.
+        const wrappedSeq = HISTORY_WINDOW_SIZE + 10
+        ingestIncomingMessages(id, [
+            makeUserMessage({ id: 'head-prompt', seq: 1, createdAt: 1, invokedAt: 1 }),
+            ...Array.from({ length: total }, (_, index) => index + 2 === wrappedSeq
+                ? {
+                    ...makeAgentMessage({ id: 'wrapped-prompt', seq: wrappedSeq, at: wrappedSeq }),
+                    content: {
+                        role: 'agent',
+                        content: { type: 'output', data: { type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'typed' }] } } }
+                    }
+                } as DecryptedMessage
+                : makeAgentMessage({ id: `overflow-${index}`, seq: index + 2, at: index + 2 })
+            )
+        ])
+
+        const ids = getMessageWindowState(id).messages.map((message) => message.id)
+        // It starts the tail's turn, so it is kept; otherwise a single in-turn
+        // gap would link the tail back to head-prompt.
+        expect(ids).toContain('wrapped-prompt')
+        releaseNavigation()
+    })
+
     it('does not keep a failed send as the tail turn prompt', () => {
         const id = sessionId('navigation-tail-failed-send')
         const releaseNavigation = beginNavigation(id)
