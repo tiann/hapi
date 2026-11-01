@@ -2981,6 +2981,52 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('retries a pending handoff after the last scheduled row is discarded', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-handoff-discard-retry')
+        const { io, cliEmitted } = makeTrackingIo()
+        let materializeCalls = 0
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    if (materializeCalls === 1) throw new Error('upload failed')
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/discarded-handoff.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        const attachmentMessage = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'ordered-handoff-discard-retry')],
+                },
+            },
+            'discarded-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'discarded-handoff-b',
+        )
+
+        await expect(service.releaseDeliverableQueuedMessages(session.id, Date.now())).resolves.toBe(0)
+        expect(store.messages.deleteQueuedMessageById(session.id, attachmentMessage.id)).toBe(true)
+        await service.releaseMatureScheduledMessages(Date.now())
+
+        expect(materializeCalls).toBe(1)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual(['discarded-handoff-b'])
+    })
+
     it('serializes an initial handoff drain with periodic mature delivery', async () => {
         const store = makeStore()
         const session = makeSession(store, 'serialized-initial-handoff')

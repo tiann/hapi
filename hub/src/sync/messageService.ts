@@ -1570,7 +1570,9 @@ export class MessageService {
             bySession.set(message.sessionId, messages)
         }
 
-        await Promise.all([...bySession].map(async ([sessionId, messages]) => {
+        const sessionIds = new Set([...bySession.keys(), ...this.pendingOrderedDeliverableReleaseSessions])
+        await Promise.all([...sessionIds].map(async (sessionId) => {
+            const messages = bySession.get(sessionId) ?? []
             if (skipSessionIds?.has(sessionId)) {
                 return
             }
@@ -1584,6 +1586,7 @@ export class MessageService {
                 }
                 return
             }
+            if (messages.length === 0) return
             // A text-only session has no asynchronous materialization work.
             // It still observes the session lock above so it cannot overtake an
             // active A/B/C handoff whose attachment was just cancelled.
