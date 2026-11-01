@@ -2950,6 +2950,23 @@
         }
       }
     },
+    "Couldn't load media." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить медиа."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法加载媒体。"
+          }
+        }
+      }
+    },
     "Couldn't load the scratchlist" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5551,6 +5568,23 @@
         }
       }
     },
+    "Load audio" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузить аудио"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载音频"
+          }
+        }
+      }
+    },
     "Load more content" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5581,6 +5615,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "加载更早消息"
+          }
+        }
+      }
+    },
+    "Load video" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузить видео"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加载视频"
           }
         }
       }
@@ -7387,6 +7438,23 @@
         }
       }
     },
+    "Prepare download" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подготовить скачивание"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备下载"
+          }
+        }
+      }
+    },
     "Preview" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -8556,6 +8624,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "先暂存，再取回"
+          }
+        }
+      }
+    },
+    "Save or share" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить или поделиться"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存或分享"
           }
         }
       }
@@ -10171,6 +10256,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此 Hub 将加入已配对列表并成为当前 Hub。"
+          }
+        }
+      }
+    },
+    "This media cannot be played on this device." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это медиа не воспроизводится на этом устройстве."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备无法播放该媒体。"
           }
         }
       }
