@@ -2,7 +2,8 @@
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native
 clients share one app-server. No local/remote ownership switch. Both can send
-messages, approve tools and answer `request_user_input`.
+messages, approve tools and answer `request_user_input`. Codex versions with
+`request_user_input_async` also expose their queued follow-up questions in HAPI.
 
 ```bash
 hapi codex                          # launch an execution owned by this terminal
@@ -77,18 +78,45 @@ confirms consumption. Compaction completion, turn completion/interruption or a
 native disconnect withdraws this temporary status. Unconfirmed input retains
 the existing unknown-delivery recovery controls and is never automatically replayed.
 
-Codex arbitrates terminal/Web answers. A submitted Web answer is only a
+For blocking `request_user_input`, Codex arbitrates terminal/Web answers. A submitted Web answer is only a
 candidate. Native `serverRequest/resolved` closes the prompt with neutral
 **Resolved in Codex** status; HAPI does not invent the winner or their answer.
 Disconnect withdraws the old controls; reconnect replays native pending requests.
-Canceling a question interrupts its native turn instead of sending an empty
+Canceling a blocking question interrupts its native turn instead of sending an empty
 fabricated answer. Unknown side-client request types remain terminal-only.
+
+`request_user_input_async` uses a separate path: Codex publishes structured
+questions in an async assistant message and continues working. HAPI shows each
+question as an answerable card, including choices and free text. Answers are
+sent as native user input during the active turn or in a new turn when idle;
+native input/history confirms completion. Unanswered questions survive turn
+completion and reconnect. Dismissing one in HAPI does not interrupt Codex or
+dismiss the terminal's local question.
 
 Each root has its own HAPI socket, MCP bridge and shell `HAPI_SESSION_ID`.
 Child-agent traces/permissions are attributed by native ancestry, not merely by
 being received on the same app-server connection.
 
 ## Recovery and local data
+
+### Fork an archived conversation
+
+With an online Runner that advertises archived Codex forks, the Web chat can
+fork an inactive Codex conversation directly. The source stays inactive and
+archived in HAPI. A historical fork excludes the selected user message's native
+turn and all later turns; Fork current retains the whole persisted conversation.
+
+The Runner reads the native history, temporarily unarchives the native source
+when required, creates an independent branch, and restores the source archive.
+No prompt is sent to the source and no model turn is started by the fork itself.
+The new branch uses its own HAPI identity and Codex execution.
+
+If an operation is interrupted, retry the same fork boundary so HAPI can reconcile
+its persisted reservation. Reopen, archive and delete are blocked while that
+reservation is pending. An unconfirmed native fork without a returned thread id
+is never automatically repeated: inspect the Runner's operation journal under
+`$CODEX_HOME/hapi-archived-forks` before recovery. Missing history, an offline
+machine, a loaded native source, or a Runner needing an upgrade produces an error.
 
 - Hub outage: existing native threads continue. Reconnect reconciles history,
   queue and pending state with stable IDs.

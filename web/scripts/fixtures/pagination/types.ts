@@ -100,6 +100,7 @@ export type PaginationOpObservation = {
  *  client-side optimistic send state when present. `queued` and `optimistic`
  *  are the derived predicates natives must reproduce. */
 export type ProjectedWindowMessage = {
+    contentRevision?: number
     id: string
     localId: string | null
     seq: number | null
@@ -115,6 +116,7 @@ export type ProjectedWindowMessage = {
  *  the store's compound paging positions: `olderCursor` feeds the next
  *  before-request, `newestCursor` the next after-request. */
 export type ProjectedWindowState = {
+    readThroughRevision: number | null
     messages: ProjectedWindowMessage[]
     hasMore: boolean
     epoch: number | null

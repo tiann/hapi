@@ -1319,7 +1319,7 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
-    it('normalizes Codex context_compacted as a compact event', () => {
+    it('normalizes reported Codex boundary facts for the common presentation', () => {
         const message = makeMessage({
             role: 'agent',
             content: {
@@ -1335,9 +1335,9 @@ describe('normalizeDecryptedMessage', () => {
         expect(normalizeDecryptedMessage(message)).toMatchObject({
             role: 'event',
             content: {
-                type: 'compact',
-                trigger: 'auto',
-                preTokens: 1234
+                type: 'compact-summary',
+                summary: '',
+                tokensBefore: 1234
             }
         })
     })
