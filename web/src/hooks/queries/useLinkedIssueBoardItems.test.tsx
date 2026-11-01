@@ -72,4 +72,26 @@ describe('useLinkedIssueBoardItems', () => {
         expect(result.current).toEqual([])
         expect(api.getBoardItems).not.toHaveBeenCalled()
     })
+
+    // Review finding: an un-memoized `.map()` returned a fresh array every
+    // render regardless of whether the underlying query data changed,
+    // cascading through getBoardMatchForIssue/context/props and defeating
+    // SessionItem's memoization on every unrelated session update.
+    it('keeps the same array reference across a re-render when query data is unchanged', async () => {
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        const boardsResponse: BoardsResponse = { boards: [{ id: 'board-1', label: 'Board One' }] }
+        const api = {
+            getBoards: vi.fn().mockResolvedValue(boardsResponse),
+            getBoardItems: vi.fn().mockResolvedValue({ board: boardsResponse.boards[0]!, statusOrder: ['Todo'], doneValues: [], items: [] }),
+        } as unknown as ApiClient
+
+        const { result, rerender } = renderHook(() => useLinkedIssueBoardItems(api, true), { wrapper: createWrapper(queryClient) })
+
+        await waitFor(() => expect(result.current).toEqual([{ boardId: 'board-1', boardLabel: 'Board One', items: [] }]))
+        const firstResult = result.current
+
+        rerender()
+
+        expect(result.current).toBe(firstResult)
+    })
 })

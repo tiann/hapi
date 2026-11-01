@@ -1558,8 +1558,10 @@ export function SessionList(props: {
     const { features } = useFeatures(api)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
-    void prClockTick
-    const prNowMs = Date.now()
+    // Pinned to the minute tick (and re-stamped when awareness toggles on) so
+    // this doesn't change — and force every memoized row to re-render — on
+    // every unrelated render, e.g. an SSE update to one other session.
+    const prNowMs = useMemo(() => Date.now(), [prClockTick, githubPrAwarenessEnabled])
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()

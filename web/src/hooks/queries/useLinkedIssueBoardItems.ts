@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { BoardItem } from '@/types/api'
@@ -37,9 +38,24 @@ export function useLinkedIssueBoardItems(api: ApiClient | null, enabled: boolean
         })),
     })
 
-    return boards.map((board, index) => ({
-        boardId: board.id,
-        boardLabel: board.label,
-        items: itemQueries[index]?.data?.items ?? EMPTY_ITEMS,
-    }))
+    // `boards` is reference-stable while its data is unchanged (see useBoards).
+    // `itemQueries` itself is a fresh array every render, so its length can't
+    // be used directly as a useMemo dep array (useMemo requires a constant
+    // size); a single scalar signature from each query's last-success
+    // timestamp keeps the deps array fixed at 2 while still invalidating the
+    // memo exactly when a board's items actually change — otherwise this
+    // would return a new array every render regardless of whether query data
+    // changed, cascading through getBoardMatchForIssue/context/props and
+    // defeating SessionItem's memoization on every unrelated session update.
+    const itemsVersionKey = itemQueries.map(query => query.dataUpdatedAt).join(',')
+
+    return useMemo(
+        () => boards.map((board, index) => ({
+            boardId: board.id,
+            boardLabel: board.label,
+            items: itemQueries[index]?.data?.items ?? EMPTY_ITEMS,
+        })),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [boards, itemsVersionKey]
+    )
 }
