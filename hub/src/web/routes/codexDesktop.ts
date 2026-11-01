@@ -1441,6 +1441,12 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             }
 
             ensureMergeSessionsInactive()
+            if (engine && typeof engine.assertSessionDeletionAllowed === 'function') {
+                engine.assertSessionDeletionAllowed(source.sessionId)
+            }
+            const latestSource = options.store.sessions.getSessionByNamespace(source.sessionId, options.namespace)
+            const latestSourceMetadata = latestSource?.metadata as { codexResumePending?: unknown } | undefined
+            if (latestSourceMetadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
 
             const copiedMessages = options.store.commitDuplicateSessionMerge({
                 namespace: options.namespace,

@@ -1581,13 +1581,19 @@ describe('Codex Desktop import routes', () => {
         )
         const source = engine.getOrCreateSession(
             'source-resume-pending-session',
-            {
-                path: 'C:/work/project', host: 'test-host', machineId: 'machine', codexSessionId,
-                codexResumePending: { machineId: 'machine', nativeSessionId: codexSessionId }
-            },
+            { path: 'C:/work/project', host: 'test-host', machineId: 'machine', codexSessionId },
             {},
             'default'
         )
+        const prepareForDeletion = engine.prepareSessionForDeletion.bind(engine)
+        engine.prepareSessionForDeletion = async (...args) => {
+            await prepareForDeletion(...args)
+            const latest = store.sessions.getSession(source.id)!
+            store.sessions.updateSessionMetadata(source.id, {
+                ...(latest.metadata as Record<string, unknown>),
+                codexResumePending: { machineId: 'machine', nativeSessionId: codexSessionId }
+            }, latest.metadataVersion, 'default')
+        }
         store.messages.addMessage(canonical.id, { role: 'user', content: { type: 'text', text: 'merge me' } }, 'canonical-resume-1')
         store.messages.addMessage(canonical.id, { role: 'user', content: { type: 'text', text: 'canonical-only' } }, 'canonical-resume-2')
         store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'merge me' } }, 'source-resume-1')

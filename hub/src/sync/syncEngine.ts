@@ -2919,11 +2919,18 @@ export class SyncEngine {
         await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
     }
 
-    async deleteSession(sessionId: string): Promise<void> {
-        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+    /** Lifecycle guards shared by direct deletion and duplicate-session consolidation. */
+    assertSessionDeletionAllowed(sessionId: string): void {
+        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) {
+            throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+        }
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is pending; reconcile it before deleting the source')
         }
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        this.assertSessionDeletionAllowed(sessionId)
         await this.prepareSessionForDeletion(sessionId)
         await this.sessionCache.deleteSession(sessionId)
         this.clearSharedForkAttachmentTarget(sessionId)
@@ -2934,7 +2941,7 @@ export class SyncEngine {
 
     /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
     async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean }): Promise<void> {
-        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+        this.assertSessionDeletionAllowed(sessionId)
         await this.ensureSharedForkChildrenBeforeDelete(sessionId)
         await this.waitForSharedForkAttachmentHydration(sessionId)
         await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)
