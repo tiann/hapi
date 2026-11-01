@@ -71,6 +71,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -436,6 +437,9 @@ private class FakeScratchlist : SessionScratchlist {
     val deletedAttachments = mutableListOf<String>()
     val sessionState = MutableStateFlow(ScratchlistSessionState())
 
+    /** When set below Int.MAX_VALUE, uploads after the first N throw a cancellation (holder-clear simulation). */
+    var cancelAfterUploads: Int = Int.MAX_VALUE
+
     override fun state(sessionId: String): Flow<ScratchlistSessionState> = sessionState
     override fun currentState(sessionId: String): ScratchlistSessionState = sessionState.value
     override fun open(sessionId: String) = Unit
@@ -469,6 +473,7 @@ private class FakeScratchlist : SessionScratchlist {
         mimeType: String,
     ): ScratchlistUploadResult {
         uploaded += filename to mimeType
+        if (uploaded.size > cancelAfterUploads) throw CancellationException("holder cleared")
         return uploadResult(filename)
     }
     override suspend fun deleteAttachment(
@@ -2425,6 +2430,40 @@ class ChatViewModelInteractionTest {
         assertTrue(scratch.created.isEmpty(), "the entry is never written on a failed migration")
         assertEquals("do not lose me", vm.composer.value.text)
         vm.attachments.items.first { chips -> chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready }
+    }
+
+    @Test
+    fun `park cancelled mid-migration frees the already-migrated hub blobs`() = runTest {
+        // Holder cancellation (leaving chat) reaches the second migration
+        // upload: the first blob is already on the hub and the entry write
+        // never runs — it must be freed or it squats the session's byte
+        // quota (storage.ts counts pending files).
+        val scratch = FakeScratchlist().apply { cancelAfterUploads = 1 }
+        val harness = InteractionHarness(this, scratchlist = scratch)
+        val vm = harness.viewModel
+
+        vm.attachments.add(preparedShot(id = "att-1", filename = "one.jpg"))
+        vm.attachments.add(preparedShot(id = "att-2", filename = "two.jpg"))
+        vm.attachments.items.first { chips ->
+            chips.size == 2 && chips.all { it.status == ComposerAttachmentStatus.Ready }
+        }
+        vm.setComposerText("keep me through the cancel")
+        vm.composer.first { it.text.isNotEmpty() }
+
+        vm.parkComposerDraft()
+        // Drive the migration launch (the test coroutine is not suspended
+        // here, so the queued dispatch needs an explicit pump); the fake
+        // uploads never actually suspend, so one dispatch runs the whole
+        // loop through the cancellation and the NonCancellable cleanup.
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("one.jpg" to "image/jpeg", "two.jpg" to "image/jpeg"), scratch.uploaded)
+        assertTrue(scratch.created.isEmpty(), "cancellation must not write the entry")
+        assertEquals(listOf("hub-att-0"), scratch.deletedAttachments, "the completed blob is freed out-of-band")
+        assertEquals("keep me through the cancel", vm.composer.value.text, "the draft survives for a retry")
+        vm.attachments.items.first { chips ->
+            chips.size == 2 && chips.all { it.status == ComposerAttachmentStatus.Ready }
+        }
     }
 
     @Test

@@ -111,6 +111,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -1409,6 +1410,15 @@ class ChatViewModel(
                     val uploaded = try {
                         store.uploadAttachment(sessionId, chip.filename, chip.bytes, chip.mimeType)
                     } catch (cancellation: CancellationException) {
+                        // Holder cancellation mid-migration (leaving chat):
+                        // blobs uploaded so far are unreferenced — the entry
+                        // write never ran. Free them out-of-band before the
+                        // cancellation propagates; storage.ts counts these
+                        // pending files against the session's byte quota, so
+                        // repeated cancellations must not strand them.
+                        if (migrated.isNotEmpty()) {
+                            freeMigratedBlobs(store, migrated)
+                        }
                         throw cancellation
                     } catch (_: Exception) {
                         null
@@ -1445,15 +1455,22 @@ class ChatViewModel(
         }
     }
 
-    /** Rejected park: drop the migrated hub blobs so retry re-migrates from the chips. */
+    /**
+     * Rejected park: drop the migrated hub blobs so retry re-migrates from
+     * the chips. Runs under [NonCancellable] — the owning scope may already
+     * be cancelling (holder cleared mid-migration or mid-cleanup), and every
+     * delete must still reach the hub.
+     */
     private suspend fun freeMigratedBlobs(store: SessionScratchlist, migrated: List<ScratchlistAttachment>) {
-        migrated.forEach { attachment ->
-            try {
-                store.deleteAttachment(sessionId, attachment.id)
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {
-                // Best-effort.
+        withContext(NonCancellable) {
+            migrated.forEach { attachment ->
+                try {
+                    store.deleteAttachment(sessionId, attachment.id)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // Best-effort.
+                }
             }
         }
     }
