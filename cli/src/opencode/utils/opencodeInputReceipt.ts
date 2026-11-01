@@ -32,19 +32,26 @@ export async function fetchOpencodeUserMessages(opts: {
             if (typeof id !== 'string' || !id || ids.has(id) || !Array.isArray(entry.parts)) return null;
             let text = '';
             let hasSubmittedText = false;
+            let hasInternalText = false;
             let internal = entry.info.type === 'compaction' || entry.info.summary === true;
             for (const part of entry.parts) {
                 if (!isRecord(part)) return null;
+                // Overflow replay can turn a file into unmarked placeholder
+                // text, so this history cannot establish text-only identity.
+                if (part.type === 'file') return null;
                 if (part.type === 'compaction'
                     || (isRecord(part.metadata) && part.metadata.compaction_continue === true)) internal = true;
                 if (part.type !== 'text') continue;
                 if (typeof part.text !== 'string') return null;
                 if ((part.synthetic !== undefined && typeof part.synthetic !== 'boolean')
                     || (part.ignored !== undefined && typeof part.ignored !== 'boolean')) return null;
-                if (part.synthetic === true || part.ignored === true) continue;
+                if (part.synthetic === true || part.ignored === true) { hasInternalText = true; continue; }
                 hasSubmittedText = true;
                 text += part.text;
             }
+            // updateMessage precedes updatePart: an incomplete ordinary row
+            // may still acquire text that a later compaction can replay.
+            if (!internal && !hasSubmittedText && !hasInternalText) return null;
             ids.add(id);
             messages.push({ id, text: !internal && hasSubmittedText ? text : null });
         }

@@ -1051,6 +1051,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 const nativeBefore = !this.nativeSteerReceiptCorrelationLost
                     && this.pendingSteerAcceptances.size === 1
                     && taken.item.message !== this.activePromptText
+                    // Native slash commands can persist an expanded body
+                    // different from the foreground text sent over ACP.
+                    && !this.activePromptText?.trimStart().startsWith('/')
                     ? await fetchOpencodeUserMessages({ baseUrl: this.baseUrl, sessionId: acpSessionId })
                     : null;
                 // Recheck everything the durable/native-history awaits could
@@ -1156,11 +1159,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 };
                 // OpenCode persists the user input before the concurrent
                 // session/prompt response (which waits for the model's entire
-                // turn). A new native id with the exact input proves acceptance
-                // now, allowing every UI to move the row into chat promptly.
+                // turn). A new native id can confirm a previously unseen input.
+                // Compaction can replay an earlier user row without a marker,
+                // so repeated text must wait for its own successful response.
                 // Never infer acceptance from stdin dispatch or elapsed time.
                 const nativeReceipt = (async () => {
-                    if (!nativeBefore) return;
+                    if (!nativeBefore || nativeBefore.some(message => message.text === taken.item.message)) return;
                     const previousIds = new Set(nativeBefore.map(message => message.id));
                     while (!accepted && operation.transportPending
                         && !this.nativeSteerReceiptCorrelationLost

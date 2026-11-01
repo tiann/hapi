@@ -7,7 +7,7 @@ const user = { info: { id: 'user-1', role: 'user' }, parts: [{ type: 'text', tex
 describe('fetchOpencodeUserMessages', () => {
     it('reads native ids and joins text parts, excluding assistant output', async () => {
         const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => Response.json([
-            { ...user, parts: [{ type: 'text', text: 'mid-' }, { type: 'file' }, { type: 'text', text: 'turn' }] },
+            { ...user, parts: [{ type: 'text', text: 'mid-' }, { type: 'text', text: 'turn' }] },
             { info: { role: 'assistant' }, parts: [{ type: 'text', text: 'mid-turn' }] }
         ]));
         await expect(fetchOpencodeUserMessages({ ...context, fetchImpl })).resolves.toEqual([{ id: 'user-1', text: 'mid-turn' }]);
@@ -26,6 +26,14 @@ describe('fetchOpencodeUserMessages', () => {
         [user, user]
     ])('does not treat malformed or duplicate history as an input receipt: %j', async data => {
         await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => Response.json(data) })).resolves.toBeNull();
+    });
+
+    it.each([
+        { parts: [{ type: 'file', mime: 'image/png', filename: 'image.png' }] },
+        { parts: [] }
+    ])('does not infer text receipt identity from media replay or incomplete user history', async ({ parts }) => {
+        await expect(fetchOpencodeUserMessages({ ...context, fetchImpl: async () => Response.json([{ ...user, parts }]) }))
+            .resolves.toBeNull();
     });
 
     it('returns unknown for an unavailable native endpoint', async () => {
