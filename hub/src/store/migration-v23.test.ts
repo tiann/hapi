@@ -10,11 +10,12 @@ const tempDirs: string[] = []
 
 afterEach(() => {
     for (const dir of tempDirs.splice(0)) {
-        rmSync(dir, { recursive: true, force: true })
+        Bun.gc(true)
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
     }
 })
 
-describe('schema migrations through v30', () => {
+describe('schema migrations through v31', () => {
     it('adds events and event_links tables to a V22 database', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v23-'))
         tempDirs.push(dir)
@@ -44,7 +45,7 @@ describe('schema migrations through v30', () => {
             expect(links?.name).toBe('event_links')
             const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
             expect(columns.map((column) => column.name)).toContain('delivery_state')
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
         } finally {
             migrated.close()
         }
@@ -77,7 +78,7 @@ describe('schema migrations through v30', () => {
             expect(migrated.messages.searchContent('backfill this', 'default')[0]?.sessionId).toBe(session.id)
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
         } finally {
             migrated.close()
         }
@@ -113,7 +114,7 @@ describe('schema migrations through v30', () => {
             ).get() as { name: string } | null
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
             expect(lookup?.name).toBe('message_content_search_lookup')
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
         } finally {
             migrated.close()
         }
@@ -176,7 +177,7 @@ describe('schema migrations through v30', () => {
             expect(target?.target_message_id).toBe(message.id)
             expect(indexed?.searchable_text.length).toBeLessThanOrEqual(MAX_INDEXED_MESSAGE_CHARACTERS)
             expect(indexed?.searchable_text).toContain('tail-migration-needle')
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
         } finally {
             migrated.close()
         }
@@ -238,7 +239,7 @@ describe('schema migrations through v30', () => {
             expect(indexed?.searchable_text).toContain('v30-middle-needle')
             expect(metadata?.is_truncated).toBe(1)
             expect(metadata?.short_index_truncated).toBe(1)
-            expect(version.user_version).toBe(30)
+            expect(version.user_version).toBe(31)
         } finally {
             migrated.close()
         }

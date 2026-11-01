@@ -53,7 +53,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 30
+const SCHEMA_VERSION: number = 31
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -374,6 +374,7 @@ export class Store {
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
+            30: () => this.migrateFromV30ToV31(),
         })
 
         if (currentVersion === 0) {
@@ -409,6 +410,8 @@ export class Store {
         // intermediate schema version after an interrupted upgrade.
         if (currentVersion === 26) {
             this.migrateFromV26ToV30()
+            this.migrateFromV29ToV30()
+            this.migrateFromV30ToV31()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -1187,10 +1190,8 @@ export class Store {
         })()
     }
 
-    /** v29→v30: rebuild content search and add read-state revisions. */
+    /** v29→v30: add read-state revisions. */
     private migrateFromV29ToV30(): void {
-        createMessageContentSearchTable(this.db)
-
         const columns = this.getSessionColumnNames()
         for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
             if (columns.size > 0 && !columns.has(name)) {
@@ -1199,12 +1200,15 @@ export class Store {
         }
 
         const messageColumns = this.getMessageColumnNames()
-        if (messageColumns.size > 0) {
-            if (!messageColumns.has('content_revision')) {
-                this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
-            }
-            rebuildMessageContentSearch(this.db)
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
         }
+    }
+
+    /** v30→v31: create and backfill the message-content search index. */
+    private migrateFromV30ToV31(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
     }
 
     private getSessionColumnNames(): Set<string> {
