@@ -191,8 +191,8 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  * Steer = soft mid-turn delivery (same idea as Cursor GUI default "Send"):
  * - Pi: native steer over the Pi runtime (first-class since #1466)
  * - Codex: app-server `turn/steer` (true mid-turn inject)
- * - OpenCode v1 ACP: concurrent `session/prompt` soft-send (no cancel);
- *   v2 rejects concurrent prompts and does not advertise steeringActive.
+ * - OpenCode v1: concurrent ACP `session/prompt`; v2: durable REST inbox
+ *   steering at a native step boundary. Both require live steeringActive.
  * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
  *   stream-json Cursor sessions are NOT steerable — gate with
  *   {@link isSteeringSupportedForSession}.

@@ -14,6 +14,8 @@ import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLaunc
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
+import type { QueueReservation } from '@/utils/MessageQueue2';
+import { admitOpencodeV2Steer, cancelOpencodeV2Steer, opencodeV2InputId, readOpencodeV2Input, steerOpencodeV2Inbox, type OpencodeSteerCancelHandler, type OpencodeSteerCancelResult } from './utils/opencodeV2Steer';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     allocateFreePort,
@@ -51,6 +53,7 @@ import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
 
 type OpencodeRemoteLauncherOptions = {
+    onSteerCancelHandlerChange?: (handler: OpencodeSteerCancelHandler | null) => void;
     onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
     // Called with `true` once the ACP backend + internal HTTP baseUrl are
@@ -102,6 +105,15 @@ type CompactOperationPhase = 'idle' | 'snapshot' | 'summarize' | 'post-summarize
  * - `detach()` also makes an unanswered delivery explicitly resolvable. A
  *   late callback may consume it only while it still owns that reservation.
  */
+type OpencodeV2SteerEntry = {
+    inputId: string;
+    sessionId: string;
+    delivered: () => void;
+    enqueued: (properties: Record<string, unknown>) => void;
+    cancel: (purpose: 'stop' | 'explicit' | 'teardown', resetFinished?: Promise<void>) => Promise<OpencodeSteerCancelResult>;
+    abandon: () => void;
+};
+
 type OpencodeSteerOperation = {
     settled: Promise<void>;
     transportPending: boolean;
@@ -236,6 +248,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private majorVersion: OpencodeFlavorVersion | null = null;
     /** v2-only REST access discovered after spawn; null unless both port and OPENCODE_PASSWORD were found. */
     private v2RestInfo: { baseUrl: string; password: string } | null = null;
+    private v2Steers = new Map<string, OpencodeV2SteerEntry>();
+    private v2AbortInProgress: Promise<void> | null = null;
 
     constructor(
         session: OpencodeSession,
@@ -448,7 +462,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             mode: this.majorVersion ?? 'v1',
             onRetry: (retry) => this.surfaceUpstreamRetry(retry),
             onConnected: () => { void this.nativeTranscript?.refresh(); },
-            onEvent: (type, properties, eventId) => this.nativeTranscript?.event(type, properties, eventId)
+            onEvent: (type, properties, eventId) => {
+                this.nativeTranscript?.event(type, properties, eventId);
+                this.handleV2SteerEvent(type, properties);
+            }
         });
         }
 
@@ -575,6 +592,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
 
         this.installSteerHandler(session, acpSessionId);
+        if (isV2 && this.v2RestInfo) {
+            this.options.onSteerCancelHandlerChange?.(localId => this.v2Steers.get(localId)?.cancel('explicit'));
+        }
 
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
@@ -954,8 +974,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (!localId) {
                     return { steered: false, error: 'Missing localId' };
                 }
-                if (this.majorVersion === 'v2') {
-                    return { steered: false, error: 'OpenCode v2 does not support mid-turn steering' };
+                if (this.majorVersion === 'v2' && !this.v2RestInfo) {
+                    return { steered: false, error: 'OpenCode v2 internal API unavailable' };
                 }
                 const backend = this.backend;
                 // isPromptRequestInFlight(), not processingMessage: after ACP
@@ -1048,7 +1068,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // The foreground input itself may still be awaiting native
                 // persistence. If its text matches, a new id cannot prove
                 // which request was accepted; wait for completion instead.
-                const nativeBefore = !this.nativeSteerReceiptCorrelationLost
+                const nativeBefore = this.majorVersion !== 'v2' && !this.nativeSteerReceiptCorrelationLost
                     && this.pendingSteerAcceptances.size === 1
                     && taken.item.message !== this.activePromptText
                     // Native slash commands can persist an expanded body
@@ -1068,6 +1088,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     await restoreQueuedReservation();
                     releaseOperation();
                     return { steered: false, error: 'Active turn changed' };
+                }
+
+                if (this.majorVersion === 'v2') {
+                    return this.dispatchV2Steer(session, acpSessionId, localId, taken, releaseOperation, restoreQueuedReservation);
                 }
 
                 let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
@@ -1215,6 +1239,144 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         );
     }
 
+    private handleV2SteerEvent(type: string, properties: Record<string, unknown>): void {
+        if (this.majorVersion !== 'v2' || typeof properties.inboxID !== 'string') return;
+        for (const entry of this.v2Steers.values()) {
+            if (properties.sessionID !== entry.sessionId || properties.inboxID !== entry.inputId) continue;
+            if (type === 'session.inbox.delivered') entry.delivered();
+            if (type === 'session.inbox.enqueued') entry.enqueued(properties);
+            // delivery.changed is only a mode change. Neither it nor an
+            // enqueued fact can acknowledge model-visible input delivery.
+        }
+    }
+
+    private async dispatchV2Steer(
+        session: OpencodeSession,
+        sessionId: string,
+        localId: string,
+        taken: QueueReservation<OpencodeMode>,
+        release: () => void,
+        restore: () => Promise<boolean>
+    ): Promise<{ steered: boolean; error?: string }> {
+        const rest = this.v2RestInfo!;
+        const opts = { ...rest, sessionId, text: taken.item.message, inputId: opencodeV2InputId({
+            hapiSessionId: session.client.sessionId, sessionId, localId, text: taken.item.message
+        }) };
+        let accepted = false;
+        let admissionKnown = false;
+        let cancelRequested = false;
+        let abandoned = false;
+        let purpose: 'stop' | 'explicit' | 'teardown' = 'stop';
+        let cancellation: Promise<OpencodeSteerCancelResult> | null = null;
+        let resolveDelivered!: () => void;
+        const delivered = new Promise<void>(resolve => { resolveDelivered = resolve; });
+        const remove = () => { if (this.v2Steers.get(localId) === entry) this.v2Steers.delete(localId); };
+        const unknown = () => {
+            if (accepted) return;
+            if (session.queue.markReservationIndeterminate(taken)) session.client.emitSteerIndeterminate([localId]);
+            release();
+        };
+        const consume = () => {
+            if (accepted) return true;
+            if (abandoned || !session.queue.commitReservation(taken)) return false;
+            accepted = true;
+            session.client.emitMessagesConsumed([localId], { steered: true });
+            this.messageBuffer.addMessage(taken.item.message, 'user');
+            resolveDelivered();
+            release();
+            remove();
+            return true;
+        };
+        const entry: OpencodeV2SteerEntry = {
+            inputId: opts.inputId, sessionId, delivered: consume,
+            enqueued: properties => {
+                const item = properties.item;
+                if (item && typeof item === 'object' && 'type' in item && item.type === 'user'
+                    && 'payload' in item && item.payload && typeof item.payload === 'object'
+                    && 'text' in item.payload && item.payload.text === opts.text) admissionKnown = true;
+            },
+            abandon: () => { abandoned = true; unknown(); },
+            cancel: (nextPurpose, resetFinished = Promise.resolve()) => {
+                cancelRequested = true;
+                if (nextPurpose === 'explicit' || purpose !== 'explicit' && nextPurpose === 'teardown') purpose = nextPurpose;
+                cancellation ??= (async (): Promise<OpencodeSteerCancelResult> => {
+                    const admission = await Promise.race([admitted, delivered.then(() => 'delivered' as const)]);
+                    if (accepted) return 'consumed';
+                    if (!admissionKnown && admission !== 'rejected') {
+                        // A lost POST may still prepare an input. Only a
+                        // positive inbox/projection proves its write happened;
+                        // a no-op DELETE before admission cannot fence it.
+                        const state = await readOpencodeV2Input(opts);
+                        if (state === 'delivered') return consume() ? 'consumed' : 'indeterminate';
+                        admissionKnown = state === 'pending';
+                    }
+                    const outcome = admission === 'rejected' ? 'cancelled'
+                        : admissionKnown ? await cancelOpencodeV2Steer(opts) : 'unknown';
+                    if (accepted || outcome === 'delivered') return consume() ? 'consumed' : 'indeterminate';
+                    await resetFinished;
+                    if (outcome !== 'cancelled' || abandoned) { unknown(); return 'indeterminate'; }
+                    if (purpose === 'explicit') {
+                        session.queue.markReservationIndeterminate(taken);
+                        const removed = session.queue.cancelByLocalId(localId);
+                        release(); remove();
+                        return removed;
+                    }
+                    if (purpose === 'stop' && !taken.originIndeterminate) {
+                        const restored = await restore();
+                        release(); remove();
+                        return restored;
+                    }
+                    // Teardown or a previously unknown delivery never becomes
+                    // an implicit retry. The durable HAPI row remains unknown.
+                    unknown(); remove();
+                    return 'indeterminate';
+                })().catch(error => {
+                    logger.debug('[opencode-remote] v2 cancellation could not be verified', error);
+                    unknown();
+                    return 'indeterminate';
+                });
+                return cancellation;
+            }
+        };
+        this.v2Steers.set(localId, entry);
+        const admitted = (async () => {
+            if (!taken.originIndeterminate) return admitOpencodeV2Steer(opts);
+            // Unknown retries never blindly POST again: a previous request
+            // might still admit later. Reconcile its stable native identity.
+            const state = await readOpencodeV2Input(opts);
+            if (state === 'delivered') { consume(); return 'admitted' as const; }
+            if (state !== 'pending' || cancelRequested) return 'unknown' as const;
+            return steerOpencodeV2Inbox(opts);
+        })().then(result => {
+            admissionKnown ||= result === 'admitted';
+            return result;
+        });
+        const result = await Promise.race([admitted, delivered.then(() => 'delivered' as const)]);
+        if (accepted) return { steered: true };
+        if (cancelRequested) return { steered: false, error: 'Active turn changed' };
+        if (result === 'rejected') {
+            const restored = await restore();
+            release(); remove();
+            return { steered: false, error: restored ? 'OpenCode rejected steering input' : 'Steer state is indeterminate' };
+        }
+        if (result !== 'admitted') {
+            unknown();
+            return { steered: false, error: 'Steer outcome is being reconciled' };
+        }
+        // SSE owns prompt feedback. Identity-based readback closes missed
+        // events/reconnect gaps without treating elapsed time as acceptance.
+        void (async () => {
+            while (!accepted && !cancelRequested && !abandoned) {
+                const state = await readOpencodeV2Input(opts);
+                if (accepted || cancelRequested || abandoned) return;
+                if (state === 'delivered') { consume(); return; }
+                if (state !== 'pending') { unknown(); return; }
+                await new Promise<void>(resolve => setTimeout(resolve, 100));
+            }
+        })();
+        return { steered: true };
+    }
+
     /**
      * Single source of the steer gate's lifecycle: bump the epoch so any steer
      * parked on an await is invalid, close the normal-prompt gate, and stop
@@ -1275,8 +1437,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * mode starts leaving.
      */
     private setSteeringActive(active: boolean): void {
-        // OpenCode v2 rejects concurrent session/prompt requests for one session.
-        const steeringActive = active && this.majorVersion !== 'v2';
+        // v2 uses its experimental durable REST inbox, never concurrent ACP.
+        const steeringActive = active && (this.majorVersion !== 'v2' || this.v2RestInfo !== null);
         this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive }));
     }
 
@@ -1398,6 +1560,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // durable-state await must not be able to send into the backend that is
         // about to be torn down (or a replacement one).
         this.closeSteerGate({ detachStrandedSteers: true });
+        this.options.onSteerCancelHandlerChange?.(null);
+        await Promise.all(Array.from(this.v2Steers.values(), entry => entry.cancel('teardown')));
+        for (const entry of this.v2Steers.values()) entry.abandon();
+        this.v2Steers.clear();
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
             steered: false,
             error: 'Session ending'
@@ -1555,6 +1721,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // turn's drain. Only already-transmitted requests are detached — a
         // reservation still waiting on its durable write keeps gating the
         // drain, so its row cannot be restored after the next prompt.
+        const v2Cancellations = Array.from(this.v2Steers.values(), entry => entry.cancel('stop'));
         this.closeSteerGate({ detachStrandedSteers: true });
 
         this.session.onThinkingChange(false);
@@ -1568,6 +1735,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // deactivate the foreground handler and swallow the tail output
             // OpenCode still emits while processing the cancel.
             this.settleBackendSoftSteers(backend, this.steerTurnEpoch, 'stall-cancel');
+            await Promise.all(v2Cancellations);
         }
     }
 
@@ -1960,9 +2128,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /**
      * `leavingRemote` distinguishes plain Stop (`false`, the default — stays
      * in the same remote session) from switch-to-local/exit (`true` — the
-     * session is being torn down). A 6th PR-review round rejected an earlier
-     * fix (always aborting `compactAbortController` here) because it broke
-     * this feature's core invariant: compact and a prompt must never touch
+     * session is being torn down). Compact and a prompt must never touch
      * the same OpenCode session concurrently (see
      * `compactResultSuppressed`'s field doc comment for the full
      * reasoning). Plain Stop aborts only read-only marker/result GETs. It
@@ -1972,79 +2138,104 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * disconnects the ACP subprocess right after.
      */
     private async handleAbort(leavingRemote = false): Promise<void> {
-        // Synchronous, before any await: a steer parked on its durable-state
-        // await must observe the turn as invalid immediately, so it restores
-        // its row instead of injecting into a cancelled turn or a new one.
-        this.closeSteerGate({ detachStrandedSteers: true });
-        // A hostile-review sweep found that a plain Stop during an in-flight
-        // compact — which deliberately leaves the operation running for real
-        // (see compactResultSuppressed's doc comment) — still unconditionally
-        // flipped `thinking` off and reported "Turn aborted" below, telling
-        // the user the turn had stopped while the dequeue loop was actually
-        // still blocked inside runCompactOperation() for however long the
-        // real server-side compaction takes (potentially minutes). Track
-        // that specific case so the messaging stays honest: nothing has
-        // actually stopped yet from the user's perspective, and the dequeue
-        // loop's own `finally` (once runCompactOperation() genuinely
-        // returns) remains the sole source of truth for when this turn is
-        // done.
-        const compactAbortController = this.compactAbortController;
-        if (compactAbortController) {
-            this.compactResultSuppressed = true;
-            // Only summarize can still mutate the shared OpenCode session.
-            // Plain Stop aborts snapshot/verification reads, but deliberately
-            // waits for an in-flight POST to complete server-side.
-            if (
-                leavingRemote
-                || this.compactOperationPhase === 'snapshot'
-                || this.compactOperationPhase === 'post-summarize'
-                || this.compactOperationPhase === 'verification'
-            ) {
-                compactAbortController.abort();
+        if (this.majorVersion !== 'v2') return this.performAbort(leavingRemote);
+        if (this.v2AbortInProgress) {
+            // One overlapping Stop/switch owns queue.reset. A later reset
+            // must not erase an input the first cancellation just restored.
+            if (leavingRemote) {
+                this.closeSteerGate({ detachStrandedSteers: true });
+                this.compactResultSuppressed = true;
+                this.compactAbortController?.abort();
             }
+            return this.v2AbortInProgress;
         }
-        const backend = this.backend;
-        if (backend && this.session.sessionId) {
-            try {
-                await backend.cancelPrompt(this.session.sessionId);
-            } finally {
-                // A soft steer this turn dispatched can still be pending after
-                // an Abort and its ACP request may never answer, which would
-                // hold both the next turn's message handler and the inter-turn
-                // model/effort switches that wait for response-complete. Only
-                // settle counters this backend genuinely owns, so an ordinary
-                // Stop with no steer keeps the cancelled turn's trailing
-                // tool_result/text (abortSoftSteers deactivates the shared
-                // foreground handler).
-                this.settleBackendSoftSteers(backend, this.steerTurnEpoch, 'abort');
+        let resolve!: () => void;
+        let reject!: (error: unknown) => void;
+        const abort = new Promise<void>((ok, failed) => { resolve = ok; reject = failed; });
+        this.v2AbortInProgress = abort;
+        void this.performAbort(leavingRemote).then(resolve, reject);
+        try { await abort; }
+        finally { if (this.v2AbortInProgress === abort) this.v2AbortInProgress = null; }
+    }
+
+    private async performAbort(leavingRemote: boolean): Promise<void> {
+        let finishReset!: () => void;
+        const resetFinished = new Promise<void>(resolve => { finishReset = resolve; });
+        const v2Cancellations = Array.from(this.v2Steers.values(), entry => entry.cancel('stop', resetFinished));
+        let resetDone = false;
+        try {
+            // Synchronous, before any await: a steer parked on its durable-state
+            // await must observe the turn as invalid immediately, so it restores
+            // its row instead of injecting into a cancelled turn or a new one.
+            this.closeSteerGate({ detachStrandedSteers: true });
+            // A plain Stop during an in-flight compact deliberately leaves the
+            // operation running for real. Its dequeue-loop finally remains
+            // the boundary for thinking=false while the native POST can mutate
+            // this session; Stop must not report completion before that boundary.
+            const compactAbortController = this.compactAbortController;
+            if (compactAbortController) {
+                this.compactResultSuppressed = true;
+                // Only summarize can still mutate the shared OpenCode session.
+                // Plain Stop aborts snapshot/verification reads, but deliberately
+                // waits for an in-flight POST to complete server-side.
+                if (
+                    leavingRemote
+                    || this.compactOperationPhase === 'snapshot'
+                    || this.compactOperationPhase === 'post-summarize'
+                    || this.compactOperationPhase === 'verification'
+                ) {
+                    compactAbortController.abort();
+                }
             }
+            const backend = this.backend;
+            if (backend && this.session.sessionId) {
+                try {
+                    await backend.cancelPrompt(this.session.sessionId);
+                } finally {
+                    // A soft steer this turn dispatched can still be pending after
+                    // an Abort and its ACP request may never answer, which would
+                    // hold both the next turn's message handler and the inter-turn
+                    // model/effort switches that wait for response-complete. Only
+                    // settle counters this backend genuinely owns, so an ordinary
+                    // Stop with no steer keeps the cancelled turn's trailing
+                    // tool_result/text (abortSoftSteers deactivates the shared
+                    // foreground handler).
+                    this.settleBackendSoftSteers(backend, this.steerTurnEpoch, 'abort');
+                }
+            }
+            await this.permissionHandler?.cancelAll('User aborted');
+            // A steer that was already dispatched may still complete after the
+            // abort; preserve its reservation so the completion callback can
+            // still commit it (or mark it indeterminate) instead of losing the
+            // input.
+            this.session.queue.reset({ preserveDispatchingReservations: true });
+            resetDone = true;
+            finishReset();
+            await Promise.all(v2Cancellations);
+            this.abortController.abort();
+            this.abortController = new AbortController();
+            // Re-read here (not the snapshot taken above, before the awaits) in
+            // case a concurrent leavingRemote=true call for the same compact
+            // interleaved with this one and already aborted it — RPC dispatch
+            // doesn't serialize handleAbort() calls against each other, so a
+            // Stop immediately followed by a switch-to-local can genuinely
+            // overlap. Without this, the (now-stale) plain-Stop continuation
+            // could append its "still waiting" message after the switch's
+            // "Turn aborted" already ran, showing the two in a confusing order.
+            const activeCompactAbortController = this.compactAbortController;
+            const decision = selectAbortStatusMessage({
+                hasCompactInFlight: activeCompactAbortController !== null && this.compactOperationPhase === 'summarize',
+                leavingRemote,
+                compactAborted: activeCompactAbortController?.signal.aborted ?? false
+            });
+            if (decision.shouldClearThinking) {
+                this.session.onThinkingChange(false);
+            }
+            this.messageBuffer.addMessage(decision.message, 'status');
+        } finally {
+            if (!resetDone) for (const entry of this.v2Steers.values()) entry.abandon();
+            finishReset();
         }
-        await this.permissionHandler?.cancelAll('User aborted');
-        // A steer that was already dispatched may still complete after the
-        // abort; preserve its reservation so the completion callback can
-        // still commit it (or mark it indeterminate) instead of losing the
-        // input.
-        this.session.queue.reset({ preserveDispatchingReservations: true });
-        this.abortController.abort();
-        this.abortController = new AbortController();
-        // Re-read here (not the snapshot taken above, before the awaits) in
-        // case a concurrent leavingRemote=true call for the same compact
-        // interleaved with this one and already aborted it — RPC dispatch
-        // doesn't serialize handleAbort() calls against each other, so a
-        // Stop immediately followed by a switch-to-local can genuinely
-        // overlap. Without this, the (now-stale) plain-Stop continuation
-        // could append its "still waiting" message after the switch's
-        // "Turn aborted" already ran, showing the two in a confusing order.
-        const activeCompactAbortController = this.compactAbortController;
-        const decision = selectAbortStatusMessage({
-            hasCompactInFlight: activeCompactAbortController !== null && this.compactOperationPhase === 'summarize',
-            leavingRemote,
-            compactAborted: activeCompactAbortController?.signal.aborted ?? false
-        });
-        if (decision.shouldClearThinking) {
-            this.session.onThinkingChange(false);
-        }
-        this.messageBuffer.addMessage(decision.message, 'status');
     }
 
     private async handleExitFromUi(): Promise<void> {

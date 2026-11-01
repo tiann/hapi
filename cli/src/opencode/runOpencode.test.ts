@@ -473,6 +473,20 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
+    it('delegates native v2 cancellation before generic queue removal and clears the delegate on teardown', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const bind = harness.opencodeLoopArgs[0].onSteerCancelHandlerChange as
+            (handler: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null) => void;
+        const cancel = harness.session.onCancelQueuedMessage.mock.calls[0][0] as
+            (id: string) => boolean | Promise<unknown>;
+        const native = vi.fn((id: string) => id === 'native' ? Promise.resolve('in-flight' as const) : undefined);
+        bind(native);
+        await expect(cancel('native')).resolves.toBe('in-flight');
+        expect(native).toHaveBeenCalledWith('native');
+        bind(null);
+        expect(cancel('missing')).toBe(false);
+    });
+
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {
         await runOpencode({ startedBy: 'runner' });
 

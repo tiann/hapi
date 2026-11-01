@@ -2678,6 +2678,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         firstMessage?: string;
         firstMode?: OpencodeMode;
         holdPrompt?: boolean;
+        launcherOptions?: Parameters<typeof opencodeRemoteLauncher>[1];
     } = {}): Promise<{
         stub: SteerSession;
         handlers: Map<string, (params: unknown) => unknown>;
@@ -2698,7 +2699,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             [{ message: opts.firstMessage ?? 'first', mode, localId: 'first' }],
             { keepOpen: true }
         );
-        const runPromise = opencodeRemoteLauncher(stub.session as never);
+        const runPromise = opencodeRemoteLauncher(stub.session as never, opts.launcherOptions);
         await vi.waitFor(() => expect(harness.promptCount).toBe(1));
         // Later prompts fall back to the default auto-resolving prompt, so a
         // release can never strand the loop on a second turn.
@@ -2741,7 +2742,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         return { steering, releaseState };
     }
 
-    it.each([true, false])('does not advertise v2 steering with REST discovery=%s', async (discovered) => {
+    it.each([true, false])('advertises v2 steering only with REST discovery=%s', async (discovered) => {
         harness.detectedVersion = 'v2';
         harness.discoveredPort = discovered ? 48274 : null;
         harness.discoveredPassword = discovered ? 'synthetic-password' : null;
@@ -2750,13 +2751,13 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             expect(harness.createBackendArgs.at(-1)?.majorVersion).toBe('v2');
             expect(harness.events).toContain('prompt:start');
             expect(harness.events).not.toContain('prompt:end');
-            expect(stub.steeringActiveCalls).not.toContain(true);
+            expect(stub.steeringActiveCalls.includes(true)).toBe(discovered);
         } finally {
             await stopTurn(stub, releasePrompt, runPromise);
         }
     });
 
-    it.each([true, false])('rejects v2 steering before reserving the queued row with REST discovery=%s', async (discovered) => {
+    it.each([false])('rejects v2 steering before reserving the queued row with REST discovery=%s', async (discovered) => {
         const receipts = await import('./utils/opencodeInputReceipt');
         const receipt = vi.spyOn(receipts, 'fetchOpencodeUserMessages').mockResolvedValue(null);
         harness.detectedVersion = 'v2';
@@ -2767,7 +2768,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             stub.session.queue.push('correction', createMode(), 'steer');
             const queued = stub.session.queue.peekByLocalId('steer');
             await expect(steerHandlerOf(stub)({ localId: 'steer' })).resolves.toEqual({
-                steered: false, error: 'OpenCode v2 does not support mid-turn steering'
+                steered: false, error: 'OpenCode v2 internal API unavailable'
             });
             expect(stub.session.queue.peekByLocalId('steer')).toBe(queued);
             expect(harness.steerStateCalls).toEqual([]);
@@ -2780,6 +2781,209 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             receipt.mockRestore();
             await stopTurn(stub, releasePrompt, runPromise);
         }
+    });
+
+    it('v2 durably admits without ACP soft prompt and consumes only its delivered identity', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 48274;
+        harness.discoveredPassword = 'synthetic-password';
+        let inputId = '';
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+            if (init?.method === 'POST') inputId = JSON.parse(String(init.body)).id;
+            const item = { id: inputId, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            return Response.json({ data: init?.method === 'POST' ? item : [item] });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await expect(steerHandlerOf(stub)({ localId: 'v2-steer' })).resolves.toEqual({ steered: true });
+            expect(harness.softSteerCalls).toEqual([]);
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            const event = harness.eventStreamOptions.at(-1)!.onEvent!;
+            event('session.inbox.delivery.changed', { sessionID: 'acp-session-1', inboxID: inputId, delivery: 'steer' });
+            event('session.inbox.delivered', { sessionID: 'other-session', inboxID: inputId });
+            event('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: 'other-input' });
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            event('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: inputId });
+            event('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: inputId });
+            expect(stub.emitMessagesConsumedCalls).toEqual([{ localIds: ['v2-steer'], options: { steered: true } }]);
+            expect(harness.events).not.toContain('prompt:end');
+        } finally {
+            nativeFetch.mockRestore();
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('v2 recovers a missing delivered event by exact native projection readback', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = '';
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') {
+                id = JSON.parse(String(init.body)).id;
+                return Response.json({ data: { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } } });
+            }
+            return Response.json({ data: String(url).endsWith('/inbox') ? [] : { id, sessionID: 'acp-session-1', type: 'user', text: 'correction' } });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([{ localIds: ['v2-steer'], options: { steered: true } }]));
+            expect(harness.events).not.toContain('prompt:end');
+        } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
+    });
+
+    it('v2 keeps missing delivery evidence unknown and never blindly re-POSTs on Retry', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let posts = 0;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') { posts++; throw new Error('admission response lost'); }
+            return String(url).endsWith('/inbox') ? Response.json({ data: [] }) : new Response(null, { status: 404 });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            expect(stub.steerIndeterminateCalls).toContainEqual(['v2-steer']);
+            expect(stub.session.queue.cancelByLocalId('v2-steer')).toBe(true);
+            // Rehydration after explicit Retry retains original unknown origin.
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            const held = stub.session.queue.takeByLocalId('v2-steer')!;
+            stub.session.queue.beginReservationDispatch(held);
+            stub.session.queue.markReservationIndeterminate(held);
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            expect(posts).toBe(1);
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+        } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
+    });
+
+    it('v2 confirms native cancellation before allowing explicit removal', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let cancelled = false;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') id = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') { cancelled = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return String(url).endsWith('/inbox') ? Response.json({ data: cancelled ? [] : [item] }) : new Response(null, { status: 404 });
+        });
+        let cancel: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null = null;
+        const { stub, releasePrompt, runPromise } = await startTurn({ launcherOptions: { onSteerCancelHandlerChange: value => { cancel = value; } } });
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await expect(cancel!('v2-steer')).resolves.toBe(true);
+            expect(cancelled).toBe(true);
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            expect(stub.session.queue.cancelByLocalId('v2-steer')).toBe(false);
+        } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
+    });
+
+    it('v2 restores a proven cancelled input after one reset for overlapping Stops', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let cancelled = false;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') id = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') { cancelled = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return String(url).endsWith('/inbox') ? Response.json({ data: cancelled ? [] : [item] }) : new Response(null, { status: 404 });
+        });
+        let releaseAbort!: () => void;
+        harness.cancelPromptImpl = () => new Promise<void>(resolve => { releaseAbort = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        const reset = vi.spyOn(stub.session.queue, 'reset');
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            const abort = stub.rpcHandlers.get('abort') as () => Promise<void>;
+            const first = abort();
+            await vi.waitFor(() => expect(cancelled).toBe(true));
+            const second = abort();
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            releaseAbort();
+            await Promise.all([first, second]);
+            expect(reset).toHaveBeenCalledTimes(1);
+            expect(stub.session.queue.peekByLocalId('v2-steer')?.message).toBe('correction');
+            expect(harness.steerStateCalls).toContainEqual({ localIds: ['v2-steer'], state: 'queued' });
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+        } finally {
+            releaseAbort?.(); harness.cancelPromptImpl = null; nativeFetch.mockRestore();
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('v2 lets delivery win a no-op native cancellation without restoring or double-ACKing', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let delivered = false;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') id = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') { delivered = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return Response.json({ data: String(url).endsWith('/inbox') ? delivered ? [] : [item] : { id, sessionID: 'acp-session-1', type: 'user', text: 'correction' } });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            expect(stub.emitMessagesConsumedCalls).toEqual([{ localIds: ['v2-steer'], options: { steered: true } }]);
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            expect(harness.steerStateCalls).not.toContainEqual({ localIds: ['v2-steer'], state: 'queued' });
+        } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
+    });
+
+    it('v2 accepts its delivered event before the admission HTTP response without waiting or double delivery', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let releasePost!: () => void;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+            id = JSON.parse(String(init?.body)).id;
+            await new Promise<void>(resolve => { releasePost = resolve; });
+            return Response.json({ data: { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } } });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            const steering = steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await vi.waitFor(() => expect(id).not.toBe(''));
+            harness.eventStreamOptions.at(-1)!.onEvent!('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: id });
+            await expect(steering).resolves.toEqual({ steered: true });
+            expect(stub.emitMessagesConsumedCalls).toHaveLength(1);
+            releasePost();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(stub.emitMessagesConsumedCalls).toHaveLength(1);
+        } finally { releasePost?.(); nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
+    });
+
+    it('v2 Stop fences a delayed admission before native cancellation and FIFO restoration', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let releasePost!: () => void; let deleted = false;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') {
+                id = JSON.parse(String(init.body)).id;
+                await new Promise<void>(resolve => { releasePost = resolve; });
+                return Response.json({ data: { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } } });
+            }
+            if (init?.method === 'DELETE') { deleted = true; return new Response(null, { status: 204 }); }
+            return String(url).endsWith('/inbox') ? Response.json({ data: [] }) : new Response(null, { status: 404 });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            const steering = steerHandlerOf(stub)({ localId: 'v2-steer' });
+            await vi.waitFor(() => expect(id).not.toBe(''));
+            const aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(deleted).toBe(false);
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            releasePost();
+            await Promise.all([steering, aborting]);
+            expect(deleted).toBe(true);
+            expect(stub.session.queue.peekByLocalId('v2-steer')?.message).toBe('correction');
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            expect(nativeFetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1);
+        } finally { releasePost?.(); nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
     });
 
     it('injects a compatible queued message into the active turn without cancelling it', async () => {
