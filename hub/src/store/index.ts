@@ -426,6 +426,10 @@ export class Store {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_user_message_at INTEGER,
+                content_revision INTEGER NOT NULL DEFAULT 0,
+                read_revision INTEGER NOT NULL DEFAULT 0,
+                read_state_version INTEGER NOT NULL DEFAULT 0,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -465,6 +469,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
+                content_revision INTEGER NOT NULL DEFAULT 0,
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -1179,8 +1184,9 @@ export class Store {
         `)
     }
 
-    /** v29→v30: persist structured-task backfill state and canonical source positions. */
+    /** v29→v30: add read-state columns and structured-task source positions. */
     private migrateFromV29ToV30(): void {
+        // Branch databases labeled v28 may predate upstream turn columns.
         this.migrateFromV27ToV28()
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS migration_state (
@@ -1188,16 +1194,25 @@ export class Store {
                 completed_at INTEGER NOT NULL
             );
         `)
+
         const columns = this.getSessionColumnNames()
-        // A partially built legacy database may not have the sessions table yet.
-        // createSchema runs after the legacy migration ladder and creates the
-        // current columns in that case.
-        if (columns.size === 0) return
-        if (!columns.has('todos_source_at')) {
-            this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_at INTEGER')
+        if (columns.size > 0) {
+            if (!columns.has('todos_source_at')) {
+                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_at INTEGER')
+            }
+            if (!columns.has('todos_source_seq')) {
+                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
+            }
+            for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+                if (!columns.has(name)) {
+                    this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+                }
+            }
         }
-        if (!columns.has('todos_source_seq')) {
-            this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
+
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
         }
     }
 

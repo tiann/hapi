@@ -167,6 +167,8 @@ object SummaryPatching {
         thinking = session.thinking,
         activeAt = session.activeAt,
         updatedAt = session.updatedAt,
+        contentRevision = session.contentRevision,
+        readState = session.readState,
         createdAt = session.createdAt,
         lastUserMessageAt = session.lastUserMessageAt,
         hasConversationContent = session.hasConversationContent,
@@ -213,6 +215,8 @@ object SummaryPatching {
      */
     fun applySessionSummaryPatch(current: SessionSummary, patch: SessionPatch): SessionSummary {
         var next = current.copy(
+            contentRevision = patch.contentRevision?.let { max(current.contentRevision ?: 0, it) } ?: current.contentRevision,
+            readState = SessionReadState.merge(current.readState, patch.readState),
             active = patch.active ?: current.active,
             thinking = patch.thinking ?: current.thinking,
             activeAt = patch.activeAt ?: current.activeAt,
@@ -309,7 +313,8 @@ object SummaryPatching {
      * effect is suppressing a re-render that stores an equal-rendering value.
      */
     fun isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): Boolean {
-        return current.active == next.active
+        return current.contentRevision == next.contentRevision && current.readState == next.readState &&
+            current.active == next.active
             && current.thinking == next.thinking
             && current.updatedAt == next.updatedAt
             && current.lastUserMessageAt == next.lastUserMessageAt

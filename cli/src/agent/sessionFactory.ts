@@ -398,6 +398,11 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
+    // Shared Codex cold-resume calls bootstrap while holding native ownership.
+    // The source reservation outlives the native fork through child startup.
+    if (options.flavor === 'codex' && sessionInfo.metadata?.codexArchivedFork) {
+        throw new Error(`HAPI session ${options.sessionId} has a pending archived fork; retry that fork before resuming the source`)
+    }
     // #1911 M1 belt: match hub merge-preserve scope — only hub-authored archive.
     // CLI self-archive (archivedBy=cli) must still reopen; hub clears before spawn
     // for intentional revive. CAS closed hub-side (success+preserve + ack EXIT).

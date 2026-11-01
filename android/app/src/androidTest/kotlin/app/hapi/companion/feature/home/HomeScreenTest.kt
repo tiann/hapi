@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.home
 
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Build
 import android.view.WindowManager
@@ -8,12 +9,16 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.platform.app.InstrumentationRegistry
 import app.hapi.companion.R
 import app.hapi.companion.feature.sessions.SessionListViewModel
@@ -79,6 +84,8 @@ class HomeScreenTest {
     private val viewModel = SessionListViewModel(sessions, HomeMachines(), LastSeenStore(scope), scope)
     private val today = LocalDate.now().toEpochDay()
     @Volatile private var imeVisible = false
+    /** Compose's reported IME inset height, captured next to [imeVisible] for diagnostics. */
+    @Volatile private var composeImeBottom = -1
 
     @Before fun configureWindow() {
         compose.runOnUiThread {
@@ -97,7 +104,11 @@ class HomeScreenTest {
     @Composable
     private fun Content() {
         val showingKeyboard = WindowInsets.isImeVisible
-        SideEffect { imeVisible = showingKeyboard }
+        val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+        SideEffect {
+            imeVisible = showingKeyboard
+            composeImeBottom = imeBottom
+        }
         HapiTheme(dynamicColor = false) {
             HomeScreen(
                 viewModel = viewModel,
@@ -121,6 +132,36 @@ class HomeScreenTest {
     private fun openFilters() = compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
     private fun pressBack() {
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+    }
+
+    /**
+     * Wait for a named phase and, on timeout, report which phase stalled plus
+     * the IME signals observed by both Compose and the platform (tiann/hapi#2253).
+     * The behaviour under test is unchanged; only the failure message is.
+     */
+    private fun awaitPhase(phase: String, condition: () -> Boolean) {
+        try {
+            compose.waitUntil(PHASE_TIMEOUT_MS) { condition() }
+        } catch (timeout: ComposeTimeoutException) {
+            throw AssertionError("Timed out after ${PHASE_TIMEOUT_MS}ms: $phase (${imeState()})", timeout)
+        }
+    }
+
+    private fun imeState(): String {
+        val insets = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+        val keyboard = when (compose.activity.resources.configuration.keyboard) {
+            Configuration.KEYBOARD_NOKEYS -> "nokeys"
+            Configuration.KEYBOARD_QWERTY -> "qwerty"
+            Configuration.KEYBOARD_12KEY -> "12key"
+            else -> "other"
+        }
+        return "sdk=${Build.VERSION.SDK_INT}, " +
+            "composeIsImeVisible=$imeVisible, " +
+            "compatIsVisible=${insets?.isVisible(WindowInsetsCompat.Type.ime())}, " +
+            "imeInsetBottom=${insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom}, " +
+            "composeImeBottom=$composeImeBottom, " +
+            "keyboard=$keyboard, " +
+            "softInputMode=${compose.activity.window.attributes.softInputMode}"
     }
 
     private fun capture(name: String) {
@@ -198,19 +239,25 @@ class HomeScreenTest {
         mount()
         compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
         compose.onNodeWithTag("home-search-input").performTextInput("Build")
-        compose.waitUntil(10_000) { imeVisible }
+        awaitPhase("IME appears after opening search") { imeVisible }
         pressBack()
-        compose.waitUntil(10_000) { !imeVisible }
+        awaitPhase("IME hides after Back") { !imeVisible }
         compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertTextEquals("Build")
 
         compose.onNodeWithTag("home-search-input").performClick()
-        compose.waitUntil(10_000) { imeVisible }
+        awaitPhase("IME appears after re-focusing the search field") { imeVisible }
         compose.onNodeWithTag("home-search-input").performImeAction()
-        compose.waitUntil(10_000) { !imeVisible }
+        awaitPhase("IME hides after the IME Search action") { !imeVisible }
         compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertTextEquals("Build")
         pressBack()
-        compose.waitUntil(10_000) { viewModel.uiState.value.searchQuery.isEmpty() }
+        awaitPhase("search closes once the keyboard is already hidden") {
+            viewModel.uiState.value.searchQuery.isEmpty()
+        }
         compose.onNodeWithTag("home-search-input").assertDoesNotExist()
         compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).assertIsDisplayed()
+    }
+
+    private companion object {
+        const val PHASE_TIMEOUT_MS = 10_000L
     }
 }

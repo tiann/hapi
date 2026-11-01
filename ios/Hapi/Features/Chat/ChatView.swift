@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 /// Transcript layout and scroll intent live in `ChatTranscriptView`.
 struct ChatView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: ChatModel
     /// Adaptive session settings (toolbar gear).
     @State private var configOpen = false
@@ -67,6 +68,11 @@ struct ChatView: View {
                 loadFailedState
             } else if model.blocks.isEmpty && !model.hasMore {
                 emptyState
+                    .task(id: scenePhase == .active ? model.readThroughRevision : nil) {
+                        if scenePhase == .active {
+                            model.markDisplayed(revision: model.readThroughRevision, serverState: model.renderedReadState)
+                        }
+                    }
             } else {
                 ChatTranscriptView(model: model)
             }
@@ -306,6 +312,9 @@ struct ChatView: View {
             if let superseding = model.supersededSessionId {
                 onNavigateToSession?(superseding)
             }
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active { model.resetDisplayedReadReceipt() }
         }
     }
 

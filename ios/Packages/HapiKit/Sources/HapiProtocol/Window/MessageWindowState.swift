@@ -73,6 +73,7 @@ public enum OlderLoadOutcome: Sendable {
 /// type) — deliberately mirroring the web's instance-based change detection,
 /// not deep equality.
 public struct MessageWindowState: Equatable, Sendable {
+    public var readThroughRevision: Int?
     public let sessionId: String
     /// Window rows in position order (queued rows re-merged after each trim).
     public var messages: [WindowMessage] = []

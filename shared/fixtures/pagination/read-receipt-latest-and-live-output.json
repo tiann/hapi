@@ -1,0 +1,109 @@
+{
+    "description": "A successful latest page establishes the read receipt; live readable rows advance it independently of position sequence.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "contentRevision": 5,
+                "createdAt": 10000,
+                "id": "answer",
+                "invokedAt": 10000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 10
+            },
+            {
+                "contentRevision": 6,
+                "createdAt": 12000,
+                "id": "next",
+                "invokedAt": 12000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 12
+            }
+        ],
+        "newestCursor": {
+            "at": 12000,
+            "seq": 12
+        },
+        "olderCursor": null,
+        "readThroughRevision": 6,
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "read-receipt-latest-and-live-output",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 20
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "answer",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "contentRevision": 5,
+                            "createdAt": 10000,
+                            "id": "answer",
+                            "invokedAt": 10000,
+                            "localId": null,
+                            "seq": 10
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": null,
+                        "nextBeforeSeq": null,
+                        "readThroughRevision": 5,
+                        "reset": false,
+                        "snapshotHeadAt": 10000,
+                        "snapshotHeadSeq": 10
+                    }
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "message": "next",
+                                "type": "message"
+                            },
+                            "type": "codex"
+                        },
+                        "role": "agent"
+                    },
+                    "contentRevision": 6,
+                    "createdAt": 12000,
+                    "id": "next",
+                    "invokedAt": 12000,
+                    "localId": null,
+                    "seq": 12
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}
