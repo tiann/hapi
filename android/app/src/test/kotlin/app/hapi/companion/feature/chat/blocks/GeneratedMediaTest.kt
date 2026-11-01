@@ -53,6 +53,57 @@ class GeneratedMediaTest {
         assertFalse(GeneratedMediaKind.FILE.loadsOnMount)
     }
 
+    /** Fake MimeTypeMap table for the resolution-seam tests below. */
+    private val extensionTypes = mapOf(
+        "pdf" to "application/pdf",
+        "mp4" to "video/mp4",
+        "zip" to "application/zip",
+    )
+
+    @Test
+    fun genericOrMissingWireTypesAreRefinedFromTheFileName() {
+        // Pre-fix behavior handed application/octet-stream to ACTION_VIEW for
+        // these, which no application/pdf viewer ever matches.
+        assertEquals("application/pdf", resolveFileMimeType(null, "report.pdf", extensionTypes::get))
+        assertEquals(
+            "application/pdf",
+            resolveFileMimeType("application/octet-stream", "年度报告.pdf", extensionTypes::get),
+        )
+        assertEquals("application/pdf", resolveFileMimeType("", "report.pdf", extensionTypes::get))
+        // Extension lookup lowercases first, like the MimeTypeMap contract.
+        assertEquals("application/pdf", resolveFileMimeType(null, "REPORT.PDF", extensionTypes::get))
+    }
+
+    @Test
+    fun unresolvableNamesFallBackToGenericOctetStream() {
+        assertEquals(
+            "application/octet-stream",
+            resolveFileMimeType(null, "data.xyz-not-a-type", extensionTypes::get),
+        )
+        assertEquals(
+            "application/octet-stream",
+            resolveFileMimeType("application/octet-stream", "no-extension", extensionTypes::get),
+        )
+        // A bogus resolved value (no slash / wildcard) is not trusted either.
+        assertEquals(
+            "application/octet-stream",
+            resolveFileMimeType(null, "odd.weird", mapOf("weird" to "not-a-mime")::get),
+        )
+    }
+
+    @Test
+    fun specificWireTypesPassThroughUntouched() {
+        assertEquals("text/plain", resolveFileMimeType("text/plain", "report.pdf", extensionTypes::get))
+        assertEquals("application/zip", resolveFileMimeType("application/zip", "archive.pdf", extensionTypes::get))
+        // The wire type wins even when the extension would map elsewhere.
+        assertEquals("text/csv", resolveFileMimeType("text/csv", "report.pdf", extensionTypes::get))
+        // Octet-stream is matched case-insensitively and still refined.
+        assertEquals(
+            "application/pdf",
+            resolveFileMimeType("APPLICATION/OCTET-STREAM", "report.pdf", extensionTypes::get),
+        )
+    }
+
     @Test
     fun labelsAndLoadActionsMapPerKind() {
         assertEquals(R.string.media_displayed_image, GeneratedMediaKind.IMAGE.labelRes)

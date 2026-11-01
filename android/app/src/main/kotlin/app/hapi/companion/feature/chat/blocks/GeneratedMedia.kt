@@ -3,6 +3,7 @@ package app.hapi.companion.feature.chat.blocks
 import app.hapi.companion.R
 import java.io.File
 import java.io.IOException
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -64,6 +65,33 @@ val GeneratedMediaKind.loadActionRes: Int?
 
 /** Cache directory for downloaded non-image generated media. */
 internal fun generatedMediaCacheDirectory(cacheDir: File): File = File(cacheDir, "generated-media")
+
+/**
+ * Resolves the MIME type the file card's Open (ACTION_VIEW) and Save
+ * (ACTION_CREATE_DOCUMENT) outlets should carry. A specific wire type passes
+ * through untouched, but a missing or `application/octet-stream` wire type
+ * would defeat Android's viewer matching — a PDF viewer registered for
+ * `application/pdf` is not matched by an intent that explicitly says
+ * `application/octet-stream` — so the type is re-derived from the original
+ * filename's extension through [resolveExtension] (the app passes
+ * `MimeTypeMap`; JVM tests pass a fake table), keeping the generic fallback
+ * for extensions the table does not know.
+ */
+internal fun resolveFileMimeType(
+    wireMimeType: String?,
+    fileName: String,
+    resolveExtension: (extension: String) -> String?,
+): String {
+    val wire = wireMimeType?.trim().orEmpty()
+    if (wire.isNotEmpty() && !wire.equals("application/octet-stream", ignoreCase = true)) return wire
+    val extension = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+    if (extension.isEmpty()) return GENERIC_FILE_MIME_TYPE
+    val resolved = resolveExtension(extension)?.takeIf { it.isNotBlank() && '/' in it && '*' !in it }
+    return resolved ?: GENERIC_FILE_MIME_TYPE
+}
+
+/** Generic fallback for files whose extension yields nothing more specific. */
+internal const val GENERIC_FILE_MIME_TYPE: String = "application/octet-stream"
 
 /**
  * Filesystem-safe cache file name for one generated media blob. The wire

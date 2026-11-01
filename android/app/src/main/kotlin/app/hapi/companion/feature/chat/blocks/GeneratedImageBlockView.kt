@@ -64,6 +64,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import android.webkit.MimeTypeMap
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatMedia
 import app.hapi.companion.ui.theme.hapi
@@ -459,7 +460,9 @@ private fun GeneratedAudioPlayer(file: File, label: String) {
  * File intent — web G13's bordered icon + filename row; the browser's single
  * download link becomes the two Android outlets the platform offers: Open
  * (ACTION_VIEW over the FileProvider cache uri) and Save (system
- * ACTION_CREATE_DOCUMENT picker, no storage permission needed).
+ * ACTION_CREATE_DOCUMENT picker, no storage permission needed). Both carry
+ * the *resolved* MIME type — a missing or octet-stream wire type is re-derived
+ * from the filename extension so a PDF actually matches a PDF viewer.
  */
 @Composable
 private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
@@ -467,7 +470,11 @@ private fun GeneratedFileActions(file: File, block: GeneratedImageBlock) {
     val scope = rememberCoroutineScope()
     var openFailed by remember(block.id) { mutableStateOf(false) }
     var saveFailed by remember(block.id) { mutableStateOf(false) }
-    val mimeType = block.mimeType ?: "application/octet-stream"
+    val mimeType = remember(block.id, block.mimeType, block.fileName) {
+        resolveFileMimeType(block.mimeType, block.fileName) { extension ->
+            MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+        }
+    }
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument(mimeType),
     ) { uri ->
