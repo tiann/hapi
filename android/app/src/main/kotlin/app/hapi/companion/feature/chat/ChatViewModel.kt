@@ -1378,6 +1378,10 @@ class ChatViewModel(
      * attachment chips migrate into hub scratchlist storage first (their chat
      * upload paths are not valid entry attachments); any rejection frees the
      * migrated hub blobs so a retry can re-migrate from the intact chips.
+     * The launch snapshot (text + chip ids) is re-validated after the
+     * migration, mirroring the web park flow's `composerParkSnapshotUnchanged`:
+     * a draft edited while the POSTs ran aborts the park instead of splitting
+     * it into an old-text entry plus a chip-less composer.
      */
     fun parkComposerDraft() {
         val store = scratchlist ?: return
@@ -1431,13 +1435,33 @@ class ChatViewModel(
                     _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
                     return@launch
                 }
-                // 2. Persist the entry (text + migrated attachments).
+                // 2. Validate the launch snapshot before the irreversible
+                //    entry write (web `composerParkSnapshotUnchanged`): a
+                //    draft edited while the migration POSTs ran must not
+                //    split into an old-text entry plus a chip-less composer.
+                //    Text, chip ids, or a new chip still settling — any
+                //    change aborts the park: blobs freed, nothing written,
+                //    the whole (possibly edited) draft stays retryable.
+                val snapshotChanged = composerDraft.value.text != text ||
+                    attachments.hasUnsettled() ||
+                    attachments.parkableChips().map { it.id } != chips.map { it.id }
+                if (snapshotChanged) {
+                    freeMigratedBlobs(store, migrated)
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
+                    return@launch
+                }
+                // 3. Persist the entry (text + migrated attachments).
                 when (store.createEntry(sessionId, text, migrated)) {
                     is ScratchlistCreateResult.Created -> {
-                        // Clear only when the draft is still what we parked
-                        // (the operator may have kept typing while the POSTs ran).
-                        if (composerDraft.value.text == text) setComposerText("")
-                        attachments.removeParked(chips.map { it.id }.toSet())
+                        // Clear only when the draft is still what we parked:
+                        // the snapshot was validated just before the entry
+                        // POST, but the POST itself can race another edit —
+                        // keep the diverged draft whole (its chips' local
+                        // uploads are still referenced, so nothing orphans).
+                        if (composerDraft.value.text == text) {
+                            setComposerText("")
+                            attachments.removeParked(chips.map { it.id }.toSet())
+                        }
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
                     }
                     ScratchlistCreateResult.AtCap -> {

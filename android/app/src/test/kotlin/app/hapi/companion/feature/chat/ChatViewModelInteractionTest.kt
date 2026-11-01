@@ -2467,6 +2467,75 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `a park whose text was edited during the migration aborts without splitting the draft`() = runTest {
+        // Review follow-up: the text-equality guard preserved an edit, but
+        // removeParked still dropped the captured chips — the draft split
+        // into an old-text entry plus a chip-less composer. The launch
+        // snapshot (text + chip ids) is now validated before the entry
+        // write, mirroring the web park flow's composerParkSnapshotUnchanged.
+        val scratch = FakeScratchlist()
+        val harness = InteractionHarness(this, scratchlist = scratch)
+        val vm = harness.viewModel
+        val notice = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            vm.events.filterIsInstance<ChatEvent.Notice>().first { it.notice == ChatNotice.ScratchlistParkFailed }
+        }
+
+        vm.attachments.add(preparedShot(id = "att-1", filename = "one.jpg"))
+        vm.attachments.items.first { chips -> chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready }
+        vm.setComposerText("park me")
+        vm.composer.first { it.text.isNotEmpty() }
+
+        vm.parkComposerDraft()
+        // The migration coroutine is still queued: edit the draft after the
+        // snapshot was taken but before the migration POSTs run.
+        vm.setComposerText("park me (edited mid-flight)")
+
+        testScheduler.runCurrent()
+
+        assertEquals(listOf("one.jpg" to "image/jpeg"), scratch.uploaded, "the migration itself completes")
+        assertTrue(scratch.created.isEmpty(), "the entry write never runs for an edited draft")
+        assertEquals(listOf("hub-att-0"), scratch.deletedAttachments, "the migrated blob is freed")
+        assertEquals("park me (edited mid-flight)", vm.composer.value.text, "the edited draft survives whole")
+        vm.attachments.items.first { chips ->
+            chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready
+        }
+        assertEquals(ChatNotice.ScratchlistParkFailed, notice.await().notice)
+    }
+
+    @Test
+    fun `a park whose chips changed during the migration aborts without splitting the draft`() = runTest {
+        // Same invariant on the attachment axis: a chip removed mid-flight
+        // must abort the park (entry unwritten, blobs freed) instead of
+        // parking a snapshot the composer no longer matches.
+        val scratch = FakeScratchlist()
+        val harness = InteractionHarness(this, scratchlist = scratch)
+        val vm = harness.viewModel
+
+        vm.attachments.add(preparedShot(id = "att-1", filename = "one.jpg"))
+        vm.attachments.add(preparedShot(id = "att-2", filename = "two.jpg"))
+        vm.attachments.items.first { chips -> chips.size == 2 && chips.all { it.status == ComposerAttachmentStatus.Ready } }
+        vm.setComposerText("chips change while parking")
+        vm.composer.first { it.text.isNotEmpty() }
+
+        vm.parkComposerDraft()
+        vm.attachments.remove("att-2")
+
+        testScheduler.runCurrent()
+
+        assertEquals(
+            listOf("one.jpg" to "image/jpeg", "two.jpg" to "image/jpeg"),
+            scratch.uploaded,
+            "the captured snapshot migrates fully before validation",
+        )
+        assertTrue(scratch.created.isEmpty(), "the entry write never runs for a changed chip set")
+        assertEquals(listOf("hub-att-0", "hub-att-1"), scratch.deletedAttachments, "both migrated blobs are freed")
+        assertEquals("chips change while parking", vm.composer.value.text)
+        vm.attachments.items.first { chips ->
+            chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready
+        }
+    }
+
+    @Test
     fun `promote to queue supersession is retained for the scratchlist route`() = runTest {
         // The scratchlist route covers ChatHost, whose SharedFlow collector
         // is out of composition — the replacement id must survive as
