@@ -307,6 +307,8 @@ export default {
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
   'session.action.copyReference': 'Copy reference',
+  'session.action.fork': 'Fork session',
+  'session.action.forkRunning': 'Wait for the current turn to finish before forking this session.',
 
   // Dialogs
   'dialog.uri.title': 'Open this link?',
@@ -333,6 +335,10 @@ export default {
   'dialog.archive.cleanupDescription': 'Session disconnected. Confirming archive and background cleanup. You can close this window; archiving will continue.',
   'dialog.archive.error': 'Archive could not be confirmed',
   'dialog.reopen.errorTitle': 'Could not reopen session',
+  'dialog.sessionFork.title': 'Fork session',
+  'dialog.sessionFork.description': 'Create a new session from the latest completed point? The current session will not be changed.',
+  'dialog.sessionFork.confirm': 'Confirm',
+  'dialog.sessionFork.confirming': 'Forking…',
   'dialog.reopen.dismiss': 'Dismiss',
   'dialog.delete.title': 'Delete Session',
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
