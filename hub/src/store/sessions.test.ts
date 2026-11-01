@@ -466,11 +466,11 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
-    it('preserves a generated fork summary across sparse child startup metadata', () => {
+    it.each(['Fork: Source title', 'Branch: Source title'])('preserves a generated %s summary across sparse child startup metadata', (text) => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
-            'fork-summary-preserve',
-            { path: '/tmp/project', host: 'example', summary: { text: 'Fork: Source title', updatedAt: 1234 } },
+            `generated-summary-preserve:${text}`,
+            { path: '/tmp/project', host: 'example', summary: { text, updatedAt: 1234 } },
             null,
             'default'
         )
@@ -481,7 +481,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
             'default'
         )
         expect(result.result).toBe('success')
-        expect(getMetadata(store, session.id)?.summary).toEqual({ text: 'Fork: Source title', updatedAt: 1234 })
+        expect(getMetadata(store, session.id)?.summary).toEqual({ text, updatedAt: 1234 })
         store.close()
     })
 

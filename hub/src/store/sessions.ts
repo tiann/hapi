@@ -141,12 +141,13 @@ function preserveForkSummary(
     next: Record<string, unknown>,
     merged: Record<string, unknown> | null
 ): Record<string, unknown> | null {
-    // A fork's provisional title is Hub-generated. CLI bootstrap writes are
-    // sparse and historically drop it, leaving the child titled by its path.
-    // Explicit `summary: null` or a replacement summary still wins.
+    // A fork or branch's provisional title is Hub-generated. CLI bootstrap
+    // writes are sparse and historically drop it, leaving the child titled by
+    // its path. Explicit `summary: null` or a replacement summary still wins.
     if (next.summary !== undefined) return merged
     const summary = prior.summary
-    if (!isPlainObject(summary) || typeof summary.text !== 'string' || !summary.text.startsWith('Fork: ')) {
+    if (!isPlainObject(summary) || typeof summary.text !== 'string'
+        || !(summary.text.startsWith('Fork: ') || summary.text.startsWith('Branch: '))) {
         return merged
     }
     const result = merged ?? { ...next }
