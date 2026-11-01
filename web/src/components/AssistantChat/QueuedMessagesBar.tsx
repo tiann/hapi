@@ -236,6 +236,12 @@ export function QueuedMessagesBar({
     const abandonMutation = useAbandonIndeterminateMessage(api)
     const [abandonTarget, setAbandonTarget] = useState<DecryptedMessage | null>(null)
     useEffect(() => setAbandonTarget(null), [sessionId])
+    useEffect(() => {
+        if (!abandonTarget) return
+        const targetStillQueued = queued.some((message) => message.id === abandonTarget.id
+            && message.deliveryState === 'indeterminate')
+        if (!targetStillQueued) setAbandonTarget(null)
+    }, [abandonTarget, queued])
     const { t } = useTranslation()
     const { addToast } = useToast()
     const pendingScheduleRef = useRef(pendingSchedule)

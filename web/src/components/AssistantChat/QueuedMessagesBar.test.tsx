@@ -952,6 +952,28 @@ describe('QueuedMessagesBar explicit abandonment', () => {
         expect(screen.getByText('Queued request')).toBeTruthy()
     })
 
+    it('clears the target when its message resolves elsewhere before another queued row appears', async () => {
+        const abandon = vi.fn()
+        const view = renderQueuedMessage(null, null, 0, false,
+            { cancelMessage: vi.fn().mockResolvedValue({ status: 'busy' }), abandonIndeterminateMessage: abandon } as unknown as ApiClient,
+            true, { deliveryState: 'indeterminate' })
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel queued message' }))
+        expect(screen.getByRole('dialog')).toBeTruthy()
+
+        mocks.messageWindowState = { messages: [] }
+        view.rerender(null, 0)
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+        mocks.messageWindowState = {
+            messages: [makeQueuedMessage(null, 'next-message', { deliveryState: 'indeterminate' })]
+        }
+        view.rerender(null, 0)
+
+        expect(screen.getByRole('status')).toBeTruthy()
+        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(abandon).not.toHaveBeenCalled()
+    })
+
     it('keeps unknown input unchanged when the confirmation dialog is dismissed', () => {
         const abandon = vi.fn()
         renderQueuedMessage(null, null, 0, false, { cancelMessage: vi.fn().mockResolvedValue({ status: 'busy' }), abandonIndeterminateMessage: abandon } as unknown as ApiClient,
