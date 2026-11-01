@@ -100,6 +100,43 @@ export class SharedCodexAsyncQuestions {
         }
     }
 
+    /** Reconcile cards whose native items were removed, then pre-scan surviving answers. */
+    reconcileHistory(threadId: string, thread: unknown): void {
+        const live = new Set<string>()
+        const turns = record(thread).turns
+        if (Array.isArray(turns)) {
+            for (const value of turns) {
+                const items = record(value).items
+                if (!Array.isArray(items)) continue
+                for (const item of items) {
+                    for (const question of asyncQuestionsForItem(threadId, item)) live.add(question.id)
+                }
+            }
+        }
+
+        const stale = new Set<string>()
+        for (const [id, question] of this.questions) {
+            if (question.threadId === threadId && !live.has(id)) stale.add(id)
+        }
+        if (stale.size > 0) {
+            for (const id of stale) {
+                this.pending.delete(id)
+                this.questions.delete(id)
+                this.completed.delete(id)
+            }
+            this.session.updateAgentState(state => {
+                const requests = { ...state.requests }
+                const completedRequests = { ...state.completedRequests }
+                for (const id of stale) {
+                    delete requests[id]
+                    delete completedRequests[id]
+                }
+                return { ...state, requests, completedRequests }
+            })
+        }
+        this.history(threadId, thread)
+    }
+
     /** Read answers first so replay never briefly resurrects answered questions. */
     history(threadId: string, thread: unknown): void {
         const turns = record(thread).turns;

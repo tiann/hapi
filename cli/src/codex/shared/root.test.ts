@@ -463,6 +463,58 @@ describe('shared conversation rewind', () => {
         await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'other' })).resolves.toBeDefined();
     });
 
+    it('reconciles async questions across a blocked rewind and keeps new questions live', async () => {
+        const f = await history()
+        const question = { type: 'agentMessage', id: 'async-rewind', delivery: 'async', text: 'Which client?',
+            questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] }
+        f.native.thread.turns[1]!.items.push(question)
+        await f.root.refresh()
+        await f.drain()
+        const oldQuestion = asyncQuestionsForItem('thread', question)[0]
+        await vi.waitFor(() => expect(f.state().requests?.[oldQuestion.id]).toBeDefined())
+
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        await expect(f.rpc.get(RPC_METHODS.Permission)!({
+            id: oldQuestion.id, approved: true, answers: { [oldQuestion.questionItemId]: ['Web'] }
+        })).rejects.toThrow(/rewind/i)
+
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+        expect(f.state().requests?.[oldQuestion.id]).toBeUndefined()
+        expect(f.state().completedRequests?.[oldQuestion.id]).toBeUndefined()
+
+        const newQuestionItem = { type: 'agentMessage', id: 'async-after-rewind', delivery: 'async', text: 'Which now?',
+            questions: [{ title: 'Which now?', options: ['Web', 'Terminal'] }] }
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'one', item: newQuestionItem })
+        const newQuestion = asyncQuestionsForItem('thread', newQuestionItem)[0]
+        await vi.waitFor(() => expect(f.state().requests?.[newQuestion.id]).toBeDefined())
+
+        const request = f.root.client.request.bind(f.root.client)
+        const answerText = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: newQuestion.questionItemId, answer: 'Web', question: newQuestion.title
+        }])}\n</send_user_message_question_reply>`
+        const requestSpy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'turn/start') {
+                f.native.notify('item/completed', { threadId: 'thread', turnId: 'one', item: {
+                    type: 'userMessage', id: 'native-after-rewind-answer', content: [{ type: 'text', text: answerText }]
+                } })
+                return {}
+            }
+            return request(method, params)
+        })
+        try {
+            await f.rpc.get(RPC_METHODS.Permission)!({
+                id: newQuestion.id, approved: true, answers: { [newQuestion.questionItemId]: ['Web'] }
+            })
+            await f.drain()
+        } finally {
+            requestSpy.mockRestore()
+        }
+        expect(f.state().requests?.[newQuestion.id]).toBeUndefined()
+        expect(f.state().completedRequests?.[newQuestion.id]).toMatchObject({ status: 'resolved' })
+    })
+
     it('rejects queued native input without changing history', async () => {
         const f = await history();
         f.native.queue.push({ id: 'q', clientUserMessageId: 'queued', input: [] });

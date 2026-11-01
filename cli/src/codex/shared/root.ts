@@ -86,6 +86,7 @@ export class SharedCodexRoot {
     private supportsRevert?: boolean;
     private retainedTurnIds?: string[];
     private deferredRequests: NativeServerRequest[] = [];
+    private readonly pendingQuestionAnswers = new Set<Promise<void>>();
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
@@ -189,6 +190,7 @@ export class SharedCodexRoot {
     }
     private async submitQuestionAnswer(threadId: string, text: string, clientUserMessageId: string): Promise<void> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+        const release = this.rewindBarrier.enter();
         const operation = (async () => {
             const thread = threadId === this.threadId ? undefined : await this.readThread(threadId);
             const turnId = threadId === this.threadId ? this.currentTurn
@@ -197,7 +199,14 @@ export class SharedCodexRoot {
             await this.client.request(turnId ? 'turn/steer' : 'turn/start', { ...params, ...(turnId ? { expectedTurnId: turnId } : {}) });
         })();
         this.controls.add(operation);
-        try { await operation; } finally { this.controls.delete(operation); }
+        this.pendingQuestionAnswers.add(operation);
+        try {
+            await operation;
+        } finally {
+            this.controls.delete(operation);
+            this.pendingQuestionAnswers.delete(operation);
+            release();
+        }
     }
     private async projectHistory(projection: SharedCodexProjection, thread: unknown): Promise<void> {
         this.asyncQuestions.history(projection.threadId, thread);
@@ -675,7 +684,7 @@ export class SharedCodexRoot {
         let dispatched = false;
         this.publishPlan();
         try {
-            if (this.currentTurn || this.reconnecting || this.permissions.hasPending() || !this.client.isInitialized()
+            if (this.currentTurn || this.reconnecting || this.permissions.hasPending() || this.pendingQuestionAnswers.size > 0 || !this.client.isInitialized()
                 || this.session.getMetadata()?.conversationHistoryDiverged) throw new Error('Session is not ready for rewind');
             await this.notifications;
             await this.queue.flush();
@@ -756,7 +765,9 @@ export class SharedCodexRoot {
             await this.notifications;
             const response = record(await this.client.request('thread/read', { threadId: this.threadId, includeTurns: false }));
             this.acceptSettings(response);
-            this.projection = new SharedCodexProjection(this.session, this.threadId, id => this.queue.committed(id), undefined, undefined, undefined, false);
+            this.asyncQuestions.reconcileHistory(this.threadId, thread);
+            this.projection = new SharedCodexProjection(this.session, this.threadId, id => this.queue.committed(id), undefined, undefined,
+                (threadId, item) => this.asyncQuestions.observeItem(threadId, item), false);
             const last = Array.isArray(thread.turns) ? record(thread.turns.at(-1)) : {};
             const lastId = string(last.id);
             this.currentTurn = undefined;
