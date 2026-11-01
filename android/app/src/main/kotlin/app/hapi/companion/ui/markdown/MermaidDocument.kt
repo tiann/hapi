@@ -25,7 +25,10 @@ package app.hapi.companion.ui.markdown
  *    emits per diagram cannot collide across instances;
  *  - sizing: the diagram host scrolls horizontally and the SVG is centered
  *    with `max-width:100%; height:auto` (web: `[&_svg]:mx-auto h-auto
- *    max-w-full` inside an `overflow-x-auto` button).
+ *    max-w-full` inside an `overflow-x-auto` button); the viewport is pinned
+ *    to `width=device-width, initial-scale=1` so the reported heights (CSS
+ *    px) map 1:1 to dp at the default scale — see [cssPxToDp], the same
+ *    boundary contract as the KaTeX document.
  */
 internal fun isMermaidFence(language: String?): Boolean = language == "mermaid"
 
@@ -128,6 +131,7 @@ private val MERMAID_DOCUMENT_TEMPLATE = """
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="mermaid.min.js"></script>
 <style>
 html, body { margin: 0; padding: 0; background: transparent; }

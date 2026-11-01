@@ -3,14 +3,16 @@ package app.hapi.companion.ui.markdown
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
  * Pure JVM tests for the offline mermaid document builder and fence dispatch,
  * mirroring the web component's requirements: exact-key dispatch, strict
  * security initialization, the web's dark/light palettes verbatim, the
- * validate-then-render gate, per-instance svg ids, and no http(s) reference
- * escaping into the document.
+ * validate-then-render gate, per-instance svg ids, no http(s) reference
+ * escaping into the document, and the CSS-px height contract at the WebView
+ * boundary (viewport pin + density-independent dp conversion).
  */
 class MermaidDocumentTest {
 
@@ -146,5 +148,35 @@ class MermaidDocumentTest {
         // Height reporting drives the Android-side view height.
         assertTrue(html.contains("MermaidBridge.onHeight(height)"))
         assertTrue(html.contains("ResizeObserver"))
+    }
+
+    // ── Height reports cross the WebView boundary in CSS px ────────────────
+
+    @Test
+    fun documentPinsDefaultWebViewScaleToOneCssPixelPerDp() {
+        // Both height reporters (the bridge's report() scrollHeight above and
+        // OfflineMarkdownWebViewClient's onPageFinished re-measure) return
+        // CSS px, and mermaidRenderedHeightDp maps them 1:1 to dp — a mapping
+        // that holds only because the document pins the viewport explicitly,
+        // exactly like the KaTeX document. Without this meta tag WebView
+        // defaults could lay the page out at another scale.
+        val html = buildMermaidDocument(spec(), generation = 1)
+        assertTrue(html.contains("""content="width=device-width, initial-scale=1""""))
+    }
+
+    @Test
+    fun reportedCssPixelHeightsConvertToDpWithoutDensityDivision() {
+        // Review case: a diagram measuring 180 CSS px occupies ~180dp on a
+        // 3x display. The pre-fix wiring ran the report through
+        // with(density) { px.toDp() } — physical-px semantics that divide by
+        // display density — collapsing it to 60dp and clipping the diagram
+        // into an unnecessarily scrolling WebView. Like the KaTeX boundary,
+        // the conversion carries no density parameter on purpose: CSS px are
+        // density-independent like dp.
+        assertEquals(180f, mermaidRenderedHeightDp(180)!!)
+        assertEquals(90f, mermaidRenderedHeightDp(90)!!)
+        // Until a positive report lands the caller keeps its loading floor.
+        assertNull(mermaidRenderedHeightDp(0))
+        assertNull(mermaidRenderedHeightDp(-5))
     }
 }

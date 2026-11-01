@@ -35,7 +35,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -84,6 +83,17 @@ internal fun mermaidFallbackUi(state: MermaidRenderState): MermaidFallbackUi = w
     is MermaidRenderState.Error -> MermaidFallbackUi(showSource = true, showErrorNotice = true)
     MermaidRenderState.Rendered -> MermaidFallbackUi(showSource = false, showErrorNotice = false)
 }
+
+/**
+ * Rendered-diagram body height from the document's report, in dp — pure so
+ * the CSS-px boundary contract is JVM-testable. Both reporters (the bridge's
+ * `report()` and the WebView client's `scrollHeight` re-measure) return CSS
+ * px, and the document pins `initial-scale=1`, so at the default WebView
+ * scale 1 CSS px = 1 dp: [cssPxToDp], the same conversion the KaTeX block
+ * uses. `null` until a positive report lands (caller holds its floor).
+ */
+internal fun mermaidRenderedHeightDp(reportedCssPx: Int): Float? =
+    if (reportedCssPx > 0) cssPxToDp(reportedCssPx) else null
 
 /** Events forwarded from the document (bridge) and the WebView client. */
 internal sealed interface MermaidViewEvent {
@@ -231,7 +241,6 @@ internal fun MermaidDiagramView(code: String, modifier: Modifier = Modifier) {
     }
     val fallback = mermaidFallbackUi(renderState)
     val rendered = renderState is MermaidRenderState.Rendered
-    val density = LocalDensity.current
 
     Column(
         modifier = modifier
@@ -244,8 +253,12 @@ internal fun MermaidDiagramView(code: String, modifier: Modifier = Modifier) {
                 .fillMaxWidth()
                 .then(
                     if (rendered) {
-                        if (heightPx > 0) {
-                            Modifier.height(with(density) { heightPx.toDp() })
+                        // CSS px straight to dp — never a physical-px toDp()
+                        // (that would divide by display density and clip the
+                        // diagram into a scrolling WebView on 3x screens).
+                        val heightDp = mermaidRenderedHeightDp(heightPx)
+                        if (heightDp != null) {
+                            Modifier.height(heightDp.dp)
                         } else {
                             // Reported height lands within a frame or two of
                             // the rendered callback; hold a sane floor.
