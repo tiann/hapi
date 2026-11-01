@@ -9,6 +9,8 @@ import androidx.activity.result.ActivityResultRegistry
 import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -136,19 +138,26 @@ class FileViewerSaveRecreationTest {
         )
 
         // One setContent per test (the Compose test environment forbids a
-        // second call — the first CI round failed with "Cannot call setContent
-        // twice per test!"), so "process death" is simulated by recreating the
-        // activity: the composition (and its `remember { buildViewModel(...) }`)
-        // runs fresh against the same DataStore-backed prefs, exactly the
-        // recovery seam a real relaunch exercises.
+        // second call), and an activity recreate does NOT remount rule
+        // content: setContent binds to the activity instance the rule
+        // created, so scenario.recreate() only yields a fresh empty activity
+        // (the CI round that tried it never saw the second picker launch).
+        // "Process death" is therefore a key(epoch) remount inside the single
+        // composition — bumping the epoch disposes the whole subtree and
+        // composes a genuinely fresh `remember { buildViewModel(...) }` over
+        // the same DataStore-backed prefs, exactly the recovery seam a real
+        // relaunch exercises.
         val firstScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val secondScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         var processScope: CoroutineScope? = firstScope
+        val processEpoch = mutableIntStateOf(1)
         compose.setContent {
             CompositionLocalProvider(LocalActivityResultRegistryOwner provides registryOwner) {
                 HapiTheme {
-                    val viewModel = remember { buildViewModel(requireNotNull(processScope)) }
-                    FileViewerScreen(viewModel = viewModel, onBack = {})
+                    key(processEpoch.intValue) {
+                        val viewModel = remember { buildViewModel(requireNotNull(processScope)) }
+                        FileViewerScreen(viewModel = viewModel, onBack = {})
+                    }
                 }
             }
         }
@@ -163,7 +172,7 @@ class FileViewerSaveRecreationTest {
             compose.waitUntil(10_000) { persisted.value != null }
             firstScope.cancel()
             processScope = secondScope
-            compose.activityRule.scenario.recreate()
+            compose.runOnIdle { processEpoch.intValue = 2 }
 
             // Process #2: fresh ViewModel, same DataStore file — the recovery
             // seam re-runs the fetch and the picker relaunches on its own.
