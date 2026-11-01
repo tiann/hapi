@@ -31,6 +31,8 @@ class FileViewerViewModelTest {
         line: Int? = null,
         markdownPreviewSource: Flow<Boolean> = emptyFlow(),
         onMarkdownPreviewChanged: suspend (Boolean) -> Unit = {},
+        pendingDownloadSource: Flow<PendingDownloadRequest?> = MutableStateFlow(null),
+        onPendingDownloadChanged: suspend (PendingDownloadRequest?) -> Unit = {},
     ): FileViewerViewModel = FileViewerViewModel(
         sessionId = "s1",
         path = path,
@@ -41,6 +43,8 @@ class FileViewerViewModelTest {
         scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
         markdownPreviewSource = markdownPreviewSource,
         onMarkdownPreviewChanged = onMarkdownPreviewChanged,
+        pendingDownloadSource = pendingDownloadSource,
+        onPendingDownloadChanged = onPendingDownloadChanged,
     )
 
     private fun b64(text: String): String = Base64.getEncoder().encodeToString(text.toByteArray())
@@ -313,6 +317,88 @@ class FileViewerViewModelTest {
 
         viewModel.consumeReadyDownload()
         assertNull(viewModel.download.value.ready)
+    }
+
+    @Test
+    fun `a pending download survives process recreation and resumes its fetch`() = runTest {
+        // The persisted seam stands in for PendingDownloadPrefs' DataStore:
+        // process #1 writes through the hook, the recreated process #2 reads
+        // the surviving request back through the source. Pre-fix there was no
+        // seam at all — the in-memory pipeline died with the process and the
+        // download vanished while the Save picker was up (review: carry
+        // pending-download recovery across process recreation).
+        val persisted = MutableStateFlow<PendingDownloadRequest?>(null)
+        val bytes = byteArrayOf(4, 5, 6)
+        val gateway = FakeFilesGateway().apply {
+            diffFileResult = GitCommandResponse(success = true, stdout = "")
+            readFileResult = FileReadResponse(
+                success = true,
+                content = Base64.getEncoder().encodeToString(bytes),
+            )
+        }
+
+        // Process #1: the download reaches the ready payload (the SAF picker
+        // window), then the process dies before the user resolves it.
+        val first = buildViewModel(
+            gateway,
+            pendingDownloadSource = persisted,
+            onPendingDownloadChanged = { persisted.value = it },
+        )
+        first.start()
+        advanceUntilIdle()
+        assertTrue(first.isDownloadable())
+        first.requestDownload()
+        advanceUntilIdle()
+        assertNotNull(first.download.value.ready)
+        assertEquals(PendingDownloadRequest("src/app.ts", "app.ts"), persisted.value)
+
+        // Process #2: a fresh ViewModel over the same seam re-runs the fetch —
+        // process #1 read content + download, process #2 reads content + the
+        // resumed download.
+        val second = buildViewModel(
+            gateway,
+            pendingDownloadSource = persisted,
+            onPendingDownloadChanged = { persisted.value = it },
+        )
+        second.start()
+        advanceUntilIdle()
+        val ready = assertNotNull(second.download.value.ready)
+        assertEquals("app.ts", ready.fileName)
+        assertTrue(ready.bytes.contentEquals(bytes))
+        assertEquals(List(4) { "src/app.ts" }, gateway.readFileCalls)
+
+        // Resolving the picker is the final user decision: consume clears.
+        second.consumeReadyDownload()
+        advanceUntilIdle()
+        assertNull(persisted.value)
+    }
+
+    @Test
+    fun `a reported download failure clears the persisted request`() = runTest {
+        val persisted = MutableStateFlow<PendingDownloadRequest?>(null)
+        val gateway = FakeFilesGateway().apply {
+            diffFileResult = GitCommandResponse(success = true, stdout = "")
+            readFileResult = FileReadResponse(success = true, content = b64("x"))
+            readFiles["src/app.ts"] = FileReadResponse(success = false, error = "boom")
+        }
+        val viewModel = buildViewModel(
+            gateway,
+            pendingDownloadSource = persisted,
+            onPendingDownloadChanged = { persisted.value = it },
+        )
+        viewModel.start()
+        advanceUntilIdle()
+
+        viewModel.requestDownload()
+        advanceUntilIdle()
+
+        assertEquals("boom", viewModel.download.value.error)
+        // The failure was reported while this process lived — nothing survives
+        // for recovery, and the resume collector does not loop.
+        assertNull(persisted.value)
+        val readsAfterFailure = gateway.readFileCalls.size
+        advanceUntilIdle()
+        assertEquals(readsAfterFailure, gateway.readFileCalls.size)
     }
 
     @Test

@@ -104,6 +104,15 @@ class FileViewerViewModel(
     private val markdownPreviewSource: Flow<Boolean> = emptyFlow(),
     /** Persistence hook invoked on user-driven preview/source toggles. */
     private val onMarkdownPreviewChanged: suspend (Boolean) -> Unit = {},
+    /**
+     * Pending-download recovery across process recreation (review, files
+     * foundation): a surviving persisted request re-runs the fetch when a
+     * recreated ViewModel starts, so a download interrupted by process death
+     * resumes/reports instead of vanishing. Production wires
+     * [PendingDownloadPrefs]; the default keeps JVM constructions inert.
+     */
+    private val pendingDownloadSource: Flow<PendingDownloadRequest?> = emptyFlow(),
+    private val onPendingDownloadChanged: suspend (PendingDownloadRequest?) -> Unit = {},
 ) {
     private val stateFlow = MutableStateFlow(
         FileViewerUiState(
@@ -138,6 +147,19 @@ class FileViewerViewModel(
                 }
             }
         }
+        scope.launch {
+            // Process-recreation recovery: a persisted pending download means
+            // the previous process died mid-flow (fetch or open SAF picker).
+            // Only an idle pipeline resumes — a live fetch, unconsumed payload
+            // or reported error already tells the story.
+            pendingDownloadSource.collect { persisted ->
+                if (persisted != null &&
+                    downloadState.value.let { !it.fetching && it.ready == null && it.error == null }
+                ) {
+                    requestDownload()
+                }
+            }
+        }
     }
 
     fun refresh() {
@@ -161,11 +183,15 @@ class FileViewerViewModel(
      * taken from [FileContentUiState]: the Text state holds a UTF-8-decoded
      * string (re-encoding corrupts non-UTF-8 files) and the Binary state drops
      * the bytes entirely — the fresh read is the only lossless source (and the
-     * web's: the same `readSessionFile` payload).
+     * web's: the same `readSessionFile` payload). The request is persisted the
+     * moment the fetch starts and cleared on failure or consumption, so
+     * process death mid-flow recovers on the next start
+     * ([pendingDownloadSource] seam).
      */
     fun requestDownload() {
         if (downloadState.value.fetching || downloadState.value.ready != null) return
         downloadState.value = ViewerDownloadUiState(fetching = true)
+        scope.launch { onPendingDownloadChanged(PendingDownloadRequest(path, stateFlow.value.fileName)) }
         scope.launch {
             val state = try {
                 val response = gateway.readFile(sessionId, path)
@@ -198,6 +224,10 @@ class FileViewerViewModel(
                 ViewerDownloadUiState(error = e.message?.takeIf { it.isNotBlank() } ?: strings.downloadFailedDefault)
             }
             downloadState.value = state
+            // A failure was reported while this process lived; only an
+            // interrupted (never-finished) flow leaves the request behind for
+            // recovery.
+            if (state.error != null) scope.launch { onPendingDownloadChanged(null) }
         }
     }
 
@@ -205,6 +235,7 @@ class FileViewerViewModel(
     fun consumeReadyDownload() {
         if (downloadState.value.ready != null) {
             downloadState.update { ViewerDownloadUiState() }
+            scope.launch { onPendingDownloadChanged(null) }
         }
     }
 

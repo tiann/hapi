@@ -53,6 +53,7 @@ import app.hapi.companion.feature.files.FilesScreen
 import app.hapi.companion.feature.files.FilesStrings
 import app.hapi.companion.feature.files.FilesViewModel
 import app.hapi.companion.feature.files.MarkdownPreviewPrefs
+import app.hapi.companion.feature.files.PendingDownloadPrefs
 import app.hapi.companion.feature.files.ViewerMode
 import app.hapi.companion.feature.home.HomeScreen
 import app.hapi.companion.feature.newsession.ApiNewSessionGateway
@@ -537,6 +538,7 @@ fun HapiNavigation() {
                     FilesViewModelHolder(
                         hubGraph, sessionId, filesStrings(filesContext),
                         graph.directorySortPrefs, graph.directoryExpandPrefs,
+                        graph.pendingDownloadPrefs,
                     )
                 },
             )
@@ -615,6 +617,7 @@ fun HapiNavigation() {
                         hubGraph, sessionId, path, staged, mode, line,
                         fileViewerStrings(viewerContext),
                         graph.markdownPreviewPrefs,
+                        graph.pendingDownloadPrefs,
                     )
                 },
             )
@@ -900,6 +903,7 @@ private class FilesViewModelHolder(
     strings: FilesStrings,
     sortPrefs: DirectorySortPrefs,
     expandPrefs: DirectoryExpandPrefs,
+    pendingDownloadPrefs: PendingDownloadPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -912,6 +916,10 @@ private class FilesViewModelHolder(
         onSortChanged = { sort -> sortPrefs.setSort(sort) },
         expandedSource = expandPrefs.expandedPaths(hubGraph.hubUrl, sessionId),
         onExpandedChanged = { paths -> expandPrefs.setExpandedPaths(hubGraph.hubUrl, sessionId, paths) },
+        pendingDownloadSource = pendingDownloadPrefs.pendingDownload("files:${hubGraph.hubUrl}:$sessionId"),
+        onPendingDownloadChanged = { request ->
+            pendingDownloadPrefs.setPendingDownload("files:${hubGraph.hubUrl}:$sessionId", request)
+        },
         sessions = hubGraph.sessionStore.sessions,
     )
 
@@ -930,8 +938,13 @@ private class FileViewerViewModelHolder(
     line: Int?,
     strings: FileViewerStrings,
     markdownPrefs: MarkdownPreviewPrefs,
+    pendingDownloadPrefs: PendingDownloadPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // The viewer's owner key includes the path: two stacked viewers of
+    // different files must not share one pending download.
+    private val pendingOwner = "viewer:${hubGraph.hubUrl}:$sessionId:$path"
 
     val viewModel = FileViewerViewModel(
         sessionId = sessionId,
@@ -946,6 +959,8 @@ private class FileViewerViewModelHolder(
         // state is the preview flag, so flip at the seam.
         markdownPreviewSource = markdownPrefs.source.map { source -> !source },
         onMarkdownPreviewChanged = { preview -> markdownPrefs.setSource(!preview) },
+        pendingDownloadSource = pendingDownloadPrefs.pendingDownload(pendingOwner),
+        onPendingDownloadChanged = { request -> pendingDownloadPrefs.setPendingDownload(pendingOwner, request) },
     )
 
     override fun onCleared() {

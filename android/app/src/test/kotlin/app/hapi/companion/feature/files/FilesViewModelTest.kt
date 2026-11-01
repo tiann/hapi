@@ -88,6 +88,8 @@ class FilesViewModelTest {
         onSortChanged: suspend (DirectorySort) -> Unit = {},
         expandedSource: Flow<Set<String>> = MutableStateFlow(emptySet()),
         onExpandedChanged: suspend (Set<String>) -> Unit = {},
+        pendingDownloadSource: Flow<PendingDownloadRequest?> = MutableStateFlow(null),
+        onPendingDownloadChanged: suspend (PendingDownloadRequest?) -> Unit = {},
         sessions: Flow<List<SessionSummary>> = MutableStateFlow(emptyList()),
     ): FilesViewModel =
         FilesViewModel(
@@ -99,6 +101,8 @@ class FilesViewModelTest {
             onSortChanged = onSortChanged,
             expandedSource = expandedSource,
             onExpandedChanged = onExpandedChanged,
+            pendingDownloadSource = pendingDownloadSource,
+            onPendingDownloadChanged = onPendingDownloadChanged,
             sessions = sessions,
         )
 
@@ -523,6 +527,85 @@ class FilesViewModelTest {
         assertEquals(FileDownloads.FALLBACK_MIME, ready.mimeType)
         assertTrue(ready.bytes.contentEquals(bytes))
         assertNull(viewModel.downloads.value.error)
+    }
+
+    @Test
+    fun `a pending download survives process recreation and resumes its fetch`() = runTest {
+        // The persisted seam stands in for PendingDownloadPrefs' DataStore:
+        // process #1 writes through the hook, the recreated process #2 reads
+        // the surviving request back through the source. Pre-fix there was no
+        // seam at all — the in-memory pipeline died with the process and the
+        // download vanished (review: carry pending-download recovery across
+        // process recreation).
+        val persisted = MutableStateFlow<PendingDownloadRequest?>(null)
+        val bytes = byteArrayOf(9, 8, 7)
+        val gateway = FakeFilesGateway().apply {
+            readFiles["notes.md"] = FileReadResponse(
+                success = true,
+                content = Base64.getEncoder().encodeToString(bytes),
+            )
+        }
+
+        // Process #1: the download reaches the ready payload (the SAF picker
+        // window), then the process dies before the user resolves it.
+        val first = buildViewModel(
+            gateway,
+            pendingDownloadSource = persisted,
+            onPendingDownloadChanged = { persisted.value = it },
+        )
+        first.start()
+        advanceUntilIdle()
+        first.downloadFile("notes.md", "notes.md")
+        advanceUntilIdle()
+        assertNotNull(first.downloads.value.ready)
+        assertEquals(PendingDownloadRequest("notes.md", "notes.md"), persisted.value)
+
+        // Process #2: a fresh ViewModel over the same seam re-runs the fetch
+        // instead of losing the download.
+        val second = buildViewModel(
+            gateway,
+            pendingDownloadSource = persisted,
+            onPendingDownloadChanged = { persisted.value = it },
+        )
+        second.start()
+        advanceUntilIdle()
+        val ready = assertNotNull(second.downloads.value.ready)
+        assertEquals("notes.md", ready.fileName)
+        assertTrue(ready.bytes.contentEquals(bytes))
+        // The resumed fetch re-read the path.
+        assertEquals(2, gateway.readFileCalls.count { it == "notes.md" })
+
+        // Resolving the picker is the final user decision: consume clears.
+        second.consumeReadyDownload()
+        advanceUntilIdle()
+        assertNull(persisted.value)
+        assertEquals(null, second.downloads.value.ready)
+    }
+
+    @Test
+    fun `a reported download failure clears the persisted request`() = runTest {
+        val persisted = MutableStateFlow<PendingDownloadRequest?>(null)
+        val gateway = FakeFilesGateway().apply {
+            readFiles["boom.txt"] = FileReadResponse(success = false, error = "too large")
+        }
+        val viewModel = buildViewModel(
+            gateway,
+            pendingDownloadSource = persisted,
+            onPendingDownloadChanged = { persisted.value = it },
+        )
+        viewModel.start()
+        advanceUntilIdle()
+
+        viewModel.downloadFile("boom.txt", "boom.txt")
+        advanceUntilIdle()
+
+        assertEquals("too large", viewModel.downloads.value.error)
+        // The failure was reported while this process lived — nothing survives
+        // for recovery, and the resume collector does not loop.
+        assertNull(persisted.value)
+        val readsAfterFailure = gateway.readFileCalls.size
+        advanceUntilIdle()
+        assertEquals(readsAfterFailure, gateway.readFileCalls.size)
     }
 
     @Test

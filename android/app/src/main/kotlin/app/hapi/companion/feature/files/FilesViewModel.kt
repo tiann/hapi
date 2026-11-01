@@ -125,6 +125,15 @@ class FilesViewModel(
     private val expandedSource: Flow<Set<String>> = emptyFlow(),
     /** Persistence hook invoked on every user-driven expand/collapse (web writes on each change). */
     private val onExpandedChanged: suspend (Set<String>) -> Unit = {},
+    /**
+     * Pending-download recovery across process recreation (review, files
+     * foundation): a surviving persisted request re-launches its fetch when a
+     * recreated ViewModel starts, so a download interrupted by process death
+     * resumes/reports instead of vanishing. Production wires
+     * [PendingDownloadPrefs]; the default keeps JVM constructions inert.
+     */
+    private val pendingDownloadSource: Flow<PendingDownloadRequest?> = emptyFlow(),
+    private val onPendingDownloadChanged: suspend (PendingDownloadRequest?) -> Unit = {},
     /** Session summaries for the workspace root (absolute-path copies). */
     private val sessions: Flow<List<SessionSummary>> = emptyFlow(),
 ) {
@@ -205,6 +214,19 @@ class FilesViewModel(
             sessions.collect { summaries ->
                 val path = summaries.firstOrNull { it.id == sessionId }?.metadata?.path
                 if (path != workspacePathState.value) workspacePathState.value = path
+            }
+        }
+        scope.launch {
+            // Process-recreation recovery: a persisted pending download means
+            // the previous process died mid-flow (fetch or open SAF picker).
+            // Only an idle pipeline resumes — a live fetch, unconsumed payload
+            // or reported error already tells the story.
+            pendingDownloadSource.collect { persisted ->
+                if (persisted != null &&
+                    downloadsState.value.let { it.inFlightPath == null && it.ready == null && it.error == null }
+                ) {
+                    downloadFile(persisted.path, persisted.fileName)
+                }
             }
         }
     }
@@ -430,11 +452,15 @@ class FilesViewModel(
      * Fetches [path]'s bytes for a directory-row download (web
      * `DirectoryTree.handleDownload`: `readSessionFile` → save; one download
      * at a time). On success [DownloadsUiState.ready] carries the payload for
-     * the SAF picker; failures land in [DownloadsUiState.error].
+     * the SAF picker; failures land in [DownloadsUiState.error]. The request
+     * is persisted the moment the fetch starts and cleared on failure or
+     * consumption, so process death mid-flow recovers on the next start
+     * ([pendingDownloadSource] seam).
      */
     fun downloadFile(path: String, fileName: String) {
         if (downloadsState.value.inFlightPath != null || downloadsState.value.ready != null) return
         downloadsState.value = DownloadsUiState(inFlightPath = path)
+        scope.launch { onPendingDownloadChanged(PendingDownloadRequest(path, fileName)) }
         scope.launch {
             val state = try {
                 val response = gateway.readFile(sessionId, path)
@@ -459,6 +485,10 @@ class FilesViewModel(
                 failureState(e.message)
             }
             downloadsState.value = state
+            // A failure was reported while this process lived; only an
+            // interrupted (never-finished) flow leaves the request behind for
+            // recovery.
+            if (state.error != null) scope.launch { onPendingDownloadChanged(null) }
         }
     }
 
@@ -466,6 +496,7 @@ class FilesViewModel(
     fun consumeReadyDownload() {
         if (downloadsState.value.ready != null) {
             downloadsState.update { DownloadsUiState() }
+            scope.launch { onPendingDownloadChanged(null) }
         }
     }
 

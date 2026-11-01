@@ -6,6 +6,7 @@ import app.hapi.companion.fcm.RegisterDeviceWorker
 import app.hapi.companion.feature.files.DirectoryExpandPrefs
 import app.hapi.companion.feature.files.DirectorySortPrefs
 import app.hapi.companion.feature.files.MarkdownPreviewPrefs
+import app.hapi.companion.feature.files.PendingDownloadPrefs
 import app.hapi.companion.feature.files.filesDirExpandDataStore
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
@@ -147,6 +148,14 @@ class AppGraph(context: Context) {
      * `hapi.filePreview.markdownMode.v1` twin), app-wide like the web.
      */
     val markdownPreviewPrefs: MarkdownPreviewPrefs = MarkdownPreviewPrefs(appContext.hapiDataStore)
+
+    /**
+     * Pending-download recovery across process recreation (files foundation
+     * review): both download entry points (directory rows and the single-file
+     * viewer) persist their in-flight request here so a process death mid-flow
+     * (fetch or open SAF picker) resumes on the next start.
+     */
+    val pendingDownloadPrefs: PendingDownloadPrefs = PendingDownloadPrefs(appContext.hapiDataStore)
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
