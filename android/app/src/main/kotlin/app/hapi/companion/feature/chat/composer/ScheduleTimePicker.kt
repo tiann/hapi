@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -44,10 +45,22 @@ import java.time.ZoneId
  * - 分歧 (placement): the web anchors a fixed panel above the clock button
  *   (bottom sheet on touch viewports); Android renders it above the input
  *   card like the slash/mention dropdowns, the composer's popup precedent.
+ * - 分歧 (entry): the web's single `datetime-local` box relies on browser
+ *   affordances for the `YYYY-MM-DDTHH:mm` shape; Android splits it into two
+ *   digit-keyboard fields (minute resolution) whose separators the masks
+ *   insert as digits arrive ([ScheduleSend.maskDateInput] /
+ *   [ScheduleSend.maskTimeInput] — a numeric IME has no `-`/`:` keys), with
+ *   the 30 s-grace / 7-day validation, error shown red and cleared on edit
+ *   (plus an Android-only invalid-shape error, since two text fields can be
+ *   submitted half-typed), Submit disabled while either field is empty.
  * - 分歧 (dismiss): the web closes on outside-pointer-down; Android closes on
  *   the clock-button toggle and on selection, matching the dropdown
  *   precedent. Closing without picking never touches the pending value
  *   (web: "关面板不动已选值").
+ * - 分歧 (mutual exclusion): an open panel is dismissed the moment the
+ *   attachment tray grows a chip ([ChatComposer]); the ViewModel rejects
+ *   arming over the tray regardless, and validates again before consuming
+ *   uploads on send.
  * - The web's `min`/`max` input attributes are browser affordances; the real
  *   gate is [ScheduleSend.validateSpecificDatetime], as on the web.
  */
@@ -131,16 +144,22 @@ internal fun ScheduleTimePicker(
                     timeText = timeText,
                     error = specificError,
                     onDateChange = {
-                        dateText = it
+                        dateText = ScheduleSend.maskDateInput(it)
                         specificError = null
                     },
                     onTimeChange = {
-                        timeText = it
+                        timeText = ScheduleSend.maskTimeInput(it)
                         specificError = null
                     },
                     onSubmit = {
                         val parsed = ScheduleSend.parseSpecificInput(dateText, timeText, ZoneId.systemDefault())
-                            ?: return@SpecificPicker
+                        // A shape the mask cannot complete (partial date,
+                        // "9:9", Feb 30) surfaces as an inline error instead
+                        // of silently failing the submit tap.
+                        if (parsed == null) {
+                            specificError = ScheduleSend.SpecificError.Invalid
+                            return@SpecificPicker
+                        }
                         val error = ScheduleSend.validateSpecificDatetime(parsed, now())
                         if (error != null) {
                             specificError = error
@@ -232,11 +251,16 @@ private fun SpecificPicker(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             // Format hints, not prose — kept unlocalized like the web's
-            // datetime-local pattern (YYYY-MM-DDTHH:mm).
+            // datetime-local pattern (YYYY-MM-DDTHH:mm). The keyboard stays
+            // Number: the masks below insert the `-`/`:` separators the
+            // digit IME cannot type (web browsers give datetime-local the
+            // same affordance natively).
             OutlinedTextField(
                 value = dateText,
                 onValueChange = onDateChange,
-                modifier = Modifier.weight(1.4f),
+                modifier = Modifier
+                    .weight(1.4f)
+                    .testTag("schedule-date-input"),
                 singleLine = true,
                 placeholder = { Text("YYYY-MM-DD") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -244,7 +268,9 @@ private fun SpecificPicker(
             OutlinedTextField(
                 value = timeText,
                 onValueChange = onTimeChange,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("schedule-time-input"),
                 singleLine = true,
                 placeholder = { Text("HH:mm") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -254,6 +280,7 @@ private fun SpecificPicker(
             text = when (error) {
                 ScheduleSend.SpecificError.Past -> stringResource(R.string.chat_schedule_error_past)
                 ScheduleSend.SpecificError.TooFar -> stringResource(R.string.chat_schedule_error_too_far)
+                ScheduleSend.SpecificError.Invalid -> stringResource(R.string.chat_schedule_error_invalid)
                 null -> stringResource(R.string.chat_schedule_specific_hint)
             },
             style = MaterialTheme.typography.labelSmall,
@@ -266,7 +293,9 @@ private fun SpecificPicker(
         Button(
             onClick = onSubmit,
             enabled = dateText.isNotBlank() && timeText.isNotBlank(),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("schedule-submit"),
         ) {
             Text(stringResource(R.string.chat_schedule_send))
         }

@@ -320,6 +320,7 @@
     <string name="chat_schedule_specific_hint">Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.</string>
     <string name="chat_schedule_error_past">Scheduled time must be in the future.</string>
     <string name="chat_schedule_error_too_far">Maximum schedule time is 7 days.</string>
+    <string name="chat_schedule_error_invalid">Enter the full date and time (YYYY-MM-DD, HH:mm).</string>
     <string name="chat_queued_one">1 queued message</string>
     <string name="chat_queued_many">%1$d queued messages</string>
     <string name="chat_queued_scheduled">Scheduled for %1$s</string>

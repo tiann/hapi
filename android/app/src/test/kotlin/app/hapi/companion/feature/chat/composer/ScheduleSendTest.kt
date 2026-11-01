@@ -150,6 +150,71 @@ class ScheduleSendTest {
         )
     }
 
+    // ----------------------------------------------------------- input mask --
+
+    @Test
+    fun `date mask inserts separators as digits arrive for digit keyboards`() {
+        // Keystroke-by-keystroke: a numeric IME (no `-` key) can build the
+        // full shape; each intermediate value stays a legal prefix of it.
+        val keystrokes = "20261105"
+        var typed = ""
+        val expected = listOf("2", "20", "202", "2026", "2026-1", "2026-11", "2026-11-0", "2026-11-05")
+        keystrokes.forEachIndexed { index, digit ->
+            typed = ScheduleSend.maskDateInput(typed + digit)
+            assertEquals(expected[index], typed)
+        }
+    }
+
+    @Test
+    fun `time mask inserts the colon after the second digit`() {
+        var typed = ""
+        val expected = listOf("1", "14", "14:3", "14:30")
+        "1430".forEachIndexed { index, digit ->
+            typed = ScheduleSend.maskTimeInput(typed + digit)
+            assertEquals(expected[index], typed)
+        }
+    }
+
+    @Test
+    fun `masks round-trip already formatted text unchanged`() {
+        // Pasting a full "2026-11-05" (hardware keyboard, clipboard) must
+        // not be mangled — the mask is idempotent on its own output.
+        assertEquals("2026-11-05", ScheduleSend.maskDateInput("2026-11-05"))
+        assertEquals("14:30", ScheduleSend.maskTimeInput("14:30"))
+        assertEquals("2026-11-05", ScheduleSend.maskDateInput(ScheduleSend.maskDateInput("20261105")))
+        assertEquals("14:30", ScheduleSend.maskTimeInput(ScheduleSend.maskTimeInput("1430")))
+    }
+
+    @Test
+    fun `masks drop non-digits and cap the shape`() {
+        // Letters and stray separators are dropped, overflow digits capped
+        // at the wire shape (8 date digits / 4 time digits) — the field can
+        // never grow past YYYY-MM-DD or HH:mm.
+        assertEquals("2026-11-05", ScheduleSend.maskDateInput("2a0b2c6d1e1f0g5h9"))
+        assertEquals("2026-11-05", ScheduleSend.maskDateInput("2026-11-05-99"))
+        assertEquals("14:30", ScheduleSend.maskTimeInput("14:3099"))
+        assertEquals("", ScheduleSend.maskDateInput("-:-"))
+        assertEquals("", ScheduleSend.maskTimeInput(":"))
+    }
+
+    @Test
+    fun `mask output feeds the parser unchanged`() {
+        // The mask's output IS the parser's input format: a fully-typed
+        // digit sequence parses exactly like hand-formatted text.
+        assertEquals(
+            ScheduleSend.parseSpecificInput("2026-11-05", "14:30", ZoneOffset.UTC),
+            ScheduleSend.parseSpecificInput(
+                ScheduleSend.maskDateInput("20261105"),
+                ScheduleSend.maskTimeInput("1430"),
+                ZoneOffset.UTC,
+            ),
+        )
+        // Partial mask output is a malformed parse (null), surfaced by the
+        // picker's Invalid error, never a silently wrong instant.
+        assertNull(ScheduleSend.parseSpecificInput(ScheduleSend.maskDateInput("20261"), "14:30", ZoneOffset.UTC))
+        assertNull(ScheduleSend.parseSpecificInput("2026-11-05", ScheduleSend.maskTimeInput("14"), ZoneOffset.UTC))
+    }
+
     // ------------------------------------------------------------- format --
 
     @Test

@@ -28,9 +28,12 @@ import java.util.Locale
  *   gate, like the web's real check.
  * - 分歧: the web blocks *file pastes* while a schedule is pending (the whole
  *   paste is dropped); the Android composer has no clipboard-file paste path,
- *   so nothing to block — the illegal combos are instead made unreachable via
- *   the tray gates (schedule button disabled with attachments, attach button
- *   disabled while pending), the same mutual exclusion the web enforces.
+ *   so nothing to block — the illegal combos are instead made unreachable at
+ *   three layers (tray gates: schedule button disabled with attachments,
+ *   attach button disabled while pending; the picker panel closes when a chip
+ *   appears; and the ViewModel rejects arming over a non-empty tray and
+ *   validates again before consuming uploads), the same mutual exclusion the
+ *   web enforces.
  */
 sealed interface PendingSchedule {
     /** A relative preset key (`+5m`/`+30m`/`+1h`/`+4h`); resolved at send time. */
@@ -70,8 +73,13 @@ object ScheduleSend {
         is PendingSchedule.Absolute -> pending.ms
     }
 
-    /** Why a specific datetime was rejected (web `scheduleErrorPast`/`scheduleErrorTooFar`). */
-    enum class SpecificError { Past, TooFar }
+    /**
+     * Why a specific datetime was rejected. [Invalid] is Android-only: the
+     * web's `datetime-local` box cannot hold a malformed shape (the browser
+     * affordances enforce it), while two masked text fields can be submitted
+     * half-typed.
+     */
+    enum class SpecificError { Past, TooFar, Invalid }
 
     /** Web `validateSpecificDatetime`: 30 s past-grace, 7-day ceiling, else null. */
     fun validateSpecificDatetime(value: Long, now: Long): SpecificError? {
@@ -94,6 +102,40 @@ object ScheduleSend {
 
     private val strictDate = DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT)
     private val clockTime = DateTimeFormatter.ofPattern("HH:mm")
+
+    /**
+     * Auto-format the Specific-tab date field for digit keyboards
+     * (`KeyboardType.Number`): the IME exposes no `-` key, so the field
+     * inserts the `YYYY-MM-DD` separators itself as the digits arrive —
+     * "20261105" renders (and round-trips through the state) as
+     * "2026-11-05". Non-digits are dropped and the shape is capped at 8
+     * digits; already-formatted text round-trips unchanged (pasting
+     * "2026-11-05" stays put). Deleting just re-masks the remaining digits.
+     */
+    fun maskDateInput(input: String): String {
+        val digits = input.filter { it in '0'..'9' }.take(8)
+        return buildString {
+            digits.forEachIndexed { index, digit ->
+                if (index == 4 || index == 6) append('-')
+                append(digit)
+            }
+        }
+    }
+
+    /**
+     * [maskDateInput]'s time twin: the `HH:mm` colon appears after the
+     * second digit — "1430" becomes "14:30" — because common numeric IMEs
+     * (Gboard's number pad) have no `:` key.
+     */
+    fun maskTimeInput(input: String): String {
+        val digits = input.filter { it in '0'..'9' }.take(4)
+        return buildString {
+            digits.forEachIndexed { index, digit ->
+                if (index == 2) append(':')
+                append(digit)
+            }
+        }
+    }
 
     /**
      * Parse the two specific-tab fields (`YYYY-MM-DD` + `HH:mm`, the web's
