@@ -251,7 +251,7 @@ export class SharedCodexRoot {
         // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
-        await this.projection.history(response.thread);
+        await this.projectHistory(this.projection, response.thread);
         await this.refresh();
         await this.refreshChildren(true);    }
     async activate(options: SharedLaunchOptions = {}, beforeReady?: () => Promise<void>): Promise<void> {
@@ -412,7 +412,7 @@ export class SharedCodexRoot {
             const id = string(last?.id);
             this.latestTurn = id && last ? { id, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
         }
-        await this.projection.history(thread);
+        await this.projectHistory(this.projection, thread);
         await this.queue.reconcile(); this.alive();    }
     private async refreshChildren(subscribe: boolean): Promise<void> {
         // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。

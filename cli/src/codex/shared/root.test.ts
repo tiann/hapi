@@ -187,6 +187,37 @@ describe('async question delivery', () => {
         expect(f.state().requests![q.id]).toBeDefined();
         expect(f.state().completedRequests?.[q.id]).toBeUndefined();
     });
+    it('does not expose an already answered historical question during root replay', async () => {
+        const f = await fixture()
+        const q = asyncQuestionsForItem('thread', item)[0]
+        const answer = `<send_user_message_question_reply>\n${JSON.stringify([
+            { questionItemId: q.questionItemId, answer: 'Web', question: q.title }
+        ])}\n</send_user_message_question_reply>`
+        f.native.thread.turns = [{
+            id: 'historical-answer-turn',
+            status: 'completed',
+            items: [
+                item,
+                { type: 'userMessage', id: 'native-answer', content: [{ type: 'text', text: answer }] }
+            ]
+        }]
+
+        f.updateState.mockClear()
+        let replayed = structuredClone(f.state())
+        let enteredPending = false
+        await f.root.refresh()
+        for (const [update] of f.updateState.mock.calls) {
+            replayed = update(replayed)
+            if (replayed.requests?.[q.id]) enteredPending = true
+        }
+
+        expect(enteredPending).toBe(false)
+        expect(f.state().requests?.[q.id]).toBeUndefined()
+        expect(f.state().completedRequests?.[q.id]).toMatchObject({ status: 'resolved', answers: {
+            [q.questionItemId]: { answers: ['Web'] }
+        } })
+    })
+
 });
 
 async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'input', turnId = 'compacting-turn') {
