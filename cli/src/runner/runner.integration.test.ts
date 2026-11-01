@@ -22,7 +22,9 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawn } from 'child_process';
-import { existsSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
+import { existsSync, mkdirSync, unlinkSync, readFileSync, writeFileSync, readdirSync } from 'fs';
 import path, { join } from 'path';
 import { configuration } from '@/configuration';
 import { 
@@ -37,7 +39,8 @@ import { readRunnerState, clearRunnerState } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { getLatestRunnerLog } from '@/ui/logger';
-import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
+import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
+import { ApiClient } from '@/api/api';
 import { buildTestChildEnv, testOwnedMarker } from '@/test/integrationEnv';
 import { trackChildProcess, trackRunnerPid, trackSession, cleanupAllRegisteredProcesses } from '@/test/processRegistry';
 import { findTestOwnedProcesses, reapTestOwnedProcesses } from '@/test/auditTestProcesses';
@@ -98,23 +101,21 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     return response;
   }
 
-  beforeEach(async () => {
-    // First ensure no runner is running by checking PID in metadata file
-    await stopRunner()
-    
+  async function startTestRunner(env: NodeJS.ProcessEnv = {}): Promise<void> {
     // Start fresh runner for this test
     // This will return and start a background process - we don't need to wait for it
     const runnerLauncher = spawnHappyCLI(['runner', 'start'], {
       stdio: 'ignore',
       // Test-scoped env: neutralizes any outer HAPI/pi session identity and
       // stamps every child with the run's unique test marker.
-      env: buildTestChildEnv()
+      env: { ...buildTestChildEnv(), ...env }
     });
     // Register immediately after spawn so cleanup runs even if this test fails
     // before reaching its happy-path teardown.
     trackChildProcess(runnerLauncher, 'runner-launcher');
     
-    // Wait for runner to write its state file (it needs to auth, setup, and start server)
+    // The state file proves local control is available, not that the Hub has
+    // received this runner's RPC registrations yet.
     // Also require the PID to actually be alive: a SIGKILLed runner (or a
     // crashed one) can leave a stale runner.state.json behind, and reading it
     // as "started" would make every control call in the test body fail.
@@ -130,8 +131,33 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     runnerPid = runnerState.pid;
     trackRunnerPid(runnerPid, 'runner');
 
+    const machineId = runnerState.startedWithMachineId;
+    if (!machineId) throw new Error('Runner state is missing its machine ID');
+    // ApiMachineClient emits its RPC registrations before the running-state
+    // update on the same socket. Match the PID so the previous runner's state
+    // cannot satisfy this barrier during a restart.
+    await waitFor(async () => {
+      const response = await fetch(`${configuration.apiUrl}/cli/machines/${machineId}`, {
+        headers: { Authorization: `Bearer ${configuration.cliApiToken}` },
+        signal: AbortSignal.timeout(1000),
+      });
+      if (!response.ok) return false;
+      const { machine } = await response.json() as {
+        machine?: { active: boolean; runnerState: { status: string; pid?: number } | null };
+      };
+      return machine?.active === true
+        && machine.runnerState?.status === 'running'
+        && machine.runnerState.pid === runnerPid;
+    }, 10_000);
+
     console.log(`[TEST] Runner started for test: PID=${runnerPid}`);
     console.log(`[TEST] Runner log file: ${runnerState?.runnerLogPath}`);
+  }
+
+  beforeEach(async () => {
+    // First ensure no runner is running by checking PID in metadata file
+    await stopRunner()
+    await startTestRunner()
   });
 
   /** Bounded wrapper around the graceful runner stop. */
@@ -173,6 +199,389 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     const sessions = await listRunnerSessions();
     expect(sessions).toEqual([]);
   });
+
+  const resumeProcessFile = `${configuration.runnerStateFile}.resume-processes.json`;
+  const verifiedExitFile = `${configuration.runnerStateFile}.verified-exits.json`;
+  type ResumeRecord = {
+    requestedSessionId: string;
+    confirmedSessionId: string;
+    pid: number;
+    processStartMarker: string;
+    bootId?: string;
+  };
+
+  function readResumeRecords(): ResumeRecord[] {
+    return JSON.parse(readFileSync(resumeProcessFile, 'utf8'));
+  }
+
+  function expectNoExitTombstone(sessionId: string, pid: number): void {
+    const exits: string[] = existsSync(verifiedExitFile)
+      ? JSON.parse(readFileSync(verifiedExitFile, 'utf8'))
+      : [];
+    expect(exits).not.toContain(sessionId);
+    expect(exits).not.toContain(`PID-${pid}`);
+  }
+
+  async function restartWithResumeRecords(records: ResumeRecord[], env: NodeJS.ProcessEnv = {}): Promise<void> {
+    const oldPid = runnerPid;
+    await stopRunnerHttp();
+    await waitFor(async () => !isProcessAlive(oldPid));
+    writeFileSync(resumeProcessFile, JSON.stringify(records));
+    await startTestRunner(env);
+  }
+
+  async function spawnUnrelatedProcess(): Promise<number> {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      env: buildTestChildEnv(),
+      stdio: 'ignore',
+    });
+    trackChildProcess(child, 'resume-generation-unrelated-process');
+    if (!child.pid) throw new Error('Failed to spawn generation fixture');
+    const pid = child.pid;
+    await waitFor(async () => getProcessStartMarker(pid) !== null);
+    return pid;
+  }
+
+  async function findFixtureThread(pid: number): Promise<number> {
+    let tid: number | undefined;
+    await waitFor(async () => {
+      tid = readdirSync(`/proc/${pid}/task`).map(Number).find(candidate => candidate !== pid);
+      return tid !== undefined;
+    });
+    return tid!;
+  }
+
+  function processProbeFixture(pid: number | { pidFile: string }): { modeFile: string; env: NodeJS.ProcessEnv } {
+    const binDir = join(configuration.happyHomeDir, `generation-probe-${randomUUID()}`);
+    mkdirSync(binDir);
+    const modeFile = join(binDir, 'mode');
+    const quotedModeFile = `'${modeFile.replace(/'/g, `'\\''`)}'`;
+    const expectedPid = typeof pid === 'number'
+      ? `'${pid}'`
+      : `"$(cat '${pid.pidFile.replace(/'/g, `'\\''`)}' 2>/dev/null)"`;
+    // Only this test-owned PID's lstart probe is changed. All identity,
+    // process-tree, and orphan scans use the real system ps unchanged.
+    writeFileSync(join(binDir, 'ps'), `#!/bin/sh
+if [ "$1" = '-p' ] && [ "$2" = ${expectedPid} ] && [ "$3" = '-o' ] && [ "$4" = 'lstart=' ] && [ -f ${quotedModeFile} ]; then
+  case "$(cat ${quotedModeFile})" in
+    block) exit 1 ;;
+    replace) printf '%s\\n' 'different-generation'; exit 0 ;;
+  esac
+fi
+exec /bin/ps "$@"
+`, { mode: 0o755 });
+    return {
+      modeFile,
+      env: {
+        PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
+        HAPI_RUNNER_HEARTBEAT_INTERVAL: '200',
+        HAPI_DISABLE_VERSION_HANDOFF: '1',
+      },
+    };
+  }
+
+  it.skipIf(process.platform !== 'linux')('releases a previous-boot record without stopping the reused live PID or claiming session exit', async () => {
+    const pid = await spawnUnrelatedProcess();
+    const currentBoot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const oldBoot = currentBoot === '00000000-0000-4000-8000-000000000000'
+      ? '00000000-0000-4000-8000-000000000001'
+      : '00000000-0000-4000-8000-000000000000';
+    const sessionId = randomUUID();
+    await restartWithResumeRecords([{
+      requestedSessionId: sessionId,
+      confirmedSessionId: sessionId,
+      pid,
+      // A matching marker must not override proof of a different boot.
+      processStartMarker: getProcessStartMarker(pid)!,
+      bootId: oldBoot,
+    }]);
+
+    expect(readResumeRecords().some(record => record.requestedSessionId === sessionId)).toBe(false);
+    expect(isProcessAlive(pid)).toBe(true);
+    expectNoExitTombstone(sessionId, pid);
+    expect(await stopRunnerSession(sessionId)).toBe('unknown');
+    expect(isProcessAlive(pid)).toBe(true);
+  });
+
+  it.skipIf(process.platform !== 'linux')('releases a legacy record whose PID was reused by a live nonleader thread', async () => {
+    const pid = await spawnUnrelatedProcess();
+    const tid = await findFixtureThread(pid);
+    expect(isProcessAlive(tid)).toBe(true);
+    expect(getProcessStartMarker(tid)).toBeNull();
+    const sessionId = randomUUID();
+    await restartWithResumeRecords([{
+      requestedSessionId: sessionId,
+      confirmedSessionId: sessionId,
+      pid: tid,
+      processStartMarker: 'Sun Oct 25 04:46:27 2026',
+    }]);
+
+    expect(readResumeRecords().some(record => record.requestedSessionId === sessionId)).toBe(false);
+    expect(isProcessAlive(pid)).toBe(true);
+    expect(isProcessAlive(tid)).toBe(true);
+    expectNoExitTombstone(sessionId, tid);
+    expect(await stopRunnerSession(sessionId)).toBe('unknown');
+    expect(isProcessAlive(tid)).toBe(true);
+  });
+
+  it.skipIf(process.platform !== 'linux')('does not adopt or terminate a session webhook naming a nonleader thread', async () => {
+    const pid = await spawnUnrelatedProcess();
+    const tid = await findFixtureThread(pid);
+    const sessionId = randomUUID();
+    await notifyRunnerSessionStarted(sessionId, {
+      path: '/tmp',
+      host: hostname(),
+      homeDir: '/tmp',
+      happyHomeDir: configuration.happyHomeDir,
+      happyLibDir: process.cwd(),
+      happyToolsDir: process.cwd(),
+      hostPid: tid,
+      startedBy: 'runner',
+      machineId: 'test-generation-machine',
+    });
+
+    expect((await listRunnerSessions()).some(item => item.happySessionId === sessionId)).toBe(false);
+    expect(readResumeRecords().some(item => item.requestedSessionId === sessionId)).toBe(false);
+    expect(isProcessAlive(pid)).toBe(true);
+    expect(isProcessAlive(tid)).toBe(true);
+  });
+
+  it.skipIf(process.platform !== 'linux')('preserves live legacy and same-boot records when restarting the runner', async () => {
+    const legacyPid = await spawnUnrelatedProcess();
+    const currentPid = await spawnUnrelatedProcess();
+    const uppercasePid = await spawnUnrelatedProcess();
+    const malformedPid = await spawnUnrelatedProcess();
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const records: ResumeRecord[] = [legacyPid, currentPid, uppercasePid, malformedPid].map(pid => {
+      const sessionId = randomUUID();
+      return {
+        requestedSessionId: sessionId,
+        confirmedSessionId: sessionId,
+        pid,
+        processStartMarker: getProcessStartMarker(pid)!,
+        ...(pid === legacyPid ? {} : {
+          bootId: pid === uppercasePid ? bootId.toUpperCase()
+            : pid === malformedPid ? 'not-a-boot-id' : bootId,
+        }),
+      };
+    });
+    await restartWithResumeRecords(records);
+
+    const { bootId: _invalidBoot, ...legacyMalformed } = records[3];
+    expect(readResumeRecords()).toEqual(expect.arrayContaining([
+      records[0], records[1], { ...records[2], bootId }, legacyMalformed,
+    ]));
+    for (const record of records) {
+      expect(isProcessAlive(record.pid)).toBe(true);
+      expectNoExitTombstone(record.requestedSessionId, record.pid);
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('keeps an unverifiable record through stop and releases a later heartbeat mismatch without exit tombstones', async () => {
+    const pid = await spawnUnrelatedProcess();
+    const sessionId = randomUUID();
+    const record: ResumeRecord = {
+      requestedSessionId: sessionId,
+      confirmedSessionId: sessionId,
+      pid,
+      processStartMarker: getProcessStartMarker(pid)!,
+      bootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+    };
+    const fixture = processProbeFixture(pid);
+    writeFileSync(fixture.modeFile, 'block');
+    await restartWithResumeRecords([record], fixture.env);
+
+    expect(readResumeRecords()).toContainEqual(record);
+    expect(await stopRunnerSession(sessionId)).toBe('still_alive');
+    expect(readResumeRecords()).toContainEqual(record);
+    expect(isProcessAlive(pid)).toBe(true);
+    expectNoExitTombstone(sessionId, pid);
+
+    unlinkSync(fixture.modeFile);
+    const heartbeat = (await readRunnerState())?.lastHeartbeat;
+    await waitFor(async () => (await readRunnerState())?.lastHeartbeat !== heartbeat);
+    expect(readResumeRecords()).toContainEqual(record);
+    expectNoExitTombstone(sessionId, pid);
+
+    writeFileSync(fixture.modeFile, 'replace');
+    await waitFor(async () => !readResumeRecords().some(item => item.requestedSessionId === sessionId));
+    expect(isProcessAlive(pid)).toBe(true);
+    expectNoExitTombstone(sessionId, pid);
+    expect(await stopRunnerSession(sessionId)).toBe('unknown');
+  });
+
+  it.skipIf(process.platform !== 'linux')('preserves an adopted process and its record when stop cannot verify its generation', async () => {
+    const pid = await spawnUnrelatedProcess();
+    const sessionId = randomUUID();
+    const fixture = processProbeFixture(pid);
+    await restartWithResumeRecords([], fixture.env);
+    await notifyRunnerSessionStarted(sessionId, {
+      path: '/tmp',
+      host: hostname(),
+      homeDir: '/tmp',
+      happyHomeDir: configuration.happyHomeDir,
+      happyLibDir: process.cwd(),
+      happyToolsDir: process.cwd(),
+      hostPid: pid,
+      hostStartMarker: getProcessStartMarker(pid)!,
+      startedBy: 'runner',
+      machineId: 'test-generation-machine',
+    });
+    const record = readResumeRecords().find(item => item.requestedSessionId === sessionId);
+    expect(record).toBeDefined();
+
+    writeFileSync(fixture.modeFile, 'block');
+    expect(await stopRunnerSession(sessionId)).toBe('still_alive');
+    expect(readResumeRecords()).toContainEqual(record);
+    expect((await listRunnerSessions()).some(item => item.happySessionId === sessionId)).toBe(true);
+    expect(isProcessAlive(pid)).toBe(true);
+    expectNoExitTombstone(sessionId, pid);
+
+    unlinkSync(fixture.modeFile);
+    const heartbeat = (await readRunnerState())?.lastHeartbeat;
+    await waitFor(async () => (await readRunnerState())?.lastHeartbeat !== heartbeat);
+    expect(isProcessAlive(pid)).toBe(true);
+    expect(readResumeRecords()).toContainEqual(record);
+  });
+
+  it.skipIf(process.platform !== 'linux')('settles an unconfirmed startup on generation mismatch and cancels its old kill deadline', async () => {
+    const fixtureDir = join(configuration.happyHomeDir, `unconfirmed-generation-${randomUUID()}`);
+    mkdirSync(fixtureDir);
+    const pidFile = join(fixtureDir, 'pid');
+    const preload = join(fixtureDir, 'preload.ts');
+    // Bun runs this before the CLI entrypoint. Park only the test session;
+    // runner launchers and the runner itself still execute their real code.
+    writeFileSync(preload, `import { writeFileSync } from 'node:fs';
+if (process.argv[2] === 'claude') {
+  writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
+`);
+    const fixture = processProbeFixture({ pidFile });
+    const webhookTimeoutMs = 3000;
+    await restartWithResumeRecords([], {
+      ...fixture.env,
+      BUN_OPTIONS: `--preload=${preload}`,
+      HAPI_RUNNER_WEBHOOK_TIMEOUT_MS: String(webhookTimeoutMs),
+    });
+    const state = await readRunnerState();
+    const sessionId = randomUUID();
+    const spawnRequest = fetch(`http://127.0.0.1:${state!.httpPort}/spawn-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: '/tmp', sessionId }),
+    }).then(async response => ({ status: response.status, body: await response.json() as { error?: string } }));
+    // Teardown may stop the runner while a deliberately failing Red assertion
+    // leaves this request pending. Observe its rejection in that case too.
+    void spawnRequest.catch(() => {});
+    await waitFor(async () => existsSync(pidFile));
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    trackRunnerPid(pid, 'unconfirmed-generation-session');
+    await waitFor(async () => readResumeRecords().some(record => record.pid === pid));
+    const startupObservedAt = Date.now();
+    expect(isProcessAlive(pid)).toBe(true);
+
+    writeFileSync(fixture.modeFile, 'replace');
+    await waitFor(async () => !readResumeRecords().some(record => record.pid === pid));
+    const result = await Promise.race([
+      spawnRequest,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 1000)),
+    ]);
+    expect(result, 'generation invalidation must settle startup before its old timeout').not.toBeNull();
+    expect(result!.status).toBe(500);
+    expect(result!.body.error).toMatch(/generation changed before startup was confirmed/);
+    expectNoExitTombstone(sessionId, pid);
+
+    // Cross the original deadline: its timer must have been cancelled instead
+    // of signalling the now-untrusted PID after the binding was discarded.
+    await waitFor(async () => Date.now() > startupObservedAt + webhookTimeoutMs + 300, webhookTimeoutMs + 1000);
+    expect(isProcessAlive(pid)).toBe(true);
+    expectNoExitTombstone(sessionId, pid);
+  });
+
+  it.skipIf(process.platform !== 'linux')('persists the boot ID of a newly spawned session across runner restart', async () => {
+    const response = await spawnTrackedSession('/tmp');
+    expect(response.success).toBe(true);
+    const record = readResumeRecords().find(item => item.confirmedSessionId === response.sessionId);
+    expect(record).toBeDefined();
+    expect(record!.bootId).toBe(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+    await restartWithResumeRecords([record!]);
+    expect(readResumeRecords()).toContainEqual(record);
+    expect(isProcessAlive(record!.pid)).toBe(true);
+  });
+
+  it.skipIf(process.platform !== 'linux')('resumes the same Hub session once after recovering a stale thread record', async () => {
+    const pid = await spawnUnrelatedProcess();
+    const tid = await findFixtureThread(pid);
+    const machineId = JSON.parse(readFileSync(configuration.settingsFile, 'utf8')).machineId;
+    expect(typeof machineId).toBe('string');
+    const api = await ApiClient.create();
+    const session = await api.getOrCreateSession({
+      tag: `resume-generation-${randomUUID()}`,
+      metadata: {
+        path: '/tmp',
+        host: hostname(),
+        homeDir: '/tmp',
+        happyHomeDir: configuration.happyHomeDir,
+        happyLibDir: process.cwd(),
+        happyToolsDir: process.cwd(),
+        machineId,
+        flavor: 'claude',
+      },
+      state: null,
+    });
+    trackSession(session.id, 'resumed-generation-session');
+    expect(session.active).toBe(false);
+    const registrationMarker = join(configuration.happyHomeDir, `rpc-registration-${randomUUID()}`);
+    const registrationPreload = `${registrationMarker}.ts`;
+    // Exercise the state-file/Hub-registration gap without delaying RPC or
+    // resume requests after registration. Preserve register-before-running.
+    writeFileSync(registrationPreload, `import { writeFileSync } from 'node:fs';
+if (process.argv[2] === 'runner' && process.argv[3] === 'start-sync') {
+  const { RpcHandlerManager } = await import(${JSON.stringify(join(process.cwd(), 'src/api/rpc/RpcHandlerManager.ts'))});
+  const onSocketConnect = RpcHandlerManager.prototype.onSocketConnect;
+  RpcHandlerManager.prototype.onSocketConnect = function(socket) {
+    writeFileSync(${JSON.stringify(registrationMarker)}, String(process.pid));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500);
+    return onSocketConnect.call(this, socket);
+  };
+}
+`);
+    await restartWithResumeRecords([{
+      requestedSessionId: session.id,
+      confirmedSessionId: session.id,
+      pid: tid,
+      processStartMarker: 'Sun Oct 25 04:46:27 2026',
+    }], { BUN_OPTIONS: `--preload=${registrationPreload}` });
+    await waitFor(async () => existsSync(registrationMarker));
+    expect(readFileSync(registrationMarker, 'utf8')).toBe(String(runnerPid));
+
+    const auth = await fetch(`${configuration.apiUrl}/api/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken: configuration.cliApiToken }),
+    });
+    expect(auth.status).toBe(200);
+    const { token } = await auth.json() as { token: string };
+    const resume = () => fetch(`${configuration.apiUrl}/api/sessions/${session.id}/resume`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const responses = await Promise.all([resume(), resume()]);
+    for (const response of responses) {
+      const body = await response.json();
+      expect(body).toEqual({ type: 'success', sessionId: session.id });
+      expect(response.status).toBe(200);
+    }
+    const retry = await resume();
+    expect(retry.status).toBe(200);
+    const sessions = await listRunnerSessions();
+    expect(sessions.filter(item => item.happySessionId === session.id)).toHaveLength(1);
+    expect(isProcessAlive(pid)).toBe(true);
+    expect(isProcessAlive(tid)).toBe(true);
+  }, 40_000);
 
   it('preserves shared Codex support after a runner heartbeat', async () => {
     const initial = await readRunnerState();

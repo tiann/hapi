@@ -1133,9 +1133,12 @@ export function normalizeAgentRecord(
                 createdAt,
                 role: 'event',
                 content: {
-                    type: 'compact',
-                    trigger: asString(data.trigger) ?? 'auto',
-                    preTokens: asNumber(data.preTokens ?? data.pre_tokens) ?? 0
+                    type: 'compact-summary',
+                    // Native completion alone does not imply summary or token
+                    // content; the common presentation uses only available facts.
+                    summary: '',
+                    compactionId: asString(data.id) ?? undefined,
+                    tokensBefore: asNumber(data.preTokens ?? data.pre_tokens) ?? undefined
                 },
                 isSidechain: false,
                 meta
@@ -1145,8 +1148,7 @@ export function normalizeAgentRecord(
         // Defensive parity with context_compacted above: a compact-summary
         // arriving in the codex envelope (e.g. from an older import path or a
         // future producer) must not be silently dropped by the codex-content
-        // filter — map it to the same agent-event the live pi wrapper emits
-        // so it renders as the dedicated chat block.
+        // filter — preserve its facts for the common compaction presentation.
         if (data.type === 'compact-summary' && typeof data.summary === 'string') {
             return {
                 id: messageId,
@@ -1156,7 +1158,9 @@ export function normalizeAgentRecord(
                 content: {
                     type: 'compact-summary',
                     summary: data.summary,
+                    compactionId: asString(data.compactionId) ?? undefined,
                     tokensBefore: asNumber(data.tokensBefore) ?? undefined,
+                    tokensAfter: asNumber(data.tokensAfter) ?? undefined,
                     estimatedTokensAfter: asNumber(data.estimatedTokensAfter) ?? undefined
                 },
                 isSidechain: false,
@@ -1265,6 +1269,18 @@ export function normalizeAgentRecord(
 
         if (data.type === 'tool-call-result' && typeof data.callId === 'string') {
             const uuid = asString(data.id) ?? messageId
+            const command = isObject(data.output) && data.output.type === 'exec_command_end' ? data.output : null
+            const commandFailed = command !== null && (
+                ['failed', 'cancelled', 'canceled', 'declined', 'interrupted'].includes(String(command.status))
+                || (typeof command.exit_code === 'number' && command.exit_code !== 0)
+                || Boolean(command.error)
+            )
+            const duration = command?.duration_ms
+            const commandExecution = command ? {
+                input: Object.fromEntries(['command', 'cwd', 'command_actions', 'command_source']
+                    .filter(key => command[key] !== undefined).map(key => [key, command[key]])),
+                ...(typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 ? { durationMs: duration } : {})
+            } : undefined
             return {
                 id: messageId,
                 localId,
@@ -1275,7 +1291,8 @@ export function normalizeAgentRecord(
                     type: 'tool-result',
                     tool_use_id: data.callId,
                     content: data.output,
-                    is_error: Boolean(data.is_error),
+                    is_error: Boolean(data.is_error) || commandFailed,
+                    ...(commandExecution ? { commandExecution } : {}),
                     uuid,
                     parentUUID: null
                 }],

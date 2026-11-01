@@ -125,6 +125,8 @@ export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
+        /** Readable revision covered by this tail snapshot; absent on history pages. */
+        readThroughRevision?: number
         direction: 'latest' | 'before' | 'after'
         limit: number
         epoch: number
@@ -654,6 +656,17 @@ export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     error: string
 }
 
+/** Machine-scoped native history operation; never sends a source prompt. */
+export const ForkArchivedCodexRequestSchema = z.object({
+    operationId: z.string().uuid(),
+    sourceSessionId: z.string().uuid(),
+    sourceThreadId: z.string().min(1),
+    directory: z.string().min(1),
+    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional()
+})
+export type ForkArchivedCodexRequest = z.infer<typeof ForkArchivedCodexRequestSchema>
+export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: string; rollbackSafe: boolean }
+
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
@@ -830,6 +843,7 @@ export type MachinePathsExistsResponse = PathExistsResponse
 export type WorkspaceReadFileRequest = {
     cwd: string
     path: string
+    maxBytes?: number
 }
 
 export type WorkspaceListDirectoryRequest = {
@@ -1133,4 +1147,44 @@ export type UsageSummaryResponse = {
     byAgent: UsageSummaryBucket[]
     byModel: UsageSummaryBucket[]
     updatedAt: number
+}
+
+/** A stretch an agent was working: from `thinking` turning on to it turning
+ *  off. `end` is null while the turn is still going. */
+export type AgentActivityTurn = {
+    start: number
+    end: number | null
+    endReason: 'idle' | 'session_end' | 'expired' | 'hub_restart' | null
+    startedBy: 'hub_prompt' | 'agent' | 'patch'
+}
+
+/** The agent waiting on the user inside a turn: a permission prompt or a
+ *  question. `end` is null while it is still waiting. */
+export type AgentActivityWait = {
+    start: number
+    end: number | null
+    kind: 'permission' | 'input'
+    tool: string
+}
+
+export type AgentActivitySession = {
+    id: string
+    flavor: string | null
+    /** The agent's own session id (Claude session, Codex thread, ...). */
+    agentSessionId: string | null
+    machineId: string | null
+    host: string | null
+    machineName: string | null
+    path: string | null
+    title: string | null
+    turns: AgentActivityTurn[]
+    waits: AgentActivityWait[]
+}
+
+/** GET /api/activity: when agents in the caller's namespace were working. */
+export type AgentActivityResponse = {
+    since: number
+    until: number
+    generatedAt: number
+    sessions: AgentActivitySession[]
 }

@@ -4,7 +4,7 @@ import type { RawJSONLines } from '@/claude/types'
 
 // Transcript messages must forward the
 // transcript entry's own `timestamp` (converted to epoch ms) as `createdAt` on
-// the socket 'message' emit, but ONLY for the agent (non-external-user) path —
+// the socket 'message' emit for agent output and genuine local input —
 // see hub/src/store/messages.ts addMessage (Phase 1), which honors this value
 // for created_at/invoked_at so display order follows jsonl order instead of
 // hub-receive order.
@@ -123,7 +123,7 @@ describe('sendClaudeSessionMessage createdAt propagation', () => {
         }))
     })
 
-    it('local Claude prompt: does not add createdAt and does not stamp isTranscriptEcho', () => {
+    it('local Claude prompt: preserves original time without stamping isTranscriptEcho', () => {
         const { client, fakeSocket } = makeClient()
         const body = {
             type: 'user',
@@ -139,7 +139,7 @@ describe('sendClaudeSessionMessage createdAt propagation', () => {
         expect(fakeSocket.emit).toHaveBeenCalledTimes(1)
         const [, payload] = fakeSocket.emit.mock.calls[0] as [string, Record<string, unknown>]
         expect(payload.sid).toBe('session-1')
-        expect(payload).not.toHaveProperty('createdAt')
+        expect(payload.createdAt).toBe(Date.parse(body.timestamp!))
         expect(payload.message).toMatchObject({
             role: 'user',
             meta: { sentFrom: 'cli' }

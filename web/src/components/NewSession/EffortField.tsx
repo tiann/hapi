@@ -17,6 +17,7 @@ export type EffortFieldProps = {
     isDisabled: boolean
     /** Model-dependent launch-effort options (Grok). */
     grokOptions?: Array<{ value: string; label: string }>
+    agyOptions?: Array<{ value: string; label: string }>
     /** Launch-effort options the selected Claude model accepts; undefined = every level. */
     claudeOptions?: Array<{ value: string; label: string }>
     /** Model-dependent reasoning-effort options (Codex). */
@@ -49,7 +50,10 @@ export function EffortField(props: EffortFieldProps) {
     const isReasoningEffort = props.agent === 'codex' || props.agent === 'opencode'
 
     let options: Array<{ value: string; label: string }>
-    if (props.agent === 'grok') {
+    if (props.agent === 'agy') {
+        if (!props.agyOptions?.length) return null
+        options = [{ value: 'auto', label: t('newSession.model.default') }, ...props.agyOptions]
+    } else if (props.agent === 'grok') {
         options = props.grokOptions ?? GROK_EFFORT_OPTIONS
     } else if (props.agent === 'pi') {
         if (props.piSelectedModel?.reasoning === false) {

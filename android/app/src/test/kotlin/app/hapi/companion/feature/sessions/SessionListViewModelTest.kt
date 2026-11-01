@@ -179,6 +179,28 @@ private fun TestScope.buildViewModel(
 // ------------------------------------------------------------------ tests --
 
 class SessionListViewModelTest {
+    @Test
+    fun `reset clears machine and date filters while preserving search`() = runTest {
+        val (viewModel, sessions) = buildViewModel()
+        sessions.set(
+            summary("one", name = "Matching session", machineId = "m1"),
+            summary("two", name = "Matching session", machineId = "m2"),
+            summary("three", name = "Other", machineId = "m2"),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+        viewModel.setMachineFilter("m1")
+        viewModel.setDateRange(0, 0)
+        viewModel.setSearchQuery("Matching")
+        val filtered = viewModel.uiState.first { it.activeMachineFilter == "m1" && it.dateRange != null && it.isSearching }
+        assertTrue(filtered.hasActiveFilters)
+        assertEquals(listOf("one"), filtered.rows.map { it.id })
+
+        viewModel.clearFilters()
+        val reset = viewModel.uiState.first { !it.hasActiveFilters }
+        assertEquals("Matching", reset.searchQuery)
+        assertEquals(setOf("one", "two"), reset.rows.map { it.id }.toSet())
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
     fun `vanished filter stays cleared when sessions return and is isolated per home`() = runTest {
@@ -221,9 +243,9 @@ class SessionListViewModelTest {
         val (viewModel, sessions, machines) = buildViewModel()
         machines.backing.value = listOf(machine("m1", host = "devbox.local", displayName = "Devbox"))
         sessions.set(
-            summary("s1", updatedAt = 900, name = "Named session", machineId = "m1", summaryText = "working on it"),
-            summary("s2", updatedAt = 500, summaryText = "summary title", machineId = "offline-machine-id"),
-            summary("s3", updatedAt = 100, path = "/repo/tail-name"),
+            summary("s1", updatedAt = 900, name = "Named session", machineId = "m1", summaryText = "working on it").copy(contentRevision = 1),
+            summary("s2", updatedAt = 500, summaryText = "summary title", machineId = "offline-machine-id").copy(contentRevision = 1),
+            summary("s3", updatedAt = 100, path = "/repo/tail-name").copy(contentRevision = 1),
         )
 
         val state = viewModel.uiState.first { it.rows.size == 3 }
@@ -369,13 +391,13 @@ class SessionListViewModelTest {
     }
 
     @Test
-    fun `onSessionOpened stamps the last-seen watermark and clears unread`() = runTest {
+    fun `onSessionOpened preserves unread until transcript renders`() = runTest {
         val (viewModel, sessions, _) = buildViewModel()
-        sessions.set(summary("s1", updatedAt = 900))
+        sessions.set(summary("s1", updatedAt = 900).copy(contentRevision = 1))
         assertTrue(viewModel.uiState.first { it.rows.size == 1 }.rows.single().unread)
 
         viewModel.onSessionOpened("s1")
-        assertFalse(viewModel.uiState.first { !it.rows.single().unread }.rows.single().unread)
+        assertTrue(viewModel.uiState.value.rows.single().unread)
     }
 
     // -------------------------------------------- rename / delete / reopen --

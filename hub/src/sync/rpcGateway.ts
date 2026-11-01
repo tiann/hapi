@@ -410,8 +410,8 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.GitDiffFile, options) as RpcCommandResponse
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ReadFile, { path }) as RpcReadFileResponse
+    async readSessionFile(sessionId: string, path: string, options?: { maxBytes?: number }): Promise<RpcReadFileResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ReadFile, { path, ...options }) as RpcReadFileResponse
     }
 
     async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
@@ -625,6 +625,13 @@ export class RpcGateway {
             params,
             120_000
         ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResponse
+    }
+
+    async forkArchivedCodex(machineId: string, request: import('@hapi/protocol/apiTypes').ForkArchivedCodexRequest): Promise<import('@hapi/protocol/apiTypes').ForkArchivedCodexResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ForkArchivedCodex, request, 120_000) as Record<string, unknown>
+        if (typeof result?.error === 'string') return { error: result.error, rollbackSafe: result.rollbackSafe === true }
+        if (typeof result?.nativeSessionId !== 'string' || !result.nativeSessionId) throw new Error('Native archived fork did not return a session id')
+        return { nativeSessionId: result.nativeSessionId }
     }
 
     async clearConversation(sessionId: string): Promise<{ sessionId: string }> {

@@ -89,6 +89,8 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
 /// hub-derived: badges must use `pendingRequestsCount` (authoritative total),
 /// never `pendingRequests.count` (capped at 5, oldest first).
 public struct SessionSummary: Codable, Equatable, Sendable {
+    public var contentRevision: Int?
+    public var readState: SessionReadState?
     /// Server-side cap on `pendingRequests` entries
     /// (`PENDING_REQUEST_SUMMARY_CAP`, `shared/src/sessionSummary.ts`).
     public static let pendingRequestSummaryCap = 5
@@ -97,6 +99,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var active: Bool
     public var thinking: Bool
     public var activeAt: Int
+    public var createdAt: Int?
+    public var lastUserMessageAt: Int?
     public var updatedAt: Int
     public var pinned: Bool?
     public var globalPinned: Bool?
@@ -119,11 +123,15 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var effort: String?
 
     public init(
+        contentRevision: Int? = nil,
+        readState: SessionReadState? = nil,
         id: String,
         active: Bool,
         thinking: Bool,
         activeAt: Int,
         updatedAt: Int,
+        createdAt: Int? = nil,
+        lastUserMessageAt: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         metadata: SessionSummaryMetadata? = nil,
@@ -142,10 +150,14 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         effort: String? = nil
     ) {
         self.id = id
+        self.contentRevision = contentRevision
+        self.readState = readState
         self.active = active
         self.thinking = thinking
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
+        self.createdAt = createdAt
         self.pinned = pinned
         self.globalPinned = globalPinned
         self.metadata = metadata
