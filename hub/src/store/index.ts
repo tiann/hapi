@@ -47,7 +47,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 29
+const SCHEMA_VERSION: number = 30
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -364,6 +364,7 @@ export class Store {
             26: () => this.migrateFromV26ToV27(),
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
+            29: () => this.migrateFromV29ToV30(),
         })
 
         if (currentVersion === 0) {
@@ -419,6 +420,10 @@ export class Store {
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_user_message_at INTEGER,
+                content_revision INTEGER NOT NULL DEFAULT 0,
+                read_revision INTEGER NOT NULL DEFAULT 0,
+                read_state_version INTEGER NOT NULL DEFAULT 0,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -456,6 +461,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
+                content_revision INTEGER NOT NULL DEFAULT 0,
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -1178,6 +1184,18 @@ export class Store {
     private getMessageColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))
+    }
+
+    /** Historical rows start at zero: upgrading never marks the backlog unread. */
+    private migrateFromV29ToV30(): void {
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+        }
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+        }
     }
 
     private getUserVersion(): number {

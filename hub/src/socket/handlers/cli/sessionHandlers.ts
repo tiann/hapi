@@ -74,7 +74,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'forkTitleSeed',
-    'forkTitleGenerationAttemptedAt'
+    'forkTitleGenerationAttemptedAt',
+    'promptTitle'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
@@ -272,7 +273,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
-                invokedAt: msg.invokedAt
+                invokedAt: msg.invokedAt,
+                ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }
         })
     })

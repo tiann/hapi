@@ -460,7 +460,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn', 'forkTitleSeed', 'forkTitleGenerationAttemptedAt'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn', 'forkTitleSeed', 'forkTitleGenerationAttemptedAt', 'promptTitle'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -481,7 +481,8 @@ describe('cli session handlers', () => {
                         : field === 'opencodeClearOperation'
                             ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
                             : field === 'titleSuggestionTurn' ? { first: false, completed: true }
-                                : field === 'forkTitleSeed' ? { text: 'Fork: forged', updatedAt: 1 } : 1234
+                                : field === 'forkTitleSeed' ? { text: 'Fork: forged', updatedAt: 1 }
+                                : field === 'promptTitle' ? 'Forged title' : 1234
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -521,7 +522,8 @@ describe('cli session handlers', () => {
             titleSuggestionAutoAttemptedAt: 1234,
             titleSuggestionTurn: { first: true, completed: false },
             forkTitleSeed: { text: 'Fork: Parent', updatedAt: 1234 },
-            forkTitleGenerationAttemptedAt: 5678
+            forkTitleGenerationAttemptedAt: 5678,
+            promptTitle: 'Fix the login bug'
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -541,7 +543,8 @@ describe('cli session handlers', () => {
             titleSuggestionAutoAttemptedAt: 1234,
             titleSuggestionTurn: { first: true, completed: false },
             forkTitleSeed: { text: 'Fork: Parent', updatedAt: 1234 },
-            forkTitleGenerationAttemptedAt: 5678
+            forkTitleGenerationAttemptedAt: 5678,
+            promptTitle: 'Fix the login bug'
         })
     })
 })
