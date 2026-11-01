@@ -1,7 +1,5 @@
 package app.hapi.companion.feature.chat.blocks
 
-import android.content.Context
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,58 +7,36 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.PermissionAction
 import app.hapi.companion.feature.chat.PermissionRowOverride
-import app.hapi.companion.feature.chat.permissions.AskQuestion
-import app.hapi.companion.feature.chat.permissions.isCursorAskQuestionToolName
-import app.hapi.companion.feature.chat.permissions.isRequestUserInputAnswered
-import app.hapi.companion.feature.chat.permissions.isRequestUserInputUrlConfirmed
-import app.hapi.companion.feature.chat.permissions.parseAskUserQuestions
-import app.hapi.companion.feature.chat.permissions.parseRequestUserInput
-import app.hapi.companion.feature.chat.permissions.requestUserInputAnswerValues
-import app.hapi.companion.feature.chat.permissions.selectRequestUserInputOption
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
-import app.hapi.protocol.chat.isAskUserQuestionToolName
-import app.hapi.protocol.chat.isRequestUserInputToolName
 import app.hapi.protocol.catalog.Flavors
 
 /**
  * Pending-permission footers (B-M3b): the approval buttons for ordinary tool
- * permissions plus the dedicated AskUserQuestion / request_user_input answer
- * forms. Flavor logic mirrors `PermissionFooter.tsx`:
+ * permissions; AskUserQuestion / request_user_input reuse the inline
+ * [QuestionAnswerFormView]. Flavor logic mirrors `PermissionFooter.tsx`:
  *
  * - codex family (incl. cursor and codex-dialect tool names): Allow
  *   (`decision: approved`) / Abort (`decision: abort`) + overflow
@@ -78,22 +54,22 @@ fun PendingPermissionFooter(
     onAction: (String, PermissionAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    when {
-        isAskUserQuestionToolName(tool.name) -> AskUserQuestionFooter(
-            tool = tool,
-            requestId = requestId,
-            override = override,
-            onAction = onAction,
-            modifier = modifier,
-        )
-        isRequestUserInputToolName(tool.name) -> RequestUserInputFooter(
-            tool = tool,
-            requestId = requestId,
-            override = override,
-            onAction = onAction,
-            modifier = modifier,
-        )
-        else -> PermissionActionsRow(
+    if (isQuestionDetailsTool(tool.name)) {
+        if (override == PermissionRowOverride.AlreadyHandled) {
+            AlreadyHandledLine(modifier)
+        } else {
+            QuestionAnswerFormView(
+                tool = tool,
+                requestId = requestId,
+                enabled = true,
+                submitting = override == PermissionRowOverride.Resolving,
+                openDetails = null,
+                onSubmit = { action -> onAction(requestId, action) },
+                modifier = modifier,
+            )
+        }
+    } else {
+        PermissionActionsRow(
             tool = tool,
             requestId = requestId,
             flavor = flavor,
@@ -201,391 +177,7 @@ private fun AlreadyHandledLine(modifier: Modifier = Modifier) {
     )
 }
 
-// ------------------------------------------------------- AskUserQuestion --
-
-/**
- * AskUserQuestion answer form: every question as a card section — options as
- * tappable rows (radio/checkbox per `multiSelect`), an "Other" free-text
- * choice, one Submit. Answers post flat `{key: [labels…]}` where the key is
- * the index (or the Cursor stable id) — `AskUserQuestionFooter.tsx` parity.
- */
-@Composable
-private fun AskUserQuestionFooter(
-    tool: ChatToolCall,
-    requestId: String,
-    override: PermissionRowOverride?,
-    onAction: (String, PermissionAction) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    if (override == PermissionRowOverride.AlreadyHandled) {
-        AlreadyHandledLine(modifier)
-        return
-    }
-    val resolving = override == PermissionRowOverride.Resolving
-    val cursorDialect = isCursorAskQuestionToolName(tool.name)
-    val questions = remember(tool.id, tool.input) { parseAskUserQuestions(tool.input, cursorDialect) }
-
-    // Selection state per question index.
-    val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<Int, Set<Int>>()) }
-    val otherText = rememberSaveable(tool.id) { mutableStateOf(mapOf<Int, String>()) }
-    var validationError by remember(tool.id) { mutableStateOf<String?>(null) }
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        if (questions.isEmpty()) {
-            // Fallback: free-text answer keyed "0" (web parity).
-            OutlinedTextField(
-                value = otherText.value[0].orEmpty(),
-                onValueChange = { otherText.value = otherText.value + (0 to it) },
-                enabled = !resolving,
-                placeholder = { Text(stringResource(R.string.chat_perm_type_answer)) },
-                minLines = 2,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        } else {
-            questions.forEachIndexed { index, question ->
-                AskQuestionSection(
-                    question = question,
-                    selectedIndices = selected.value[index] ?: emptySet(),
-                    otherText = otherText.value[index].orEmpty(),
-                    enabled = !resolving,
-                    onToggleOption = { optionIndex ->
-                        val current = selected.value[index] ?: emptySet()
-                        val next = when {
-                            question.multiSelect ->
-                                if (optionIndex in current) current - optionIndex else current + optionIndex
-                            else -> setOf(optionIndex)
-                        }
-                        selected.value = selected.value + (index to next)
-                        validationError = null
-                    },
-                    onOtherText = { text ->
-                        otherText.value = otherText.value + (index to text)
-                        if (!question.multiSelect && text.isNotBlank()) {
-                            selected.value = selected.value + (index to emptySet())
-                        }
-                        validationError = null
-                    },
-                )
-            }
-        }
-
-        validationError?.let { error ->
-            Text(
-                text = error,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (resolving) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            } else {
-                val typeAnswerFirst = stringResource(R.string.chat_perm_type_answer_first)
-                val answerEveryQuestion = stringResource(R.string.chat_perm_answer_all)
-                TextButton(onClick = {
-                    val answers = linkedMapOf<String, List<String>>()
-                    if (questions.isEmpty()) {
-                        val text = otherText.value[0].orEmpty().trim()
-                        if (text.isEmpty()) {
-                            validationError = typeAnswerFirst
-                            return@TextButton
-                        }
-                        answers["0"] = listOf(text)
-                    } else {
-                        questions.forEachIndexed { index, question ->
-                            val values = mutableListOf<String>()
-                            (selected.value[index] ?: emptySet()).sorted().forEach { optionIndex ->
-                                question.options.getOrNull(optionIndex)?.let { option ->
-                                    values += if (cursorDialect) {
-                                        option.id?.takeIf { it.isNotBlank() } ?: option.label
-                                    } else {
-                                        option.label
-                                    }
-                                }
-                            }
-                            otherText.value[index]?.trim()?.takeIf { it.isNotEmpty() }?.let { values += it }
-                            if (values.isEmpty()) {
-                                validationError = answerEveryQuestion
-                                return@TextButton
-                            }
-                            answers[question.answerKey(index, cursorDialect)] = values
-                        }
-                    }
-                    onAction(requestId, PermissionAction.FlatAnswers(answers))
-                }) {
-                    Text(stringResource(R.string.chat_perm_submit))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AskQuestionSection(
-    question: AskQuestion,
-    selectedIndices: Set<Int>,
-    otherText: String,
-    enabled: Boolean,
-    onToggleOption: (Int) -> Unit,
-    onOtherText: (String) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        question.header?.let { header ->
-            Text(
-                text = header,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.hapi.hint,
-            )
-        }
-        if (question.question.isNotEmpty()) {
-            Text(text = question.question, style = MaterialTheme.typography.bodyMedium)
-        }
-        question.options.forEachIndexed { optionIndex, option ->
-            val checked = optionIndex in selectedIndices
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = if (checked) {
-                    MaterialTheme.colorScheme.secondaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = checked,
-                        enabled = enabled,
-                        onClick = { onToggleOption(optionIndex) },
-                    ),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (question.multiSelect) {
-                        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
-                    } else {
-                        RadioButton(selected = checked, onClick = null, enabled = enabled)
-                    }
-                    Column(modifier = Modifier.padding(start = 6.dp)) {
-                        Text(text = option.label, style = MaterialTheme.typography.bodyMedium)
-                        option.description?.let { description ->
-                            Text(
-                                text = description,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.hapi.hint,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        OutlinedTextField(
-            value = otherText,
-            onValueChange = onOtherText,
-            enabled = enabled,
-            placeholder = { Text(stringResource(R.string.chat_perm_other)) },
-            minLines = 2,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
-
-// ----------------------------------------------------- request_user_input --
-
-/**
- * request_user_input answer form: per-field option rows plus a free-text
- * note; answers post nested `{fieldId: {answers: [labels…, "user_note: …"]}}`
- * (`RequestUserInputFooter.tsx` parity). Sign-in requests carry a validated
- * `input.url`: submit requires the `__mcp_url_confirmation` option to be
- * selected and then opens the page (ACTION_VIEW) alongside submitting — the
- * native analogue of web's opener-null `window.open`.
- */
-@Composable
-private fun RequestUserInputFooter(
-    tool: ChatToolCall,
-    requestId: String,
-    override: PermissionRowOverride?,
-    onAction: (String, PermissionAction) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    if (override == PermissionRowOverride.AlreadyHandled) {
-        AlreadyHandledLine(modifier)
-        return
-    }
-    val resolving = override == PermissionRowOverride.Resolving
-    val context = LocalContext.current
-    val parsed = remember(tool.id, tool.input) { parseRequestUserInput(tool.input) }
-    val questions = parsed.questions
-
-    val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<String, Set<String>>()) }
-    val notes = rememberSaveable(tool.id) {
-        mutableStateOf(questions.associate { it.id to it.prefill.orEmpty() })
-    }
-    var validationError by remember(tool.id) { mutableStateOf<String?>(null) }
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        questions.forEach { question ->
-            val noteFocusRequester = remember(tool.id, question.id) { FocusRequester() }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (question.question.isNotEmpty()) {
-                    Text(
-                        text = if (question.required) {
-                            question.question
-                        } else {
-                            stringResource(R.string.chat_perm_optional_format, question.question)
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                question.answerOptions.forEachIndexed { optionIndex, option ->
-                    val isOther = question.isOtherOption(optionIndex)
-                    val checked = option.label in (selected.value[question.id] ?: emptySet())
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (checked) {
-                            MaterialTheme.colorScheme.secondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(selected = checked, enabled = !resolving, onClick = {
-                                val current = selected.value[question.id] ?: emptySet()
-                                val next = selectRequestUserInputOption(question, current, optionIndex)
-                                selected.value = selected.value + (question.id to next)
-                                validationError = null
-                                if (isOther) noteFocusRequester.requestFocus()
-                            })
-                            .testTag("request-input-${question.id}-option-$optionIndex"),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (question.multiple) {
-                                Checkbox(checked = checked, onCheckedChange = null, enabled = !resolving)
-                            } else {
-                                RadioButton(selected = checked, onClick = null, enabled = !resolving)
-                            }
-                            Column(modifier = Modifier.padding(start = 6.dp)) {
-                                Text(
-                                    text = if (isOther) stringResource(R.string.chat_perm_none_of_the_above) else option.label,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                )
-                                val description = if (isOther) stringResource(R.string.chat_perm_other_note_optional) else option.description
-                                description?.let {
-                                    Text(
-                                        text = description,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.hapi.hint,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                OutlinedTextField(
-                    value = notes.value[question.id].orEmpty(),
-                    onValueChange = {
-                        notes.value = notes.value + (question.id to it)
-                        validationError = null
-                    },
-                    enabled = !resolving,
-                    placeholder = { Text(question.placeholder ?: stringResource(R.string.chat_perm_add_note)) },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                        .focusRequester(noteFocusRequester)
-                        .testTag("request-input-${question.id}-note"),
-                )
-            }
-        }
-
-        validationError?.let { error ->
-            Text(
-                text = error,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (resolving) {
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            } else {
-                val answerEveryRequired = stringResource(R.string.chat_perm_answer_required)
-                val openFailed = stringResource(R.string.chat_perm_open_signin_failed)
-                TextButton(onClick = {
-                    for (question in questions) {
-                        val questionSelected = (selected.value[question.id] ?: emptySet()).toList()
-                        val note = notes.value[question.id].orEmpty()
-                        if (!isRequestUserInputAnswered(question, questionSelected, note)) {
-                            validationError = answerEveryRequired
-                            return@TextButton
-                        }
-                    }
-                    // Sign-in flow: the URL must be explicitly confirmed, then
-                    // the page opens together with submitting (web shows the
-                    // same select-option error for the unconfirmed case).
-                    if (parsed.url != null) {
-                        if (!isRequestUserInputUrlConfirmed(parsed, selected.value.mapValues { it.value.toList() })) {
-                            validationError = answerEveryRequired
-                            return@TextButton
-                        }
-                        if (!openRequestUserInputUrl(context, parsed.url)) {
-                            validationError = openFailed
-                            return@TextButton
-                        }
-                    }
-                    val answers = linkedMapOf<String, List<String>>()
-                    questions.forEach { question ->
-                        answers[question.id] = requestUserInputAnswerValues(
-                            question = question,
-                            selected = (selected.value[question.id] ?: emptySet()).toList(),
-                            note = notes.value[question.id].orEmpty(),
-                        )
-                    }
-                    onAction(requestId, PermissionAction.NestedAnswers(answers))
-                }) {
-                    Text(stringResource(R.string.chat_perm_submit))
-                }
-            }
-        }
-    }
-}
-
 // -------------------------------------------------------------- previews --
-
-/**
- * `openRequestUserInputUrl` native twin: web's opener-null `window.open` has
- * no tab-nabbing surface on Android, so a plain view intent is the analogue.
- * False (≈ web's popup-blocked return) when no handler takes the intent.
- */
-private fun openRequestUserInputUrl(context: Context, url: String): Boolean = try {
-    context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
-    true
-} catch (_: Exception) {
-    false
-}
 
 @Preview(showBackground = true)
 @Composable
