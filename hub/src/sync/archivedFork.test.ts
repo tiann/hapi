@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, vi } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Store } from '../store'
 import { SyncEngine } from './syncEngine'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { MACHINE_CAPABILITIES } from '@hapi/protocol'
+import { MACHINE_CAPABILITIES, type Metadata } from '@hapi/protocol'
 import type { RpcGateway } from './rpcGateway'
 import type { ForkArchivedCodexRequest } from '@hapi/protocol/apiTypes'
 
@@ -114,6 +114,35 @@ describe('archived Codex fork coordination', () => {
             expect(f.engine.getSession(f.source.id)?.metadata?.codexResumePending).toBeUndefined()
             f.rpc.spawnSession = spawn
             expect((await f.engine.forkConversation(f.source.id, 'ns')).type).toBe('success')
+        } finally { f.engine.stop() }
+    })
+
+    it('seeds archived fork title ownership and generates a configured title', async () => {
+        const f = fixture()
+        try {
+            const current = f.store.sessions.getSession(f.source.id)!
+            f.store.sessions.updateSessionMetadata(f.source.id, {
+                ...(current.metadata as object), name: 'Parent title'
+            }, current.metadataVersion, 'ns')
+            ;(f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(f.source.id)
+            const spawn = f.rpc.spawnSession
+            let seedAtSpawn: Metadata['forkTitleSeed']
+            f.rpc.spawnSession = async (...args) => {
+                const childId = args[12]!
+                seedAtSpawn = f.engine.getSession(childId)?.metadata?.forkTitleSeed
+                return spawn(...args)
+            }
+            const suggestion = vi.spyOn((f.engine as unknown as { titleSuggestionService: { suggestTitle(id: string): Promise<string> } }).titleSuggestionService,
+                'suggestTitle').mockResolvedValue('Generated child title')
+
+            const result = await f.engine.forkConversation(f.source.id, 'ns')
+            expect(result.type).toBe('success')
+            if (result.type !== 'success') return
+            expect(seedAtSpawn).toMatchObject({ text: 'Fork: Parent title' })
+            for (let retry = 0; retry < 20 && suggestion.mock.calls.length === 0; retry++) await new Promise(resolve => setTimeout(resolve, 10))
+            expect(suggestion).toHaveBeenCalledWith(result.sessionId)
+            for (let retry = 0; retry < 20 && f.engine.getSession(result.sessionId)?.metadata?.summary?.text !== 'Generated child title'; retry++) await new Promise(resolve => setTimeout(resolve, 10))
+            expect(f.engine.getSession(result.sessionId)?.metadata?.summary?.text).toBe('Generated child title')
         } finally { f.engine.stop() }
     })
 

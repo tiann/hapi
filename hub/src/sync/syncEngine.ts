@@ -1633,6 +1633,7 @@ export class SyncEngine {
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
             const childId = attempt.childSessionId
+            const forkSummary = buildForkSessionSummary(metadata)
             let child = this.sessionCache.refreshSession(childId)
             if (child?.active) {
                 if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
@@ -1646,7 +1647,8 @@ export class SyncEngine {
                 child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
                     path: metadata.path, host: metadata.host, machineId: metadata.machineId, flavor: 'codex',
                     forkedFrom: source.id, startedBy: 'runner',
-                    summary: buildForkSessionSummary(metadata)
+                    capabilities: { concurrentClients: true },
+                    ...(forkSummary ? { summary: forkSummary, forkTitleSeed: forkSummary } : {}),
                 }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
             } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
             if (attempt.spawnAttempted) {
@@ -1796,7 +1798,6 @@ export class SyncEngine {
             const currentSource = this.sessionCache.refreshSession(sessionId)
             const forkSummary = buildForkSessionSummary(currentSource?.metadata ?? source.metadata)
             await this.sessionCache.seedForkTitle(child.id, forkSummary)
-            this.restoreForkSummaryMetadata(child.id, namespace, forkSummary)
             void this.generateForkTitle(child.id)
             return { type: 'success', sessionId: child.id }
         }
