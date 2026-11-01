@@ -124,7 +124,7 @@ describe('archived Codex fork coordination', () => {
             await f.engine.resumeSession(f.source.id, 'ns')
             f.rpc.killSession = async () => ({})
             f.rpc.stopRunnerSession = async () => 'unknown'
-            await expect(f.engine.archiveSession(f.source.id)).rejects.toThrow('still running')
+            await expect(f.engine.archiveSession(f.source.id)).rejects.toThrow('Session cleanup is not yet confirmed')
             expect(f.engine.getSession(f.source.id)?.metadata?.codexResumePending).toBeDefined()
             f.rpc.stopRunnerSession = async () => 'already_gone'
             await f.engine.archiveSession(f.source.id)
