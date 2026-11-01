@@ -1974,6 +1974,13 @@ export class SyncEngine {
     private async generateForkTitle(sessionId: string): Promise<void> {
         const metadata = this.sessionCache.getSession(sessionId)?.metadata
         if (!metadata || metadata.name?.trim() || metadata.titleLocked === true) return
+        // A pre-bound shared child can become ready before the fork RPC returns.
+        // If its source already had a title, wait for seedForkTitle instead of
+        // consuming the one-shot generation claim with an undefined baseline.
+        if (!metadata.forkTitleSeed && metadata.forkedFrom) {
+            const sourceMetadata = this.sessionCache.getSession(metadata.forkedFrom)?.metadata
+            if (buildForkSessionSummary(sourceMetadata)) return
+        }
         const expected = metadata.summary
         if (expected && (expected.text !== metadata.forkTitleSeed?.text
             || expected.updatedAt !== metadata.forkTitleSeed?.updatedAt)) return
