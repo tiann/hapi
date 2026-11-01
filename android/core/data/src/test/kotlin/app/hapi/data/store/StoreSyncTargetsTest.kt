@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
 class FakeSessionListStore : SessionListStore {
@@ -250,6 +251,8 @@ class StoreSyncTargetsTest {
             sync("""{"type":"message-cancelled","sessionId":"s1","messageId":"server-m1","localId":"l1"}"""),
         )
         advanceUntilIdle()
+        // StoreSyncTargets consumes queued SSE events in backgroundScope.
+        runCurrent()
 
         val row = store.state.value.messages.single()
         assertEquals("server-m1", row.id)
