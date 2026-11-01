@@ -1461,6 +1461,32 @@ describe('ApiSessionClient incoming user messages', () => {
             }]
         })
         triggerIncomingUserMessage(socket, {
+            id: 'persistent-attachment-message',
+            seq: 1,
+            text: 'unavailable file',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'unavailable.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                attachmentId: 'persistent-attachment'
+            }]
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'persistent-attachment-message',
+            seq: 1,
+            text: 'unavailable file',
+            sentFrom: 'webapp',
+            attachments: [{
+                id: 'att-1',
+                filename: 'unavailable.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                attachmentId: 'persistent-attachment'
+            }]
+        })
+        triggerIncomingUserMessage(socket, {
             id: 'message-after-persistent-failure',
             seq: 2,
             text: 'later prompt',

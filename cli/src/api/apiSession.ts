@@ -886,6 +886,9 @@ export class ApiSessionClient extends EventEmitter {
             )) {
             return Promise.resolve()
         }
+        const accepted = this.incomingFilter.accept({ id: message.id, seq: message.seq })
+        if (!force && !accepted) return Promise.resolve()
+
         const parsed = UserMessageSchema.safeParse(message.content)
         const needsMaterialization = parsed.success
             && (parsed.data.content.attachments?.some((attachment) => Boolean(attachment.attachmentId && !attachment.path)) ?? false)
@@ -1019,10 +1022,6 @@ export class ApiSessionClient extends EventEmitter {
         force = false
     ): void {
         if (this.isClosed()) return
-        const accepted = this.incomingFilter.accept({ id: message.id, seq: message.seq })
-        if (!force && !accepted) {
-            return
-        }
         if (!force && message.id && this.cancelledIncomingMessageIds.has(message.id)) {
             return
         }
