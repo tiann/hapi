@@ -539,6 +539,10 @@ class PiImportController(
                     error = error.message?.takeIf { message -> message.isNotEmpty() } ?: strings.loadFailed,
                 )
             }
+            // A failed scan is settled too (web: the emptied session list
+            // gives the init effect a fresh `directories` reference), so the
+            // weak init re-runs and stale checkboxes do not survive it.
+            applyDialogInitializations()
         } finally {
             if (generation == loadGeneration) update { it.copy(loading = false) }
         }
@@ -549,14 +553,8 @@ class PiImportController(
      * checkboxes = exactly the inline selection (membership in the list is
      * **not** required, unlike the codex dialog), directory = the form cwd
      * when it is among the options (else all directories), query cleared.
-     * Re-applied on the open edge and after every settled scan while open.
-     */
-    /**
-     * The web init effect (`PiSessionImportDialog` L39-45), weak on purpose:
-     * checkboxes = exactly the inline selection (membership in the list is
-     * **not** required, unlike the codex dialog), directory = the form cwd
-     * when it is among the options (else all directories), query cleared.
-     * Re-applied on the open edge and after every settled scan while open.
+     * Re-applied on the open edge and after every settled scan while open —
+     * a failed scan included, so stale checkboxes never survive a re-pull.
      * All reads fold into the atomic transition — a concurrent state change
      * (import settling, marker-less resets) can no longer be overwritten by
      * values derived from a stale snapshot.

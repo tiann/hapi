@@ -218,6 +218,45 @@ class PiImportControllerTest {
         assertEquals("", state.searchQuery, "query resets on the weak init")
     }
 
+    @Test
+    fun `a failed re-scan clears the stale checkboxes while the dialog stays open`() = runTest {
+        val gateway = FakeGateway().apply {
+            piSessionsImpl = { _, machineId ->
+                PiLocalSessionsResponse(
+                    success = true,
+                    machineId = machineId,
+                    sessions = listOf(session("a"), session("b")),
+                )
+            }
+        }
+        val controller = buildController(gateway)
+
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.setSearchQuery("stale query")
+        assertEquals(setOf("a"), controller.state.value.dialogSelection)
+
+        gateway.piSessionsImpl = { _, _ -> throw RuntimeException("rpc down") }
+        controller.load("/repo", "m1")
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertTrue(state.open, "a failed scan leaves the dialog open")
+        assertEquals("rpc down", state.error)
+        assertTrue(state.sessions.isEmpty())
+        assertTrue(
+            state.dialogSelection.isEmpty(),
+            "a settled failed scan re-applies the weak init (web: the emptied list re-runs the effect)",
+        )
+        assertEquals(
+            PiImportLogic.ALL_DIRECTORIES,
+            state.directoryFilter,
+            "the emptied options fall back to all directories",
+        )
+        assertEquals("", state.searchQuery, "the failed re-pull resets the query like the open edge does")
+    }
+
     // -------------------------------------------------- import-at-create path --
 
     @Test
