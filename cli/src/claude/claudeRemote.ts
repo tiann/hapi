@@ -409,6 +409,8 @@ export async function claudeRemote(opts: {
                 mode = next.mode;
                 specialCommand = nextSpecialCommand;
                 messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                // A follow-up prompt starts a new turn; only the first turn gets system/init.
+                updateThinking(true);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
                     `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`

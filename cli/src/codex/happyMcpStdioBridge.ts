@@ -1,7 +1,7 @@
 /**
  * HAPI MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, and `inspect_peer`.
+ * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, `inspect_peer`, and `spawn_peer`.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -26,7 +26,7 @@ import {
 } from '@hapi/protocol/sessionCitation';
 import { isPeerToolsDisabled, PEER_TOOL_NAMES } from '@/modules/common/peerTools';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -215,7 +215,41 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
       deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
+      waitForReply: z.boolean().optional().describe(
+        'Post the peer\'s reply into this session when its turn ends. End your turn after calling; do not poll.'
+      ),
     });
+
+    const spawnPeerInputSchema: z.ZodTypeAny = z.object({
+      message: z.string().min(1).describe('Task for the new session'),
+      directory: z.string().trim().min(1).optional().describe('Absolute working directory (default: this session\'s)'),
+      agent: z.string().trim().min(1).optional().describe('Agent flavor such as claude or codex (default: this session\'s)'),
+    });
+
+    if (toolNames.has('spawn_peer')) {
+      server.registerTool<any, any>(
+        'spawn_peer',
+        {
+          description: 'Start a new HAPI session on this machine and send it a task. Its reply is posted into this session when its turn ends, so end your turn after calling instead of polling.',
+          title: 'Spawn Peer Session',
+          inputSchema: spawnPeerInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'spawn_peer', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to spawn peer: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
 
     if (toolNames.has('ping_peer')) {
       server.registerTool<any, any>(

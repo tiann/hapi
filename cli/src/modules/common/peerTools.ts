@@ -1,6 +1,6 @@
 /**
  * Kill switch for the peer-session MCP tools (`list_peers` / `inspect_peer` /
- * `ping_peer`).
+ * `ping_peer` / `spawn_peer`).
  *
  * Set `HAPI_DISABLE_PEER_TOOLS=1` in the runner environment to stop wrapped
  * agents from browsing or messaging other HAPI sessions (peer pollution):
@@ -12,7 +12,7 @@
  * variable unset in their interactive shell keep full CLI access.
  */
 
-export const PEER_TOOL_NAMES = ['list_peers', 'ping_peer', 'inspect_peer'] as const;
+export const PEER_TOOL_NAMES = ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'] as const;
 
 export function isPeerToolsDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
     return ['true', '1', 'yes'].includes((env.HAPI_DISABLE_PEER_TOOLS ?? '').toLowerCase());

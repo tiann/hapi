@@ -50,6 +50,8 @@ const SENSITIVE_TOOL_NAME_HINTS = [
     'ping peer',
     'inspect_peer',
     'inspect peer',
+    'spawn_peer',
+    'spawn peer',
 ];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     'write',
