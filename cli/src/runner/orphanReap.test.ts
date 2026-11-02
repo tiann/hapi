@@ -151,6 +151,31 @@ describe('orphanReap argv matching', () => {
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
+    it('does not signal an orphan whose own preparation was not confirmed', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('same-session', {
+            findTargets: async () => [{ pid: 123, startMarker: 'gen-a' }],
+            getStartMarker: () => 'gen-a', isAlive: () => true,
+            prepare: async () => false,
+            killTree: async (pid) => { killed.push(pid); return true }
+        })
+        expect(status).toBe('still_alive')
+        expect(killed).toEqual([])
+    })
+
+    it('rechecks an orphan generation after its preparation await', async () => {
+        let generation = 'gen-a'
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('same-session', {
+            findTargets: async () => [{ pid: 123, startMarker: 'gen-a' }],
+            getStartMarker: () => generation, isAlive: () => true,
+            prepare: async () => { generation = 'gen-b'; return true },
+            killTree: async (pid) => { killed.push(pid); return true }
+        })
+        expect(status).toBe('still_alive')
+        expect(killed).toEqual([])
+    })
+
     const stableMarker = (marker = 'gen-a') => {
         let reads = 0
         return () => {

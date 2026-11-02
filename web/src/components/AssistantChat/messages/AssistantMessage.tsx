@@ -61,10 +61,18 @@ export function HappyAssistantMessage() {
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount, roundSummary }
 
     const history = ctx.metadata?.capabilities?.conversationHistory
+    const historicalForkLocalId = ctx.assistantForkPoints?.get(messageId)
     const showForkCurrent = Boolean(
         (history?.forkCurrent || ctx.allowInactiveFork)
         && ctx.isLatestCompletedBoundary?.(messageId)
         && (!ctx.disabled || ctx.allowInactiveFork === true)
+        && ctx.onForkConversation
+    )
+    const showHistoricalFork = Boolean(
+        !showForkCurrent
+        && history?.forkAtMessage
+        && historicalForkLocalId
+        && !ctx.disabled
         && ctx.onForkConversation
     )
 
@@ -88,9 +96,13 @@ export function HappyAssistantMessage() {
                 copyText={copyText || undefined}
                 metadata={metadata}
                 messageElementId={elementId}
-                showFork={showForkCurrent}
+                showFork={showForkCurrent || showHistoricalFork}
                 historyActionPending={ctx.historyActionPending}
-                onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}
+                onFork={showForkCurrent
+                    ? () => ctx.onForkConversation!()
+                    : showHistoricalFork
+                        ? () => ctx.onForkConversation!(historicalForkLocalId!)
+                        : undefined}
             />
         </MessagePrimitive.Root>
     )

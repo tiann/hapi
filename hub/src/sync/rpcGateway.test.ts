@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
-import type { Server } from 'socket.io'
-import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods'
-import type { RpcRegistry } from '../socket/rpcRegistry'
+import type { Server, Socket } from 'socket.io'
+import { getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { RpcRegistry } from '../socket/rpcRegistry'
 import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
 function createGateway() {
@@ -164,6 +164,48 @@ describe('RpcGateway RPC timeouts', () => {
 // target CLI is unreachable, so syncEngine.archiveSession can narrow on it
 // and treat the kill as a benign no-op.
 describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
+    it('targets an older process alias while the generic session method belongs to a newer wrapper', async () => {
+        const registry = new RpcRegistry()
+        const calls: string[] = []
+        const fixture = (id: string, pid: number) => ({ id, timeout: () => ({ emitWithAck: async (_event: string, request: { params: string }) => {
+            calls.push(id)
+            const params = JSON.parse(request.params)
+            return JSON.stringify({ success: true, pid, machineId: params.expectedMachineId,
+                processStartMarker: params.expectedProcessStartMarker, preparationLease: params.preparationLease })
+        } }) })
+        const old = fixture('old', 42)
+        const newer = fixture('new', 43)
+        registry.register(old as unknown as Socket, `session-1:${RPC_METHODS.KillSession}`)
+        registry.register(newer as unknown as Socket, `session-1:${RPC_METHODS.KillSession}`)
+        registry.register(old as unknown as Socket, `session-1:${getSessionStopPreparationMethod('machine-1', 42)}`)
+        registry.register(newer as unknown as Socket, `session-1:${getSessionStopPreparationMethod('machine-1', 43)}`)
+        const sockets = new Map([['old', old], ['new', newer]])
+        const gateway = new RpcGateway({ of: () => ({ sockets }) } as unknown as Server, registry)
+        const options = { prepareOnly: true, expectedMachineId: 'machine-1', expectedPid: 42, expectedProcessStartMarker: 'old-generation' }
+        expect((await gateway.killSession('session-1', options)).pid).toBe(42)
+        registry.unregisterAll(newer as unknown as Socket)
+        sockets.delete('new')
+        expect((await gateway.killSession('session-1', options)).pid).toBe(42)
+        expect(calls).toEqual(['old', 'old'])
+    })
+
+    it('does not fall back to the newer generic wrapper when an older process alias is unavailable', async () => {
+        const registry = new RpcRegistry()
+        const newer = { id: 'new' } as Socket
+        registry.register(newer, `session-1:${RPC_METHODS.KillSession}`)
+        const gateway = new RpcGateway({ of: () => { throw new Error('must not call generic socket') } } as unknown as Server, registry)
+        await expect(gateway.killSession('session-1', { prepareOnly: true, expectedMachineId: 'machine-1',
+            expectedPid: 42, expectedProcessStartMarker: 'old-generation' })).rejects.toBeInstanceOf(RpcTargetMissingError)
+    })
+
+    it('rejects a KillSession error envelope instead of allowing runner force termination', async () => {
+        const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
+            emitWithAck: async () => JSON.stringify({ error: 'publication drain failed' })
+        }) }) } }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        await expect(new RpcGateway(io, registry).killSession('session-1')).rejects.toThrow('publication drain failed')
+    })
+
     it('throws RpcTargetMissingError(handler-not-registered) when no socket is registered for the method', async () => {
         const io = {
             of() {

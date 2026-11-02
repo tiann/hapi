@@ -355,6 +355,7 @@ export class ApiSessionClient extends EventEmitter {
                 : Promise.resolve()
             void afterMeta.finally(() => {
                 void this.backfillIfNeeded()
+                if (this.state === 'active' && this.allowReconnect) this.emit('connected')
             })
             this.hasConnectedOnce = true
             this.reconnectHandler?.()
@@ -887,6 +888,16 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     /** Refresh Hub-owned metadata before an explicit tool action or after reconnect. */
+    async reportOpenCodeRewind(report: import('@hapi/protocol/apiTypes').OpenCodeRewindReport): Promise<import('@hapi/protocol/schemas').OpenCodeRewindOperation> {
+        if (!await this.refreshMetadata()) throw new Error('Cannot reconcile Hub rewind reservation')
+        const response = await axios.post(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/opencode-rewind`,
+            { report, expectedVersion: this.metadataVersion }, { headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }), timeout: 15_000 })
+        const { OpenCodeRewindSchema } = await import('@hapi/protocol/schemas')
+        const operation = OpenCodeRewindSchema.parse(response.data?.operation)
+        if (!await this.refreshMetadata()) throw new Error('Cannot confirm authoritative rewind state')
+        return operation
+    }
+
     async refreshMetadata(): Promise<boolean> {
         try {
             const response = await axios.get(

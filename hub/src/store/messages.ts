@@ -1170,6 +1170,17 @@ export function mergeSessionMessages(
  * the removed suffix with `replacement` messages. Bumps message epoch so web
  * clients reset their window.
  */
+export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSeq: number): number {
+    return db.transaction(() => {
+        prepareCached(db, 'DELETE FROM messages WHERE session_id = ? AND seq >= ?').run(sessionId, cutoffSeq)
+        prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
+            WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
+                SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
+            )`).run(sessionId)
+        return bumpMessageEpoch(db, sessionId)
+    })()
+}
+
 export function truncateMessagesFromLocalId(
     db: Database,
     sessionId: string,

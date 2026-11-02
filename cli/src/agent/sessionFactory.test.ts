@@ -215,6 +215,8 @@ describe('bootstrapExistingSession', () => {
     })
 
     it('preserves existing native resume metadata when reactivating a session', async () => {
+        const checkpoint = { sessionId: 'native-child', messageIds: ['m1'], userMessageIds: ['m1'], localMessageIds: ['m2'], localPublicationPending: true as const,
+            v1Migration: { format: 1 as const, rows: [{ id: 'm1', type: 'user' as const, sha256: 'a'.repeat(64) }], summaries: [] } }
         const session = createSession()
         const existingMetadata = session.metadata
         if (!existingMetadata) throw new Error('expected test session metadata')
@@ -246,6 +248,8 @@ describe('bootstrapExistingSession', () => {
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
                 terminal: true,
@@ -293,6 +297,8 @@ describe('bootstrapExistingSession', () => {
             tools: ['read_file'],
             slashCommands: ['/compact'],
             conversationHistoryPoints: { 'local-user-1': true },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
                 terminal: true,
@@ -304,7 +310,9 @@ describe('bootstrapExistingSession', () => {
         expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
-            conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
+            conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true
         }))
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',

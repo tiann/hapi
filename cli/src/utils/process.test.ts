@@ -10,7 +10,12 @@ vi.mock('cross-spawn', () => ({
     }
 }))
 
-import { getHapiRunnerProcessIdentity, killProcess } from './process'
+import { getHapiRunnerProcessIdentity, killProcess, killProcessTreeByPid } from './process'
+import { monotonicTimeMs } from './time'
+
+vi.mock('@/utils/time', async (original) => ({
+    ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}))
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
 
@@ -39,6 +44,31 @@ function unavailable(command: string) {
         error
     }
 }
+
+describe('preparation signal deadline on POSIX', () => {
+    beforeEach(() => {
+        setPlatform('linux')
+        vi.useFakeTimers()
+        spawnSyncMock.mockReset()
+        spawnSyncMock.mockReturnValue({ status: 1, stdout: '', stderr: '' })
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+    })
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.restoreAllMocks()
+        if (originalPlatformDescriptor) Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+    })
+    it('does not signal a tree after its preparation authorization expired', async () => {
+        expect(await killProcessTreeByPid(5544, false, undefined, monotonicTimeMs() - 1)).toBe(false)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([])
+    })
+    it('does not escalate to SIGKILL after the lease expires during the graceful wait', async () => {
+        const stopped = killProcess(5544, false, monotonicTimeMs() + 100)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[5544, 'SIGTERM']])
+    })
+})
 
 describe('getHapiRunnerProcessIdentity on Windows', () => {
     it.each(['', '[]', '{}', '{broken', JSON.stringify([{ ProcessId: 100, CreationDate: 'generation' }]),
@@ -291,6 +321,52 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         if (originalPlatformDescriptor) {
             Object.defineProperty(process, 'platform', originalPlatformDescriptor)
         }
+    })
+
+    it('retains the upstream stop report while an expired lease prevents signalling', async () => {
+        const reports: Array<import('./process').ProcessTreeStopReport> = []
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'tasklist') return completed('hapi.exe 5544 Console')
+            if (cmd === 'powershell') return completed(args.join(' ').includes('$children=') ? 'OK:5544' : 'generation')
+            return completed('')
+        })
+        const stopped = killProcessTreeByPid(5544, false, (report) => reports.push(report), monotonicTimeMs() - 1)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([cmd]) => cmd === 'taskkill')).toHaveLength(0)
+        expect(reports).toHaveLength(1)
+        expect(reports[0]).toMatchObject({ rootPid: 5544, outcome: 'unconfirmed', members: [
+            { pid: 5544, expectedMarker: 'generation', alive: true }
+        ] })
+    })
+
+    it.each([false, true])('does not invoke taskkill when authority expires inside its liveness probe (force=%s)', async (force) => {
+        const deadline = monotonicTimeMs() + 100
+        let delayed = false
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'tasklist') {
+                if (!delayed) { delayed = true; vi.advanceTimersByTime(100) }
+                return completed('hapi.exe 5544 Console')
+            }
+            return completed('')
+        })
+        const stopped = killProcess(5544, force, deadline)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([cmd]) => cmd === 'taskkill')).toHaveLength(0)
+    })
+
+    it('does not force taskkill when preparation expires during a refused soft signal', async () => {
+        const deadline = monotonicTimeMs() + 100
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'tasklist') return completed('hapi.exe 5544 Console')
+            if (cmd === 'taskkill') { vi.advanceTimersByTime(100); return completed('', 1) }
+            return completed('')
+        })
+        const stopped = killProcess(5544, false, deadline)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([cmd]) => cmd === 'taskkill')).toHaveLength(1)
     })
 
     it('escalates soft taskkill to /F when the process stays alive (mirrors SIGTERM→SIGKILL)', async () => {
