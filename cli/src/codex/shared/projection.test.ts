@@ -48,6 +48,27 @@ describe('shared history projection', () => {
             item: { ...item, id: 'update', text: 'Still working', questions: null } });
         expect(parentThreadId ? send.mock.lastCall![0].message : send.mock.lastCall![0]).toMatchObject({ type: 'message', message: 'Still working' });
     });
+    it('projects viewed images as inline media tied to the view_image call', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-view-image-'));
+        try {
+            const path = join(dir, 'shot.png');
+            await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]));
+            const send = vi.fn();
+            const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+            const projection = new SharedCodexProjection(session, 'thread', async () => {});
+            const item = { id: 'exec-view', type: 'imageView', path };
+            await projection.notification('item/started', { threadId: 'thread', turnId: 'turn', item });
+            expect(send).not.toHaveBeenCalled();
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+            expect(send).toHaveBeenCalledOnce();
+            expect(send.mock.calls[0][0]).toMatchObject({
+                type: 'generated-image', fileName: 'shot.png', mimeType: 'image/png',
+                source: { ingress: 'tool_result', flavor: 'codex', toolName: 'view_image', toolCallId: 'exec-view' }
+            });
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
     it.each([undefined, 'root'])('projects command outcomes for live output and replay (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

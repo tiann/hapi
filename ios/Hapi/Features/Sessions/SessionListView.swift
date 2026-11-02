@@ -30,12 +30,14 @@ struct SessionListView: View {
     @State private var renameTarget: SessionRowUI?
     @State private var renameText = ""
     @State private var deleteTarget: SessionRowUI?
+    /// Rows kept while a pushed chat covers the list (see `sessionList`).
+    @State private var frozenRows: [SessionRowUI]?
 
     var body: some View {
-        // Minute-tick timeline keeps the relative-age labels honest without
-        // any store churn.
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            sessionList(now: context.date)
+        // Rows own their minute-tick age labels; the list itself only
+        // changes with the data.
+        Group {
+            sessionList
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let summary = model.filterSummary {
@@ -112,14 +114,29 @@ struct SessionListView: View {
 
     // MARK: - List
 
-    private func sessionList(now: Date) -> some View {
-        let rows = model.rows
+    /// Covered by a pushed chat, the list keeps its last rows: on a large
+    /// hub every streaming session would otherwise rebuild and diff
+    /// thousands of rows nobody sees (~80 ms main-thread stalls while
+    /// scrolling the chat). A side-by-side split never disappears and
+    /// stays live; returning refreshes once.
+    private var sessionList: some View {
+        let rows = frozenRows ?? model.rows
+        return KeyedContent(key: ListRenderKey(rows: rows, selectable: selection != nil,
+                                               theme: theme, filters: model.filters)) {
+            list(rows)
+        }
+        .equatable()
+        .onAppear { frozenRows = nil }
+        .onDisappear { frozenRows = model.rows }
+    }
+
+    private func list(_ rows: [SessionRowUI]) -> some View {
         let pinnedCount = SessionListModel.pinnedCount(of: rows)
         return List(selection: selection) {
             if pinnedCount > 0 {
                 Section {
                     ForEach(rows.prefix(pinnedCount)) { row in
-                        rowCell(row, now: now)
+                        equatableRow(row)
                     }
                 } header: {
                     sectionHeader("Pinned")
@@ -133,7 +150,7 @@ struct SessionListView: View {
                 if pinnedCount > 0 {
                     Section {
                         ForEach(rows.dropFirst(pinnedCount)) { row in
-                            rowCell(row, now: now)
+                            equatableRow(row)
                         }
                     } header: {
                         // Not "Sessions": the navigation title already says so.
@@ -145,7 +162,7 @@ struct SessionListView: View {
                     // separator above the very first row (device feedback).
                     Section {
                         ForEach(rows) { row in
-                            rowCell(row, now: now)
+                            equatableRow(row)
                         }
                     }
                     .listSectionSeparator(.hidden, edges: .top)
@@ -168,18 +185,28 @@ struct SessionListView: View {
         }
     }
 
-    private func rowCell(_ row: SessionRowUI, now: Date) -> some View {
+    /// The List evaluates every row's content (offscreen ones included) on
+    /// each list change, so one streaming session cost O(all rows) per
+    /// update. Rows compare only what they draw and skip unchanged content.
+    private func equatableRow(_ row: SessionRowUI) -> some View {
+        KeyedContent(key: RowRenderKey(row: row, selectable: selection != nil, theme: theme)) {
+            rowCell(row)
+        }
+        .equatable()
+    }
+
+    private func rowCell(_ row: SessionRowUI) -> some View {
         Group {
             if selection != nil {
                 NavigationLink(value: row.id) {
-                    rowLabel(row, now: now)
+                    rowLabel(row)
                 }
                 .tag(row.id)
             } else {
                 Button {
                     onOpenSession(row.id)
                 } label: {
-                    rowLabel(row, now: now)
+                    rowLabel(row)
                 }
                 .buttonStyle(.plain)
             }
@@ -260,8 +287,8 @@ struct SessionListView: View {
         }
     }
 
-    private func rowLabel(_ row: SessionRowUI, now: Date) -> some View {
-        SessionRowView(row: row, now: now)
+    private func rowLabel(_ row: SessionRowUI) -> some View {
+        SessionRowView(row: row)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
     }
@@ -356,13 +383,37 @@ struct SessionListView: View {
 
 // MARK: - Row
 
+/// Re-renders `content` only when `key` changes. List and row content
+/// capture only stable references (the model, state setters, the open
+/// callback), so an equal key can keep the previous content.
+private struct KeyedContent<Key: Equatable, Content: View>: View, Equatable {
+    let key: Key
+    @ViewBuilder let content: () -> Content
+
+    var body: some View { content() }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+}
+
+private struct RowRenderKey: Equatable {
+    let row: SessionRowUI
+    let selectable: Bool
+    let theme: HapiTheme
+}
+
+private struct ListRenderKey: Equatable {
+    let rows: [SessionRowUI]
+    let selectable: Bool
+    let theme: HapiTheme
+    let filters: SessionListFilters
+}
+
 struct SessionRowView: View {
     @Environment(\.hapiTheme) private var theme
     @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 30
     @ScaledMetric(relativeTo: .footnote) private var statusSlotSize: CGFloat = 16
 
     let row: SessionRowUI
-    let now: Date
 
     private let iconSpacing: CGFloat = 12
 
@@ -415,12 +466,15 @@ struct SessionRowView: View {
             Spacer(minLength: 4)
             // Unread is a semibold title plus an accent timestamp, not a
             // dot: the presence badge is the row's only dot.
-            Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
-                .font(.footnote)
-                .fontWeight(row.unread ? .semibold : .regular)
-                .foregroundStyle(row.unread ? theme.accent : theme.textSecondary)
-                .monospacedDigit()
-                .fixedSize()
+            // Minute ticks redraw only this label, not the list.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                Text(verbatim: formatRelativeAge(now: context.date, thenEpochMs: row.summary.updatedAt))
+            }
+            .font(.footnote)
+            .fontWeight(row.unread ? .semibold : .regular)
+            .foregroundStyle(row.unread ? theme.accent : theme.textSecondary)
+            .monospacedDigit()
+            .fixedSize()
         }
     }
 

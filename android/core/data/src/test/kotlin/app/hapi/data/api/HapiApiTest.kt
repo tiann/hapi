@@ -197,6 +197,37 @@ class HapiApiTest {
     }
 
     @Test
+    fun `send message body carries scheduledAt as epoch millis`() {
+        server.enqueue(ok("""{"ok":true}"""))
+
+        runBlocking {
+            session.api.sendMessage(
+                "s1",
+                SendMessageRequest(
+                    text = "later",
+                    localId = "local-2",
+                    deliveryMode = "queue",
+                    scheduledAt = 1_761_400_200_000L,
+                ),
+            )
+        }
+
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/s1/messages", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals(
+            buildJsonObject {
+                put("text", "later")
+                put("localId", "local-2")
+                put("deliveryMode", "queue")
+                put("scheduledAt", 1_761_400_200_000L)
+            },
+            body,
+            "a scheduled send rides the wire as an epoch-millis number",
+        )
+    }
+
+    @Test
     fun `upload posts json base64 (not multipart) and yields the hub path`() {
         server.enqueue(ok("""{"success":true,"path":"/tmp/uploads/shot.jpg"}"""))
 

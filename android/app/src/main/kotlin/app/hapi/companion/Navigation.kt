@@ -38,6 +38,7 @@ import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
+import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
@@ -368,6 +369,8 @@ fun HapiNavigation() {
                 onOpenSession = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
                 onNewSession = { navController.navigate(Routes.newSession()) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                connectionChrome = hubGraph.connectionChrome,
+                runnerSkewChrome = hubGraph.runnerSkewChrome,
             )
         }
 
@@ -476,7 +479,7 @@ fun HapiNavigation() {
             BackHandler(enabled = assignedShare != null, onBack = closeChat)
             ChatHost(
                 viewModel = holder.viewModel,
-                media = remember(hubGraph, sessionId) {
+                media = remember(hubGraph, sessionId, appContext) {
                     ChatMedia(
                         imageLoader = hubGraph.imageLoader,
                         generatedImageUrl = { imageId ->
@@ -484,6 +487,18 @@ fun HapiNavigation() {
                         },
                         attachmentUrl = { attachmentId ->
                             hubGraph.attachmentUrl(sessionId, attachmentId)
+                        },
+                        // Non-image generated media (video/audio/file): same
+                        // endpoint, same authed client (JWT + silent 401
+                        // re-auth + ETag disk cache) as the image loader.
+                        fetchGeneratedMedia = { url, imageId, fileName ->
+                            fetchGeneratedMediaFile(
+                                hubGraph.session.imageClient,
+                                url,
+                                appContext.cacheDir,
+                                imageId,
+                                fileName,
+                            )
                         },
                     )
                 },

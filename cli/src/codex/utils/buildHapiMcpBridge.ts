@@ -49,6 +49,8 @@ export interface HapiMcpBridgeOptions {
     exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    /** Session project cwd for relative spawn_peer directories (Codex --cd aware). */
+    workingDirectory?: string;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -83,6 +85,7 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        workingDirectory: options.workingDirectory ?? options.skillLookup?.workingDirectory,
         skillLookup: options.skillLookup
     });
     // Stamp the hub row id so orphanReap can find MCP helpers after the agent
@@ -119,9 +122,9 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
-    // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
-    // bridge, but are not auto-approved: they target another session (resume +
-    // inject, or read peer histories).
+    // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
+    // server / stdio bridge, but are not auto-approved: they target another
+    // session (resume + inject, read peer histories, or create + inject).
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'
