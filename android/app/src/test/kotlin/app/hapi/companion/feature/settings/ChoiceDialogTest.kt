@@ -2,8 +2,11 @@ package app.hapi.companion.feature.settings
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import app.hapi.companion.ui.theme.ColorThemePreset
+import app.hapi.companion.ui.theme.preview
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -64,5 +67,31 @@ class ChoiceDialogTest {
 
         assertNull(option.swatch)
         assertEquals(AppLanguage.ENGLISH, option.value)
+    }
+
+    @Test
+    fun `every color theme preset carries an accent strip`() {
+        ColorThemePreset.entries.forEach { preset ->
+            val swatch = colorThemePresetSwatch(preset)
+            assertNotNull(swatch.accentColor, "${preset.name} card must show its accent")
+        }
+    }
+
+    @Test
+    fun `preset swatches outline halves that would vanish against the dialog`() {
+        // Every preset's canvases are near-white and near-black by design, so
+        // each card carries the hairline — the web cards are all bordered too.
+        ColorThemePreset.entries.forEach { preset ->
+            assertTrue(colorThemePresetSwatch(preset).outline, preset.name)
+        }
+    }
+
+    @Test
+    fun `preset swatch halves are the preset's own canvases`() {
+        val nord = colorThemePresetSwatch(ColorThemePreset.NORD)
+
+        assertEquals(ColorThemePreset.NORD.preview().light, nord.startColor)
+        assertEquals(ColorThemePreset.NORD.preview().dark, nord.endColor)
+        assertEquals(ColorThemePreset.NORD.preview().accent, nord.accentColor)
     }
 }

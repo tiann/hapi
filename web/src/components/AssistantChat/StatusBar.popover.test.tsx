@@ -95,7 +95,7 @@ describe('StatusBar context details dialog', () => {
         )
 
         expect(screen.getByText('xhigh').className.split(' ')).toContain('sm:hidden')
-        const desktopLabel = screen.getByText('reasoning xhigh')
+        const desktopLabel = screen.getByText('effort xhigh')
         expect(desktopLabel.className.split(' ')).toContain('hidden')
         expect(desktopLabel.className.split(' ')).toContain('sm:inline')
     })
@@ -114,7 +114,7 @@ describe('StatusBar context details dialog', () => {
         )
 
         expect(screen.getByText('default').className.split(' ')).toContain('sm:hidden')
-        expect(screen.getByText('reasoning default').className.split(' ')).toContain('sm:inline')
+        expect(screen.getByText('effort default').className.split(' ')).toContain('sm:inline')
     })
 
     it('uses Pi ordinary effort instead of model reasoning effort', () => {
@@ -132,8 +132,8 @@ describe('StatusBar context details dialog', () => {
         )
 
         expect(screen.getByText('max').className.split(' ')).toContain('sm:hidden')
-        expect(screen.getByText('reasoning max').className.split(' ')).toContain('sm:inline')
-        expect(screen.queryByText('reasoning xhigh')).not.toBeInTheDocument()
+        expect(screen.getByText('effort max').className.split(' ')).toContain('sm:inline')
+        expect(screen.queryByText('effort xhigh')).not.toBeInTheDocument()
     })
 
     it('hides Pi reasoning when effort is absent or blank', () => {
@@ -148,7 +148,7 @@ describe('StatusBar context details dialog', () => {
             </I18nProvider>
         )
 
-        expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
+        expect(screen.queryByText('effort default')).not.toBeInTheDocument()
         expect(screen.queryByText('default')).not.toBeInTheDocument()
 
         rerender(
@@ -163,11 +163,11 @@ describe('StatusBar context details dialog', () => {
             </I18nProvider>
         )
 
-        expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
+        expect(screen.queryByText('effort default')).not.toBeInTheDocument()
         expect(screen.queryByText('default')).not.toBeInTheDocument()
     })
 
-    it('does not expose ordinary effort for Claude or unknown flavors', () => {
+    it('shows ordinary effort for Claude but not for unknown flavors', () => {
         const { rerender } = render(
             <I18nProvider>
                 <StatusBar
@@ -180,8 +180,7 @@ describe('StatusBar context details dialog', () => {
             </I18nProvider>
         )
 
-        expect(screen.queryByText('reasoning max')).not.toBeInTheDocument()
-        expect(screen.queryByText('max')).not.toBeInTheDocument()
+        expect(screen.getByText('effort max')).toBeInTheDocument()
 
         rerender(
             <I18nProvider>
@@ -195,7 +194,7 @@ describe('StatusBar context details dialog', () => {
             </I18nProvider>
         )
 
-        expect(screen.queryByText('reasoning max')).not.toBeInTheDocument()
+        expect(screen.queryByText('effort max')).not.toBeInTheDocument()
         expect(screen.queryByText('max')).not.toBeInTheDocument()
     })
 

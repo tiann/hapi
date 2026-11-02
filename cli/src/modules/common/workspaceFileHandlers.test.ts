@@ -87,6 +87,22 @@ describe('workspace file RPC handlers', () => {
         })
     })
 
+    it('classifies archived-session workspace files and directories for path search', async () => {
+        const stats = await callWorkspaceHandler(rpc, RPC_METHODS.WorkspaceStatFiles, {
+            cwd: rootDir,
+            paths: ['src/index.ts', 'src', 'missing.ts'],
+        })
+
+        expect(stats).toMatchObject({
+            success: true,
+            entries: [
+                { path: 'src/index.ts', type: 'file', size: 25 },
+                { path: 'src', type: 'directory' },
+                { path: 'missing.ts' },
+            ],
+        })
+    })
+
     it('rejects oversized and non-regular files before reading them', async () => {
         const oversizedPath = join(rootDir, 'oversized.bin')
         await writeFile(oversizedPath, '')

@@ -38,7 +38,7 @@ describe('selectShareTurnMetadata', () => {
     })
 
     it('uses Pi effort for shared reasoning metadata', () => {
-        expect(getShareTurnReasoningLabel('pi', null, 'max', true)).toBe('reasoning max')
+        expect(getShareTurnReasoningLabel('pi', null, 'max', true)).toBe('effort max')
         expect(getShareTurnReasoningLabel('pi', null, 'max', false)).toBe('max')
     })
 })
