@@ -53,9 +53,11 @@ public final class ChatInteractor {
 
     /// Composer attachment tray (A-M3f). The screen feeds prepared picks in
     /// and renders `attachments.items`; ``sendMessage(steer:)`` consumes the
-    /// Ready set. Lives (and dies) with this interactor — see the tray's own
-    /// docs for the discard-on-deallocation semantics.
+    /// Ready set. Lives with this interactor, or is handed to its replacement
+    /// when upload recovery changes the session ID. See the tray's own docs
+    /// for discard-on-deallocation semantics.
     public let attachments: ComposerAttachments
+    public let mentionFiles: ComposerMentionFiles
 
     // MARK: Observable storage
 
@@ -113,6 +115,13 @@ public final class ChatInteractor {
     private var codexPlanErrors: [String: String] = [:]
 
     private var queuedOpPending = false
+    /// Sends dispatched while the agent was idle: the CLI consumes them right
+    /// away, so they render in the thread instead of flashing through the
+    /// queued bar while `invokedAt` is still null. Each entry expires
+    /// ``directSendGrace`` after the POST settles; a row still uninvoked by
+    /// then is genuinely waiting and moves to the bar.
+    public private(set) var directSendLocalIds: Set<String> = []
+    private let directSendGrace: Duration
     /// Raw override map; the published view prunes settled requests.
     private var overridesStore: [String: PermissionRowOverride] = [:]
 
@@ -120,10 +129,19 @@ public final class ChatInteractor {
     /// owning screen model; replaced wholesale on re-activation.
     @ObservationIgnored public var onEvent: (@MainActor (ChatInteractionEvent) -> Void)?
 
+    /// ``directSendLocalIds`` changed; the screen re-runs the thread pipeline.
+    @ObservationIgnored public var onDirectSendsChanged: (@MainActor () -> Void)?
+
+    /// The host defers source-session removal while /resume is in flight,
+    /// and retains the tray before navigating to a replacement session.
+    @ObservationIgnored public var onAttachmentSessionRecovery: (@MainActor (Bool) -> Void)?
+    @ObservationIgnored public var onAttachmentSessionSuperseded: (@MainActor (String, ChatInteractor) -> Void)?
+
     // MARK: Wiring
 
     private let api: APIClient
     private let sessionStore: SessionListStore
+    private let machineStore: MachineStore?
     private let windows: MessageWindowControllers
     private let drafts: (any ChatDrafts)?
     private let draftSaveDebounce: Duration
@@ -142,19 +160,63 @@ public final class ChatInteractor {
         sessionStore: SessionListStore,
         windows: MessageWindowControllers,
         drafts: (any ChatDrafts)? = nil,
+        machineStore: MachineStore? = nil,
+        attachments: ComposerAttachments? = nil,
         draftSaveDebounce: Duration = .milliseconds(300),
+        directSendGrace: Duration = .seconds(5),
         now: @escaping () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
         makeLocalId: @escaping () -> String = { "local-\(UUID().uuidString)" }
     ) {
         self.sessionId = sessionId
         self.api = api
         self.sessionStore = sessionStore
+        self.machineStore = machineStore
+        self.mentionFiles = ComposerMentionFiles { query in
+            try await api.searchSessionFiles(sessionId: sessionId, query: query, limit: 50)
+        }
         self.windows = windows
         self.drafts = drafts
         self.draftSaveDebounce = draftSaveDebounce
+        self.directSendGrace = directSendGrace
         self.now = now
         self.makeLocalId = makeLocalId
-        self.attachments = ComposerAttachments(api: api, sessionId: sessionId)
+        self.attachments = attachments ?? ComposerAttachments(api: api, sessionId: sessionId)
+        self.attachments.resumeInactiveSession = { [weak self] source in
+            guard let self else { throw CancellationError() }
+            return try await self.resumeForAttachmentUpload(from: source)
+        }
+    }
+
+    /// Like text-send recovery, but preserve the entire unsent composer. The
+    /// tray single-flights concurrent 409s and retries each upload only once.
+    private func resumeForAttachmentUpload(from source: String) async throws -> String {
+        onAttachmentSessionRecovery?(true)
+        defer { onAttachmentSessionRecovery?(false) }
+        let target = try await api.resumeSession(id: source, permissionMode: sessionStore.detail(for: source)?.permissionMode)
+        if target != source {
+            await windows.seed(fromSessionId: source, toSessionId: target)
+            flushPendingDraft()
+            drafts?.move(fromSessionId: source, toSessionId: target)
+        }
+        scratchlistSendTarget = target
+        attachments.retarget(to: target)
+        sessionStore.updateDetailLocal(target) { $0.active = true }
+        sessionStore.scheduleRefresh()
+        if target != sessionId {
+            // Store the live tray before the event: navigation constructs a
+            // new interactor, while pending uploads still belong to this tray.
+            onAttachmentSessionSuperseded?(target, self)
+            emit(.sessionSuperseded(sessionId: target))
+        }
+        return target
+    }
+
+    /// Read at replacement-screen creation, not at /resume completion: the
+    /// user may still type before navigation runs. Cancel the source's draft
+    /// debounce so it cannot later resurrect a draft cleared by the new chat.
+    public func prepareComposerHandoff() -> (attachments: ComposerAttachments, text: String) {
+        flushPendingDraft()
+        return (attachments, composerText)
     }
 
     // MARK: - Lifecycle (paired with the screen's appear/disappear)
@@ -252,6 +314,33 @@ public final class ChatInteractor {
         }
     }
 
+    public var mentionFlavor: String { currentFlavor() ?? "claude" }
+
+    /// Read the live, same-hub roster on every render; file results must match
+    /// the current query and flavor before they can supplement session hits.
+    public func mentionSuggestions(selection: NSRange) -> [ComposerMentionSuggestion] {
+        guard composerDestination == .chat,
+              let query = ComposerMentionSuggestions.query(in: composerText, selection: selection) else { return [] }
+        let sessions = ComposerMentionSuggestions.sessions(sessionStore.sessions, query: query.search, excluding: sessionId) { id in
+            guard let id else { return String(localized: "Unknown machine") }
+            let metadata = self.machineStore?.machines.first { $0.id == id }?.metadata
+            let name = metadata?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !name.isEmpty { return name }
+            return metadata?.host ?? String(id.prefix(8))
+        }
+        return sessions + mentionFiles.suggestions(for: .init(query: query.search, flavor: mentionFlavor))
+    }
+
+    /// Only replace the active @ range; retain surrounding text and return
+    /// the caret for UIKit. The serialized reference uses ordinary draft saves.
+    public func selectMention(_ suggestion: ComposerMentionSuggestion, selection: NSRange) -> NSRange? {
+        guard composerDestination == .chat,
+              mentionSuggestions(selection: selection).contains(suggestion),
+              let edit = ComposerMentionSuggestions.inserting(suggestion, into: composerText, selection: selection) else { return nil }
+        setComposerText(edit.text)
+        return edit.selection
+    }
+
     /// Slash-command dropdown rows: non-empty only while the composer is a
     /// lone `/token`; metadata names merged with the RPC list (RPC wins).
     public var slashSuggestions: [SlashCommand] {
@@ -279,7 +368,7 @@ public final class ChatInteractor {
         composerText = text
         draftTask?.cancel()
         guard let drafts else { return }
-        let sessionId = sessionId
+        let sessionId = scratchlistSendTarget ?? sessionId
         let debounce = draftSaveDebounce
         // Inherits main-actor isolation, so capturing the drafts store is safe.
         draftTask = Task {
@@ -328,6 +417,7 @@ public final class ChatInteractor {
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
+            if let target = self.scratchlistSendTarget { self.drafts?.clear(sessionId: target) }
             if attachmentMetadata == nil && (text == "/clear" || text == "/new")
                 && self.sessionStore.detail(for: self.sessionId)?.metadata?.capabilities?.concurrentClients == true {
                 defer { self.isSending = false }
@@ -449,7 +539,12 @@ public final class ChatInteractor {
         targetSessionId: String? = nil
     ) async -> String? {
         defer { isSending = false }
-        let target = targetSessionId ?? sessionId
+        let target = targetSessionId ?? scratchlistSendTarget ?? sessionId
+        // Decide before the POST: the hub flips `thinking` on as soon as it
+        // queues the message, so the state afterwards says nothing.
+        let direct = scheduledAt == nil && !currentSessionState().thinking
+        if direct { setDirectSend(localId, true) }
+        defer { if direct { expireDirectSend(localId) } }
         let store = target == sessionId ? await windowController() : await windows.open(sessionId: target)
         if isRetry {
             await store.updateStatus(localId: localId, status: .sending)
@@ -479,6 +574,21 @@ public final class ChatInteractor {
         } catch {
             await store.updateStatus(localId: localId, status: .failed)
             return nil
+        }
+    }
+
+    private func setDirectSend(_ localId: String, _ isDirect: Bool) {
+        let changed = isDirect
+            ? directSendLocalIds.insert(localId).inserted
+            : directSendLocalIds.remove(localId) != nil
+        if changed { onDirectSendsChanged?() }
+    }
+
+    private func expireDirectSend(_ localId: String) {
+        let grace = directSendGrace
+        Task { [weak self] in
+            try? await Task.sleep(for: grace)
+            self?.setDirectSend(localId, false)
         }
     }
 
@@ -550,7 +660,9 @@ public final class ChatInteractor {
     public var queuedRows: [QueuedMessageRow] {
         guard let windowState else { return [] }
         let thinking = currentSessionState().thinking
-        let queued = windowState.messages.filter { $0.isQueuedForInvocation }
+        let queued = windowState.messages.filter {
+            $0.isQueuedForInvocation && $0.localId.map(directSendLocalIds.contains) != true
+        }
         let sorted = queued.enumerated().sorted { lhs, rhs in
             let lhsScheduled = lhs.element.scheduledAt != nil
             let rhsScheduled = rhs.element.scheduledAt != nil
@@ -1259,7 +1371,7 @@ public final class ChatInteractor {
         draftTask?.cancel()
         draftTask = nil
         guard pending, let drafts else { return }
-        drafts.save(sessionId: sessionId, text: composerText)
+        drafts.save(sessionId: scratchlistSendTarget ?? sessionId, text: composerText)
     }
 
     private func emit(_ event: ChatInteractionEvent) {

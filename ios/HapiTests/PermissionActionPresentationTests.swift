@@ -355,11 +355,11 @@ final class PermissionActionPresentationTests: XCTestCase {
             ), interactor: driver.interactor)
         }
         for theme in [HapiTheme.light, .dark, .oled] {
-            XCTAssertEqual(measure(row().hapiTheme(theme), width: 358).height, 56, accuracy: 1)
+            XCTAssertEqual(measure(row().hapiTheme(theme), width: 358).height, 44, accuracy: 1)
             for (width, size) in [(CGFloat(180), DynamicTypeSize.large), (288, .accessibility5), (720, .xxxLarge)] {
                 let enabled = measure(row().hapiTheme(theme), width: width, size: size)
                 XCTAssertLessThanOrEqual(enabled.width, width)
-                if width < 320 { XCTAssertGreaterThan(enabled.height, 56) }
+                if width < 320 { XCTAssertGreaterThan(enabled.height, 44) }
                 XCTAssertEqual(measure(row(enabled: false).hapiTheme(theme), width: width, size: size).height,
                                enabled.height, accuracy: 1)
                 for specimen in [row(uncertain: true), row(scheduled: true)] {

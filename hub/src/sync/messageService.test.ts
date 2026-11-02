@@ -1913,3 +1913,30 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         expect(stillQueued.find((m) => m.localId === 'local-future')?.invokedAt).toBeNull()
     })
 })
+
+describe('observed read revision receipts', () => {
+    it('latest and completed catch-up receipt cover only their observed head', () => {
+        const store = makeStore()
+        try {
+            const { id } = makeSession(store, 'read-receipt')
+            const reply = (text: string) => ({ role: 'agent', content: { type: 'codex', data: { type: 'message', message: text } } })
+            store.messages.addMessage(id, reply('one'), 'one', null, 1)
+            const service = new MessageService(store, makeIo(() => {}), makePublisher() as unknown as EventPublisher)
+            const first = service.getMessagesPage(id, { limit: 1 })
+            expect(first.page.readThroughRevision).toBe(1)
+            const after = { at: first.page.snapshotHeadAt!, seq: first.page.snapshotHeadSeq! }
+            store.messages.addMessage(id, reply('two'), 'two', null, 2)
+            store.messages.addMessage(id, reply('three'), 'three', null, 3)
+            const partial = service.getMessagesPage(id, { limit: 1, after })
+            expect(partial.page.hasMore).toBe(true)
+            expect(partial.page.readThroughRevision).toBeUndefined()
+            const until = { at: partial.page.snapshotHeadAt!, seq: partial.page.snapshotHeadSeq! }
+            store.messages.addMessage(id, reply('concurrent'), 'four', null, 4)
+            const bounded = service.getMessagesPage(id, { limit: 20, after, until })
+            expect(bounded.page.readThroughRevision).toBeUndefined()
+            expect(service.getMessagesPage(id, { limit: 20, after }).page.readThroughRevision).toBe(4)
+            expect(service.getMessagesPage(id, { limit: 20, before: until }).page.readThroughRevision).toBeUndefined()
+            expect(first.page.readThroughRevision).toBe(1)
+        } finally { store.close() }
+    })
+})

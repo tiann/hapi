@@ -656,6 +656,13 @@ fun normalizeAgentRecord(
             }, meta)
         }
         if (dataType == "system" && subtype == "turn_duration") {
+            val summary = normalizeRoundSummary(data["resultSummary"])
+            if (summary != null) {
+                return eventMessage(messageId, localId, createdAt, buildJsonObject {
+                    put("type", "turn-summary")
+                    put("summary", roundSummaryToJson(summary))
+                }, meta)
+            }
             return eventMessage(messageId, localId, createdAt, buildJsonObject {
                 put("type", "turn-duration")
                 put("durationMs", jsNumber(asNumber(data["durationMs"]) ?: 0.0))
@@ -804,6 +811,41 @@ fun normalizeAgentRecord(
         val data = asObject(record["data"]) ?: return null
         val dataType = asString(data["type"]) ?: return null
 
+        // Native turns stamp their id onto the message metadata so later
+        // round summaries can target the exact turn's block group.
+        val turnId = asString(data["turn_id"].orNull() ?: data["turnId"])
+        @Suppress("NAME_SHADOWING")
+        val meta = if (turnId == null) {
+            meta
+        } else {
+            buildJsonObject {
+                asObject(meta)?.forEach { (key, value) -> put(key, value) }
+                put("codexTurnId", turnId)
+            }
+        }
+
+        if (dataType == "turn_duration") {
+            val durationMs = nonNegativeNumber(data["durationMs"])
+            val scope = asObject(data["scope"])
+            val scopeRole = asString(
+                data["scope_role"].orNull() ?: data["scopeRole"].orNull() ?: scope?.get("role")
+            )
+            // Only top-level native turn durations are billable round signals:
+            // imported history, child-scope turns, unstamped or invalid
+            // durations are dropped entirely.
+            if (asString(data["flavor"]) != "codex" || asString(data["hapiUsageScope"]) == "imported-history" ||
+                scopeRole == "child" || turnId == null || durationMs == null
+            ) {
+                return null
+            }
+            return eventMessage(messageId, localId, createdAt, buildJsonObject {
+                put("type", "turn-duration")
+                put("provider", "codex")
+                put("durationMs", jsNumber(durationMs))
+                put("turnId", turnId)
+            }, meta)
+        }
+
         if (dataType == "agent-run-start" || dataType == "agent-run-update" || dataType == "agent-run-trace") {
             return eventMessage(messageId, localId, createdAt, data, meta)
         }
@@ -891,9 +933,10 @@ fun normalizeAgentRecord(
 
         if (dataType == "context_compacted") {
             return eventMessage(messageId, localId, createdAt, buildJsonObject {
-                put("type", "compact")
-                put("trigger", asString(data["trigger"]) ?: "auto")
-                put("preTokens", jsNumber(asNumber(data["preTokens"].orNull() ?: data["pre_tokens"]) ?: 0.0))
+                put("type", "compact-summary")
+                put("summary", "")
+                asString(data["id"])?.let { put("compactionId", it) }
+                asNumber(data["preTokens"].orNull() ?: data["pre_tokens"])?.let { put("tokensBefore", jsNumber(it)) }
             }, meta)
         }
 
@@ -903,7 +946,9 @@ fun normalizeAgentRecord(
                 return eventMessage(messageId, localId, createdAt, buildJsonObject {
                     put("type", "compact-summary")
                     put("summary", summary)
+                    asString(data["compactionId"])?.let { put("compactionId", it) }
                     asNumber(data["tokensBefore"])?.let { put("tokensBefore", jsNumber(it)) }
+                    asNumber(data["tokensAfter"])?.let { put("tokensAfter", jsNumber(it)) }
                     asNumber(data["estimatedTokensAfter"])?.let { put("estimatedTokensAfter", jsNumber(it)) }
                 }, meta)
             }
@@ -914,6 +959,11 @@ fun normalizeAgentRecord(
             return eventMessage(messageId, localId, createdAt, buildJsonObject {
                 put("type", "token-count")
                 data["info"]?.let { put("info", it) }
+                if (asString(data["flavor"]) == "codex") {
+                    put("provider", "codex")
+                    turnId?.let { put("turnId", it) }
+                    asString(data["model"])?.let { put("model", it) }
+                }
             }, meta, usage = usage)
         }
 

@@ -9,8 +9,9 @@ import type { PaginationFixtureCase } from './types'
  * keep ids ASCII and positions distinct).
  */
 
-function agentMessage(init: { id: string; seq: number; at: number }): DecryptedMessage {
+function agentMessage(init: { id: string; seq: number; at: number; contentRevision?: number }): DecryptedMessage {
     return {
+        ...(init.contentRevision !== undefined ? { contentRevision: init.contentRevision } : {}),
         id: init.id,
         seq: init.seq,
         localId: null,
@@ -106,11 +107,13 @@ function pageResponse(
         nextBefore?: Position | null
         nextAfter?: Position | null
         snapshotHead?: Position | null
+        readThroughRevision?: number
     }
 ): MessagesResponse {
     return {
         messages,
         page: {
+            ...(page.readThroughRevision !== undefined ? { readThroughRevision: page.readThroughRevision } : {}),
             direction: page.direction,
             limit: 200,
             epoch: page.epoch,
@@ -135,6 +138,34 @@ function paddedAgentRun(fromSeq: number, toSeq: number): DecryptedMessage[] {
 }
 
 export const paginationFixtureCases: PaginationFixtureCase[] = [
+    {
+        name: 'read-receipt-latest-and-live-output',
+        description: 'A successful latest page establishes the read receipt; live readable rows advance it independently of position sequence.',
+        ops: [
+            { op: 'sync-tail', responses: [pageResponse([
+                agentMessage({ id: 'answer', seq: 10, at: 10_000, contentRevision: 5 })
+            ], { direction: 'latest', epoch: 0, hasMore: false, snapshotHead: { at: 10_000, seq: 10 }, readThroughRevision: 5 })] },
+            { op: 'sse-messages', messages: [agentMessage({ id: 'next', seq: 12, at: 12_000, contentRevision: 6 })] }
+        ]
+    },
+    {
+        name: 'read-receipt-history-does-not-advance',
+        description: 'Browsing history may reveal a delayed message with a higher content revision; an older-page load never certifies the current tail.',
+        ops: [
+            { op: 'sync-tail', responses: [pageResponse([
+                agentMessage({ id: 'answer', seq: 10, at: 10_000, contentRevision: 5 })
+            ], { direction: 'latest', epoch: 0, hasMore: true, nextBefore: { at: 10_000, seq: 10 }, snapshotHead: { at: 10_000, seq: 10 }, readThroughRevision: 5 })] },
+            { op: 'set-view-mode', mode: 'history' },
+            { op: 'fetch-older', responses: [pageResponse([
+                agentMessage({ id: 'delayed', seq: 11, at: 5_000, contentRevision: 6 })
+            ], { direction: 'before', epoch: 0, hasMore: false, nextBefore: { at: 5_000, seq: 11 } })] }
+        ]
+    },
+    {
+        name: 'read-receipt-requires-initial-tail-sync',
+        description: 'SSE arriving before initial tail synchronization cannot establish a read receipt over an unloaded conversation.',
+        ops: [{ op: 'sse-messages', messages: [agentMessage({ id: 'live', seq: 10, at: 10_000, contentRevision: 5 })] }]
+    },
     {
         name: 'latest-page-then-sse-ingest',
         description: 'Cold start: a latest page seeds the window, epoch, older cursor (page.nextBefore) and newest cursor (page.snapshotHead); a live SSE message appends and advances the newest cursor to its position.',

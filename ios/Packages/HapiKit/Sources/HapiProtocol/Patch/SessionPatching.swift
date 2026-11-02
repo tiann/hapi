@@ -45,6 +45,8 @@ public func isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch
             return false
         }
     }
+    if let value = patch.contentRevision, value != session.contentRevision { return false }
+    if let value = patch.readState, value != session.readState { return false }
     if let value = patch.updatedAt, value != session.updatedAt { return false }
     if let value = patch.lastUserMessageAt, value != session.lastUserMessageAt { return false }
     // Versioned wrappers never equal the session's plain fields in the TS
@@ -92,6 +94,8 @@ public func applySessionDetailPatch(session: Session, patch: SessionPatch) -> Se
     if let value = patch.activeAt { assign(\.activeAt, value) }
     // Monotonic with the hub's applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.
+    if let value = patch.contentRevision { assign(\.contentRevision, max(next.contentRevision ?? 0, value)) }
+    if let value = patch.readState { assign(\.readState, SessionReadState.merge(next.readState, value)) }
     if let value = patch.updatedAt { assign(\.updatedAt, max(next.updatedAt, value)) }
     if let value = patch.lastUserMessageAt { assign(\.lastUserMessageAt, max(next.lastUserMessageAt ?? 0, value)) }
     if let field = patch.model { assign(\.model, field.wireValue) }

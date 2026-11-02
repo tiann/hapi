@@ -110,6 +110,19 @@ describe('bootstrapExistingSession', () => {
         delete process.env[HAPI_SESSION_ID_ENV]
     })
 
+    it('refuses local Codex resume of a CLI-archived source with a pending fork before creating a socket or changing metadata', async () => {
+        const session = createSession()
+        session.metadata = { ...session.metadata!, lifecycleState: 'archived', archivedBy: 'cli',
+            codexArchivedFork: { operationId: '11111111-1111-4111-8111-111111111111', childSessionId: '22222222-2222-4222-8222-222222222222' } }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+        await expect(bootstrapExistingSession({ sessionId: session.id, flavor: 'codex', workingDirectory: '/tmp/project' }))
+            .rejects.toThrow('pending archived fork')
+        expect(sessionSyncClientMock).not.toHaveBeenCalled()
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+    })
+
     it('does not wait for metadata when an existing session has no stale history capabilities', async () => {
         const session = createSession()
         const sessionClient = {
@@ -216,6 +229,7 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
                 machineId: 'machine-1',
@@ -263,6 +277,7 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
                 machineId: 'machine-1',

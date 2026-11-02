@@ -155,7 +155,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             if (callCount === 1) {
                 const msg = await opts.nextMessage();
                 expect(msg?.message).toBe('/compact');
-                opts.onCompactResultAccepted();
+                opts.onResultAccepted();
                 throw new Error('stream failed after compact result');
             }
 
