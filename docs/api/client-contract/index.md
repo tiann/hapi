@@ -15,6 +15,7 @@ does not imply that both apps expose a corresponding UI.
 | [Auth](./auth.md) | Pairing deeplink, access-token grammar, JWT exchange, silent re-auth, namespaces, credential storage |
 | [REST](./rest.md) | Interactive client APIs, other hub surfaces, request/response shapes, gzip negotiation |
 | [SSE](./sse.md) | `GET /api/events` stream: subscription modes, resume handshake, event ids, reconnect policy |
+| [Read state](./read-state.md) | Shared unread revisions, rendered-tail receipts, offline retry and migration |
 | [Pagination](./pagination.md) | Message window: composite cursors, epoch reset, optimistic-send reconciliation |
 | [Messages](./messages.md) | `DecryptedMessage.content` decoding tree (`codex` / `output` / `event` families) |
 | [Errors](./errors.md) | `{status, code}` table, error body shapes, RPC-wrapped failure modes |

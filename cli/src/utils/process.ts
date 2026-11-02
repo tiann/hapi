@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
 import { readFileSync } from 'node:fs';
+import { stopWindowsProcessTree } from './windowsProcessStop';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -474,7 +475,6 @@ export type ProcessTreeStopReport = {
     resolution?: 'exited' | 'generation_changed';
   }>;
 };
-
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
 export async function killProcessTreeByPid(
   pid: number,
@@ -484,6 +484,17 @@ export async function killProcessTreeByPid(
 ): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
+  if (isWindows() && !canSignal) {
+    return stopWindowsProcessTree(n, force, onReport
+      ? result => onReport({
+          rootPid: n,
+          outcome: result.confirmed ? 'verified' : 'unconfirmed',
+          elapsedMs: result.elapsedMs,
+          phaseMs: { [result.phase]: result.elapsedMs },
+          members: [],
+        })
+      : undefined);
+  }
   if (isWindows()) {
     const started = Date.now();
     const phaseMs: Record<string, number> = {};

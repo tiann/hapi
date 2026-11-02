@@ -45,7 +45,9 @@ import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
-import { readRuntimes, runtimeAuthHash } from '@/codex/shared/registry';
+import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
+import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
+import { coalesceStopRequests } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
@@ -131,7 +133,8 @@ export function classifyRecoveredProcessGeneration(
 
 export function probeRecoveredProcessGeneration(
   pid: number,
-  record: { processStartMarker: string; bootId?: string }
+  record: { processStartMarker: string; bootId?: string },
+  currentMarker?: string | null
 ): 'verified' | 'quarantined' | 'exited' {
   if (!isProcessAlive(pid)) return 'exited';
   const evidence = {
@@ -141,7 +144,7 @@ export function probeRecoveredProcessGeneration(
     persistedBootId: record.bootId,
   };
   if (classifyRecoveredProcessGeneration(true, null, record.processStartMarker, evidence) === 'exited') return 'exited';
-  return classifyRecoveredProcessGeneration(true, getProcessStartMarker(pid), record.processStartMarker, evidence);
+  return classifyRecoveredProcessGeneration(true, currentMarker !== undefined ? currentMarker : getProcessStartMarker(pid), record.processStartMarker, evidence);
 }
 
 /** Heartbeat snapshots are the only process probe on Windows. */
@@ -1202,7 +1205,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = async (
+    const stopSession = coalesceStopRequests(async (
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
@@ -1235,6 +1238,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return false
       }
 
+      // Cache only positive liveness evidence for this stop. Retaining a dead
+      // owner is conservative; caching a negative result could hide a new live
+      // owner after PID reuse. Binding files are reread on EVERY decision.
+      const possiblyLiveGenerations = new Set<string>();
+      const runtimeGenerationKey = (record: Awaited<ReturnType<typeof readRuntimes>>[number]) =>
+        JSON.stringify([record.pid, record.marker, record.serverPid, record.serverMarker]);
       const readLiveRuntimesForStop = async () => {
         try {
           const scanStarted = Date.now();
@@ -1477,7 +1486,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             }
             try {
               const reportStop: Parameters<typeof killProcessTreeByPid>[2] = report => {
-                logger.debug('[RUNNER RUN] Session process tree stop proof', { sessionId, ...report });
+                logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
               };
               const treeStopped = session.childProcess
                 ? await killProcessByChildProcess(session.childProcess, false, reportStop, canSignal)
@@ -1486,8 +1495,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
               }
-              logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
               treeTerminationVerified = true;
+              logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill session ${sessionId}:`, error);
               return 'still_alive';
@@ -1654,7 +1663,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // while callers that just spawned this id can treat unknown defensively.
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
       return 'unknown';
-    };
+    });
 
     // A reused PID invalidates a binding, not every runtime for that session.
     const discardStaleProcess = (pid: number) => {
