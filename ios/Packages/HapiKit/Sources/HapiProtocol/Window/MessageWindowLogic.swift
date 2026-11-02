@@ -322,6 +322,7 @@ public enum MessageWindowLogic {
             oldest = responseOldest ?? previous.oldestPosition
         }
         var next = settingMessages(previous, trim.kept)
+        next.readThroughRevision = max(previous.readThroughRevision ?? 0, page.readThroughRevision ?? 0, trim.kept.compactMap(\.contentRevision).max() ?? 0)
         next.hasMore = page.hasMore || (!replaceServerRows && previous.hasMore) || !trim.dropped.isEmpty
         next.epoch = page.epoch
         next.oldestPosition = oldest
@@ -379,6 +380,7 @@ public enum MessageWindowLogic {
             return merged
         }
         merged.epoch = page.epoch
+        merged.readThroughRevision = max(merged.readThroughRevision ?? 0, page.readThroughRevision ?? 0, merged.messages.compactMap(\.contentRevision).max() ?? 0)
         merged.newestPosition = maxPosition(nextAfter, merged.newestPosition)
         merged.warning = nil
         return merged
@@ -580,6 +582,9 @@ public enum MessageWindowLogic {
         var merged = mergeIntoWindow(previous, incoming: incoming, advanceTailRevision: true)
         if merged.epoch == nil || merged.requiresLatestReset {
             return merged
+        }
+        if let revision = merged.readThroughRevision {
+            merged.readThroughRevision = max(revision, incoming.compactMap(\.contentRevision).max() ?? 0)
         }
         let incomingNewest = derivePosition(incoming, .newest)
         let currentNewest = merged.newestPosition
@@ -802,7 +807,11 @@ public enum MessageWindowLogic {
         source: MessageWindowState,
         target: MessageWindowState
     ) -> MessageWindowState {
-        var next = settingMessages(createState(sessionId: target.sessionId), source.messages)
+        var next = settingMessages(createState(sessionId: target.sessionId), source.messages.map { message in
+            WindowMessage(id: message.id, seq: message.seq, localId: message.localId, content: message.content,
+                          createdAt: message.createdAt, invokedAt: message.invokedAt,
+                          scheduledAt: message.scheduledAt, status: message.status)
+        })
         next.hasMore = source.hasMore
         next.tailRevision = source.tailRevision
         next.oldestPosition = source.oldestPosition

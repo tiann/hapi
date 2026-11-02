@@ -58,6 +58,13 @@ const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
 
+export class RunnerStopRpcError extends Error {
+    constructor(readonly timedOut: boolean, cause: unknown) {
+        super('Runner stop acknowledgement was not received', { cause })
+        this.name = 'RunnerStopRpcError'
+    }
+}
+
 /**
  * tiann/hapi#916: thrown by {@link RpcGateway.rpcCall} when the target CLI is
  * unreachable (handler not registered or socket disconnected). Callers can
@@ -215,12 +222,22 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string }
+        opts?: { processStartMarker?: string; timeoutMs?: number }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
-            sessionId,
-            ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
-        })
+        const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
+        const started = performance.now()
+        let result: unknown
+        try {
+            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
+                sessionId,
+                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            }, timeoutMs)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) throw error
+            // Ack timeout does not cancel the remote stop. Preserve uncertainty
+            // instead of claiming that the process is definitely still alive.
+            throw new RunnerStopRpcError(performance.now() - started >= timeoutMs, error)
+        }
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
         if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-session response')
@@ -625,6 +642,13 @@ export class RpcGateway {
             params,
             120_000
         ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResponse
+    }
+
+    async forkArchivedCodex(machineId: string, request: import('@hapi/protocol/apiTypes').ForkArchivedCodexRequest): Promise<import('@hapi/protocol/apiTypes').ForkArchivedCodexResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ForkArchivedCodex, request, 120_000) as Record<string, unknown>
+        if (typeof result?.error === 'string') return { error: result.error, rollbackSafe: result.rollbackSafe === true }
+        if (typeof result?.nativeSessionId !== 'string' || !result.nativeSessionId) throw new Error('Native archived fork did not return a session id')
+        return { nativeSessionId: result.nativeSessionId }
     }
 
     async clearConversation(sessionId: string): Promise<{ sessionId: string }> {

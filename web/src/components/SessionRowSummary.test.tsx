@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
+import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
@@ -27,6 +28,7 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         nextScheduledAt: null,
         model: null,
         effort: null,
+        contentRevision: overrides.updatedAt ?? 0,
         ...overrides
     }
 }
@@ -47,21 +49,42 @@ describe('SessionRowSummary background status', () => {
         localStorage.clear()
     })
 
-    it('draws the background spinner with the thinking spinner markup, only in blue', () => {
-        const background = renderSummary(false).container.querySelector('svg.animate-spin-slow')
+    it('marks running and background work on the presence badge, without spinners', () => {
+        const background = renderSummary(false).container
+        const backgroundBadge = background.querySelector('[data-testid="session-presence"]')
+        expect(backgroundBadge).toHaveClass('bg-blue-400', 'animate-pulse')
+        expect(background.querySelector('svg.animate-spin-slow')).toBeNull()
         cleanup()
+
         const thinking = render(
             <I18nProvider>
                 <SessionRowSummary session={makeSummary({ thinking: true, backgroundTaskCount: 0 })} />
             </I18nProvider>
-        ).container.querySelector('svg.animate-spin-slow')
-
+        ).container
+        expect(thinking.querySelector('[data-testid="session-presence"]'))
+            .toHaveClass('bg-[var(--app-badge-success-text)]', 'animate-pulse')
         expect(screen.queryByText('Running', { exact: true })).not.toBeInTheDocument()
-        expect(background?.outerHTML.replace('text-blue-400', 'text-[var(--app-badge-success-text)]'))
-            .toBe(thinking?.outerHTML)
+        cleanup()
+
+        const idle = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        ).container
+        expect(idle.querySelector('[data-testid="session-presence"]')).not.toHaveClass('animate-pulse')
     })
 
-    it('shows a detailed background dot with the task-count tooltip in Extended mode', () => {
+    it('does not dim disconnected rows or show them a presence badge', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ active: false, backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        )
+        expect(container.querySelector('.opacity-50')).toBeNull()
+        expect(container.querySelector('[data-testid="session-presence"]')).toBeNull()
+    })
+
+    it('shows a detailed background tooltip on the agent icon in Extended mode', () => {
         renderSummary(true)
 
         expect(screen.queryByText('Running', { exact: true })).not.toBeInTheDocument()
@@ -76,7 +99,7 @@ describe('SessionRowSummary background status', () => {
             backgroundTaskCount: 0,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
+        markSessionSeen(session.id, 2_000)
         const view = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -87,9 +110,10 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument()
+        expect(screen.queryByText('New activity')).not.toBeInTheDocument()
+        expect(screen.getByText('Background demo')).toHaveClass('font-normal')
 
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 1_999 }))
+        markSessionUnread(session.id)
         view.rerender(
             <I18nProvider>
                 <SessionRowSummary
@@ -100,18 +124,18 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+        expectUnread()
     })
 
-    it('keeps an explicit unread dot across newer activity', () => {
+    it('keeps an explicit unread mark across newer activity', () => {
         const session = makeSummary({
             id: 'selected-unread',
             active: false,
             backgroundTaskCount: 0,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
-        localStorage.setItem('hapi.sessionManualUnread.v1', JSON.stringify({ [session.id]: 2_000 }))
+        markSessionSeen(session.id, 2_000)
+        markSessionUnread(session.id)
 
         const view = render(
             <I18nProvider>
@@ -124,7 +148,7 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+        expectUnread()
 
         view.rerender(
             <I18nProvider>
@@ -137,19 +161,19 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+        expectUnread()
     })
 
-    it('shows an explicit unread dot before the thinking spinner', () => {
+    it('marks unread without a dot while the presence badge keeps pulsing', () => {
         const session = makeSummary({
             id: 'selected-thinking-unread',
             thinking: true,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
-        localStorage.setItem('hapi.sessionManualUnread.v1', JSON.stringify({ [session.id]: 2_000 }))
+        markSessionSeen(session.id, 2_000)
+        markSessionUnread(session.id)
 
-        render(
+        const { container } = render(
             <I18nProvider>
                 <SessionRowSummary
                     session={session}
@@ -160,9 +184,52 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+        expectUnread()
+        const dots = container.querySelectorAll('.rounded-full')
+        expect(dots).toHaveLength(1)
+        expect(dots[0]).toHaveAttribute('data-testid', 'session-presence')
+        expect(dots[0]).toHaveClass('animate-pulse')
+    })
+
+    it('shows unseen output from a running session', () => {
+        const session = makeSummary({ id: 'running-unread', backgroundTaskCount: 1, updatedAt: 2_000 })
+        markSessionSeen(session.id, 1_000)
+
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={session} showDetailedStatus={true} lastSeenVersion={0} />
+            </I18nProvider>
+        )
+
+        expectUnread()
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('bg-blue-400', 'animate-pulse')
+    })
+
+    it('shows pending requests as an amber symbol, not a dot', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        pendingRequestsCount: 1,
+                        pendingRequestKinds: ['permission'],
+                        pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: 0 }],
+                    })}
+                    showDetailedStatus={true}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Bash')
+        expect(container.querySelector('.text-\\[var\\(--app-badge-warning-text\\)\\] svg')).not.toBeNull()
+        expect(container.querySelectorAll('.rounded-full')).toHaveLength(1)
     })
 })
+
+function expectUnread() {
+    expect(screen.getByText('New activity')).toHaveClass('sr-only')
+    expect(screen.getByText(/demo|Background/, { selector: '[title]' })).toHaveClass('font-semibold')
+}
 
 describe('SessionRowSummary time label', () => {
     beforeEach(() => {

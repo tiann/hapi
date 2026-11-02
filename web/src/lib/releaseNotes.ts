@@ -76,7 +76,23 @@ function releaseNote(
  * guide and reusable authoring prompt.
  */
 export const RELEASE_NOTES = [
-    releaseNote('0.33.3', '2026-10-29',
+    releaseNote('0.34.0', '2026-11-02',
+        'Add mid-turn Claude steering, restart-free effort controls, peer spawn remits, richer Android media and scheduling, and more reliable attachment and file-search flows; improve Windows archive recovery and DSH session restore.',
+        '增加 Claude 回合中介入、无需重启的力度控制、对等会话派生参数、更丰富的 Android 媒体与定时发送能力，并改进附件和文件搜索流程；同时改进 Windows 归档恢复与 DSH 会话恢复。',
+        [
+            group('Agent control and delivery', 'Agent 控制与投递', [
+                change('feature', 'Support mid-turn steering for remote Claude sessions and switch Claude effort without restarting the process.', '支持远程 Claude 会话的回合中介入，并无需重启进程即可切换 Claude 力度。'),
+                change('feature', 'Give every harness the same effort control and add spawn-peer remit plus rename-proof Parent UUID stamps.', '为所有 Agent 提供一致的力度控制，并增加对等会话派生参数和不受重命名影响的父会话 UUID 标记。'),
+            ]),
+            group('Mobile and Web experience', '移动端与 Web 体验', [
+                change('feature', 'Add Android connection and runner version-skew banners, a mobile attachment source picker, generated media for video/audio/files, context-remaining status, offline Mermaid diagrams, scheduled sends, and full theme presets.', '增加 Android 连接与 Runner 版本偏差提示、移动端附件来源选择器、视频/音频/文件生成媒体、剩余上下文状态、离线 Mermaid 图、定时发送和完整主题预设。'),
+                change('feature', 'Allow retrying failed attachment uploads, collapse the expanded composer immediately on submit, dismiss fullscreen image previews with browser Back, and optimize exact-path and directory file search.', '支持重试失败的附件上传、提交时立即收起展开的输入框、使用浏览器返回关闭全屏图片预览，并优化精确路径与目录文件搜索。'),
+            ]),
+            group('Reliability fixes', '可靠性修复', [
+                change('fix', 'Prevent premature archive failures on Windows.', '防止 Windows 上过早出现归档失败。'),
+                change('fix', 'Resume DSH ACP sessions after a HAPI restart.', '在 HAPI 重启后恢复 DSH ACP 会话。'),
+            ]),
+        ]),    releaseNote('0.33.3', '2026-10-29',
         'Offer the current Claude model presets with 1M context defaults, support local Markdown images in chat, add Android file and text sharing, and default peer messages to Codex-aware auto delivery; improve post-reboot session recovery, Codex thread replay, and Web composer and directory interactions.',
         '提供当前四款默认 1M 上下文的 Claude 模型预设，在聊天中支持本地 Markdown 图片，增加 Android 文件与文本分享，并将对等消息默认设为感知 Codex 的自动投递；改进主机重启后的会话恢复、Codex 线程重放以及 Web 输入框与目录交互。',
         [

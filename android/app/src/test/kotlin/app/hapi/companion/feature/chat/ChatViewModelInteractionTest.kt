@@ -4,6 +4,7 @@ import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.PreparedAttachment
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.PendingSchedule
 import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
@@ -37,6 +38,8 @@ import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.FileSearchItem
+import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
@@ -51,6 +54,7 @@ import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionMetadata
 import app.hapi.protocol.wire.SessionCapabilities
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
@@ -170,6 +174,8 @@ private class RecordingChatApi : ChatSessionApi {
 
     var cancelResult: CancelMessageResponse = CancelMessageResponse(status = "cancelled")
     val cancelCalls = MutableStateFlow<List<String>>(emptyList())
+    /** Hold cancel round-trips open to interleave schedule picks mid-edit. */
+    var cancelGate: CompletableDeferred<Unit>? = null
 
     var steerResult: SteerQueuedMessageResponse = SteerQueuedMessageResponse(status = "steered")
     val steerCalls = MutableStateFlow<List<String>>(emptyList())
@@ -211,6 +217,7 @@ private class RecordingChatApi : ChatSessionApi {
 
     override suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse {
         cancelCalls.value = cancelCalls.value + messageId
+        cancelGate?.await()
         return cancelResult
     }
 
@@ -278,6 +285,18 @@ private class RecordingChatApi : ChatSessionApi {
     override suspend fun getSlashCommands(sessionId: String): SlashCommandsResponse {
         slashCommandsCalls.value += 1
         return slashCommandsResult
+    }
+
+    var fileSearchResult: FileSearchResponse = FileSearchResponse(success = false, error = "not scripted")
+    var fileSearchFailure: Exception? = null
+    /** Non-null ⇒ the file RPC records its call then parks until completed. */
+    var fileSearchGate: CompletableDeferred<Unit>? = null
+    val fileSearchCalls = MutableStateFlow<List<Triple<String, String, Int?>>>(emptyList())
+    override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
+        fileSearchCalls.value = fileSearchCalls.value + Triple(sessionId, query, limit)
+        fileSearchGate?.await()
+        fileSearchFailure?.let { throw it }
+        return fileSearchResult
     }
 
     var uploadResult: UploadFileResponse = UploadFileResponse(success = true, path = "/uploads/ok")
@@ -951,13 +970,19 @@ class ChatViewModelInteractionTest {
     // ---------------------------------------------------------- queued bar --
 
     /** Server-echoed queued row (id != localId, explicit `invokedAt: null`). */
-    private fun queuedServerRow(id: String, localId: String, text: String): DecryptedMessage =
+    private fun queuedServerRow(
+        id: String,
+        localId: String,
+        text: String,
+        scheduledAt: Long? = null,
+    ): DecryptedMessage =
         DecryptedMessage(
             id = id,
             seq = 7,
             localId = localId,
             createdAt = 500,
             invokedAt = OptionalField.Present(null),
+            scheduledAt = scheduledAt,
             content = buildJsonObject {
                 put("role", "user")
                 putJsonObject("content") {
@@ -1027,6 +1052,359 @@ class ChatViewModelInteractionTest {
         harness.viewModel.editQueuedMessage("srv-3")
         harness.viewModel.composer.first { it.text == "edit me" }
         assertEquals(listOf("srv-3"), harness.api.cancelCalls.value)
+    }
+
+    // ------------------------------------------------------ scheduled send --
+
+    @Test
+    fun `scheduled send resolves the preset at the send instant and clears the pick`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("later please")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+30m"))
+        assertEquals(PendingSchedule.Preset("+30m"), harness.viewModel.pendingSchedule.value)
+        harness.viewModel.sendMessage()
+
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        // The now() fixture is 1_000 — a preset anchors to the Send tap.
+        assertEquals(1_801_000L, request.scheduledAt)
+        assertEquals("queue", request.deliveryMode)
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        val row = harness.window().state.first { state ->
+            state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Sent }
+        }.messages.single()
+        assertEquals(1_801_000L, row.wire.scheduledAt)
+    }
+
+    @Test
+    fun `pending schedule downgrades a steer long-press to durable queue`() = runTest {
+        val harness = InteractionHarness(this, detail(thinking = true))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("steer later")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(50_000))
+        harness.viewModel.sendMessage(steer = true)
+
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertEquals(50_000L, request.scheduledAt)
+        // The wire forbids scheduledAt + steer; the web forces the send
+        // intent to 'default' while a schedule is pending.
+        assertEquals("queue", request.deliveryMode)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `absolute pending pick auto-clears on the virtual clock and presets never do`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        // now() fixture is 1_000 → this pick is 4_000 ms out.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(5_000))
+        assertEquals(PendingSchedule.Absolute(5_000), harness.viewModel.pendingSchedule.value)
+        testScheduler.advanceTimeBy(3_999)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Absolute(5_000), harness.viewModel.pendingSchedule.value)
+        testScheduler.advanceTimeBy(2)
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        // Presets are send-relative; they never expire on a timer.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+        testScheduler.advanceTimeBy(60_000_000)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Preset("+5m"), harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `within-grace past absolute pick clears immediately`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        // 500 < now() = 1_000, but within the 30 s validation grace: the
+        // web's `remaining <= 0` branch clears it the moment it is picked.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(500))
+        assertNull(harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `edit of a scheduled queued row re-arms the pending schedule`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-4", "l-4", "scheduled edit", scheduledAt = 99_999),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-4" } }
+
+        harness.viewModel.editQueuedMessage("srv-4")
+        harness.viewModel.composer.first { it.text == "scheduled edit" }
+        assertEquals(PendingSchedule.Absolute(99_999), harness.viewModel.pendingSchedule.value)
+        assertEquals(listOf("srv-4"), harness.api.cancelCalls.value)
+    }
+
+    @Test
+    fun `edit of an unscheduled row clears any pending pick`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(app.hapi.protocol.window.WindowMessage(queuedServerRow("srv-5", "l-5", "plain edit"))),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-5" } }
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+
+        // The web restores unconditionally (computeEditPendingSchedule(null)
+        // → null), so the re-send goes out immediately.
+        harness.viewModel.editQueuedMessage("srv-5")
+        harness.viewModel.composer.first { it.text == "plain edit" }
+        harness.viewModel.pendingSchedule.first { it == null }
+    }
+
+    @Test
+    fun `edit drops the schedule restore while attachments sit in the tray`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-6", "l-6", "with tray", scheduledAt = 77_777),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-6" } }
+        // Any chip (even mid-upload) blocks the restore: the clock button is
+        // disabled with a non-empty tray, so an armed pick would be invisible
+        // and un-clearable, and the send would trip the scheduled+attachments
+        // wire invariant.
+        harness.viewModel.attachments.add(preparedShot())
+
+        // Subscribe before the edit so the zero-replay event flow keeps it.
+        val notice = async {
+            harness.viewModel.events.filterIsInstance<ChatEvent.Notice>().first().notice
+        }
+        harness.viewModel.editQueuedMessage("srv-6")
+        harness.viewModel.composer.first { it.text == "with tray" }
+        assertNull(harness.viewModel.pendingSchedule.value)
+        assertEquals(ChatNotice.QueuedEditScheduleDropped, notice.await())
+    }
+
+    @Test
+    fun `edit keeps a schedule pick re-made while the edit is in flight`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-7", "l-7", "mid-flight pick", scheduledAt = 88_888),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-7" } }
+
+        // The edit snapshots the pick at tap time (null); the operator
+        // re-picks on the clock while the cancel round-trip is in flight.
+        harness.viewModel.editQueuedMessage("srv-7")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+
+        harness.viewModel.composer.first { it.text == "mid-flight pick" }
+        assertEquals(PendingSchedule.Preset("+1h"), harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `a scheduled clear queues instead of the concurrent shortcut`() = runTest {
+        val concurrent = detail().copy(
+            metadata = SessionMetadata(
+                path = "/repo/app", host = "devbox", flavor = "claude",
+                capabilities = SessionCapabilities(concurrentClients = true),
+            ),
+        )
+        val harness = InteractionHarness(this, concurrent)
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("/clear")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+        harness.viewModel.sendMessage()
+
+        // With a schedule pending the /clear goes out as a queued scheduled
+        // message (web gates the shortcut on scheduledAt == null); the fake's
+        // clearConversation throws, so a regression would surface as no send.
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertNotNull(request.scheduledAt)
+        assertEquals("queue", request.deliveryMode)
+    }
+
+    // ------------------------------------------- schedule x attachments gate --
+
+    @Test
+    fun `schedule picks are rejected while attachments sit in the tray`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        // The open-picker scenario: the panel stays interactive after "+"
+        // drops a chip; the ViewModel transition — not the disabled clock
+        // button — must refuse to arm over the tray.
+        harness.viewModel.attachments.add(preparedShot())
+        harness.awaitAttachmentsReady()
+
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+30m"))
+        assertNull(harness.viewModel.pendingSchedule.value)
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(999_999))
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        // Clearing stays allowed over a non-empty tray (it only disarms).
+        harness.viewModel.setPendingSchedule(null)
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        // A rejected pick never leaks into the attachment send.
+        harness.viewModel.setComposerText("plain attachment send")
+        harness.viewModel.sendMessage()
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertNull(request.scheduledAt)
+        assertEquals(1, request.attachments?.size)
+    }
+
+    @Test
+    fun `a scheduled send over tray chips blocks before consuming the draft or uploads`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.viewModel.setComposerText("with chips")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+        // The reverse order (pick armed first, chip lands after — share
+        // import or the still-open panel) must refuse BEFORE the draft
+        // clears or the tray consumes, keeping both recoverable instead of
+        // crashing later on the wire invariant.
+        harness.viewModel.attachments.add(preparedShot())
+        harness.awaitAttachmentsReady()
+
+        val notices = mutableListOf<ChatNotice>()
+        val collector = launch { harness.viewModel.events.collect { if (it is ChatEvent.Notice) notices += it.notice } }
+        testScheduler.runCurrent()
+        harness.viewModel.sendMessage()
+        testScheduler.runCurrent()
+        collector.cancel()
+
+        assertEquals<List<ChatNotice>>(listOf(ChatNotice.ScheduleAttachmentConflict), notices)
+        assertEquals("with chips", harness.viewModel.composer.value.text)
+        assertEquals(PendingSchedule.Preset("+5m"), harness.viewModel.pendingSchedule.value)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        assertEquals(1, harness.viewModel.attachments.items.value.size, "the refused send must not consume the chip")
+    }
+
+    // ---------------------------------------------- schedule serialization --
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `rapid consecutive absolute picks keep only the newest expiry alive`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        // now() fixture is 1_000 → first pick fires at t+4_000, second at
+        // t+8_000. Registration is one critical section: the second apply
+        // always observes and cancels the first timer, and the revision
+        // guard is the second layer if it ever raced through.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(5_000))
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(9_000))
+        assertEquals(PendingSchedule.Absolute(9_000), harness.viewModel.pendingSchedule.value)
+
+        testScheduler.advanceTimeBy(4_000)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Absolute(9_000), harness.viewModel.pendingSchedule.value)
+
+        testScheduler.advanceTimeBy(4_001)
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.pendingSchedule.value)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a preset picked after a restored absolute survives the restore's deadline`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-8", "l-8", "stale deadline", scheduledAt = 5_000),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-8" } }
+
+        // The edit re-arms the row's absolute pick (deadline t+4_000), then
+        // the operator re-picks a preset. The restored pick's timer must not
+        // clear the newer preset at its deadline — the review's "next Send
+        // goes out immediately despite the newer preset" symptom.
+        harness.viewModel.editQueuedMessage("srv-8")
+        harness.viewModel.pendingSchedule.first { it == PendingSchedule.Absolute(5_000) }
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+
+        testScheduler.advanceTimeBy(4_100)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Preset("+5m"), harness.viewModel.pendingSchedule.value)
+
+        // And the send under it still resolves the preset, not immediate.
+        harness.viewModel.setComposerText("still scheduled")
+        harness.viewModel.sendMessage()
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertNotNull(request.scheduledAt)
+    }
+
+    @Test
+    fun `edit restore loses to a pick and explicit clear made mid-flight`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-9", "l-9", "pick then clear", scheduledAt = 99_999),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-9" } }
+
+        // Edit taps with no pending pick; while the cancel round-trip hangs,
+        // the operator picks a preset and explicitly clears it. The slot is
+        // null again — value equality would call it "unchanged" and restore
+        // the row's old schedule over the explicit clear.
+        harness.api.cancelGate = CompletableDeferred()
+        harness.viewModel.editQueuedMessage("srv-9")
+        testScheduler.runCurrent()
+        assertEquals(listOf("srv-9"), harness.api.cancelCalls.value)
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+        harness.viewModel.setPendingSchedule(null)
+        harness.api.cancelGate!!.complete(Unit)
+
+        harness.viewModel.composer.first { it.text == "pick then clear" }
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `edit restore loses to a clear and same-preset reselection made mid-flight`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-10", "l-10", "reselect same", scheduledAt = 88_888),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-10" } }
+
+        // The slot starts AND ends at Preset("+1h") — value equal — but the
+        // clear→reselect interactions in between are newer than the Edit
+        // tap, so the revision must keep the restore off the slot.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+        harness.viewModel.editQueuedMessage("srv-10")
+        harness.viewModel.setPendingSchedule(null)
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+
+        harness.viewModel.composer.first { it.text == "reselect same" }
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Preset("+1h"), harness.viewModel.pendingSchedule.value)
     }
 
     // --------------------------------------------------------- permissions --
@@ -1482,6 +1860,193 @@ class ChatViewModelInteractionTest {
         harness.viewModel.setComposerText("/")
         val suggestions = harness.viewModel.slashSuggestions.first { it.isNotEmpty() }
         assertEquals(listOf("deploy"), suggestions.map { it.name })
+    }
+
+    // ------------------------------------------------------------- mentions --
+
+    private fun peerSummary(
+        id: String,
+        name: String? = "Peer chat",
+        hasContent: Boolean = true,
+    ): SessionSummary = SessionSummary(
+        id = id,
+        active = false,
+        updatedAt = 200,
+        hasConversationContent = hasContent,
+        metadata = name?.let {
+            SessionSummaryMetadata(path = "/work/peer", name = it)
+        },
+    )
+
+    @Test
+    fun `at-query merges session rows ahead of file hits and searches files once`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(
+            peerSummary("sess-peer-01"),
+            // Current session and empty stubs are never mentionable.
+            peerSummary(IX_SESSION, name = "this chat"),
+            peerSummary("sess-husk", name = "Husk", hasContent = false),
+        )
+        harness.api.fileSearchResult = FileSearchResponse(
+            success = true,
+            files = listOf(
+                FileSearchItem(fileName = "notes.md", filePath = "docs", fullPath = "docs/notes.md", fileType = "file"),
+            ),
+        )
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("check @peer")
+        val suggestions = harness.viewModel.mentionSuggestions.first { it.size == 2 }
+
+        // Sessions first (web `[...sessionHits, ...fileHits]`), husk/current excluded.
+        assertEquals("session:sess-peer-01", suggestions[0].key)
+        assertEquals("@Peer chat", suggestions[0].label)
+        assertEquals("@\"docs/notes.md\"", suggestions[1].key)
+        assertEquals("@notes.md", suggestions[1].label)
+        assertEquals(listOf(Triple(IX_SESSION, "peer", 50)), harness.api.fileSearchCalls.value)
+
+        // Retyping the query refires the file RPC once per distinct query.
+        harness.viewModel.setComposerText("check @Peer")
+        harness.api.fileSearchCalls.first { it.size == 2 }
+        assertEquals(
+            listOf(Triple(IX_SESSION, "peer", 50), Triple(IX_SESSION, "Peer", 50)),
+            harness.api.fileSearchCalls.value,
+        )
+        harness.viewModel.mentionSuggestions.first { rows -> rows.size == 2 && rows[0].label == "@Peer chat" }
+    }
+
+    @Test
+    fun `file mentions fire only for codex and copilot flavors`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "claude"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("@peer")
+        val suggestions = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }
+
+        assertEquals(listOf("session:sess-peer-01"), suggestions.map { it.key })
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `file RPC failure degrades silently to session-only rows`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "copilot"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.api.fileSearchFailure = RuntimeException("hub says no")
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("@peer")
+        val suggestions = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }
+
+        assertEquals(listOf("session:sess-peer-01"), suggestions.map { it.key })
+        assertEquals(listOf(Triple(IX_SESSION, "peer", 50)), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `selecting a mention replaces the word and closes the dropdown`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "claude"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("check @peer")
+        val row = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }.single()
+
+        harness.viewModel.selectMentionSuggestion(row)
+
+        val expected = "check " + row.insertText + " "
+        harness.viewModel.composer.first { it.text == expected }
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+    }
+
+    @Test
+    fun `mid-word prefix never queries or fires the file RPC`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("foo@peer")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(emptyList(), harness.viewModel.mentionSuggestions.value)
+        assertEquals(emptyList(), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `mention detection follows the caret instead of the text tail`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        // Draft whose tail is plain text — tail-only detection would miss it.
+        harness.viewModel.onComposerChange("a @peer b", 7, 7) // caret right after "@peer"
+        val rows = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }
+        assertEquals(listOf("session:sess-peer-01"), rows.map { it.key })
+
+        // Caret moves inside the word keep the same query (no refire)…
+        harness.viewModel.onComposerChange("a @peer b", 5, 5)
+        // …stepping off it (the space before '@') closes the dropdown…
+        harness.viewModel.onComposerChange("a @peer b", 2, 2)
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+        // …and a selected range suppresses detection entirely (web rule).
+        harness.viewModel.onComposerChange("a @peer b", 3, 8)
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+        testScheduler.advanceUntilIdle()
+        // One caret-anchored query only — caret moves inside the word do not refire.
+        assertEquals(listOf(Triple(IX_SESSION, "peer", 50)), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `selecting a mention mid-draft swaps that word and rests the caret after it`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "claude"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.onComposerChange("a @peer b", 7, 7)
+        val row = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }.single()
+
+        harness.viewModel.selectMentionSuggestion(row)
+
+        val expected = "a " + row.insertText + " b"
+        val state = harness.viewModel.composer.first { it.text == expected }
+        // Caret rests right after the inserted prose — before the pre-existing
+        // space, not teleported to the draft tail.
+        assertEquals(expected.length - 2, state.caretPosition)
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+    }
+
+    @Test
+    fun `query change drops the previous query's file rows before the new RPC settles`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.api.fileSearchResult = FileSearchResponse(
+            success = true,
+            files = listOf(
+                FileSearchItem(fileName = "notes.md", filePath = "docs", fullPath = "docs/notes.md", fileType = "file"),
+            ),
+        )
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("@peer")
+        harness.viewModel.mentionSuggestions.first { it.size == 2 }
+
+        // Retype with the next file RPC held in flight: the previous query's
+        // file row must vanish immediately (session-only interim state), and
+        // the new file row only lands once the RPC settles.
+        val gate = CompletableDeferred<Unit>()
+        harness.api.fileSearchGate = gate
+        harness.viewModel.setComposerText("@Peer")
+        val interim = harness.viewModel.mentionSuggestions.first { rows ->
+            rows.isNotEmpty() && rows.none { it.key == "@\"docs/notes.md\"" }
+        }
+        assertEquals(listOf("session:sess-peer-01"), interim.map { it.key })
+
+        gate.complete(Unit)
+        harness.viewModel.mentionSuggestions.first { rows -> rows.size == 2 && rows[1].key == "@\"docs/notes.md\"" }
+        assertEquals(
+            listOf(Triple(IX_SESSION, "peer", 50), Triple(IX_SESSION, "Peer", 50)),
+            harness.api.fileSearchCalls.value,
+        )
     }
 
     // ------------------------------------------------------------ dictation --
