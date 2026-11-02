@@ -55,6 +55,8 @@ import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.markdown.HrefDecision
 import app.hapi.protocol.markdown.HrefPolicy
 import app.hapi.protocol.markdown.MarkdownTransforms
+import app.hapi.protocol.markdown.MathBlockNode
+import app.hapi.protocol.markdown.MathInlineNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
@@ -114,10 +116,14 @@ val LocalMarkdownLinkHandler = staticCompositionLocalOf<MarkdownLinkHandler> { N
 /**
  * Renders chat markdown with the shared HAPI pipeline: source transforms and
  * parser configuration come from `:core:protocol` ([MarkdownTransforms.parse]:
- * table repair, GFM tables/strikethrough/autolink, indented code disabled),
- * then this walker maps the AST to Compose. Unknown fences (mermaid, math)
- * degrade to plain [CodeBlock]s per the v1 plan; html blocks fall back to
- * monospace text.
+ * table repair, GFM tables/strikethrough/autolink, indented code disabled,
+ * `$$`/`\[...\]`/`\(...\)` math extraction), then this walker maps the AST to
+ * Compose. Display math renders through the offline KaTeX WebView
+ * ([KaTeXMathBlock]); inline math is a declared v1 degradation (monospace TeX
+ * via the code-span style) because an AnnotatedString cannot host a WebView
+ * inline. `mermaid` fences render through the offline mermaid WebView
+ * ([MermaidDiagramView], web-parity dispatch); other unknown fences degrade to
+ * plain [CodeBlock]s; html blocks fall back to monospace text.
  */
 @Composable
 fun Markdown(text: String, modifier: Modifier = Modifier) {
@@ -195,14 +201,23 @@ private fun MarkdownBlock(node: Node, parsed: ParsedMarkdown) {
         is BlockQuote -> MarkdownBlockQuote(node, parsed)
         is BulletList -> MarkdownList(node, ordered = false, parsed = parsed)
         is OrderedList -> MarkdownList(node, ordered = true, parsed = parsed)
-        is FencedCodeBlock -> CodeBlock(
-            code = node.literal.orEmpty().trimEnd('\n'),
-            language = node.info?.trim()?.takeWhile { !it.isWhitespace() }?.ifEmpty { null },
-        )
+        is FencedCodeBlock -> {
+            val code = node.literal.orEmpty().trimEnd('\n')
+            val language = node.info?.trim()?.takeWhile { !it.isWhitespace() }?.ifEmpty { null }
+            if (isMermaidFence(language)) {
+                // Same dispatch as the web (`MARKDOWN_COMPONENTS_BY_LANGUAGE`
+                // exact `mermaid` key): the fence renders as a diagram with
+                // the code header and raw-source fallback kept around it.
+                MermaidDiagramView(code = code)
+            } else {
+                CodeBlock(code = code, language = language)
+            }
+        }
         is IndentedCodeBlock -> CodeBlock(code = node.literal.orEmpty().trimEnd('\n'), language = null)
         is TableBlock -> MarkdownTable(node)
         is ThematicBreak -> HorizontalDivider(color = MaterialTheme.hapi.divider)
         is HtmlBlock -> HtmlBlockFallback(node.literal.orEmpty())
+        is MathBlockNode -> KaTeXMathBlock(latex = node.latex)
         else -> if (node.firstChild != null) MarkdownBlockChildren(node, parsed)
     }
 }
@@ -510,8 +525,22 @@ private fun AnnotatedString.Builder.appendInlineNode(node: Node, ctx: InlineCont
         is Link -> if (insideLink) appendInlineChildren(node, ctx, true) else appendLink(node, ctx)
         is Image -> appendImageFallback(node, ctx)
         is HtmlInline -> append(node.literal.orEmpty())
+        is MathInlineNode -> appendMathLiteral(node.latex, ctx)
+        is MathBlockNode -> appendMathLiteral(node.latex, ctx)
         else -> appendInlineChildren(node, ctx, insideLink)
     }
+}
+
+/**
+ * Inline math, declared v1 degradation: an [AnnotatedString] cannot host the
+ * KaTeX WebView inline, so `\(...\)` and mid-paragraph `$$...$$` render as the
+ * raw TeX in the code-span style (readable, copyable, clearly math). Block
+ * math gets the full KaTeX treatment via [KaTeXMathBlock]; this branch only
+ * fires for inline occurrences and for display nodes that could not be hoisted
+ * out of their paragraph.
+ */
+private fun AnnotatedString.Builder.appendMathLiteral(latex: String, ctx: InlineContext) {
+    withStyle(ctx.codeSpanStyle) { append(latex) }
 }
 
 /** Plain prose: autolink workspace file citations found by the shared detector. */
