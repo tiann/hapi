@@ -20,6 +20,15 @@ archive (active) or reopen/delete (inactive), from the row's context menu or the
 chat's … menu; sending to an inactive session or reopening it can resume it and
 migrate the draft/navigation when the returned session ID changes.
 
+Agent-displayed media (`display_image`, `display_video`, `display_media`) uses
+MIME-based cards: images load automatically, while video, audio and other files
+load only on request. Video/audio use native playback controls without autoplay;
+leaving the row or backgrounding the app pauses playback. Loaded files can be
+saved/shared, and supported documents open in Quick Look. Media that iOS cannot
+decode (including unsupported WebM codecs) still offers save/share. Downloads use
+the authenticated hub API, then private temporary files with a bounded per-chat
+cache; the generated-media endpoint must still be available when first loading.
+
 Model, permission and Codex collaboration controls follow the session's agent/capabilities;
 usage/storage require the owner namespace. See the [native app guide](../docs/guide/native-apps.md)
 for platform differences, web-only features and everyday use.

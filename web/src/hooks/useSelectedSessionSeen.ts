@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { markSessionSeen } from '@/lib/sessionLastSeen'
+import { followSessionTail, markSessionSeen } from '@/lib/sessionLastSeen'
 import { useDocumentVisibility } from './useDocumentVisibility'
 
 /** Called by the rendered transcript, never by list selection or SSE metadata. */
@@ -13,6 +13,12 @@ export function useSelectedSessionSeen(
     const visible = useDocumentVisibility()
     const version = useRef(stateVersion)
     version.current = stateVersion
+    const followsTail = visible && renderedRevision !== undefined
+    // New output is acknowledged below as it renders; do not flash its dot meanwhile.
+    useEffect(() => {
+        if (!followsTail || !sessionId) return
+        return followSessionTail(sessionId)
+    }, [followsTail, sessionId])
     useEffect(() => {
         if (!visible || !sessionId || renderedRevision === undefined) return
         const viewport = viewportRef.current

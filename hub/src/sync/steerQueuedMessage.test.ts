@@ -40,13 +40,13 @@ describe('SyncEngine.steerQueuedMessage', () => {
         }
     })
 
-    it('routes a remote OpenCode correction using its original localId', async () => {
+    it.each(['opencode', 'claude'] as const)('routes a remote %s correction using its original localId', async (flavor) => {
         const { store, engine } = createEngine()
         const steer = spyOn(RpcGateway.prototype, 'steerQueuedMessage').mockResolvedValue({ steered: true })
         try {
             const session = engine.getOrCreateSession(
-                'steer-opencode',
-                { path: '/tmp/project', host: 'localhost', flavor: 'opencode' },
+                `steer-${flavor}`,
+                { path: '/tmp/project', host: 'localhost', flavor },
                 { requests: {}, completedRequests: {} },
                 'default'
             )
@@ -165,8 +165,8 @@ describe('SyncEngine.steerQueuedMessage', () => {
         const { store, engine } = createEngine()
         try {
             const session = engine.getOrCreateSession(
-                'steer-claude',
-                { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+                'steer-gemini',
+                { path: '/tmp/project', host: 'localhost', flavor: 'gemini' },
                 { requests: {}, completedRequests: {} },
                 'default'
             )
@@ -176,7 +176,7 @@ describe('SyncEngine.steerQueuedMessage', () => {
 
             expect(result).toEqual({
                 status: 'failed',
-                error: 'Steering is only supported for Pi, Codex, OpenCode, and Cursor ACP sessions',
+                error: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions',
                 localId: null
             })
         } finally {

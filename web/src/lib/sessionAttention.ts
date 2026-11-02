@@ -1,4 +1,5 @@
 import type { SessionSummary } from '@/types/api'
+import { hasUnseenContent } from '@/lib/sessionLastSeen'
 
 export type SessionAttention =
     | { kind: 'permission' }
@@ -18,8 +19,8 @@ export function sessionIsUnread(
     const manualUnread = options.manualUnreadAt === undefined
         ? summary.readState?.manualUnread === true
         : hasManualUnreadMarker(options.manualUnreadAt)
-    return manualUnread || (!(summary.active && summary.thinking)
-        && (summary.contentRevision ?? 0) > Math.max(options.lastSeenAt, summary.readState?.readRevision ?? 0))
+    return manualUnread
+        || hasUnseenContent(summary, Math.max(options.lastSeenAt, summary.readState?.readRevision ?? 0))
 }
 
 export function classifySessionAttention(
@@ -39,19 +40,16 @@ export function classifySessionAttention(
         return { kind: 'input' }
     }
 
-    if (options.manualUnreadAt === undefined ? summary.readState?.manualUnread : hasManualUnreadMarker(options.manualUnreadAt)) {
-        return { kind: 'unread' }
-    }
-
-    if (summary.active && (summary.backgroundTaskCount ?? 0) > 0) {
-        return { kind: 'background' }
-    }
-
+    // Rows draw running work beside the dot, so unread wins over background.
     if (sessionIsUnread(summary, {
         lastSeenAt: options.lastSeenAt,
         manualUnreadAt: options.manualUnreadAt
     })) {
         return { kind: 'unread' }
+    }
+
+    if (summary.active && (summary.backgroundTaskCount ?? 0) > 0) {
+        return { kind: 'background' }
     }
 
     return null

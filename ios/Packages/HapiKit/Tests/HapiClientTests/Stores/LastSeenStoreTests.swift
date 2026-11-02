@@ -18,7 +18,7 @@ struct LastSeenStoreTests {
         #expect(LastSeenStore(snapshotDirectory: makeTempDirectory(), namespace: "alice").lastSeenAt("s1") == 0)
     }
 
-    @Test func unreadIgnoresMetadataAndKeepsRunningOutputPending() async {
+    @Test func unreadIgnoresMetadataAndIncludesRunningOutput() async {
         let store = LastSeenStore()
         var row = storeSummary("s1", updatedAt: 999_999)
         #expect(!LastSeenStore.isUnread(row, state: store.state))
@@ -26,7 +26,7 @@ struct LastSeenStoreTests {
         #expect(LastSeenStore.isUnread(row, state: store.state))
         row.active = true
         row.thinking = true
-        #expect(!LastSeenStore.isUnread(row, state: store.state))
+        #expect(LastSeenStore.isUnread(row, state: store.state))
         row.active = false
         #expect(LastSeenStore.isUnread(row, state: store.state))
         await store.markSeen(sessionId: "s1", revision: 1)
@@ -35,6 +35,24 @@ struct LastSeenStoreTests {
         #expect(!LastSeenStore.isUnread(row, state: store.state))
         row.readState = SessionReadState(readRevision: 2, manualUnread: true, version: 2)
         #expect(LastSeenStore.isUnread(row, state: store.state))
+    }
+
+    @Test func followedTailHidesOnlyOrdinaryUnread() async {
+        let store = LastSeenStore()
+        var row = storeSummary("s1", updatedAt: 1)
+        row.contentRevision = 2
+        store.setFollowingTail("s1", true)
+        store.setFollowingTail("s1", true)
+        #expect(!LastSeenStore.isUnread(row, state: store.state, followedTails: store.followedTails))
+        row.readState = SessionReadState(readRevision: 0, manualUnread: true, version: 1)
+        #expect(LastSeenStore.isUnread(row, state: store.state, followedTails: store.followedTails))
+        row.readState = nil
+        store.setFollowingTail("s1", false)
+        #expect(!LastSeenStore.isUnread(row, state: store.state, followedTails: store.followedTails))
+        store.setFollowingTail("s1", false)
+        #expect(store.followedTails.isEmpty)
+        #expect(LastSeenStore.isUnread(row, state: store.state, followedTails: store.followedTails))
+        #expect(store.lastSeenAt("s1") == 0)
     }
 
     @Test func staleReadCannotClearANewerManualChoice() async {

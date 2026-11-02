@@ -307,6 +307,8 @@ export default {
   'session.action.delete': '删除',
   'session.action.copy': '复制',
   'session.action.copyReference': '复制引用',
+  'session.action.fork': '分叉会话',
+  'session.action.forkRunning': '当前轮次完成后才能分叉此会话。',
 
   // Dialogs
   'dialog.uri.title': '打开此链接？',
@@ -335,6 +337,10 @@ export default {
   'dialog.archive.error': '归档尚未确认完成',
 
   'dialog.reopen.errorTitle': '无法重新打开会话',
+  'dialog.sessionFork.title': '分叉会话',
+  'dialog.sessionFork.description': '从最新完成进度创建新会话？当前会话不会被修改。',
+  'dialog.sessionFork.confirm': '确定',
+  'dialog.sessionFork.confirming': '分叉中…',
   'dialog.reopen.dismiss': '关闭',
 
   'dialog.delete.title': '删除会话',
@@ -401,6 +407,10 @@ export default {
   'newSession.runnerUpgradeRequired': '创建会话前，请升级并重启此机器上的 HAPI runner。',
   'newSession.noAvailableAgents': '此机器上没有安装受支持的 Agent。',
   'newSession.agentUnavailable': '所选 Agent 在此机器上已不可用，请刷新后选择其他 Agent。',
+  'newSession.agentUnavailableReason.notFound': '未安装或不在 PATH 中',
+  'newSession.agentUnavailableReason.invalidConfiguration': 'Runner 配置无效',
+  'newSession.moreAgents': '更多 Agent',
+  'newSession.hideOtherAgents': '收起其他 Agent',
   'newSession.directoryOutsideWorkspaceRoots': '目录必须位于此机器配置的任一 workspace root 内。',
   'newSession.model': '模型',
   'newSession.effort': '思考强度',

@@ -26,6 +26,8 @@ private actor ReadStateWriter {
 public final class LastSeenStore {
     public private(set) var state: LastSeenState
     public private(set) var persistenceError: String?
+    /// Sessions whose visible chat follows its tail; never persisted.
+    public private(set) var followedTails: [String: Int] = [:]
     @ObservationIgnored private let directory: URL?
     @ObservationIgnored private var namespace: String?
     @ObservationIgnored private let writer = ReadStateWriter()
@@ -79,6 +81,13 @@ public final class LastSeenStore {
     public func shutdown() { closed = true; foreground = false; syncTask?.cancel(); syncTask = nil; syncToken = nil }
 
     public func lastSeenAt(_ sessionId: String) -> Int { state.lastSeen[sessionId] ?? 0 }
+
+    /// A followed tail acknowledges output as it lays out. Until that lands,
+    /// rows hide its ordinary dot rather than flash it per message.
+    public func setFollowingTail(_ sessionId: String, _ following: Bool) {
+        let count = (followedTails[sessionId] ?? 0) + (following ? 1 : -1)
+        followedTails[sessionId] = count > 0 ? count : nil
+    }
 
     /// Every successful mark is already persisted; this waits for in-flight writes.
     public func flushPersistence() async { await mutationTask?.value }
@@ -175,10 +184,11 @@ public final class LastSeenStore {
         }
     }
 
-    public static func isUnread(_ summary: SessionSummary, state: LastSeenState) -> Bool {
+    /// Running sessions count too; `followedTails` only affects display.
+    public static func isUnread(_ summary: SessionSummary, state: LastSeenState, followedTails: [String: Int] = [:]) -> Bool {
         let server = SessionReadState.merge(state.server[summary.id], summary.readState) ?? SessionReadState()
         let manual = server.manualUnread && state.pending[summary.id]?.request.expectedVersion != server.version
-        return manual || (!(summary.active && summary.thinking)
+        return manual || (followedTails[summary.id] == nil
             && (summary.contentRevision ?? 0) > max(server.readRevision, state.lastSeen[summary.id] ?? 0))
     }
 }

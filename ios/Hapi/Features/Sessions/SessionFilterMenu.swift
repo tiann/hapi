@@ -34,8 +34,9 @@ struct SessionFilterMenu: View {
                 }
             }
         } label: {
-            Label("Filters", systemImage: model.hasActiveFilters
-                  ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            // No .circle variant: the iOS 26 glass button is already the
+            // circle. Active filters show through the accent tint.
+            Label("Filters", systemImage: "line.3.horizontal.decrease")
                 .frame(minWidth: 44, minHeight: 44)
         }
         .tint(model.hasActiveFilters ? theme.accent : .primary)
