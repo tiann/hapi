@@ -174,6 +174,6 @@ describe('SessionList issue-ref chip isolation', () => {
         fireEvent.mouseDown(title, { button: 0 })
         fireEvent.mouseUp(title)
         fireEvent.click(title)
-        expect(onSelect).toHaveBeenCalledWith('session-1')
+        expect(onSelect).toHaveBeenCalledWith('session-1', undefined, undefined)
     })
 })

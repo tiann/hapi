@@ -1,7 +1,7 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
-import { ScheduleIcon } from '@/components/icons'
+import { InfoIcon, ScheduleIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
 import { IssueRefChip } from '@/components/IssueRefChip'
@@ -119,6 +119,10 @@ export function SessionRowSummary(props: {
      * for callers like the mention-chip tooltip, which aren't inside one.
      */
     showIssueChip?: boolean
+    /** Context returned by the opt-in session message-content search. */
+    contentSnippet?: string
+    /** The indexed message exceeded the search index budget. */
+    contentSearchTruncated?: boolean
 }) {
     const {
         session: s,
@@ -138,6 +142,8 @@ export function SessionRowSummary(props: {
         inRunningSection = false,
         projectLabel,
         machineLabel,
+        contentSnippet,
+        contentSearchTruncated = false,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -296,6 +302,25 @@ export function SessionRowSummary(props: {
                         ) : null}
                     </div>
                 </div>
+                {contentSnippet ? (
+                    <div
+                        className="line-clamp-2 text-xs text-[var(--app-fg)]/80"
+                        title={contentSearchTruncated
+                            ? `${contentSnippet}\n${t('sessions.search.content.truncated')}`
+                            : contentSnippet}
+                    >
+                        {contentSnippet}
+                        {contentSearchTruncated ? (
+                            <span
+                                className="ml-1 inline-flex align-[-2px] text-[var(--app-badge-warning-text)]"
+                                title={t('sessions.search.content.truncated')}
+                                aria-label={t('sessions.search.content.truncated')}
+                            >
+                                <InfoIcon className="h-3 w-3" />
+                            </span>
+                        ) : null}
+                    </div>
+                ) : null}
                 {projectLabel || machineLabel ? (
                     <div className="truncate text-xs text-[var(--app-hint)]" title={[projectLabel, machineLabel].filter(Boolean).join(' · ')}>
                         {[projectLabel, machineLabel].filter(Boolean).join(' · ')}

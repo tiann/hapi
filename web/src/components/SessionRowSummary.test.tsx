@@ -276,6 +276,21 @@ describe('SessionRowSummary background status', () => {
 
         expect(screen.queryByTestId('issue-ref-chip')).not.toBeInTheDocument()
     })
+
+    it('marks a content-search snippet whose source message was truncated', () => {
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary()}
+                    contentSnippet="…tail phrase…"
+                    contentSearchTruncated={true}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByLabelText('This message was truncated for search; some content may be missing.'))
+            .toBeInTheDocument()
+    })
 })
 
 function expectUnread() {
