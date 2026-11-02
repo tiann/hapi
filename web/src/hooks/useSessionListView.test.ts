@@ -12,6 +12,12 @@ describe('useSessionListView', () => {
         expect(readSessionListView()).toEqual({ sort: 'last-message', status: 'all', activeFirst: true })
     })
 
+    it('falls back to defaults for unknown stored values', () => {
+        localStorage.setItem('hapi-session-list-sort', 'activity')
+        localStorage.setItem('hapi-session-list-status', 'bogus')
+        expect(readSessionListView()).toEqual({ sort: 'last-message', status: 'all', activeFirst: true })
+    })
+
     it('carries the legacy active-only setting over as the Active status', () => {
         localStorage.setItem('hapi-show-active-sessions-only', 'true')
         expect(readSessionListView().status).toBe('active')

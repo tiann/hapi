@@ -8,7 +8,6 @@ describe('getSessionSortKey', () => {
         expect(getSessionSortKey(session, 'last-message')).toBe(200)
         expect(getSessionSortKey({ ...session, lastUserMessageAt: undefined }, 'last-message')).toBe(100)
         expect(getSessionSortKey(session, 'created')).toBe(100)
-        expect(getSessionSortKey(session, 'activity')).toBe(300)
     })
 })
 

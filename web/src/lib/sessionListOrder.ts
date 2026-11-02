@@ -1,23 +1,17 @@
 import type { SessionSummary } from '@/types/api'
 import type { SessionListSort, SessionListStatus, SessionListView } from '@/hooks/useSessionListView'
 
-type OrderFields = Pick<SessionSummary, 'id' | 'active' | 'createdAt' | 'updatedAt' | 'lastUserMessageAt'>
+type OrderFields = Pick<SessionSummary, 'id' | 'active' | 'createdAt' | 'lastUserMessageAt'>
 
 /**
  * - last-message: the user's latest prompt, falling back to creation (the
  *   long-standing default, which agent output never reorders).
  * - created: newest sessions first.
- * - activity: latest activity from either side, agent output included.
  */
 export function getSessionSortKey(session: OrderFields, sort: SessionListSort): number {
-    switch (sort) {
-        case 'created':
-            return session.createdAt ?? 0
-        case 'activity':
-            return Math.max(session.updatedAt ?? 0, session.lastUserMessageAt ?? 0, session.createdAt ?? 0)
-        default:
-            return session.lastUserMessageAt ?? session.createdAt ?? 0
-    }
+    return sort === 'created'
+        ? session.createdAt ?? 0
+        : session.lastUserMessageAt ?? session.createdAt ?? 0
 }
 
 export type SessionComparator = (a: SessionSummary, b: SessionSummary) => number

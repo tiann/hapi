@@ -5,7 +5,7 @@ import { useCallback, useSyncExternalStore } from 'react'
  * connected sessions sort ahead of archived ones. One store shared by every
  * consumer (sidebar menu, settings page) and synced across tabs.
  */
-export type SessionListSort = 'last-message' | 'created' | 'activity'
+export type SessionListSort = 'last-message' | 'created'
 export type SessionListStatus = 'all' | 'active' | 'archived'
 
 export type SessionListView = {
@@ -26,7 +26,7 @@ const ACTIVE_FIRST_KEY = 'hapi-session-list-active-first'
 // Pre-status "Show active sessions only" setting; read once as the default status.
 const LEGACY_ACTIVE_ONLY_KEY = 'hapi-show-active-sessions-only'
 
-const SORTS: readonly SessionListSort[] = ['last-message', 'created', 'activity']
+const SORTS: readonly SessionListSort[] = ['last-message', 'created']
 const STATUSES: readonly SessionListStatus[] = ['all', 'active', 'archived']
 
 function safeGetItem(key: string): string | null {

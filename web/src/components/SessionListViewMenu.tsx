@@ -37,8 +37,7 @@ function SortFilterIcon(props: { className?: string }) {
 
 const SORT_OPTIONS: Array<{ value: SessionListSort; labelKey: string }> = [
     { value: 'last-message', labelKey: 'sessions.view.sort.lastMessage' },
-    { value: 'created', labelKey: 'sessions.view.sort.created' },
-    { value: 'activity', labelKey: 'sessions.view.sort.activity' }
+    { value: 'created', labelKey: 'sessions.view.sort.created' }
 ]
 
 const STATUS_OPTIONS: Array<{ value: SessionListStatus; labelKey: string }> = [

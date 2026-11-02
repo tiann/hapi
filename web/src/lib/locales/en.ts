@@ -83,7 +83,6 @@ export default {
   'sessions.view.sort': 'Sort by',
   'sessions.view.sort.lastMessage': 'Last message',
   'sessions.view.sort.created': 'Date created',
-  'sessions.view.sort.activity': 'Recent activity',
   'sessions.view.activeFirst': 'Active first',
   'sessions.view.status': 'Show',
   'sessions.view.status.all': 'All sessions',

@@ -83,7 +83,6 @@ export default {
   'sessions.view.sort': '排序方式',
   'sessions.view.sort.lastMessage': '最后消息时间',
   'sessions.view.sort.created': '创建时间',
-  'sessions.view.sort.activity': '最近活动',
   'sessions.view.activeFirst': '活跃会话优先',
   'sessions.view.status': '显示',
   'sessions.view.status.all': '全部会话',

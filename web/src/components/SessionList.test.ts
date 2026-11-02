@@ -774,7 +774,7 @@ describe('session list sort and filter view', () => {
     const ids = (sessions: SessionSummary[], view: Parameters<typeof groupSessionsByDirectory>[1]) =>
         groupSessionsByDirectory(sessions, view).flatMap(g => g.sessions.map(s => s.id))
 
-    it('orders by last message, creation time or latest activity', () => {
+    it('orders by last message or creation time, never by agent output', () => {
         const sessions = [
             session('old-chatty', { createdAt: 1_000, lastUserMessageAt: 9_000, updatedAt: 9_000 }),
             session('new-quiet', { createdAt: 5_000, lastUserMessageAt: 5_000, updatedAt: 5_000 }),
@@ -782,7 +782,6 @@ describe('session list sort and filter view', () => {
         ]
         expect(ids(sessions, { sort: 'last-message', activeFirst: false })).toEqual(['old-chatty', 'new-quiet', 'agent-busy'])
         expect(ids(sessions, { sort: 'created', activeFirst: false })).toEqual(['new-quiet', 'agent-busy', 'old-chatty'])
-        expect(ids(sessions, { sort: 'activity', activeFirst: false })).toEqual(['agent-busy', 'old-chatty', 'new-quiet'])
     })
 
     it('puts active sessions and projects ahead of archived ones when active-first is on', () => {

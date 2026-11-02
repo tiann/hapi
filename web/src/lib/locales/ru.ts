@@ -83,7 +83,6 @@ export default {
   'sessions.view.sort': 'Сортировать по',
   'sessions.view.sort.lastMessage': 'Последнему сообщению',
   'sessions.view.sort.created': 'Дате создания',
-  'sessions.view.sort.activity': 'Последней активности',
   'sessions.view.activeFirst': 'Сначала активные',
   'sessions.view.status': 'Показывать',
   'sessions.view.status.all': 'Все сессии',
