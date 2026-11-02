@@ -80,7 +80,7 @@ function App() {
                 <section aria-label="Sent" className="mb-4">
                     <MessageAttachments attachments={[{
                         id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl,
-                    }]} />
+                    }]} api={{} as never} sessionId="e2e-session" />
                 </section>
                 <Composer />
             </main>

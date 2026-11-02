@@ -46,7 +46,7 @@ function Composer({ disabled }: { disabled: boolean }) {
         <main className="mx-auto max-w-2xl p-4">
             <p data-testid="refresh-count">{ticks}</p>
             <section aria-label="Sent images" className="mb-4">
-                <MessageAttachments attachments={[{ id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl }]} />
+                <MessageAttachments attachments={[{ id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl }]} api={{} as never} sessionId="e2e-session" />
             </section>
             <section aria-label="Composer" className="rounded-xl border p-4">
                 <div className="flex flex-wrap gap-2">
