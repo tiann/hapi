@@ -23,9 +23,13 @@ history starts at zero; live delayed output counts. A replay with the same
 `localId` keeps its original revision. Meaningful message rows carry their
 `contentRevision` in REST and SSE.
 
-Unread is `manualUnread || (!(active && thinking) && contentRevision > readRevision)`.
-Running suppresses the ordinary dot without discarding unseen content. Input and
-permission attention remain independent. Selecting a session does not make it read.
+Unread is `manualUnread || contentRevision > readRevision`, including while the
+session is running; clients show running activity beside the unread dot. Input
+and permission attention remain independent. Selecting a session does not make it read.
+Session patches can arrive before the message they count, so a client may hide the
+ordinary dot of a session whose visible chat follows its tail (the same conditions as
+an automatic read below) until that output renders and is acknowledged. This is
+display-only and never sends a read; manual unread stays visible.
 Clients merge revisions monotonically and use the highest read-state `version`
 for the manual flag, including when REST and SSE arrive out of order.
 
