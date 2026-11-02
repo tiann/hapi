@@ -13,7 +13,11 @@ import type { EnhancedMode } from './loop'
 const harness = vi.hoisted(() => ({
     // One entry per claudeRemote() call that actually received an initial
     // message: the mode it would spawn with plus every message it consumed.
-    spawns: [] as Array<{ permissionMode: string; messages: string[] }>,
+    spawns: [] as Array<{ permissionMode: string; effort?: string; messages: string[] }>,
+    // Live effort applier handed to the launcher; null keeps the restart path.
+    effortApplier: null as null | ((effort: string | null) => Promise<boolean>),
+    // Resolving this ends the current mock process while nextMessage() is pending.
+    exitProcess: null as null | (() => void),
     bailouts: 0,
     triggerSwitch: null as (() => void) | null,
     // Message text that, once consumed, ends the test by firing the switch RPC.
@@ -29,9 +33,11 @@ vi.mock('./claudeRemote', () => ({
         }
         const spawn = {
             permissionMode: initial.mode.permissionMode as string,
+            effort: initial.mode.effort as string | undefined,
             messages: [initial.message as string]
         }
         harness.spawns.push(spawn)
+        if (harness.effortApplier) opts.setEffortApplier?.(harness.effortApplier)
         opts.onSessionFound(`session-${harness.spawns.length}`)
         // Mirror the real claudeRemote: a single call keeps consuming turns
         // until nextMessage() resolves null (mode change parked / abort).
@@ -39,8 +45,11 @@ vi.mock('./claudeRemote', () => ({
             if (spawn.messages.includes(harness.finalMessage)) {
                 harness.triggerSwitch?.()
             }
-            const next = await opts.nextMessage()
-            if (!next) {
+            const exited = new Promise<'exited'>((resolve) => {
+                harness.exitProcess = () => resolve('exited')
+            })
+            const next = await Promise.race([opts.nextMessage(), exited])
+            if (next === 'exited' || !next) {
                 return
             }
             spawn.messages.push(next.message as string)
@@ -131,6 +140,9 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
         harness.spawns = []
         harness.bailouts = 0
         harness.triggerSwitch = null
+        harness.effortApplier = null
+        harness.exitProcess = null
+        harness.finalMessage = 'three'
         vi.clearAllMocks()
     })
 
@@ -152,12 +164,110 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
             await claudeRemoteLauncher(session as any)
 
             expect(harness.spawns).toEqual([
-                { permissionMode: 'default', messages: ['one'] },
-                { permissionMode: 'auto', messages: ['two'] },
-                { permissionMode: 'default', messages: ['three'] }
+                { permissionMode: 'default', effort: undefined, messages: ['one'] },
+                { permissionMode: 'auto', effort: undefined, messages: ['two'] },
+                { permissionMode: 'default', effort: undefined, messages: ['three'] }
             ])
         } finally {
             session.stopKeepAlive()
         }
+    })
+})
+
+describe('claudeRemoteLauncher live effort changes', () => {
+    afterEach(() => {
+        harness.spawns = []
+        harness.bailouts = 0
+        harness.triggerSwitch = null
+        harness.effortApplier = null
+        harness.exitProcess = null
+        harness.finalMessage = 'three'
+        vi.clearAllMocks()
+    })
+
+    async function run(pushes: Array<[string, EnhancedMode]>, finalMessage: string) {
+        const client = createClientStub()
+        const { session, queue } = createSession(client)
+        try {
+            pushes.forEach(([message, mode], index) => queue.push(message, mode, `local-${index}`))
+            harness.finalMessage = finalMessage
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+            await claudeRemoteLauncher(session as any)
+        } finally {
+            session.stopKeepAlive()
+        }
+    }
+
+    it('applies an effort-only change to the running Claude process', async () => {
+        const applied: Array<string | null> = []
+        harness.effortApplier = async (effort) => {
+            applied.push(effort)
+            return true
+        }
+
+        await run([
+            ['one', { permissionMode: 'default', effort: 'high' }],
+            ['two', { permissionMode: 'default', effort: 'low' }],
+            ['three', { permissionMode: 'default' }]
+        ], 'three')
+
+        expect(applied).toEqual(['low', null])
+        expect(harness.spawns).toEqual([
+            { permissionMode: 'default', effort: 'high', messages: ['one', 'two', 'three'] }
+        ])
+    })
+
+    it('restarts Claude when it refuses the live effort change', async () => {
+        harness.effortApplier = async () => false
+
+        await run([
+            ['one', { permissionMode: 'default', effort: 'high' }],
+            ['two', { permissionMode: 'default', effort: 'low' }]
+        ], 'two')
+
+        expect(harness.spawns).toEqual([
+            { permissionMode: 'default', effort: 'high', messages: ['one'] },
+            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+        ])
+    })
+
+    it('keeps the prompt for the next process when Claude exits during the effort change', async () => {
+        const applied: Array<string | null> = []
+        harness.effortApplier = async (effort) => {
+            applied.push(effort)
+            // The process dies before answering; the applier then reports it closed.
+            harness.exitProcess?.()
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            return false
+        }
+
+        await run([
+            ['one', { permissionMode: 'default', effort: 'high' }],
+            ['two', { permissionMode: 'default', effort: 'low' }]
+        ], 'two')
+
+        expect(applied).toEqual(['low'])
+        expect(harness.spawns).toEqual([
+            { permissionMode: 'default', effort: 'high', messages: ['one'] },
+            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+        ])
+    })
+
+    it('restarts without a live apply when another process setting changes too', async () => {
+        const applier = vi.fn(async () => true)
+        harness.effortApplier = applier
+
+        await run([
+            ['one', { permissionMode: 'default', effort: 'high' }],
+            ['two', { permissionMode: 'default', effort: 'low', model: 'claude-sonnet-5-5' }]
+        ], 'two')
+
+        expect(applier).not.toHaveBeenCalled()
+        expect(harness.spawns).toEqual([
+            { permissionMode: 'default', effort: 'high', messages: ['one'] },
+            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+        ])
     })
 })
