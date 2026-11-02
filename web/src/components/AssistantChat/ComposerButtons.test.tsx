@@ -11,6 +11,7 @@ import {
     ComposerButtons,
     ComposerExpandButton,
     DictationButton,
+    addSelectedAttachments,
     getComposerToolbarJustifyContent,
     isComposerPrimaryFillHeight,
     isLargeEmptyVoicePrimary,
@@ -51,6 +52,53 @@ function renderInProviders(ui: ReactElement) {
 
 function getButton(label: RegExp | string): HTMLButtonElement {
     return screen.getByRole('button', { name: label }) as HTMLButtonElement
+}
+
+function stubViewport(matches: boolean) {
+    const mediaQueryList = {
+        matches,
+        media: '(max-width: 640px)',
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+    } as unknown as MediaQueryList
+    vi.spyOn(window, 'matchMedia').mockReturnValue(mediaQueryList)
+}
+
+function renderAttachmentToolbar(overrides: Partial<ComponentProps<typeof ComposerButtons>> = {}) {
+    const noop = () => {}
+    render(
+        <RuntimeProviders>
+            <ComposerButtons
+                canSend={false}
+                controlsDisabled={false}
+                showSettingsButton={false}
+                onSettingsToggle={noop}
+                expanded={false}
+                onExpandedToggle={noop}
+                showTerminalButton={false}
+                terminalDisabled={false}
+                terminalLabel="Terminal"
+                onTerminal={noop}
+                showAbortButton={false}
+                abortDisabled={false}
+                isAborting={false}
+                onAbort={noop}
+                showSwitchButton={false}
+                switchDisabled={false}
+                isSwitching={false}
+                onSwitch={noop}
+                voiceEnabled={false}
+                voiceStatus="disconnected"
+                onVoiceToggle={noop}
+                onSend={noop}
+                {...overrides}
+            />
+        </RuntimeProviders>,
+    )
 }
 
 describe('UnifiedButton — routesToScratchlist visual state', () => {
@@ -530,6 +578,63 @@ describe('ComposerButtons responsive toolbar', () => {
         expect(getComposerToolbarJustifyContent('right')).toBe('safe end')
         expect(getComposerToolbarJustifyContent('left')).toBe('flex-start')
         expect(getComposerToolbarJustifyContent('split')).toBe('flex-start')
+    })
+})
+
+describe('ComposerButtons attachment entrypoint', () => {
+    afterEach(() => {
+        cleanup()
+        vi.restoreAllMocks()
+    })
+
+    it('keeps the original assistant-ui attachment trigger on wide viewports', () => {
+        stubViewport(false)
+        renderAttachmentToolbar()
+
+        expect(getButton('Attach file')).toBeInTheDocument()
+        expect(screen.queryByTestId('composer-attachment-picker-trigger')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('composer-attachment-picker')).not.toBeInTheDocument()
+    })
+
+    it('uses the HAPI source panel on narrow viewports', () => {
+        stubViewport(true)
+        renderAttachmentToolbar()
+
+        expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Add attachment' })).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByTestId('composer-attachment-picker-trigger'))
+
+        expect(screen.getByRole('dialog', { name: 'Add attachment' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Photos' })).toBeInTheDocument()
+    })
+
+    it('disables the mobile entry when the session has no attachment adapter', () => {
+        stubViewport(true)
+        renderAttachmentToolbar({ attachmentsEnabled: false })
+
+        expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeDisabled()
+    })
+
+    it('starts all selected attachments before the first handoff resolves', async () => {
+        const first = new File(['first'], 'first.txt', { type: 'text/plain' })
+        const second = new File(['second'], 'second.txt', { type: 'text/plain' })
+        const started: string[] = []
+        let resolveFirst!: () => void
+        const firstPending = new Promise<void>((resolve) => {
+            resolveFirst = resolve
+        })
+        const addAttachment = vi.fn((file: File) => {
+            started.push(file.name)
+            return file === first ? firstPending : Promise.resolve()
+        })
+
+        const pending = addSelectedAttachments(addAttachment, [first, second])
+
+        expect(started).toEqual(['first.txt', 'second.txt'])
+        resolveFirst()
+        await pending
+        expect(addAttachment).toHaveBeenCalledTimes(2)
     })
 })
 

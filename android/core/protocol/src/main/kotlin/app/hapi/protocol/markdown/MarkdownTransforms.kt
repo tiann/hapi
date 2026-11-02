@@ -11,6 +11,7 @@ import org.commonmark.node.HtmlBlock
 import org.commonmark.node.ListBlock
 import org.commonmark.node.Node
 import org.commonmark.node.ThematicBreak
+import org.commonmark.parser.IncludeSourceSpans
 import org.commonmark.parser.Parser
 
 /**
@@ -24,6 +25,9 @@ import org.commonmark.parser.Parser
  * - [stripCjkAutolinkArtifacts] <- `web/src/lib/remark-strip-cjk-autolink.ts`
  * - [detectFilePathLinks] / [matchWholeFilePath] / [rewriteExplicitLinkTarget]
  *                             <- `web/src/lib/remark-file-path-links.ts`
+ * - [MarkdownMath]            <- `web/src/lib/remark-latex-bracket-math.ts` +
+ *                                `remark-math {singleDollarTextMath: false}`
+ *                                (`parse` extracts `$$`/`\[...\]`/`\(...\)` math nodes)
  *
  * Pure JVM on purpose: everything here is unit-tested in `:core:protocol`.
  */
@@ -182,12 +186,12 @@ object MarkdownTransforms {
         builder.enabledBlockTypes(BLOCK_TYPES_WITHOUT_INDENTED_CODE)
 
     /**
-     * The canonical HAPI markdown parser: GFM tables + strikethrough (double
-     * tilde only, matching web `remark-gfm {singleTilde: false}` -- a single
-     * tilde is common in shell prompts) + bare-URL autolink, with indented code
-     * blocks disabled. Thread-safe and reusable.
+     * The canonical HAPI markdown parser builder: GFM tables + strikethrough
+     * (double tilde only, matching web `remark-gfm {singleTilde: false}` -- a
+     * single tilde is common in shell prompts) + bare-URL autolink, with
+     * indented code blocks disabled. Thread-safe and reusable once built.
      */
-    fun newParser(): Parser = disableIndentedCode(
+    fun newParserBuilder(): Parser.Builder = disableIndentedCode(
         Parser.builder().extensions(
             listOf(
                 TablesExtension.create(),
@@ -195,12 +199,38 @@ object MarkdownTransforms {
                 AutolinkExtension.create(),
             )
         )
-    ).build()
+    )
+
+    /** [newParserBuilder] built: the canonical parser. */
+    fun newParser(): Parser = newParserBuilder().build()
 
     private val sharedParser: Parser by lazy { newParser() }
 
-    /** Full source pipeline: [repairTables] then parse with [newParser] config. */
-    fun parse(source: String): Node = sharedParser.parse(repairTables(source))
+    /**
+     * Same configuration plus source spans on blocks and inlines; used only by
+     * [MarkdownMath] to learn which source ranges are protected (code, links,
+     * definitions) before scanning for math delimiters.
+     */
+    private val spannedParser: Parser by lazy {
+        newParserBuilder().includeSourceSpans(IncludeSourceSpans.BLOCKS_AND_INLINES).build()
+    }
+
+    /**
+     * Full source pipeline: [repairTables] then parse with [newParser] config.
+     * Sources that look like they may contain math (`$$`, `\[`, `\(`) go
+     * through [MarkdownMath.parseWithMath], which extracts
+     * [MathBlockNode]/[MathInlineNode] nodes; everything else takes the plain
+     * single-parse path.
+     */
+    fun parse(source: String): Node {
+        val repaired = repairTables(source)
+        if (!MarkdownMath.MATH_HINT.containsMatchIn(repaired)) return sharedParser.parse(repaired)
+        return MarkdownMath.parseWithMath(
+            repaired,
+            spannedParse = spannedParser::parse,
+            plainParse = sharedParser::parse,
+        )
+    }
 
     // ── CJK autolink artifact strip (remark-strip-cjk-autolink port) ─────────
 

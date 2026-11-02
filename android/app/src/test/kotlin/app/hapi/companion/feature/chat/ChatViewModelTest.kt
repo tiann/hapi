@@ -195,6 +195,12 @@ private open class FakeMessagesApi : ChatSessionApi {
         CodexModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
         app.hapi.protocol.wire.SlashCommandsResponse(success = false, error = "not scripted")
+    override suspend fun searchSessionFiles(
+        sessionId: String,
+        query: String,
+        limit: Int?,
+    ): app.hapi.protocol.wire.FileSearchResponse =
+        app.hapi.protocol.wire.FileSearchResponse(success = false, error = "not scripted")
     override suspend fun uploadFile(
         sessionId: String,
         filename: String,
@@ -675,15 +681,27 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `marks the session seen on entry and on updates`() = runTest {
+    fun `reads only rendered tail and keeps newer summary output unread`() = runTest {
         val harness = Harness(this, ScriptedTransport(listOf("ok")))
-        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 500))
-
+        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 500).copy(contentRevision = 4))
+        harness.api.tailResponses.add(MessagesResponse(
+            messages = listOf(agentMessage("a", 1, 100, "answer")),
+            page = page("latest", hasMore = false).copy(readThroughRevision = 3),
+        ))
         harness.viewModel.start()
-        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 500L }
-
-        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 900))
-        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 900L }
+        val rendered = harness.viewModel.uiState.first { !it.isSyncingTail && it.readThroughRevision == 3L }
+        assertEquals(0, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+        harness.viewModel.readingViewportChanged(followsTail = false, needsOlder = false)
+        harness.viewModel.markDisplayed(rendered.readThroughRevision, rendered.renderedReadState)
+        assertEquals(0, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+        harness.viewModel.readingViewportChanged(followsTail = true, needsOlder = false)
+        harness.viewModel.setTranscriptVisible(false)
+        harness.viewModel.markDisplayed(rendered.readThroughRevision, rendered.renderedReadState)
+        assertEquals(0, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+        harness.viewModel.setTranscriptVisible(true)
+        harness.viewModel.markDisplayed(rendered.readThroughRevision, rendered.renderedReadState)
+        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 3L }
+        assertTrue(LastSeenStore.isUnread(harness.sessionStore.summaries.value.single(), harness.lastSeenStore.state.value))
         harness.viewModel.stop()
     }
 

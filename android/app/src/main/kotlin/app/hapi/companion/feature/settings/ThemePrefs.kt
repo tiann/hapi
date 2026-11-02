@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
+import app.hapi.companion.ui.theme.ColorThemePreset
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -30,17 +31,26 @@ enum class ThemeMode(val storageKey: String) {
     }
 }
 
-/** The persisted appearance choice, defaults = follow system + Material You. */
+/**
+ * The persisted appearance choice, defaults = follow system + Material You.
+ * [preset] is the web-parity color theme; the default keeps the built-in
+ * schemes in charge.
+ */
 data class ThemeSettings(
     val mode: ThemeMode = ThemeMode.SYSTEM,
-    /** Material You wallpaper color (effective only on API 31+, non-OLED). */
+    /** Material You wallpaper color (effective only on API 31+, non-OLED, no preset). */
     val dynamicColor: Boolean = true,
+    val preset: ColorThemePreset = ColorThemePreset.DEFAULT,
 )
 
 /**
  * Appearance persistence over the app-wide `hapi_prefs` DataStore. Read at
  * `MainActivity.setContent` to drive `HapiTheme`, written by the settings
  * screen; unreadable prefs degrade to defaults (roster storage precedent).
+ * The preset key is stored explicitly (including `"default"`) so "never
+ * configured" and "deliberately back on default" persist identically —
+ * the web client deletes its key instead, which DataStore keys cannot
+ * express without conflating the two states.
  */
 class ThemePrefs(private val dataStore: DataStore<Preferences>) {
 
@@ -51,6 +61,7 @@ class ThemePrefs(private val dataStore: DataStore<Preferences>) {
             ThemeSettings(
                 mode = ThemeMode.fromStorageKey(prefs[MODE_KEY]),
                 dynamicColor = prefs[DYNAMIC_COLOR_KEY] ?: true,
+                preset = ColorThemePreset.fromStorageKey(prefs[PRESET_KEY]),
             )
         }
         .distinctUntilChanged()
@@ -63,8 +74,13 @@ class ThemePrefs(private val dataStore: DataStore<Preferences>) {
         dataStore.edit { it[DYNAMIC_COLOR_KEY] = enabled }
     }
 
+    suspend fun setPreset(preset: ColorThemePreset) {
+        dataStore.edit { it[PRESET_KEY] = preset.storageKey }
+    }
+
     companion object {
         val MODE_KEY: Preferences.Key<String> = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR_KEY: Preferences.Key<Boolean> = booleanPreferencesKey("theme_dynamic_color")
+        val PRESET_KEY: Preferences.Key<String> = stringPreferencesKey("theme_preset")
     }
 }
