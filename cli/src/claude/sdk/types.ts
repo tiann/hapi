@@ -24,6 +24,10 @@ export interface SDKUserMessage extends SDKMessage {
      */
     isSynthetic?: boolean
     isMeta?: boolean
+    /** Stdin messages may set it; `--replay-user-messages` echoes it back. */
+    uuid?: string
+    /** Set on the `--replay-user-messages` echo of a stdin message. */
+    isReplay?: boolean
     message: {
         role: 'user'
         content: string | Array<{
@@ -211,6 +215,11 @@ export interface QueryOptions {
     fallbackModel?: string
     settingsPath?: string
     strictMcpConfig?: boolean
+    /**
+     * Echo every stdin user message back (`isReplay: true`, same uuid) when
+     * Claude starts processing it. Requires a streaming prompt.
+     */
+    replayUserMessages?: boolean
     canCallTool?: CanCallToolCallback
     promptFailureCleanupTimeoutMs?: number
 }

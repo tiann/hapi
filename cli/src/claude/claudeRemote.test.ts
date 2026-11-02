@@ -1208,7 +1208,7 @@ describe('claudeRemote compact summary promotion', () => {
                 readyCount += 1;
                 readyEvents.push(completionEvent);
             },
-            onCompactResultAccepted: () => {
+            onResultAccepted: () => {
                 acceptedCount += 1;
             },
             isAborted: () => false,
