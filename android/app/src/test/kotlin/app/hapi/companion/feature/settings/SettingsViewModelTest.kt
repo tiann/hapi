@@ -3,6 +3,7 @@
 package app.hapi.companion.feature.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import app.hapi.companion.ui.theme.ColorThemePreset
 import app.hapi.protocol.wire.HubHealthResponse
 import java.io.File
 import java.util.Base64
@@ -120,5 +121,19 @@ class SettingsViewModelTest {
         assertEquals(ThemeMode.OLED, viewModel.themeSettings.value.mode)
         assertFalse(viewModel.themeSettings.value.dynamicColor)
         assertEquals(AppLanguage.SIMPLIFIED_CHINESE, viewModel.language.value)
+    }
+
+    @Test
+    fun `color theme preset setter persists through the prefs`() = runWithViewModel(
+        jwt = null,
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+    ) { viewModel ->
+        viewModel.setPreset(ColorThemePreset.NORD)
+        advanceUntilIdle()
+
+        assertEquals(
+            ColorThemePreset.NORD,
+            viewModel.themeSettings.value.preset,
+        )
     }
 }

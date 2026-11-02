@@ -115,7 +115,7 @@ public enum SummaryPatching {
             switch AgentFlavor(rawValue: flavor) {
             case .claude: flavorSessionId = metadata.claudeSessionId
             case .codex: flavorSessionId = metadata.codexSessionId
-            case .dsh: flavorSessionId = nil
+            case .dsh: flavorSessionId = metadata.dshSessionId
             case .gemini: flavorSessionId = metadata.geminiSessionId
             case .opencode: flavorSessionId = metadata.opencodeSessionId
             case .grok: flavorSessionId = metadata.grokSessionId
@@ -141,6 +141,7 @@ public enum SummaryPatching {
             metadata.cursorSessionId,
             metadata.kimiSessionId,
             metadata.copilotSessionId,
+            metadata.dshSessionId,
         ]
         return legacyFallbacks.compactMap { $0 }.first
     }
