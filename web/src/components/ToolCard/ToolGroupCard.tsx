@@ -25,7 +25,8 @@ export function getToolGroupTiming(tools: ToolCallBlock[], now: number): {
         .filter((tool) => tool.tool.state !== 'pending')
         .map((tool) => tool.tool.startedAt ?? tool.tool.createdAt)
         .filter((value): value is number => Number.isFinite(value))
-    const startedAt = startedValues.length > 0 ? Math.min(...startedValues) : null
+    const startedAt = !tools.some(tool => tool.tool.startUnavailable) && startedValues.length > 0
+        ? Math.min(...startedValues) : null
     const running = tools.some((tool) => tool.tool.state === 'running')
     const allFinished = tools.length > 0 && tools.every((tool) => tool.tool.state === 'completed' || tool.tool.state === 'error')
     const completedValues = allFinished

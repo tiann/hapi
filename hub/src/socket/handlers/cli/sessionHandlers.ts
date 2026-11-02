@@ -72,7 +72,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'promptTitle'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
@@ -172,7 +173,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        // The durable row already exists; replay must not be mistaken for
+        // fresh agent progress or trigger another round of UI updates.
+        if (wasStored) return
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per
@@ -266,7 +271,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
-                invokedAt: msg.invokedAt
+                invokedAt: msg.invokedAt,
+                ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }
         })
     })

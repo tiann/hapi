@@ -541,17 +541,10 @@ export function reduceTimeline(
                     && msg.usage.scope_role !== 'child'
                 ) {
                     const model = tokenCount.model ?? undefined
-                    const displayUsage = model
-                        ? msg.usage
-                        : {
-                            ...msg.usage,
-                            cache_creation_input_tokens: undefined,
-                            cache_read_input_tokens: undefined
-                        }
                     attachCodexRoundSummaryToLatestGroup(blocks, {
                         provider: 'codex',
                         turnId: tokenCount.turnId,
-                        usage: displayUsage,
+                        usage: msg.usage,
                         modelUsage: model
                             ? {
                                 [model]: {
@@ -886,6 +879,10 @@ export function reduceTimeline(
                     if (streamId) {
                         const existing = textBlocksByStreamId.get(streamId)
                         if (existing) {
+                            existing.sourceMessageIds ??= []
+                            if (!existing.sourceMessageIds.includes(msg.id)) {
+                                existing.sourceMessageIds.push(msg.id)
+                            }
                             existing.text = c.text
                             existing.usage = msg.usage
                             existing.model = msg.model
@@ -897,13 +894,11 @@ export function reduceTimeline(
 
                     const block: AgentTextBlock = {
                         kind: 'agent-text',
-                        // Streamed snapshots under one stream id arrive as
-                        // separate message rows that the window keeps swapping
-                        // for newer rows. Deriving the id from the stream id
-                        // (unique per stream) keeps the block identity stable
-                        // across snapshots so the rendered component is
-                        // updated in place instead of being remounted.
+                        // Stream-stable identity keeps the rendered component
+                        // mounted while retaining every raw message ID for
+                        // content-search navigation.
                         id: streamId ?? `${msg.id}:${idx}`,
+                        sourceMessageIds: [msg.id],
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -940,6 +935,10 @@ export function reduceTimeline(
                     if (streamId) {
                         const existing = reasoningBlocksByStreamId.get(streamId)
                         if (existing) {
+                            existing.sourceMessageIds ??= []
+                            if (!existing.sourceMessageIds.includes(msg.id)) {
+                                existing.sourceMessageIds.push(msg.id)
+                            }
                             existing.text = c.text
                             existing.usage = msg.usage
                             existing.model = msg.model
@@ -951,11 +950,10 @@ export function reduceTimeline(
 
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',
-                        // Same as agent-text above: a stream-stable id keeps
-                        // the reasoning panel mounted while its snapshots
-                        // arrive, so the smooth streaming continues from the
-                        // previous text instead of replaying from a remount.
+                        // Keep the reasoning panel mounted across snapshots,
+                        // while preserving every source row for search jumps.
                         id: streamId ?? `${msg.id}:${idx}`,
+                        sourceMessageIds: [msg.id],
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -1053,6 +1051,7 @@ export function reduceTimeline(
                     // null exec timestamp is a no-op, leaving exec start unset so
                     // toolDurationMs falls back to hub times on both sides.
                     setEarliestStartedAt(block, msg.createdAt)
+                    if (block.tool.startUnavailable) block.tool = { ...block.tool, startUnavailable: false }
                     setEarliestExecStartedAt(block, msg.agentTimestamp ?? null)
 
                     if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {
@@ -1107,6 +1106,7 @@ export function reduceTimeline(
                         return permissionFromResult ?? permissionEntry?.permission
                     })()
 
+                    const existing = toolBlocksById.get(c.tool_use_id)
                     const block = ensureToolBlock(blocks, toolBlocksById, c.tool_use_id, {
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -1114,8 +1114,8 @@ export function reduceTimeline(
                         model: msg.model,
                         localId: msg.localId,
                         meta: msg.meta,
-                        name: permissionEntry?.toolName ?? 'Tool',
-                        input: permissionEntry?.input ?? null,
+                        name: permissionEntry?.toolName ?? (c.commandExecution ? 'CodexBash' : 'Tool'),
+                        input: existing?.tool.input ?? permissionEntry?.input ?? c.commandExecution?.input ?? null,
                         description: null,
                         permission
                         // NOTE: no agentTimestamp seed here. execStartedAt must
@@ -1129,6 +1129,10 @@ export function reduceTimeline(
 
                     block.tool = {
                         ...block.tool,
+                        ...(c.commandExecution ? {
+                            executionDurationMs: c.commandExecution.durationMs ?? block.tool.executionDurationMs,
+                            ...(!existing ? { startedAt: null, startUnavailable: true } : {})
+                        } : {}),
                         result: c.content,
                         completedAt: msg.createdAt,
                         // Only a real Claude timestamp — never the hub receive

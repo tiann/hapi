@@ -4,7 +4,7 @@ import { reconcileChatBlocks } from './reconcile'
 import { buildVisibleChatBlocks, type VisibleChatBlock } from './toolGroups'
 import { aggregateResponseGroups, assignThreadMessageIdsWithStableWrappers, type BlockWithThreadMessageId } from '@/lib/assistant-runtime'
 import { normalizeDecryptedMessage } from './normalize'
-import type { NormalizedMessage } from './types'
+import type { AgentTextBlock, NormalizedMessage } from './types'
 import type { DecryptedMessage } from '@/types/api'
 import type { AgentState, ThreadGoal, ThreadGoalStatus } from '@/types/api'
 
@@ -698,4 +698,27 @@ describe('reduceChatBlocks', () => {
         expect(firstAnswer?.kind === 'agent-text' ? firstAnswer.roundSummary : undefined).toBeUndefined()
     })
 
+
+    it('keeps terminal stream source IDs when reconciling unchanged text', () => {
+        const previous: AgentTextBlock = {
+            kind: 'agent-text',
+            id: 'stream-1',
+            sourceMessageIds: ['live-row'],
+            localId: null,
+            createdAt: 2,
+            text: 'same answer'
+        }
+        const next: AgentTextBlock = {
+            ...previous,
+            sourceMessageIds: ['live-row', 'terminal-row'],
+            createdAt: 3
+        }
+
+        const reconciled = reconcileChatBlocks([next], new Map([[previous.id, previous]]))
+        const assistant = reconciled.blocks[0]
+
+        expect(assistant).toBe(next)
+        expect(assistant.kind === 'agent-text' ? assistant.sourceMessageIds : undefined)
+            .toEqual(['live-row', 'terminal-row'])
+    })
 })

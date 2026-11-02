@@ -46,7 +46,8 @@ final class AppModel {
     var infoNotice: String?
     /// Session targeted by a notification tap (Android
     /// `pendingOpenSessionId`): the home screen consumes it into its
-    /// navigation path against the active hub.
+    /// navigation path against the active hub (switched to the owner first,
+    /// see ``openNotificationTarget(sessionId:hubUrl:)``).
     var pendingOpenSessionId: String?
 
     // `let` storage is inert under @Observable (no annotation needed).
@@ -55,6 +56,8 @@ final class AppModel {
     private let performer: any HTTPPerforming
     private let pairingService: HubPairingService
     @ObservationIgnored private var isForeground = false
+    @ObservationIgnored private var activationTask: Task<Void, Never>?
+    @ObservationIgnored private var activationToken = UUID()
 
     init(
         registry: HubRegistry = HubRegistry(),
@@ -78,7 +81,12 @@ final class AppModel {
             credentialStore: credentialStore,
             performer: performer,
             openChatSessionId: { [weak self] in self?.session?.openChatSessionId },
-            openSession: { [weak self] sessionId in self?.pendingOpenSessionId = sessionId }
+            activeHubKnowsSession: { [weak self] sessionId in
+                self?.session?.sessionStore.sessions.contains { $0.id == sessionId } ?? false
+            },
+            openSession: { [weak self] sessionId, hubUrl in
+                self?.openNotificationTarget(sessionId: sessionId, hubUrl: hubUrl)
+            }
         ))
     }
 
@@ -151,6 +159,15 @@ final class AppModel {
         }
     }
 
+    /// Notification tap: a located owning hub becomes active first, so the
+    /// new home screen consumes the target (`HomeView` is keyed by hub).
+    func openNotificationTarget(sessionId: String, hubUrl: String?) {
+        if let hubUrl, registry.hubs.contains(hubUrl), hasCredentials(for: hubUrl) {
+            switchHub(to: hubUrl)
+        }
+        pendingOpenSessionId = sessionId
+    }
+
     // MARK: - Deep links (hapicompanion://bind)
 
     /// Routes a parsed bind link: already-paired hubs just switch (with a
@@ -209,8 +226,27 @@ final class AppModel {
     /// Builds (and starts, when foregrounded) the session for `hub`,
     /// replacing any previous one.
     private func activate(hub: String) {
+        let previousStore = session?.lastSeenStore
         session?.shutdown()
         session = nil
+        let token = UUID()
+        activationToken = token
+        if previousStore?.isPersisting == true || activationTask != nil {
+            let previousActivation = activationTask
+            activationTask = Task { [weak self] in
+                await previousActivation?.value
+                await previousStore?.flushPersistence()
+                guard let self, self.activationToken == token else { return }
+                self.activationTask = nil
+                guard self.registry.activeHub == hub else { return }
+                self.buildSession(hub: hub)
+            }
+            return
+        }
+        buildSession(hub: hub)
+    }
+
+    private func buildSession(hub: String) {
         guard let newSession = HubSession(
             hubUrl: hub,
             credentialStore: credentialStore,

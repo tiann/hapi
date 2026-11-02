@@ -230,7 +230,7 @@ describe('fetchCompactionResult', () => {
             summary('this-request-summary', 'this-request-marker')
         ]));
 
-        expect(result).toEqual({ status: 'success', text: '## Objective\n- Did the thing' });
+        expect(result).toMatchObject({ status: 'success', text: '## Objective\n- Did the thing', compactionId: 'this-request-marker' });
     });
 
     it('does not guess between two post-snapshot manual markers', async () => {
@@ -287,7 +287,7 @@ describe('fetchCompactionResult', () => {
             summary('this-request-summary', 'this-request-marker', { finish: 'provider-specific-finish' })
         ]));
 
-        expect(result).toEqual({ status: 'success', text: '## Objective\n- Did the thing' });
+        expect(result).toMatchObject({ status: 'success', text: '## Objective\n- Did the thing' });
     });
 
     it('concatenates every text part from the exact linked summary', async () => {
@@ -310,7 +310,7 @@ describe('fetchCompactionResult', () => {
             }
         ]));
 
-        expect(result).toEqual({ status: 'success', text: '## Objective\n- Did the thing' });
+        expect(result).toMatchObject({ status: 'success', text: '## Objective\n- Did the thing' });
     });
 
     it('keeps an associated but non-terminal result unverified instead of treating token-less text as a failure', async () => {
@@ -639,7 +639,7 @@ describe('fetchCompactionResultV2', () => {
             password: 'pw',
             fetchImpl
         });
-        expect(result).toEqual({ status: 'success', text: 'v2 summary text' });
+        expect(result).toMatchObject({ status: 'success', text: 'v2 summary text' });
         const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
         expect(url).toBe('http://127.0.0.1:48273/api/session/ses_x%2F2/message');
         expect(init.method).toBe('GET');
@@ -724,7 +724,7 @@ describe('fetchCompactionResultV2', () => {
             // Descending (newest first), as measured.
             fetchImpl: async () => fixtureEntry(newerCompleted, olderCompleted)
         });
-        expect(result).toEqual({ status: 'success', text: 'fresh summary' });
+        expect(result).toMatchObject({ status: 'success', text: 'fresh summary' });
     });
 
     it('a completed entry with an empty summary but a providerContext is a native-compaction success', async () => {
@@ -740,7 +740,7 @@ describe('fetchCompactionResultV2', () => {
             expectedCompactionId: 'msg_native',
             fetchImpl: async () => fixtureEntry(entry)
         });
-        expect(result).toEqual({ status: 'success', text: '' });
+        expect(result).toMatchObject({ status: 'success', text: '' });
     });
 
     it('a completed entry with an empty summary but a native window is a 2.1-native-compaction success', async () => {
@@ -763,7 +763,7 @@ describe('fetchCompactionResultV2', () => {
             expectedCompactionId: 'msg_native21',
             fetchImpl: async () => fixtureEntry(entry)
         });
-        expect(result).toEqual({ status: 'success', text: '' });
+        expect(result).toMatchObject({ status: 'success', text: '' });
     });
 
     it('a completed entry with an empty summary and a native record without a window is a failure', async () => {
@@ -817,7 +817,7 @@ describe('fetchCompactionResultV2', () => {
             excludeCompactionIds: [],
             fetchImpl: async () => fixtureEntry(entry)
         });
-        expect(result).toEqual({ status: 'success', text: 'fresh summary' });
+        expect(result).toMatchObject({ status: 'success', text: 'fresh summary' });
     });
 
     it('exclude recovery never settles a server auto-compaction as ours', async () => {
@@ -846,7 +846,7 @@ describe('fetchCompactionResultV2', () => {
             delayImpl: async () => {},
             fetchImpl: fetchImpl as unknown as typeof fetch
         });
-        expect(result).toEqual({ status: 'success', text: 'mine' });
+        expect(result).toMatchObject({ status: 'success', text: 'mine' });
         expect(calls).toBe(2);
     });
 
@@ -955,7 +955,7 @@ describe('pollCompactionResultV2', () => {
             },
             fetchImpl: fetchImpl as unknown as typeof fetch
         });
-        expect(result).toEqual({ status: 'success', text: 'done!' });
+        expect(result).toMatchObject({ status: 'success', text: 'done!' });
         expect(delays).toEqual([5, 5]);
     });
 
@@ -1013,7 +1013,7 @@ describe('pollCompactionResultV2', () => {
             delayImpl: async () => {},
             fetchImpl: fetchImpl as unknown as typeof fetch
         });
-        expect(result).toEqual({ status: 'success', text: 'done' });
+        expect(result).toMatchObject({ status: 'success', text: 'done' });
         expect(calls).toBe(5);
     });
 
@@ -1077,7 +1077,7 @@ describe('pollCompactionResultV2', () => {
             delayImpl: async () => {},
             fetchImpl: fetchImpl as unknown as typeof fetch
         });
-        expect(result).toEqual({ status: 'success', text: 'late summary' });
+        expect(result).toMatchObject({ status: 'success', text: 'late summary' });
         expect(calls).toBe(4);
     });
 });

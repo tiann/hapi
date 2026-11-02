@@ -11,23 +11,33 @@ import SwiftUI
 ///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
-/// - per row: flavor brand icon + title, trailing relative `updatedAt` and
-///   an optional unread dot; a quiet second line has project left and a small status
-///   indicator right. No preview, task progress, machine/path details or badges.
-///   Disconnected titles/icons are secondary, without dimming attention;
-/// - long-press context menu → pin (none/project/global) + archive with
-///   optimistic store updates; failures land in an alert.
+/// - per row: a two-line-tall flavor icon whose presence badge marks
+///   connected sessions (pulsing while running); title with trailing
+///   relative `updatedAt` (unread: semibold title + accent time, no dot so
+///   the badge stays the only dot); a quiet second line has project left and an attention symbol right. No preview, task progress,
+///   machine/path details or spinners. Disconnected rows are not dimmed;
+/// - swipe actions: leading pin/mark-read, trailing archive or delete/reopen;
+/// - long-press context menu → rename, pin (none/project/global), then
+///   archive for active sessions or reopen/delete for inactive ones (web
+///   `SessionActionMenu`), with optimistic store updates; failures land in
+///   an alert.
 struct SessionListView: View {
     @Environment(\.hapiTheme) private var theme
     let model: SessionListModel
     var selection: Binding<String?>? = nil
     let onOpenSession: (String) -> Void
 
+    @State private var renameTarget: SessionRowUI?
+    @State private var renameText = ""
+    @State private var deleteTarget: SessionRowUI?
+    /// Rows kept while a pushed chat covers the list (see `sessionList`).
+    @State private var frozenRows: [SessionRowUI]?
+
     var body: some View {
-        // Minute-tick timeline keeps the relative-age labels honest without
-        // any store churn.
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            sessionList(now: context.date)
+        // Rows own their minute-tick age labels; the list itself only
+        // changes with the data.
+        Group {
+            sessionList
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let summary = model.filterSummary {
@@ -66,19 +76,70 @@ struct SessionListView: View {
         } message: {
             Text(model.actionError ?? "")
         }
+        .alert(
+            "Rename Session",
+            isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            ),
+            presenting: renameTarget
+        ) { row in
+            TextField("Session name", text: $renameText)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                // An untouched title must not freeze an agent-generated one.
+                if name != row.title {
+                    model.renameSession(sessionId: row.id, name: name)
+                }
+            }
+            .disabled(!SessionNameRules.isValid(renameText))
+        }
+        .alert(
+            "Delete Session",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            presenting: deleteTarget
+        ) { row in
+            Button("Delete", role: .destructive) {
+                model.deleteSession(sessionId: row.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { row in
+            Text(SessionNameRules.deleteMessage(title: row.title))
+        }
     }
 
     // MARK: - List
 
-    private func sessionList(now: Date) -> some View {
-        let rows = model.rows
+    /// Covered by a pushed chat, the list keeps its last rows: on a large
+    /// hub every streaming session would otherwise rebuild and diff
+    /// thousands of rows nobody sees (~80 ms main-thread stalls while
+    /// scrolling the chat). A side-by-side split never disappears and
+    /// stays live; returning refreshes once.
+    private var sessionList: some View {
+        let rows = frozenRows ?? model.rows
+        return KeyedContent(key: ListRenderKey(rows: rows, selectable: selection != nil,
+                                               theme: theme, filters: model.filters)) {
+            list(rows)
+        }
+        .equatable()
+        .onAppear { frozenRows = nil }
+        .onDisappear { frozenRows = model.rows }
+    }
+
+    private func list(_ rows: [SessionRowUI]) -> some View {
         let pinnedCount = SessionListModel.pinnedCount(of: rows)
         return List(selection: selection) {
             if pinnedCount > 0 {
-                Section("Pinned") {
+                Section {
                     ForEach(rows.prefix(pinnedCount)) { row in
-                        rowCell(row, now: now)
+                        equatableRow(row)
                     }
+                } header: {
+                    sectionHeader("Pinned")
                 }
                 .listSectionSeparator(.hidden, edges: .top)
             }
@@ -87,10 +148,13 @@ struct SessionListView: View {
                 // header still reserves a blank sticky band above the list
                 // (device feedback: "一片空白").
                 if pinnedCount > 0 {
-                    Section(String(localized: "Sessions")) {
+                    Section {
                         ForEach(rows.dropFirst(pinnedCount)) { row in
-                            rowCell(row, now: now)
+                            equatableRow(row)
                         }
+                    } header: {
+                        // Not "Sessions": the navigation title already says so.
+                        sectionHeader("Recent")
                     }
                     .listSectionSeparator(.hidden, edges: .top)
                 } else {
@@ -98,7 +162,7 @@ struct SessionListView: View {
                     // separator above the very first row (device feedback).
                     Section {
                         ForEach(rows) { row in
-                            rowCell(row, now: now)
+                            equatableRow(row)
                         }
                     }
                     .listSectionSeparator(.hidden, edges: .top)
@@ -106,6 +170,9 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        // The default plain header height leaves a blank band between
+        // Pinned and Recent; headers size to their compact text instead.
+        .environment(\.defaultMinListHeaderHeight, 0)
         // An explicit filter change starts at the top. SSE/count/name changes
         // keep this identity (and the reading position), as does chat return.
         .id(model.filters)
@@ -118,19 +185,28 @@ struct SessionListView: View {
         }
     }
 
-    private func rowCell(_ row: SessionRowUI, now: Date) -> some View {
+    /// The List evaluates every row's content (offscreen ones included) on
+    /// each list change, so one streaming session cost O(all rows) per
+    /// update. Rows compare only what they draw and skip unchanged content.
+    private func equatableRow(_ row: SessionRowUI) -> some View {
+        KeyedContent(key: RowRenderKey(row: row, selectable: selection != nil, theme: theme)) {
+            rowCell(row)
+        }
+        .equatable()
+    }
+
+    private func rowCell(_ row: SessionRowUI) -> some View {
         Group {
             if selection != nil {
                 NavigationLink(value: row.id) {
-                    rowLabel(row, now: now)
+                    rowLabel(row)
                 }
                 .tag(row.id)
             } else {
                 Button {
-                    model.onSessionOpened(row.id)
                     onOpenSession(row.id)
                 } label: {
-                    rowLabel(row, now: now)
+                    rowLabel(row)
                 }
                 .buttonStyle(.plain)
             }
@@ -139,13 +215,80 @@ struct SessionListView: View {
         // Default separator color reads heavy against these rows; the theme
         // divider is the WeChat-style faint hairline.
         .listRowSeparatorTint(theme.divider)
+        .swipeActions(edge: .leading) {
+            leadingSwipeActions(row)
+        }
+        .swipeActions(edge: .trailing) {
+            trailingSwipeActions(row)
+        }
         .contextMenu {
             contextMenuActions(row)
         }
     }
 
-    private func rowLabel(_ row: SessionRowUI, now: Date) -> some View {
-        SessionRowView(row: row, now: now)
+    /// Compact header (Mail-style) instead of the large plain-list default.
+    private func sectionHeader(_ title: LocalizedStringKey) -> some View {
+        Text(title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(theme.textSecondary)
+            .textCase(nil)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    }
+
+    /// Leading swipe: the quick toggles (pin, read), as in Mail.
+    @ViewBuilder
+    private func leadingSwipeActions(_ row: SessionRowUI) -> some View {
+        let isPinned = row.summary.pinned == true || row.summary.globalPinned == true
+        Button {
+            model.setPinMode(sessionId: row.id, mode: isPinned ? .none : .project)
+        } label: {
+            Label(isPinned ? "Unpin" : "Pin to Project",
+                  systemImage: isPinned ? "pin.slash.fill" : "pin.fill")
+        }
+        .tint(.orange)
+        if row.unread {
+            Button {
+                model.markRead(sessionId: row.id)
+            } label: {
+                Label("Mark as Read", systemImage: "envelope.open.fill")
+            }
+            .tint(theme.accent)
+        }
+    }
+
+    /// Trailing swipe mirrors the context menu's lifecycle actions: the hub
+    /// archives live sessions only; inactive ones are deleted or reopened.
+    @ViewBuilder
+    private func trailingSwipeActions(_ row: SessionRowUI) -> some View {
+        if row.summary.active {
+            Button {
+                model.archiveSession(sessionId: row.id)
+            } label: {
+                Label("Archive", systemImage: "archivebox.fill")
+            }
+            .tint(.indigo)
+        } else {
+            // Not role: .destructive — that removes the row before the
+            // confirmation alert has a chance to cancel.
+            Button {
+                deleteTarget = row
+            } label: {
+                Label("Delete…", systemImage: "trash.fill")
+            }
+            .tint(.red)
+            Button {
+                model.reopenSession(sessionId: row.id) { sessionId in
+                    onOpenSession(sessionId)
+                }
+            } label: {
+                Label("Reopen", systemImage: "arrow.clockwise")
+            }
+            .tint(.gray)
+        }
+    }
+
+    private func rowLabel(_ row: SessionRowUI) -> some View {
+        SessionRowView(row: row)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
     }
@@ -153,6 +296,12 @@ struct SessionListView: View {
     @ViewBuilder
     private func contextMenuActions(_ row: SessionRowUI) -> some View {
         let summary = row.summary
+        Button {
+            renameText = row.title
+            renameTarget = row
+        } label: {
+            Label("Rename…", systemImage: "pencil")
+        }
         if summary.pinned == true || summary.globalPinned == true {
             Button {
                 model.setPinMode(sessionId: row.id, mode: .none)
@@ -174,10 +323,27 @@ struct SessionListView: View {
                 Label("Pin Globally", systemImage: "pin.circle")
             }
         }
-        Button(role: .destructive) {
-            model.archiveSession(sessionId: row.id)
-        } label: {
-            Label("Archive", systemImage: "archivebox")
+        // The hub archives live sessions only (409 for an inactive one);
+        // inactive history is reopened or deleted instead.
+        if summary.active {
+            Button(role: .destructive) {
+                model.archiveSession(sessionId: row.id)
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+            }
+        } else {
+            Button {
+                model.reopenSession(sessionId: row.id) { sessionId in
+                    onOpenSession(sessionId)
+                }
+            } label: {
+                Label("Reopen", systemImage: "arrow.clockwise")
+            }
+            Button(role: .destructive) {
+                deleteTarget = row
+            } label: {
+                Label("Delete…", systemImage: "trash")
+            }
         }
     }
 
@@ -197,6 +363,14 @@ struct SessionListView: View {
             } description: {
                 Text("Pull to retry once you are back online.")
             }
+        } else if model.isSearching {
+            ContentUnavailableView.search(text: model.searchQuery)
+        } else if model.hasActiveFilters {
+            ContentUnavailableView {
+                Label("No matching sessions", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("Clear the filters to see every session.")
+            }
         } else {
             ContentUnavailableView {
                 Label("No sessions yet", systemImage: "tray")
@@ -209,99 +383,125 @@ struct SessionListView: View {
 
 // MARK: - Row
 
+/// Re-renders `content` only when `key` changes. List and row content
+/// capture only stable references (the model, state setters, the open
+/// callback), so an equal key can keep the previous content.
+private struct KeyedContent<Key: Equatable, Content: View>: View, Equatable {
+    let key: Key
+    @ViewBuilder let content: () -> Content
+
+    var body: some View { content() }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+}
+
+private struct RowRenderKey: Equatable {
+    let row: SessionRowUI
+    let selectable: Bool
+    let theme: HapiTheme
+}
+
+private struct ListRenderKey: Equatable {
+    let rows: [SessionRowUI]
+    let selectable: Bool
+    let theme: HapiTheme
+    let filters: SessionListFilters
+}
+
 struct SessionRowView: View {
     @Environment(\.hapiTheme) private var theme
+    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 30
     @ScaledMetric(relativeTo: .footnote) private var statusSlotSize: CGFloat = 16
 
     let row: SessionRowUI
-    let now: Date
 
-    // The agent owns the leading column; one quiet line of secondary text
-    // keeps the row focused on the title rather than a stack of indicators.
-    private let textInset: CGFloat = 24
+    private let iconSpacing: CGFloat = 12
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            titleLine
-            detailLine
-                .padding(.leading, textInset)
+        HStack(alignment: .center, spacing: iconSpacing) {
+            agentIcon
+            VStack(alignment: .leading, spacing: 3) {
+                titleLine
+                detailLine
+            }
         }
-        .alignmentGuide(.listRowSeparatorLeading) { _ in textInset }
+        // Separators start under the text column, as in Mail and Messages.
+        .alignmentGuide(.listRowSeparatorLeading) { _ in iconSize + iconSpacing }
         .accessibilityElement(children: .combine)
+        .accessibilityValue(row.unread ? Text("Unread") : Text(verbatim: ""))
         .accessibilityIdentifier("home.session.\(row.id)")
+    }
+
+    /// The agent owns the leading column; a presence badge marks connected
+    /// sessions (pulsing while the agent works) instead of dimming the rest.
+    private var agentIcon: some View {
+        AgentFlavorIconView(flavor: row.flavor, size: iconSize * 0.8)
+            .frame(width: iconSize, height: iconSize)
+            .overlay(alignment: .bottomTrailing) {
+                if row.summary.active {
+                    presenceBadge
+                }
+            }
+    }
+
+    private var presenceBadge: some View {
+        let isRunning = row.status == .running
+        return Image(systemName: "circle.fill")
+            .font(.system(size: iconSize * 0.3))
+            .foregroundStyle(theme.success)
+            .symbolEffect(.pulse, options: .repeating, isActive: isRunning)
+            .padding(2)
+            .background(Circle().fill(theme.background))
+            .offset(x: 2, y: 2)
+            .accessibilityLabel(isRunning ? Text("Running") : Text("Connected"))
     }
 
     private var titleLine: some View {
         HStack(spacing: 8) {
-            AgentFlavorIconView(flavor: row.flavor)
-                .foregroundStyle(row.summary.active ? theme.textPrimary : theme.textSecondary)
-                .opacity(row.summary.active ? 1 : 0.5)
             Text(verbatim: row.title)
                 .font(.body)
                 .fontWeight(row.unread ? .semibold : .regular)
-                .foregroundStyle(row.summary.active ? theme.textPrimary : theme.textSecondary)
+                .foregroundStyle(theme.textPrimary)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            HStack(spacing: 6) {
-                Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
-                    .font(.caption2)
-                    .foregroundStyle(theme.textSecondary)
-                    .monospacedDigit()
-                    .fixedSize()
-                // Unread dots always occupy the trailing edge. Read rows
-                // remove the slot so the timestamp itself aligns right.
-                if row.unread {
-                    Circle()
-                        .fill(theme.accent)
-                        .frame(width: 8, height: 8)
-                        .frame(width: 12)
-                        .accessibilityLabel("Unread")
-                }
+            // Unread is a semibold title plus an accent timestamp, not a
+            // dot: the presence badge is the row's only dot.
+            // Minute ticks redraw only this label, not the list.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                Text(verbatim: formatRelativeAge(now: context.date, thenEpochMs: row.summary.updatedAt))
             }
+            .font(.footnote)
+            .fontWeight(row.unread ? .semibold : .regular)
+            .foregroundStyle(row.unread ? theme.accent : theme.textSecondary)
+            .monospacedDigit()
             .fixedSize()
         }
     }
 
-    @ViewBuilder
+    /// Project left; only states that need the user (reply/approval) get a
+    /// trailing symbol. Routine activity lives on the icon badge.
     private var detailLine: some View {
-        if row.project != nil || row.status != nil {
-            HStack(alignment: .center, spacing: 0) {
-                // Keep the same text line height when metadata is missing,
-                // so the symbol does not jump vertically at large text sizes.
-                Text(verbatim: row.project ?? " ")
-                    .lineLimit(1)
-                    .accessibilityHidden(row.project == nil)
-                Spacer(minLength: 12)
-                if let status = row.status {
-                    statusIndicator(status)
-                }
-            }
-            .font(.footnote)
-            .foregroundStyle(theme.textSecondary)
-        }
-    }
-
-    private func statusIndicator(_ status: SessionRowStatus) -> some View {
-        Group {
-            if let symbol = status.symbolName {
+        HStack(alignment: .center, spacing: 0) {
+            // Keep the same text line height when metadata is missing,
+            // so the row height does not jump.
+            Text(verbatim: row.project ?? " ")
+                .lineLimit(1)
+                .accessibilityHidden(row.project == nil)
+            Spacer(minLength: 12)
+            if let status = row.status, let symbol = status.symbolName {
                 Image(systemName: symbol)
                     .symbolVariant(.none)
                     .symbolRenderingMode(.monochrome)
                     .foregroundStyle(attentionColor)
-            } else {
-                ProgressView()
-                    // Native small loading already scales with Dynamic Type;
-                    // an extra scaleEffect would overflow the shared slot.
-                    .controlSize(.small)
-                    .tint(theme.textSecondary)
+                    // One slot keeps every attention symbol aligned.
+                    .frame(width: statusSlotSize, height: statusSlotSize)
+                    .fixedSize()
+                    .layoutPriority(1)
+                    .accessibilityLabel(statusAccessibilityText(status))
             }
         }
-        // One shared slot keeps attention symbols and loading aligned.
-        // Footnote is 13pt at the default size and scales for AX.
-        .frame(width: statusSlotSize, height: statusSlotSize)
-        .fixedSize()
-        .layoutPriority(1)
-        .accessibilityLabel(statusAccessibilityText(status))
+        .font(.footnote)
+        .foregroundStyle(theme.textSecondary)
     }
 
     // Darker amber keeps thin strokes visible on white without a filled
@@ -318,6 +518,20 @@ struct SessionRowView: View {
             return Text("\(title) · \(count) requests")
         }
         return title
+    }
+}
+
+// MARK: - Rename / delete copy (shared by the list and the chat menu)
+
+enum SessionNameRules {
+    /// Hub `PATCH /sessions/:id` accepts 1–255 characters.
+    static func isValid(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.utf16.count <= 255
+    }
+
+    static func deleteMessage(title: String) -> String {
+        String(format: String(localized: "Delete “%@”? This can't be undone."), title)
     }
 }
 

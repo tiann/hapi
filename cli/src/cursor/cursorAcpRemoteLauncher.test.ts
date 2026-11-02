@@ -18,7 +18,7 @@ const harness = vi.hoisted(() => ({
     promptCalls: 0,
     prompts: [] as unknown[][],
     deferPrompt: null as Promise<void> | null,
-    deferSoftSteer: null as Promise<void> | null,
+    deferSoftSteer: null as Promise<string | null | void> | null,
     softSteerDispatchError: null as Error | null,
     deferSoftSteerDispatch: null as Promise<void> | null,
     promptErrors: [] as Error[],
@@ -609,6 +609,37 @@ describe('cursorAcpRemoteLauncher', () => {
 
         harness.deferPrompt = null;
         releasePrompt();
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('holds a soft steer that an abort cancels for explicit resolution', async () => {
+        let releasePrompt!: () => void;
+        let finishSoftSteer!: (stopReason: string) => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { finishSoftSteer = resolve; });
+        const session = makeSession(null, false);
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+        harness.deferPrompt = null;
+        releasePrompt();
+        const abort = handlers.get(RPC_METHODS.Abort)!();
+        finishSoftSteer('cancelled');
+        await abort;
+
+        await vi.waitFor(() => expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer']));
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true });
+
         session.queue.close();
         await runPromise;
     });

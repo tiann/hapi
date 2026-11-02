@@ -11,7 +11,8 @@ const ReplySchema = z.object({
     reason: z.string().optional(),
     answers: z.union([z.record(z.string(), z.array(z.string())), z.record(z.string(), z.object({ answers: z.array(z.string()) }))]).optional()
 });
-type Reply = z.infer<typeof ReplySchema>;
+export type PermissionReply = z.infer<typeof ReplySchema>;
+type Reply = PermissionReply;
 type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; userInput: boolean; input: unknown; submitted: boolean; answer(reply: Reply): void; cancel(error: Error): void };
 
 /** No winner is inferred from submitting a Web candidate: only native resolution closes it. */
@@ -30,9 +31,11 @@ export class SharedCodexPermissions {
             scope: { role: 'child', threadId: request.threadId, parentThreadId: rootThreadId }, scope_role: 'child'
         } : message, id);
     }
-    constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string) {
+    constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string,
+        answerAsyncQuestion?: (reply: Reply) => Promise<boolean>) {
         session.rpcHandlerManager.registerHandler(RPC_METHODS.Permission, async (raw: unknown) => {
             const reply = ReplySchema.parse(raw);
+            if (await answerAsyncQuestion?.(reply)) return;
             const request = this.pending.get(reply.id);
             if (!request || request.submitted) throw new Error('Request already resolved or submitted');
             const questions = record(request.input).questions;

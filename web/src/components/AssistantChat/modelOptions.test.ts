@@ -59,9 +59,13 @@ describe('getModelOptionsForFlavor', () => {
 
     it('returns Claude model options for claude flavor', () => {
         const options = getModelOptionsForFlavor('claude')
-        expect(options[0]).toEqual({ value: null, label: 'Default' })
-        expect(options.some((o) => o.value === 'sonnet')).toBe(true)
-        expect(options.some((o) => o.value === 'opus')).toBe(true)
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus', label: 'Opus' },
+            { value: 'fable', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'haiku', label: 'Haiku' },
+        ])
     })
 
     it('uses the Claude catalog as the whole list, as the CLI picker shows it', () => {
@@ -104,13 +108,13 @@ describe('getModelOptionsForFlavor', () => {
         ])
     })
 
-    it('keeps a saved built-in alias the catalog does not list as the current model', () => {
+    it('keeps a saved 1M alias the catalog does not list as the current model', () => {
         const options = getModelOptionsForFlavor('claude', 'opus[1m]', [
             { value: 'opus', label: 'Opus 5.5' },
         ])
         expect(options).toEqual([
             { value: null, label: 'Default' },
-            { value: 'opus[1m]', label: 'Opus 1M' },
+            { value: 'opus[1m]', label: 'opus[1m]' },
             { value: 'opus', label: 'Opus 5.5' },
         ])
     })
@@ -294,9 +298,9 @@ describe('getClaudeLaunchModelOptions', () => {
         expect(options[1]).toEqual({ value: 'claude-opus-4-1', label: 'claude-opus-4-1 (no longer listed)' })
     })
 
-    it('marks a saved built-in alias the catalog no longer lists, like any other model', () => {
+    it('marks a saved 1M alias the catalog no longer lists, like any other model', () => {
         const options = getClaudeLaunchModelOptions(catalog, 'opus[1m]', 'no longer listed', 'Other models')
-        expect(options[1]).toEqual({ value: 'opus[1m]', label: 'Opus 1M (no longer listed)' })
+        expect(options[1]).toEqual({ value: 'opus[1m]', label: 'opus[1m] (no longer listed)' })
     })
 
     it('keeps a saved model selectable before the catalog arrives, without claiming it is gone', () => {
@@ -304,7 +308,7 @@ describe('getClaudeLaunchModelOptions', () => {
         expect(options.slice(0, 3)).toEqual([
             { value: 'auto', label: 'Default' },
             { value: 'claude-opus-4-1', label: 'claude-opus-4-1' },
-            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'opus', label: 'Opus' },
         ])
     })
 })
