@@ -78,7 +78,7 @@ function buildPiMetadata(
     existing: Record<string, unknown>,
     state: NonNullable<Metadata['piImportState']>
 ): Metadata {
-    const summaryText = transcript.lastUserMessage ?? transcript.title
+    const summaryText = transcript.title ?? transcript.lastUserMessage
     const entryIds = asRecord(existing.conversationHistoryEntryIds) ?? {}
     const points = asRecord(existing.conversationHistoryPoints) ?? {}
     return {
@@ -86,7 +86,7 @@ function buildPiMetadata(
         path: transcript.cwd ?? (typeof existing.path === 'string' ? existing.path : dirname(transcript.file)),
         host: typeof existing.host === 'string' ? existing.host : (machine.metadata?.host ?? machine.id),
         os: typeof existing.os === 'string' ? existing.os : (machine.metadata?.platform ?? process.platform),
-        name: typeof existing.name === 'string' ? existing.name : transcript.title,
+        name: typeof existing.name === 'string' ? existing.name : undefined,
         summary: summaryText ? { text: summaryText, updatedAt: Date.now() } : undefined,
         machineId: machine.id,
         flavor: 'pi',

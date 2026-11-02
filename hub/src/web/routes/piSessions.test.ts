@@ -226,6 +226,64 @@ describe('Pi session import', () => {
         expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(2)
     })
 
+    it('keeps an imported transcript title out of metadata.name so auto titles display', () => {
+        const { store, engine } = setup()
+        const source = transcript('imported-title', [userMessage('imported-title', 'entry-1', null, 'First user message', 1_000)])
+        const result = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+
+        const metadata = store.sessions.getSession(result.hapiSessionId!)!.metadata as Record<string, unknown>
+        // The transcript title no longer claims the manual-name slot.
+        expect(metadata.name).toBeUndefined()
+        // It lands in the summary fallback, keeping the native title visible.
+        expect(metadata.summary).toMatchObject({ text: 'Session imported-title' })
+    })
+
+    it('keeps a native session title in summary over the last user message', () => {
+        const { store, engine } = setup()
+        // transcript(): title is `Session <id>`; include a distinct last user message.
+        const source = transcript('login-fix', [userMessage('login-fix', 'entry-1', null, 'thanks', 1_000)])
+        const result = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+
+        const metadata = store.sessions.getSession(result.hapiSessionId!)!.metadata as Record<string, unknown>
+        expect(metadata.name).toBeUndefined()
+        // The native title wins over the last user message for display.
+        expect(metadata.summary).toMatchObject({ text: 'Session login-fix' })
+    })
+
+    it('falls back to the transcript title in summary when a session has no user message', () => {
+        const { store, engine } = setup()
+        const entry = toolResultMessage('imported-title-only-tools', 'entry-1', null, 'tool ping', 1_000)
+        const source = transcript('imported-title-only-tools', [entry])
+        const result = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+
+        const metadata = store.sessions.getSession(result.hapiSessionId!)!.metadata as Record<string, unknown>
+        expect(metadata.name).toBeUndefined()
+        expect(metadata.summary).toMatchObject({ text: 'Session imported-title-only-tools' })
+    })
+
+    it('keeps the manual-name slot free when a later extension-style summary arrives', () => {
+        const { store, engine } = setup()
+        const source = transcript('combo', [userMessage('combo', 'entry-1', null, 'thanks', 1_000)])
+        const first = importPiSession({ store, engine, namespace: 'default', machine: machine('machine-1'), transcript: source })
+        const sessionId = first.hapiSessionId!
+
+        // The Pi extension's setTitle syncs metadata.summary.text only (and does
+        // not touch name); simulate that write landing through the hub merge.
+        const stored = store.sessions.getSession(sessionId)!
+        store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...(stored.metadata as Record<string, unknown>), summary: { text: 'Agent title', updatedAt: 2_000 } },
+            stored.metadataVersion,
+            'default'
+        )
+
+        const after = store.sessions.getSession(sessionId)!.metadata as Record<string, unknown>
+        // The manual-name slot stays empty so the web title helper still prefers
+        // the agent title from summary over the import fallback.
+        expect(after.name).toBeUndefined()
+        expect(after.summary).toMatchObject({ text: 'Agent title' })
+    })
+
     it('preserves a custom HAPI session name during later Pi reconciliation', () => {
         const { store, engine } = setup()
         const source = transcript('native-renamed', [userMessage('native-renamed', 'entry-1', null, 'one', 1_000)])
