@@ -1814,6 +1814,12 @@ export function HappyComposer(props: {
     }, [isNarrowViewport, onModelChange, agentFlavor, selectedPiModel, model, modelOptions, selectedModelBase])
     const effortValueLabel = useMemo(() => {
         if (isNarrowViewport) return undefined
+        // Codex/OpenCode keep effort in modelReasoningEffort; same button, same wording.
+        if (showModelReasoningEffortSettings) {
+            if (!modelReasoningEffort) return t('composer.effortDefault')
+            const option = codexReasoningEffortOptions.find((candidate) => candidate.value === modelReasoningEffort)
+            return option?.label ?? modelReasoningEffort
+        }
         if (!onEffortChange || !supportsEffort(agentFlavor)) return undefined
         if (agentFlavor === 'agy' && !availableEffortOptions?.length) return undefined
         // Pi: without a resolved catalog entry there is no capability map to
@@ -1827,9 +1833,10 @@ export function HappyComposer(props: {
                 ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
                 : undefined
         }
+        if (!effort) return t('composer.effortDefault')
         const option = claudeEffortOptions.find((candidate) => candidate.value === effort)
-        return option?.label ?? (effort ? effort : undefined)
-    }, [isNarrowViewport, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions, availableEffortOptions])
+        return option?.label ?? effort
+    }, [isNarrowViewport, showModelReasoningEffortSettings, modelReasoningEffort, codexReasoningEffortOptions, t, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions, availableEffortOptions])
 
     // Wrapper for DOM onClick consumers: never leak the MouseEvent into the
     // `section` parameter (the gear must always open the full sheet).
@@ -2001,7 +2008,7 @@ export function HappyComposer(props: {
                         {sheetModelReasoningEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.reasoningEffort')}
+                                    {t('misc.effort')}
                                 </div>
                                 {codexReasoningEffortOptions.map((option) => (
                                     <button

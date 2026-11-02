@@ -429,7 +429,6 @@ export default {
   'newSession.opencodeModel.default': 'Default',
   'newSession.permission.managedTitle': 'Managed by agent',
   'newSession.permission.managedDesc': 'This agent manages its own permissions. YOLO mode is not available.',
-  'newSession.reasoningEffort': 'Reasoning effort',
   'newSession.collaborationMode': 'Collaboration mode',
   'newSession.copilotAgentMode': 'Agent mode',
   'newSession.fastMode': 'Fast mode',
@@ -708,6 +707,7 @@ export default {
 
   // Composer buttons
   'composer.settings': 'Settings',
+  'composer.effortDefault': 'Default effort',
   'composer.terminal': 'Terminal',
   'composer.abort': 'Abort',
   'composer.switchRemote': 'Switch to remote mode',
@@ -956,7 +956,7 @@ export default {
   'settings.display.sessionHeader.agent': 'Agent',
   'settings.display.sessionHeader.project': 'Project',
   'settings.display.sessionHeader.model': 'Model',
-  'settings.display.sessionHeader.reasoning': 'Reasoning effort',
+  'settings.display.sessionHeader.reasoning': 'Effort',
   'settings.display.sessionHeader.fastMode': 'Fast mode',
   'settings.display.sessionHeader.machine': 'Machine',
   'settings.display.sessionHeader.lastActive': 'Active time',
@@ -1203,7 +1203,6 @@ export default {
   'misc.permissionMode': 'Permission Mode',
   'misc.model': 'Model',
   'misc.otherModels': 'Other models',
-  'misc.reasoningEffort': 'Reasoning Effort',
   'misc.effort': 'Effort',
   'misc.fastMode': 'Fast Mode',
   'misc.fastModeStandard': 'Standard',
