@@ -24,8 +24,20 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setAppBadgeEnabled: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const hubSettingsFixture = {
+    sessionSummaryContract: false,
+    sessionSummaryInChat: false,
+    peerSpawnDefaults: {
+        agent: 'claude' as const,
+        permissionMode: 'bypassPermissions' as const,
+        models: { claude: 'sonnet' }
+    }
+}
+const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
+const updateHubSettings = vi.fn().mockResolvedValue({
+    ...hubSettingsFixture,
+    sessionSummaryContract: true
+})
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -218,8 +230,11 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue(hubSettingsFixture)
+        updateHubSettings.mockResolvedValue({
+            ...hubSettingsFixture,
+            sessionSummaryContract: true
+        })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -293,7 +308,7 @@ describe('responsive settings pages', () => {
         expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
-        expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()

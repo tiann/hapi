@@ -4,6 +4,7 @@ import {
     classifySessionAttention,
     sessionIsUnread,
 } from './sessionAttention'
+import { followSessionTail } from './sessionLastSeen'
 
 function makeSummary(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -117,11 +118,24 @@ describe('classifySessionAttention', () => {
         expect(attention).toEqual({ kind: 'unread' })
     })
 
-    it('does not show ordinary unread activity while the session is thinking', () => {
+    it('shows unseen output while the session is thinking', () => {
         expect(classifySessionAttention(
             makeSummary({ id: 'generating', thinking: true, contentRevision: 5000 }),
             { selected: false, lastSeenAt: 1000 }
-        )).toBeNull()
+        )).toEqual({ kind: 'unread' })
+    })
+
+    it('does not flash ordinary unread for a chat following its tail', () => {
+        const summary = makeSummary({ id: 'followed', thinking: true, contentRevision: 5000 })
+        const release = followSessionTail(summary.id)
+        try {
+            expect(classifySessionAttention(summary, { selected: true, lastSeenAt: 1000 })).toBeNull()
+            expect(classifySessionAttention(summary, { selected: true, lastSeenAt: 1000, manualUnreadAt: 0 }))
+                .toEqual({ kind: 'unread' })
+        } finally {
+            release()
+        }
+        expect(classifySessionAttention(summary, { selected: true, lastSeenAt: 1000 })).toEqual({ kind: 'unread' })
     })
 
     it('keeps an explicitly marked unread dot while a session is thinking', () => {
@@ -138,12 +152,20 @@ describe('classifySessionAttention', () => {
         )).toEqual({ kind: 'unread' })
     })
 
-    it('shows background work without treating it as unread', () => {
+    it('shows background work when no output is unseen', () => {
+        const attention = classifySessionAttention(
+            makeSummary({ id: 'a', backgroundTaskCount: 2, contentRevision: 5000 }),
+            { selected: false, lastSeenAt: 5000 }
+        )
+        expect(attention).toEqual({ kind: 'background' })
+    })
+
+    it('prefers unseen output over background work', () => {
         const attention = classifySessionAttention(
             makeSummary({ id: 'a', backgroundTaskCount: 2, contentRevision: 5000 }),
             { selected: false, lastSeenAt: 0 }
         )
-        expect(attention).toEqual({ kind: 'background' })
+        expect(attention).toEqual({ kind: 'unread' })
     })
 
     it('shows unread activity for inactive sessions updated since last seen', () => {
@@ -183,11 +205,11 @@ describe('sessionIsUnread', () => {
         )).toBe(false)
     })
 
-    it('is false for activity received while the session is thinking', () => {
+    it('is true for output received while the session is thinking', () => {
         expect(sessionIsUnread(
             makeSummary({ id: 'generating', thinking: true, contentRevision: 5000 }),
             { lastSeenAt: 1000 }
-        )).toBe(false)
+        )).toBe(true)
     })
 
     it('allows unread activity from an inactive session with a stale thinking flag', () => {
