@@ -1095,6 +1095,10 @@ export function HappyComposer(props: {
 
         restoredErrorIdRef.current = sendError.id
         restoredErrorSnapshotRef.current = { id: sendError.id, text: sendError.text, observed: false }
+        // Abort recovery can restore the same text as a still-pending
+        // successful send. Record it as newer draft state before the delayed
+        // settlement arrives so both live and durable cleanup preserve it.
+        if (sessionId) recordComposerDraftChange(sessionId)
         api.composer().setText(sendError.text)
         // `scheduledAt` is already absolute (presets resolve at send time), so
         // restore it through the normal controlled schedule path in the same

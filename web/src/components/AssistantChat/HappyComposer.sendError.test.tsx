@@ -399,7 +399,6 @@ function ComposerHarness(props: {
         reorderAttachments: () => runtime.attachmentReorder?.('new-attachment', 'second-attachment', 'after'),
         dictationSetText: (text) => runtime.dictationTextChange?.(text),
         abortRestore: (text) => {
-            setProgrammaticEditRevision((revision) => revision + 1)
             setSendError(fail(2, text, null, true))
         },
         acceptSend: () => {
