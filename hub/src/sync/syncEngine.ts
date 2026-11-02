@@ -567,7 +567,7 @@ export class SyncEngine {
             if (patchApplied) {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
-                this.reconcileOpenCodeDeliveryOwner(beforeMetadata, after)
+                this.reconcileSteerDeliveryOwner(beforeMetadata, after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -584,7 +584,7 @@ export class SyncEngine {
             // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
-            this.reconcileOpenCodeDeliveryOwner(beforeMetadata, after)
+            this.reconcileSteerDeliveryOwner(beforeMetadata, after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -689,19 +689,22 @@ export class SyncEngine {
         this.sessionCache.clearQueuedThinkingGrace(sessionId)
     }
 
-    private reconcileOpenCodeDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
+    private reconcileSteerDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
         const current = after?.metadata
-        if (before?.flavor !== 'opencode' || current?.flavor !== 'opencode') return
+        if ((before?.flavor !== 'opencode' && before?.flavor !== 'claude')
+            || current?.flavor !== before.flavor) return
         // Steer admission closes before an existing request finishes draining.
         // Only replacement of the owning worker ends its confirmation lease.
         if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
             || before.hostStartMarker !== current.hostStartMarker) {
-            this.markOpenCodeDispatchesUncertain(after)
+            this.markSteerDispatchesUncertain(after)
         }
     }
 
-    private markOpenCodeDispatchesUncertain(session: Session | undefined): void {
-        if (session?.metadata?.flavor !== 'opencode') return
+    private markSteerDispatchesUncertain(session: Session | undefined): void {
+        // These launchers own confirmation through a single worker. Shared-client
+        // runtimes have separate delivery ownership and are not fenced here.
+        if (session?.metadata?.flavor !== 'opencode' && session?.metadata?.flavor !== 'claude') return
         const localIds = this.store.messages.markDispatchingMessagesIndeterminate(session.id)
         if (localIds.length > 0) {
             this.eventPublisher.emit({ type: 'messages-indeterminate', sessionId: session.id, localIds })
@@ -728,7 +731,7 @@ export class SyncEngine {
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
-        this.markOpenCodeDispatchesUncertain(this.sessionCache.getSession(payload.sid))
+        this.markSteerDispatchesUncertain(this.sessionCache.getSession(payload.sid))
         if (payload.reason === 'completed') {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -1115,7 +1118,7 @@ export class SyncEngine {
             .filter((s): s is NonNullable<typeof s> => s != null)
             .sort((a, b) => (b.activeAt - a.activeAt) || (b.updatedAt - a.updatedAt))
         for (const session of sorted) {
-            this.markOpenCodeDispatchesUncertain(session)
+            this.markSteerDispatchesUncertain(session)
             this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive?.()
