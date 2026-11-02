@@ -2918,7 +2918,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
-    it('uses native IDs for text snapshots and does not forward unclassified v1 ACP text', async () => {
+    it('uses native IDs for text snapshots, preserves live forwarding, and does not forward unclassified v1 ACP text', async () => {
         const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
         const { session, agentMessages } = createSessionStub([{ message: 'first', mode: createMode() }]);
         const launcherPromise = opencodeRemoteLauncher(session as never);
@@ -2928,7 +2928,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         event('message.updated', { info: { id: 'answer', role: 'assistant', sessionID: 'acp-session-1' } });
         event('message.part.updated', { part: { id: 'stream-1', messageID: 'answer', sessionID: 'acp-session-1', type: 'text', text: 'partial' } });
         event('message.part.updated', { part: { id: 'stream-1', messageID: 'answer', sessionID: 'acp-session-1', type: 'text', text: 'partial settled', time: { end: 1 } } });
-        expect(agentMessages).toContainEqual({ type: 'message', message: 'partial', id: 'stream-1', streamSnapshot: true });
+        expect(agentMessages).toContainEqual({ type: 'message', message: 'partial', id: 'stream-1', streamSnapshot: true, live: true });
         expect(agentMessages).toContainEqual({ type: 'message', message: 'partial settled', id: 'stream-1', streamSnapshot: true });
         expect(agentMessages.some((message: unknown) => JSON.stringify(message).includes('unclassified ACP summary'))).toBe(false);
         expect(addMessage).not.toHaveBeenCalledWith('partial', 'assistant');
