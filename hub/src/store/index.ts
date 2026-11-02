@@ -16,6 +16,12 @@ import { UserStore } from './userStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import {
+    backfillMessageContentSearchLookup,
+    backfillMessageContentSearchShortIndex,
+    createMessageContentSearchTable,
+    rebuildMessageContentSearch
+} from './messageContentSearch'
 import { AttachmentStore, type StoredAttachment } from './attachments'
 
 type ScratchlistAttachmentMetadata = import('@hapi/protocol').ScratchlistAttachmentMetadata
@@ -82,11 +88,14 @@ function sameMessageIds(left: Set<string>, right: Set<string>): boolean {
     }
     return true
 }
-const SCHEMA_VERSION: number = 31
+const SCHEMA_VERSION: number = 32
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
+    'message_content_search',
+    'message_content_search_lookup',
+    'message_content_search_short',
     'message_epochs',
     'users',
     'push_subscriptions',
@@ -655,6 +664,7 @@ export class Store {
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
             30: () => this.migrateFromV30ToV31(),
+            31: () => this.migrateFromV31ToV32(),
         })
 
         if (currentVersion === 0) {
@@ -683,6 +693,14 @@ export class Store {
         }
 
         const stepMigrations = buildStepMigrations(false)
+        if (currentVersion === 26) {
+            this.migrateFromV26ToV30()
+            this.migrateFromV29ToV30()
+            this.migrateFromV30ToV31()
+            this.migrateFromV31ToV32()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
         if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
             for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
                 const step = stepMigrations[v]
@@ -966,6 +984,7 @@ export class Store {
                 ON session_turns(session_id)
                 WHERE ended_at IS NULL;
         `)
+        createMessageContentSearchTable(this.db)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -1376,6 +1395,8 @@ export class Store {
 
     /** v28→v29: persist a stable, user-input-only list ordering clock. */
     private migrateFromV28ToV29(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchShortIndex(this.db)
         const columns = this.getSessionColumnNames()
         if (columns.size === 0 || columns.has('last_user_message_at')) return
         this.db.transaction(() => {
@@ -1384,6 +1405,12 @@ export class Store {
                 backfillLastUserMessageAt(this.db)
             }
         })()
+    }
+
+    private migrateFromV26ToV30(): void {
+        this.migrateFromV26ToV27()
+        this.migrateFromV27ToV28()
+        this.migrateFromV28ToV29()
     }
 
     /**
@@ -1395,6 +1422,8 @@ export class Store {
      * still continue until then.
      */
     private migrateFromV27ToV28(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchLookup(this.db)
         // In the legacy branch sessions may not exist yet; createSchema adds
         // the table once it does.
         if (this.getSessionColumnNames().size === 0) return
@@ -1490,27 +1519,8 @@ export class Store {
         `)
     }
 
-    /** v29→v30: add Hub-resident durable attachment metadata and cleanup journal. */
+    /** v29→v30: add read-state revisions. */
     private migrateFromV29ToV30(): void {
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS attachments (
-                id TEXT PRIMARY KEY,
-                namespace TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                sha256 TEXT NOT NULL,
-                original_path TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
-                ON attachments(namespace, session_id, created_at);
-            CREATE TABLE IF NOT EXISTS attachment_deletions (
-                original_path TEXT PRIMARY KEY
-            );
-        `)
-
         const columns = this.getSessionColumnNames()
         for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
             if (columns.size > 0 && !columns.has(name)) {
@@ -1650,8 +1660,14 @@ export class Store {
         })()
     }
 
-    /** v30→v31: journal attachment creation before filesystem writes. */
+    /** v30→v31: create and backfill the message-content search index. */
     private migrateFromV30ToV31(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+    }
+
+    /** v31→v32: journal durable attachment creation before filesystem writes. */
+    private migrateFromV31ToV32(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
