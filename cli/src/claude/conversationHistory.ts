@@ -84,6 +84,11 @@ export function readNativeTurns(workingDirectory: string, sessionId: string): Na
     return turns
 }
 
+export function readCompletedNativeTurn(workingDirectory: string, sessionId: string, promptUuid?: string): NativeTurn | undefined {
+    if (!promptUuid) return undefined
+    return readNativeTurns(workingDirectory, sessionId).find(turn => turn.promptUuid === promptUuid)
+}
+
 export type RewindPlan = {
     resumeSessionAt?: string
 }

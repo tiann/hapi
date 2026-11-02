@@ -30,7 +30,7 @@ import {
     CLAUDE_CONVERSATION_HISTORY,
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
-import { hasDurableRewindBranch, hashRewindInput, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
+import { hasDurableRewindBranch, hashRewindInput, readCompletedNativeTurn, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 import { configuration } from '@/configuration';
 import { assertRewindCorrelation, pendingRewindRpcResult, withStagedRewindInput, withoutCancelledRewindInput, RewindIntentStore, type RewindDelivery, type RewindIntent } from './rewindIntent';
@@ -923,7 +923,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     sessionInstance.client.sendSessionEvent({ type: 'message', message: `Rewind could not complete: ${error}` })
                 }
                 resolveSessionReady(sessionInstance);
-                sessionInstance.onUserTurnCompleted = async (localIds) => {
+                sessionInstance.onUserTurnCompleted = async (localIds, nativePromptUuid) => {
                     if (localIds.length === 0 || !sessionInstance.sessionId) return
                     if (pendingRewind) {
                         if (sessionInstance.sessionId !== pendingRewind.nativeSessionId || !branchIsDurable(pendingRewind)) {
@@ -931,8 +931,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                         }
                         await commitPendingRewind()
                     }
-                    // The just-completed turn is the tail of the active chain.
-                    const turn = readNativeTurns(workingDirectory, sessionInstance.sessionId).at(-1)
+                    // A steered input can already be the native tail when Q's
+                    // result arrives. Bind Q only to its submitted prompt UUID.
+                    const turn = readCompletedNativeTurn(workingDirectory, sessionInstance.sessionId, nativePromptUuid)
                     if (!turn) return
                     // A joined batch is dropped natively as one turn: only its
                     // FIRST local id is a rewind point. Advertising later ones

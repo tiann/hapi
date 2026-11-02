@@ -55,7 +55,7 @@ Use explicit `queue` for non-urgent updates that can wait. Use `steer` for
 important, time-sensitive findings the peer needs to know now, not after its
 current turn: a correction that invalidates its assumptions, a blocker, or a
 result that changes its next action. State why it matters now and what the peer
-should adjust. Steer requires insertion into an active Pi, Codex, or Cursor ACP
+should adjust. Steer requires insertion into an active Claude (remote), Pi, Codex, or Cursor ACP
 turn; it does not abort that turn or guarantee an immediate response. MCP `ping_peer` accepts
 the same optional `deliveryMode: "auto" | "queue" | "steer"` field. Auto is
 resolved by the peer sender; ordinary web/native chat delivery is unchanged.

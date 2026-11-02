@@ -158,6 +158,36 @@ function createSession(
 }
 
 describe('claudeRemoteLauncher resume anchor', () => {
+    it('records the exact completed Q once before a deferred steer-ready and never replays it on failure', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        queue.push('Q', { permissionMode: 'default' }, 'q-local')
+        const completed = vi.fn(async (ids: string[], nativePromptUuid?: string) => {
+            expect(ids).toEqual(['q-local'])
+            expect(nativePromptUuid).toBe('q-native')
+        })
+        session.onUserTurnCompleted = completed
+        const delivered: string[] = []
+        harness.remoteImplementation = async opts => {
+            if (harness.callCount === 1) {
+                const q = await opts.nextMessage()
+                delivered.push(q.message)
+                opts.onInputSubmitted('q-native')
+                await opts.onResultAccepted()
+                expect(completed).toHaveBeenCalledTimes(1)
+                await opts.onReady()
+                throw new Error('stream failed after Q result and steer follow-up')
+            }
+            expect(queue.size()).toBe(0)
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(delivered).toEqual(['Q'])
+            expect(completed).toHaveBeenCalledTimes(1)
+        } finally { session.stopKeepAlive() }
+    })
+
     it('restarts a pending rewind with the first prompt launch settings before staging it', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, ['--resume-session-at', 'kept-boundary'])

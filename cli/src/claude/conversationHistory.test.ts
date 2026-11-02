@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof, hasDurableRewindBranch, hashRewindInput } from './conversationHistory'
+import { readCompletedNativeTurn, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof, hasDurableRewindBranch, hashRewindInput } from './conversationHistory'
 import { getProjectPath } from './utils/path'
 
 const CWD = '/tmp/rewind-fixture-project'
@@ -48,6 +48,26 @@ function writeTranscript(lines: string[]): string {
 }
 
 describe('readNativeTurns', () => {
+    it('binds a completed Q to its submitted UUID when a steered R is already the native tail', () => {
+        const root = writeTranscript([
+            prompt('q-native', 'Q'),
+            line({ type: 'assistant', uuid: 'q-answer', parentUuid: 'q-native', message: { role: 'assistant', content: [{ type: 'text', text: 'Q answer' }] } }),
+            line({ type: 'user', uuid: 'r-native', parentUuid: 'q-answer', message: { role: 'user', content: [{ type: 'text', text: 'steered R' }] } }),
+        ])
+        const previous = process.env.CLAUDE_CONFIG_DIR
+        try {
+            process.env.CLAUDE_CONFIG_DIR = root.replace(/\/projects$/, '')
+            expect(readNativeTurns(CWD, 'session-a').at(-1)?.promptUuid).toBe('r-native')
+            expect(readCompletedNativeTurn(CWD, 'session-a', 'q-native')).toEqual({ promptUuid: 'q-native', endUuid: 'q-answer' })
+            expect(readCompletedNativeTurn(CWD, 'session-a', 'missing')).toBeUndefined()
+            expect(readCompletedNativeTurn(CWD, 'session-a')).toBeUndefined()
+        } finally {
+            if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
+            else process.env.CLAUDE_CONFIG_DIR = previous
+            rmSync(root.replace(/\/projects$/, ''), { recursive: true, force: true })
+        }
+    })
+
     it('collects ordered turns from prompts and assistant entries only', () => {
         const root = writeTranscript([
             line({ type: 'queue-operation', uuid: 'q1' }),

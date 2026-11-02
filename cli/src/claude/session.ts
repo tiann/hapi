@@ -43,7 +43,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * reached). Reports the hub localIds of the completed batch so rewind
      * locators are only recorded for turns that really happened.
      */
-    onUserTurnCompleted: ((localIds: string[]) => void | Promise<void>) | null = null;
+    onUserTurnCompleted: ((localIds: string[], nativePromptUuid?: string) => void | Promise<void>) | null = null;
     /** Invoked when the native session id is dropped (/clear); rewind tracking must reset. */
     onNativeSessionReset: (() => void) | null = null;
     /**

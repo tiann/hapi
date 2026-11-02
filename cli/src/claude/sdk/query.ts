@@ -350,6 +350,7 @@ export function query(config: {
             fallbackModel,
             settingsPath,
             strictMcpConfig,
+            replayUserMessages,
             canCallTool,
             promptFailureCleanupTimeoutMs = DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS
         } = {}
@@ -400,6 +401,7 @@ export function query(config: {
         args.push('--print', stripNewlinesForWindowsShellArg(prompt.trim()))
     } else {
         args.push('--input-format', 'stream-json')
+        if (replayUserMessages) args.push('--replay-user-messages')
     }
 
     // Determine how to spawn Claude Code
