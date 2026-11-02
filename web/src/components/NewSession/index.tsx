@@ -393,6 +393,8 @@ export function NewSession(props: {
                 setOpencodeSelectedModel(hubModelForTarget)
             } else if (targetAgent === 'agy') {
                 setAgySelectedModel(hubModelForTarget)
+            } else if (targetAgent === 'dsh') {
+                setDshSelectedModel(hubModelForTarget)
             } else {
                 setModel(hubModelForTarget)
                 if (targetAgent === 'cursor') {
@@ -2312,6 +2314,7 @@ export function NewSession(props: {
                         ? `${t('newSession.model.loadFailed')}: ${dshModelsState.error}`
                         : null}
                     onModelChange={(value) => {
+                        editedModelRef.current = true
                         setDshSelectedModel(value === 'auto' ? null : value)
                     }}
                 />

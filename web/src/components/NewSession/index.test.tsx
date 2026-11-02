@@ -1964,6 +1964,76 @@ describe('NewSession launch preferences', () => {
         expect(screen.getByDisplayValue('codex')).toBeChecked()
     })
 
+    it.each(['untouched', 'default', 'concrete'] as const)(
+        'seeds delayed DSH model defaults while preserving an %s selection',
+        async (selection) => {
+            savePreferredAgent('dsh')
+            const hubModel = '["deepseek-official","deepseek-flash"]'
+            const pickedModel = '["deepseek-official","deepseek-v4-pro"]'
+            mocks.dshModels = [
+                { modelId: hubModel, name: 'DeepSeek-V41-Flash' },
+                { modelId: pickedModel, name: 'DeepSeek-V4-Pro' }
+            ]
+            mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+            let resolveSettings!: (value: unknown) => void
+            const deferred = new Promise((resolve) => {
+                resolveSettings = resolve
+            })
+            const slowApi = {
+                getHubSettings: vi.fn(() => deferred)
+            } as unknown as ApiClient
+            const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+            render(
+                <QueryClientProvider client={client}>
+                    <NewSession
+                        api={slowApi}
+                        machines={[machine]}
+                        initialMachineId="machine-1"
+                        initialDirectory="C:\\repo"
+                        onSuccess={mocks.onSuccess}
+                        onCancel={() => {}}
+                    />
+                </QueryClientProvider>
+            )
+
+            expect(screen.getByDisplayValue('dsh')).toBeChecked()
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            if (selection !== 'untouched') {
+                mocks.nextModelValue = selection === 'default' ? 'auto' : pickedModel
+                fireEvent.click(screen.getByTestId('model'))
+                expect(screen.getByTestId('model')).toHaveTextContent(mocks.nextModelValue)
+            }
+
+            await act(async () => {
+                resolveSettings({
+                    sessionSummaryContract: false,
+                    sessionSummaryInChat: false,
+                    peerSpawnDefaults: {
+                        agent: 'claude',
+                        permissionMode: 'default',
+                        models: { dsh: hubModel }
+                    }
+                })
+                await deferred
+            })
+
+            const expectedModel = selection === 'untouched'
+                ? hubModel
+                : selection === 'concrete' ? pickedModel : undefined
+            await waitFor(() => {
+                expect(screen.getByDisplayValue('dsh')).toBeChecked()
+                expect(screen.getByTestId('model')).toHaveTextContent(expectedModel ?? 'auto')
+            })
+            await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+            fireEvent.click(screen.getByTestId('create'))
+            await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+            expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+                agent: 'dsh',
+                model: expectedModel
+            }))
+        }
+    )
+
     it('preserves a saved Default model over a cached hub model', async () => {
         localStorage.clear()
         savePreferredAgent('claude')
