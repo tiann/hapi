@@ -64,6 +64,7 @@ import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowS
 import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
 import { useConsumedMessageTarget } from '@/lib/useConsumedMessageTarget'
 import { normalizeMessageSearchTarget } from '@/lib/messageSearchTarget'
+import { buildFileMentionSearchQuery } from '@/lib/file-search-query'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -693,7 +694,6 @@ function SessionPage() {
         sendMessage,
         retryMessage,
         isSending,
-        sendSettlement,
     } = useSendMessage(api, sessionId, {
         isSessionThinking: session?.thinking ?? false,
         onSuccess: (sentSessionId) => {
@@ -816,7 +816,12 @@ function SessionPage() {
 
             if ((agentType === 'codex' || agentType === 'copilot') && api && sessionId) {
                 return fileSuggestions(JSON.stringify([sessionId, agentType, search]), sessionHits, async () => {
-                    const response = await api.searchSessionFiles(sessionId, search, 50, context.signal)
+                    const response = await api.searchSessionFiles(
+                        sessionId,
+                        buildFileMentionSearchQuery(search),
+                        50,
+                        context.signal
+                    )
                     if (!response.success) throw new Error(response.error ?? 'File search failed')
                     const fileHits: Suggestion[] = []
                     if (response.files) {
@@ -939,7 +944,6 @@ function SessionPage() {
             isSyncingTail={messagesSyncingTail}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
-            sendSettlement={sendSettlement}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}

@@ -13,8 +13,9 @@ import SwiftUI
 /// SSE echo lands.
 struct QueuedMessagesBarView: View {
     let interactor: ChatInteractor
-    @Environment(\.hapiTheme) private var theme
-    @Environment(\.hapiTypography) private var typography
+    /// Measured height of the rows; nil until the first layout pass (one
+    /// row is the likely case, so that is the first guess).
+    @State private var contentHeight: CGFloat?
 
     var body: some View {
         let rows = interactor.queuedRows
@@ -28,9 +29,13 @@ struct QueuedMessagesBarView: View {
                                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                         }
                     }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        contentHeight = $0
+                    }
                 }
-                // About three rows; further ones scroll inside the card.
-                .frame(maxHeight: 140)
+                // A ScrollView is greedy: size it to its rows, capped at about
+                // three; further ones scroll inside the card.
+                .frame(height: min(contentHeight ?? 44, 140))
                 .scrollBounceBehavior(.basedOnSize)
                 .modifier(QueuedCardSurface())
                 .accessibilityElement(children: .contain)
