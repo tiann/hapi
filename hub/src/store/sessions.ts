@@ -65,7 +65,8 @@ const SIMPLE_RESUME_TOKENS = [
     'cursorSessionId',
     'kimiSessionId',
     'copilotSessionId',
-    'piSessionId'
+    'piSessionId',
+    'dshSessionId'
 ] as const
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
@@ -133,6 +134,24 @@ function preserveCursorProtocolPair(
     return merged
 }
 
+function preserveForkSummary(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    // A fork's provisional title is Hub-generated. CLI bootstrap writes are
+    // sparse and historically drop it, leaving the child titled by its path.
+    // Explicit `summary: null` or a replacement summary still wins.
+    if (next.summary !== undefined) return merged
+    const summary = prior.summary
+    if (!isPlainObject(summary) || typeof summary.text !== 'string' || !summary.text.startsWith('Fork: ')) {
+        return merged
+    }
+    const result = merged ?? { ...next }
+    result.summary = summary
+    return result
+}
+
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
@@ -142,6 +161,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
+    merged = preserveForkSummary(prior, next, merged)
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }

@@ -7,4 +7,9 @@
     <cache-path
         name="attachment_captures"
         path="attachments/" />
+    <!-- Generated media downloads (chat blocks): cache/generated-media/
+         files opened via ACTION_VIEW in external players. -->
+    <cache-path
+        name="generated_media"
+        path="generated-media/" />
 </paths>
