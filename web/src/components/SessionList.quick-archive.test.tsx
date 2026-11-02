@@ -85,3 +85,35 @@ describe('session row hover archive', () => {
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
     })
 })
+
+describe('session row hover archive progress', () => {
+    it('keeps the spinner until the archive settles, even after the row turns inactive', async () => {
+        let finishArchive: () => void = () => {}
+        const archiveSession = vi.fn(() => new Promise<void>((resolve) => { finishArchive = resolve }))
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const list = (session: SessionSummary) => (
+            <QueryClientProvider client={client}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <ToastProbe />
+                        <SessionList sessions={[session]} selectedSessionId={null} onSelect={vi.fn()}
+                            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+                            api={{ archiveSession } as Partial<ApiClient> as ApiClient} />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+        toasts = []
+        const { rerender } = render(list(makeSession({ id: 'idle' })))
+
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+        await waitFor(() => expect(archiveSession).toHaveBeenCalled())
+        // The hub reports the session inactive before cleanup is confirmed.
+        rerender(list(makeSession({ id: 'idle', active: false })))
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
+
+        await act(async () => finishArchive())
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull())
+        expect(toasts.map(toast => toast.title)).toEqual(['Session archived'])
+    })
+})

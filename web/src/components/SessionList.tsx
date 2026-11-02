@@ -1324,6 +1324,9 @@ const SessionItem = memo(function SessionItem(props: {
     // still goes through the confirmation, since archiving stops its agent.
     const [quickArchivePending, setQuickArchivePending] = useState(false)
     const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
+    // The row can turn inactive before the archive request settles (the hub
+    // still confirms cleanup); keep the spinner until it does.
+    const showQuickArchive = s.active || quickArchivePending
     const handleQuickArchive = async () => {
         if (archiveNeedsConfirmation) {
             setArchiveOpen(true)
@@ -1425,10 +1428,10 @@ const SessionItem = memo(function SessionItem(props: {
                         machineLabel={machineLabel}
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
-                        trailingClassName={s.active ? 'session-row-trailing' : undefined}
+                        trailingClassName={showQuickArchive ? 'session-row-trailing' : undefined}
                     />
                 </button>
-                {s.active ? (
+                {showQuickArchive ? (
                     <button
                         type="button"
                         className="session-row-quick-action absolute right-1 top-1.5 h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-wait"
