@@ -557,12 +557,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             let msg = await session.queue.waitForMessagesAndGetAsString(controller.signal);
 
                             if (msg) {
-                                // An effort-only change is applied to the running process;
-                                // if Claude refuses it, fall through to the restart below.
+                                // An effort-only change is applied to the running process.
+                                // The batch is already dequeued, so park it first: if Claude
+                                // refuses, times out or exits meanwhile, it stays in `pending`
+                                // and the next attempt starts with the new effort instead.
                                 const effortOnlyChange = Boolean(modeHash && msg.hash !== modeHash && !msg.isolate && mode
                                     && hashObject(claudeProcessModeKey(msg.mode)) === hashObject(claudeProcessModeKey(mode)));
-                                const effortApplied = effortOnlyChange && applyEffort !== null
-                                    && await applyEffort(msg.mode.effort ?? null);
+                                let effortApplied = false;
+                                if (effortOnlyChange && applyEffort !== null) {
+                                    const parked = msg;
+                                    pending = parked;
+                                    effortApplied = await applyEffort(parked.mode.effort ?? null) && pending === parked;
+                                    if (!effortApplied) {
+                                        logger.debug('[remote]: live effort change not applied, pending message');
+                                        return null;
+                                    }
+                                    pending = null;
+                                }
                                 if (((modeHash && msg.hash !== modeHash) || msg.isolate) && !effortApplied) {
                                     // Parked into `pending`, not handed to the
                                     // SDK -- deliberately NOT tracked as

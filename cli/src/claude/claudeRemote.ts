@@ -452,7 +452,9 @@ export async function claudeRemote(opts: {
                 })
             ]);
             nativeEffort = effort;
-            return true;
+            // A process that closed while we waited cannot take the prompt;
+            // report a restart so the launcher keeps the batch for the next one.
+            return !responseClosed && !inputEnded;
         } catch (e) {
             logger.debug(`[claudeRemote] apply_flag_settings effortLevel=${effort ?? 'default'} failed`, e);
             return false;

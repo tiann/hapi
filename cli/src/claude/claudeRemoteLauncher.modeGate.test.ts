@@ -16,6 +16,8 @@ const harness = vi.hoisted(() => ({
     spawns: [] as Array<{ permissionMode: string; effort?: string; messages: string[] }>,
     // Live effort applier handed to the launcher; null keeps the restart path.
     effortApplier: null as null | ((effort: string | null) => Promise<boolean>),
+    // Resolving this ends the current mock process while nextMessage() is pending.
+    exitProcess: null as null | (() => void),
     bailouts: 0,
     triggerSwitch: null as (() => void) | null,
     // Message text that, once consumed, ends the test by firing the switch RPC.
@@ -43,8 +45,11 @@ vi.mock('./claudeRemote', () => ({
             if (spawn.messages.includes(harness.finalMessage)) {
                 harness.triggerSwitch?.()
             }
-            const next = await opts.nextMessage()
-            if (!next) {
+            const exited = new Promise<'exited'>((resolve) => {
+                harness.exitProcess = () => resolve('exited')
+            })
+            const next = await Promise.race([opts.nextMessage(), exited])
+            if (next === 'exited' || !next) {
                 return
             }
             spawn.messages.push(next.message as string)
@@ -136,6 +141,7 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
         harness.bailouts = 0
         harness.triggerSwitch = null
         harness.effortApplier = null
+        harness.exitProcess = null
         harness.finalMessage = 'three'
         vi.clearAllMocks()
     })
@@ -174,6 +180,7 @@ describe('claudeRemoteLauncher live effort changes', () => {
         harness.bailouts = 0
         harness.triggerSwitch = null
         harness.effortApplier = null
+        harness.exitProcess = null
         harness.finalMessage = 'three'
         vi.clearAllMocks()
     })
@@ -220,6 +227,28 @@ describe('claudeRemoteLauncher live effort changes', () => {
             ['two', { permissionMode: 'default', effort: 'low' }]
         ], 'two')
 
+        expect(harness.spawns).toEqual([
+            { permissionMode: 'default', effort: 'high', messages: ['one'] },
+            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+        ])
+    })
+
+    it('keeps the prompt for the next process when Claude exits during the effort change', async () => {
+        const applied: Array<string | null> = []
+        harness.effortApplier = async (effort) => {
+            applied.push(effort)
+            // The process dies before answering; the applier then reports it closed.
+            harness.exitProcess?.()
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            return false
+        }
+
+        await run([
+            ['one', { permissionMode: 'default', effort: 'high' }],
+            ['two', { permissionMode: 'default', effort: 'low' }]
+        ], 'two')
+
+        expect(applied).toEqual(['low'])
         expect(harness.spawns).toEqual([
             { permissionMode: 'default', effort: 'high', messages: ['one'] },
             { permissionMode: 'default', effort: 'low', messages: ['two'] }
