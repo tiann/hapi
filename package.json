@@ -39,6 +39,7 @@
         "test:e2e:ui": "playwright test --ui",
         "test:mermaid-lightbox:playwright": "timeout 600 node scripts/dev/mermaid-lightbox-playwright.mjs",
         "test:mermaid-lightbox:live": "timeout 900 env HAPI_LIVE=1 playwright test -c web/playwright.live.config.ts",
+        "test:session-content-search:live": "timeout 900 env HAPI_LIVE=1 playwright test -c web/playwright.content-search.live.config.ts",
         "seed:mermaid-lightbox:session": "bun run scripts/dev/mermaid-lightbox-seed-session-db.ts",
         "gen:fixtures": "cd web && bun scripts/generate-fixtures.ts",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
