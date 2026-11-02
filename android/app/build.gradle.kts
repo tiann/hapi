@@ -171,6 +171,9 @@ dependencies {
     // Generated images (chat, B-M2d2): loader wired in HubGraph over the
     // authed + disk-cached hub image client.
     implementation(libs.coil.compose)
+    // Generated media (chat, C): raw byte download of non-image generated
+    // media (video/audio/file) through the same authed hub client Coil uses.
+    implementation(libs.okhttp)
 
     // FCM push + notification actions (B-M4a). firebase-messaging is always on
     // the classpath; whether it *activates* depends on google-services.json
@@ -208,4 +211,6 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // Generated media fetch tests: real HTTP round-trip against localhost.
+    testImplementation(libs.okhttp.mockwebserver)
 }
