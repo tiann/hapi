@@ -84,7 +84,7 @@ describe('user-only completed fork boundary', () => {
         ctx.allowInactiveFork = true
         mount()
         expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
-        await confirmFork()
+        await requestFork()
         expect(onFork.mock.calls[0]).toEqual([])
     })
 
@@ -96,7 +96,7 @@ describe('user-only completed fork boundary', () => {
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = false
         try {
             mount()
-            await confirmFork()
+            await requestFork()
         } finally { ctx.metadata.capabilities.conversationHistory.forkCurrent = true }
     })
 
