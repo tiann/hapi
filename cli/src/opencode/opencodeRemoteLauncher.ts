@@ -859,20 +859,25 @@ ${messageText}`;
             }];
 
             const promptStartedAt = performance.now();
+            let promptDurationMs = 0;
             this.roundSummaryPhase = 'prompt';
             session.onThinkingChange(true);
 
             try {
-                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
-                    this.handleAgentMessage(message);
-                });
+                try {
+                    await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
+                        this.handleAgentMessage(message);
+                    });
+                } finally {
+                    promptDurationMs = performance.now() - promptStartedAt;
+                    this.roundSummaryPhase = 'settle';
+                }
                 await this.nativeTranscript?.refresh();
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);
                 this.reportPromptFailure(error);
             } finally {
-                this.roundSummaryPhase = 'settle';
                 if (
                     this.roundSummaryAbortController === roundSummaryAbortController
                     && !roundSummaryAbortController.signal.aborted
@@ -886,7 +891,7 @@ ${messageText}`;
                             sessionId: acpSessionId,
                             promptText: messageText,
                             snapshot: roundSnapshot,
-                            durationMs: performance.now() - promptStartedAt,
+                            durationMs: promptDurationMs,
                             signal: roundSummaryAbortController.signal
                         }),
                         roundSummaryAbortController

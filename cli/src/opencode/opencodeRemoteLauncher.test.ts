@@ -6,6 +6,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { getOpencodeNativeToolInstruction } from './utils/systemPrompt';
 
 const harness = vi.hoisted(() => ({
+    transcriptFetchImpl: null as null | (() => Promise<Response>),
     servePid: null as number | null,
     servePidCalls: [] as number[][],
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
@@ -256,7 +257,9 @@ vi.mock('./utils/opencodeNativeTranscript', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./utils/opencodeNativeTranscript')>();
     return { OpencodeNativeTranscript: class extends actual.OpencodeNativeTranscript {
         constructor(options: ConstructorParameters<typeof actual.OpencodeNativeTranscript>[0]) {
-            super({ ...options, fetchImpl: (async () => Response.json([])) });
+            super({ ...options, fetchImpl: async () => harness.transcriptFetchImpl
+                ? await harness.transcriptFetchImpl()
+                : Response.json([]) });
         }
     } };
 });
@@ -523,6 +526,7 @@ function createClearMode(): OpencodeMode {
 }
 
 afterEach(async () => {
+    harness.transcriptFetchImpl = null;
     harness.setModelArgs = [];
     harness.setConfigOptionArgs = [];
     harness.promptCount = 0;
@@ -2682,6 +2686,60 @@ describe('selectAbortStatusMessage', () => {
 
         expect(sentAgentMessages).toEqual([]);
         expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+    it('preserves queued prompts when Stop arrives during post-prompt native transcript refresh', async () => {
+        const transcriptRead: { release: (() => void) | null } = { release: null };
+        let readHeld = false;
+        harness.transcriptFetchImpl = async () => {
+            if (!readHeld && harness.events.includes('prompt:end')) {
+                readHeld = true;
+                return new Promise<Response>((resolve) => {
+                    transcriptRead.release = () => resolve(Response.json([]));
+                });
+            }
+            return Response.json([]);
+        };
+        const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first prompt before transcript read', mode: createMode() }
+        ], { keepOpen: true });
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        while (!transcriptRead.release || !rpcHandlers.has(RPC_METHODS.Abort)) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.push('queued after transcript read', createMode());
+        await (rpcHandlers.get(RPC_METHODS.Abort) as () => Promise<void>)();
+        transcriptRead.release();
+        for (let attempt = 0; attempt < 50 && !JSON.stringify(harness.promptContents).includes('queued after transcript read'); attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.close();
+        await launchPromise;
+        try {
+            expect(JSON.stringify(harness.promptContents)).toContain('queued after transcript read');
+            expect(harness.cancelPrompt).not.toHaveBeenCalled();
+            expect(addMessage).not.toHaveBeenCalledWith('Turn aborted', 'status');
+        } finally {
+            addMessage.mockRestore();
+        }
+    });
+
+    it('excludes native transcript read latency from round prompt duration', async () => {
+        let clock = 0;
+        const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+        harness.promptImpl = async () => { clock = 25; };
+        harness.transcriptFetchImpl = async () => {
+            if (harness.events.includes('prompt:end')) clock = 5025;
+            return Response.json([]);
+        };
+        const { session } = createSessionStub([{ message: 'duration before transcript read', mode: createMode() }]);
+        try {
+            await opencodeRemoteLauncher(session as never);
+            expect(roundSummaryHarness.summaryCalls[0]?.durationMs).toBe(25);
+        } finally {
+            now.mockRestore();
+        }
     });
 
     it('plain Stop during post-prompt summary settlement preserves the queued next prompt without reporting a false abort', async () => {
