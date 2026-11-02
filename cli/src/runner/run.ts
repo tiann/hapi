@@ -1255,7 +1255,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // of old registry entries. Per-record tasklist/CIM calls made three
           // reads of nine retired runtimes exceed the 30s StopSession RPC.
           // Read the registry first, then snapshot; never reuse it across scans.
-          const live = readStopRuntimeCandidates(records, sessionId);
+          const live = await readStopRuntimeCandidates(records, sessionId);
           logger.debug('[RUNNER RUN] Runtime stop scan', { sessionId, records: records.length, live: live.length, elapsedMs: Date.now() - scanStarted });
           return live;
         } catch (error) {
