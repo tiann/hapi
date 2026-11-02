@@ -10,7 +10,8 @@ This README covers development builds.
 ## Current capabilities
 
 The app provides sessions/chat, approvals and questions, new sessions,
-attachments, scheduled sends, `/` command suggestions, files/Git, Scratchlist, standard dictation, usage/storage,
+attachments, scheduled sends, `/` command suggestions, `@` session/file references,
+files/Git, Scratchlist, standard dictation, usage/storage,
 settings and encrypted APNs notifications. It pairs with multiple hubs and
 keeps one active. The chat's … menu also forks the conversation, rewinds or
 forks at a loaded user message with a native history point (a separate sheet,
@@ -19,6 +20,15 @@ Files save panel (Markdown export stays web-only). Session lists support machine
 archive (active) or reopen/delete (inactive), from the row's context menu or the
 chat's … menu; sending to an inactive session or reopening it can resume it and
 migrate the draft/navigation when the returned session ID changes.
+
+Agent-displayed media (`display_image`, `display_video`, `display_media`) uses
+MIME-based cards: images load automatically, while video, audio and other files
+load only on request. Video/audio use native playback controls without autoplay;
+leaving the row or backgrounding the app pauses playback. Loaded files can be
+saved/shared, and supported documents open in Quick Look. Media that iOS cannot
+decode (including unsupported WebM codecs) still offers save/share. Downloads use
+the authenticated hub API, then private temporary files with a bounded per-chat
+cache; the generated-media endpoint must still be available when first loading.
 
 Model, permission and Codex collaboration controls follow the session's agent/capabilities;
 usage/storage require the owner namespace. See the [native app guide](../docs/guide/native-apps.md)
@@ -144,8 +154,9 @@ The app supports multiple hubs with one active selection. See the
   an already-paired hub can be selected directly.
 - **Simulator:** use manual entry because `DataScannerViewController` is
   unavailable. Camera pairing is optional on physical devices too.
-- **Sign out:** home → hub menu removes that hub's credentials and falls back
-  to another paired hub or pairing. A rejected access token, or a freshly
+- **Hubs:** Settings → Hubs switches between paired hubs and adds another.
+- **Sign out:** Settings → Hubs → Sign Out removes that hub's credentials and
+  falls back to another paired hub or pairing. A rejected access token, or a freshly
   issued JWT rejected again, triggers re-pairing. Temporary network/5xx refresh
   failures retain credentials.
 
@@ -276,6 +287,30 @@ uses `AnchoredTranscriptList` (`UICollectionView` with SwiftUI hosting) and
 prepares Markdown off the main thread; see
 [native transcript scrolling](../docs/native-chat-scrolling.md).
 
+## Composer references
+
+Type `@` at the start of a word to find another conversation on the active hub.
+The picker follows Web eligibility/search/ranking: conversations with content
+(including untitled ones), no empty stubs/current session/duplicate native-agent
+sessions, and archived conversations only once a search is typed. Codex and
+Copilot additionally search session files (50 results, best-effort); session
+suggestions stay available while file search is pending or fails.
+
+Selecting replaces only the token at the caret and preserves surrounding text.
+Session references are editable Markdown `[title](/sessions/id)` using the same
+wire format as Web rich mentions; native input does not render inline chips.
+Codex files insert `@"path"` with escaping; Copilot inserts `@path`. Drafts,
+queueing, scheduled sends and Scratchlist retain the serialized reference text.
+Suggestions close during text selection, IME composition, blur and Scratchlist
+input. The selection-aware native editor retains the one-to-six-line layout.
+
+Regression suites: package `ComposerMentionSuggestionsTests`,
+`ComposerMentionFilesTests`, `SessionMentionMetadataTests` and the mention cases
+in `ChatInteractorTests`; app-hosted `ComposerMentionPresentationTests` covers
+caret replacement, focus, marked text and layout. On a connected device, check
+Chinese input, VoiceOver selection, file lookup with an offline CLI, and send a
+reference from each supported file-mention agent.
+
 ## Scratchlist workflow
 
 The composer tray toggles a session-local `chat` / `scratchlist` destination.
@@ -352,10 +387,14 @@ sidebar requests 280–360pt (320pt ideal); the system collapses the same view
 hierarchy in compact windows. Foldable iPhones (iPhone Duo) use the same split
 once `UIHingeInteraction` (iOS 27.1+) reports a hinge: unfolded shows both
 columns, folded collapses to the phone stack without recreating the chat. Other
-iPhones keep their single `NavigationStack`. A side-by-side sidebar drops its
-inline "Sessions" title and moves the filter beside the hub menu, because the
-system sidebar toggle shares the trailing edge. On the folded Duo's 678pt outer
-screen the system moves Back and toolbar actions into a vertical side bar, so
+iPhones keep their single `NavigationStack`. The phone-width session list puts
+Settings on the leading edge and the filter on the trailing edge; on iOS 26+
+New Session sits beside the bottom search field (as in Messages), while iOS
+17/18 keeps it in the top bar. A side-by-side sidebar drops its inline
+"Sessions" title, keeps search at its top and moves the filter beside
+Settings, because the system sidebar toggle shares the trailing edge. On the
+folded Duo's 678pt outer screen the system moves Back and toolbar actions into
+a vertical side bar, so
 the session list drops its "Sessions" title (the empty top bar disappears) and
 the chat uses the leading-aligned system title/subtitle instead of the centered
 custom header (no agent icon). The chat title minimizes once the reader scrolls
@@ -601,7 +640,7 @@ TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
 Home keeps a fixed Sessions title: hub switching on the leading edge,
 Filters and New Session on the trailing edge. The native menu offers an
 **Unread Only** lens, machine single-selection (two or more machines) and
-**Mark All as Read** (local watermarks, confirmed first); only applied filters
+**Mark All as Read** (shared read state, confirmed first); only applied filters
 add a summary line. The unread lens keeps the iPad's selected chat listed.
 The search field (`.searchable`) ranks matches with the web relevance rules
 (`SessionListSearch`: title, worktree, summary, agent, machine, path and id;
@@ -632,3 +671,7 @@ TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
   with `CODE_SIGNING_ALLOWED=NO`.
 - CI uses the runner's default Xcode; each job prints `xcodebuild -version`
   first so failures are attributable to a toolchain bump.
+
+Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
+Only a foreground transcript laid out at the latest tail acknowledges content.
+Local pending reads persist before the dot clears and retry when connectivity returns.

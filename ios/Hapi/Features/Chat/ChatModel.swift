@@ -55,6 +55,9 @@ final class ChatModel {
     private(set) var warning: String?
     /// Bumps on tail-side content changes.
     private(set) var tailRevision = 0
+    private(set) var readThroughRevision: Int?
+    private(set) var renderedReadState: SessionReadState?
+    private var displayedReadRevision: Int?
     /// Bumps when an older page was prepended (drives scroll re-anchoring).
     private(set) var historyVersion = 0
     private(set) var historyPaging = ChatHistoryPagingState()
@@ -164,7 +167,7 @@ final class ChatModel {
     /// Transcripts append to the composer; failures surface as notices.
     let dictation: DictationController
     @ObservationIgnored private let pipeline = ChatPipeline()
-    @ObservationIgnored let imageLoader: GeneratedImageLoader
+    @ObservationIgnored let mediaLoader: GeneratedMediaLoader
     @ObservationIgnored let presentationState = ChatPresentationState()
     @ObservationIgnored let markdownCache = MarkdownRenderCache()
     @ObservationIgnored private var previousMarkdownSources: Set<String> = []
@@ -191,6 +194,8 @@ final class ChatModel {
     @ObservationIgnored private var lastEpoch: Int?
     @ObservationIgnored private var historyPumpScheduled = false
     @ObservationIgnored private var isActive = false
+    @ObservationIgnored private var wantsTailFollowing = false
+    @ObservationIgnored private var registeredTailFollowing = false
     @ObservationIgnored private var everStarted = false
 
     init(session: HubSession, sessionId: String) {
@@ -202,7 +207,7 @@ final class ChatModel {
             api: session.api,
             recorder: AVAudioRecorderDictation()
         )
-        self.imageLoader = GeneratedImageLoader(api: session.api, sessionId: sessionId)
+        self.mediaLoader = GeneratedMediaLoader(api: session.api, sessionId: sessionId)
         self.scratchlistAttachments = ScratchlistAttachmentLoader(api: session.api, sessionId: sessionId)
         self.header = ChatHeaderUI(
             title: String(sessionId.prefix(8)),
@@ -256,6 +261,7 @@ final class ChatModel {
         guard !isActive else { return }
         let preservingHistory = everStarted && (!followsTail || hasTrimmedTail)
         isActive = true
+        syncTailFollowing()
         if everStarted {
             // Coming back from a stop (e.g. a full-screen cover fired the
             // screen's disappear): fresh wiring, resumed at the saved cursor.
@@ -272,6 +278,9 @@ final class ChatModel {
                 // retry action. A second toast obscures the same input area.
                 if message != self.interactor.scratchlistError { self.showNotice(message) }
             }
+        }
+        interactor.onDirectSendsChanged = { [weak self] in
+            self?.scheduleRecompute()
         }
         interactor.activate()
         dictation.onEvent = { [weak self] event in
@@ -317,6 +326,8 @@ final class ChatModel {
     func stop() {
         guard isActive else { return }
         isActive = false
+        syncTailFollowing()
+        displayedReadRevision = nil
         statesTask?.cancel()
         statesTask = nil
         pipelineTask?.cancel()
@@ -351,11 +362,46 @@ final class ChatModel {
 
     // MARK: - Actions
 
+    func resetDisplayedReadReceipt() { displayedReadRevision = nil }
+
+    /// The conditions under which `markDisplayed` acknowledges new tail output.
+    var followsReadableTail: Bool {
+        followsTail && !isInspectingContent && !isSyncingTail && !isInitialLoading
+            && !loadFailed && warning == nil && !hasTrimmedTail
+    }
+
+    /// Hides this session's list dot while output it will acknowledge renders.
+    func setTailFollowing(_ value: Bool) {
+        wantsTailFollowing = value
+        syncTailFollowing()
+    }
+
+    private func syncTailFollowing() {
+        let value = wantsTailFollowing && isActive
+        guard value != registeredTailFollowing else { return }
+        registeredTailFollowing = value
+        hub.lastSeenStore.setFollowingTail(sessionId, value)
+    }
+
+    /// Called by the laid-out transcript, with the revision belonging to its rows.
+    func markDisplayed(revision: Int?, serverState: SessionReadState?) {
+        guard isActive, followsReadableTail, let revision, revision != displayedReadRevision else { return }
+        displayedReadRevision = revision
+        Task {
+            await hub.lastSeenStore.markSeen(sessionId: sessionId, revision: revision, serverState: serverState)
+            if let error = hub.lastSeenStore.persistenceError {
+                displayedReadRevision = nil
+                showNotice(error)
+            }
+        }
+    }
+
     func readingViewportChanged(followsTail: Bool, needsOlder: Bool, isAwayFromBottom: Bool) {
         let followsTail = isInspectingContent ? false : followsTail
         let needsOlder = isInspectingContent ? false : needsOlder
         let changedMode = self.followsTail != followsTail
         self.followsTail = followsTail
+        if !followsTail { displayedReadRevision = nil }
         self.isAwayFromBottom = !followsTail && isAwayFromBottom
         viewportNeedsOlder = needsOlder
         if changedMode, !isJumpingToLatest, let controller = chat.windowController {
@@ -536,7 +582,8 @@ final class ChatModel {
                 let visible = await pipeline.run(
                     messages: window.messages,
                     agentState: detail?.agentState,
-                    hasMoreMessages: window.hasMore
+                    hasMoreMessages: window.hasMore,
+                    directSendLocalIds: interactor.directSendLocalIds
                 )
                 let sources = Set(visible.flatMap { block -> [String] in
                     guard case .block(let value) = block else { return [] }
@@ -625,13 +672,8 @@ final class ChatModel {
         isInitialLoading = isEmpty && !syncSettled && window.warning == nil
         loadFailed = isEmpty && syncSettled && (window.warning != nil || detailLoadFailed)
 
-        // Watermark = the updatedAt currently on screen, from whichever cache
-        // is fresher (summary via the global pipe, detail via this one).
-        // markSeen is monotonic, so stale inputs cannot rewind it.
-        let updatedAt = max(detail?.updatedAt ?? 0, summary?.updatedAt ?? 0)
-        if updatedAt > 0 && !isInspectingContent {
-            hub.lastSeenStore.markSeen(sessionId: sessionId, seenAt: updatedAt)
-        }
+        readThroughRevision = window.readThroughRevision
+        renderedReadState = SessionReadState.merge(detail?.readState, summary?.readState)
     }
 
     // MARK: - Header derivation (Android `buildHeader` port)

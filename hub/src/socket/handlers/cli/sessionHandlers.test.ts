@@ -460,7 +460,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn', 'promptTitle'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -480,7 +480,8 @@ describe('cli session handlers', () => {
                         ? 'foreign-session'
                         : field === 'opencodeClearOperation'
                             ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
-                            : field === 'titleSuggestionTurn' ? { first: false, completed: true } : 1234
+                            : field === 'titleSuggestionTurn' ? { first: false, completed: true }
+                                : field === 'promptTitle' ? 'Forged title' : 1234
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -518,7 +519,8 @@ describe('cli session handlers', () => {
         const session = store.sessions.getOrCreateSession('preserve-auto-title-marker', {
             path: '/tmp/project',
             titleSuggestionAutoAttemptedAt: 1234,
-            titleSuggestionTurn: { first: true, completed: false }
+            titleSuggestionTurn: { first: true, completed: false },
+            promptTitle: 'Fix the login bug'
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -535,7 +537,8 @@ describe('cli session handlers', () => {
 
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             titleSuggestionAutoAttemptedAt: 1234,
-            titleSuggestionTurn: { first: true, completed: false }
+            titleSuggestionTurn: { first: true, completed: false },
+            promptTitle: 'Fix the login bug'
         })
     })
 })
