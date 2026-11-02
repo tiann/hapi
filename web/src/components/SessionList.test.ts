@@ -765,3 +765,44 @@ describe('session list user-activity ordering', () => {
         expect(bucketRunningSessions(sessions.map(s => ({ ...s, updatedAt: 200_000 })), true).working.map(s => s.id)).toEqual(['new', 'old'])
     })
 })
+
+describe('session list sort and filter view', () => {
+    const session = (id: string, extra: Partial<SessionSummary> & { path?: string } = {}) => {
+        const { path = '/proj', ...rest } = extra
+        return makeSession({ id, createdAt: 1_000, lastUserMessageAt: 1_000, updatedAt: 1_000, metadata: { path }, ...rest })
+    }
+    const ids = (sessions: SessionSummary[], view: Parameters<typeof groupSessionsByDirectory>[1]) =>
+        groupSessionsByDirectory(sessions, view).flatMap(g => g.sessions.map(s => s.id))
+
+    it('orders by last message, creation time or latest activity', () => {
+        const sessions = [
+            session('old-chatty', { createdAt: 1_000, lastUserMessageAt: 9_000, updatedAt: 9_000 }),
+            session('new-quiet', { createdAt: 5_000, lastUserMessageAt: 5_000, updatedAt: 5_000 }),
+            session('agent-busy', { createdAt: 2_000, lastUserMessageAt: 3_000, updatedAt: 20_000 })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: false })).toEqual(['old-chatty', 'new-quiet', 'agent-busy'])
+        expect(ids(sessions, { sort: 'created', activeFirst: false })).toEqual(['new-quiet', 'agent-busy', 'old-chatty'])
+        expect(ids(sessions, { sort: 'activity', activeFirst: false })).toEqual(['agent-busy', 'old-chatty', 'new-quiet'])
+    })
+
+    it('puts active sessions and projects ahead of archived ones when active-first is on', () => {
+        const sessions = [
+            session('archived-recent', { lastUserMessageAt: 9_000, path: '/a' }),
+            session('active-older', { lastUserMessageAt: 2_000, path: '/a', active: true }),
+            session('archived-project', { lastUserMessageAt: 8_000, path: '/b' }),
+            session('active-project', { lastUserMessageAt: 1_000, path: '/c', active: true })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: true }))
+            .toEqual(['active-older', 'archived-recent', 'active-project', 'archived-project'])
+        expect(ids(sessions, { sort: 'last-message', activeFirst: false }))
+            .toEqual(['archived-recent', 'active-older', 'archived-project', 'active-project'])
+    })
+
+    it('still keeps manual pins first when active-first is on', () => {
+        const sessions = [
+            session('active', { active: true }),
+            session('pinned-archived', { pinned: true })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: true })).toEqual(['pinned-archived', 'active'])
+    })
+})

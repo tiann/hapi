@@ -84,13 +84,14 @@ import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
-import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
+import { DEFAULT_SESSION_LIST_VIEW, useSessionListView, type SessionListView } from '@/hooks/useSessionListView'
+import { SessionListViewMenu } from '@/components/SessionListViewMenu'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import {
     compareDescWithKeyTiebreak,
-    compareSessionsByOrderKeyDesc,
-    getSessionOrderKey
+    compareSessionsByOrderKeyDesc
 } from '@hapi/protocol'
+import { createSessionComparator, filterSessionsByStatus, getSessionSortKey } from '@/lib/sessionListOrder'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
@@ -420,8 +421,15 @@ export function getPreviousSessionVisibleCount(current: number, step: number): n
     return Math.max(normalizedStep, current - normalizedStep)
 }
 
-// Group structure is unchanged; output and liveness never change its order.
-export function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
+// Without a view this is the long-standing order: by the user's last message,
+// so agent output and liveness never reorder the list.
+const LEGACY_LIST_ORDER: Pick<SessionListView, 'sort' | 'activeFirst'> = { sort: 'last-message', activeFirst: false }
+
+export function groupSessionsByDirectory(
+    sessions: SessionSummary[],
+    order: Pick<SessionListView, 'sort' | 'activeFirst'> = LEGACY_LIST_ORDER
+): SessionGroup[] {
+    const compare = createSessionComparator(order)
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
@@ -442,10 +450,10 @@ export function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGro
         .map(([key, group]) => {
             const sortedSessions = [...group.sessions].sort((a, b) => {
                 if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
-                return compareSessionsByOrderKeyDesc(a, b)
+                return compare(a, b)
             })
             const latestOrderAt = group.sessions.reduce(
-                (max, s) => Math.max(max, getSessionOrderKey(s)),
+                (max, s) => Math.max(max, getSessionSortKey(s, order.sort)),
                 -Infinity
             )
             const hasActiveSession = group.sessions.some(s => s.active)
@@ -466,6 +474,9 @@ export function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGro
         .sort((a, b) => {
             if (a.hasPinnedSession !== b.hasPinnedSession) {
                 return a.hasPinnedSession ? -1 : 1
+            }
+            if (order.activeFirst && a.hasActiveSession !== b.hasActiveSession) {
+                return a.hasActiveSession ? -1 : 1
             }
             return compareDescWithKeyTiebreak(
                 { key: a.key, order: a.latestOrderAt },
@@ -1457,7 +1468,8 @@ export function SessionList(props: {
     } = props
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
-    const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
+    const { view: listView, setView: setListView } = useSessionListView()
+    const listComparator = useMemo(() => createSessionComparator(listView), [listView])
     const lastSeenVersion = useSessionLastSeenVersion()
     // Transient unread lens — not a Settings preference. Cleared on reload; rows drop as they're seen.
     const [showUnreadOnly, setShowUnreadOnly] = useState(false)
@@ -1546,10 +1558,8 @@ export function SessionList(props: {
         [props.sessions, selectedSessionId]
     )
     const allSessions = useMemo(
-        () => showActiveSessionsOnly
-            ? filterActiveSessionsOnly(sidebarSessions, selectedSessionId)
-            : sidebarSessions,
-        [sidebarSessions, selectedSessionId, showActiveSessionsOnly]
+        () => filterSessionsByStatus(sidebarSessions, listView.status, selectedSessionId),
+        [sidebarSessions, selectedSessionId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -1669,17 +1679,17 @@ export function SessionList(props: {
         if (searchScoreIndex && hasTextQuery) {
             return sortSessionsBySearchRelevance(pinned, searchScoreIndex)
         }
-        return [...pinned].sort(compareSessionsByOrderKeyDesc)
-    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery])
+        return [...pinned].sort(listComparator)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
     const runningSessions = useMemo(() => {
         const byRelevanceOrRecent = (a: SessionSummary, b: SessionSummary) => {
             if (searchScoreIndex && hasTextQuery) {
                 return compareSessionsBySearchRelevance(a, b, searchScoreIndex)
             }
-            return compareSessionsByOrderKeyDesc(a, b)
+            return listComparator(a, b)
         }
         return bucketRunningSessions(machineFilteredSessions, pinInProgressSessions, byRelevanceOrRecent)
-    }, [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery])
+    }, [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery, listComparator])
     const runningSessionTotal = runningSessions.working.length
         + runningSessions.pending.length
     const activeSessionTotal = runningSessions.active.length + runningSessions.idle.length
@@ -1690,14 +1700,15 @@ export function SessionList(props: {
                     if (session.globalPinned) return false
                     if (pinInProgressSessions && !session.pinned && isPinnedInProgressSession(session)) return false
                     return true
-                })
+                }),
+                listView
             )
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
             return grouped
         },
-        [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery]
+        [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery, listView]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -1706,9 +1717,10 @@ export function SessionList(props: {
     // unread filters stay consistent.
     const allDirectoryGroups = useMemo(
         () => groupSessionsByDirectory(
-            machineFilteredSessions.filter((session) => !session.globalPinned)
+            machineFilteredSessions.filter((session) => !session.globalPinned),
+            listView
         ),
-        [machineFilteredSessions]
+        [machineFilteredSessions, listView]
     )
     const actionOnlyGroups = useMemo(() => {
         if (!pinInProgressSessions) {
@@ -1735,6 +1747,9 @@ export function SessionList(props: {
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
         if (isFiltering) return false
+        // Archived-only would otherwise collapse every group (none has an
+        // active session), hiding exactly what was asked for.
+        if (listView.status === 'archived') return false
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
@@ -2382,6 +2397,18 @@ export function SessionList(props: {
                                         </button>
                                     )
                                 })
+                                definedSlots.push({
+                                    id: 'view',
+                                    keep: 5,
+                                    widthPx: slotWidth('view', TOOLBAR_ICON_PX),
+                                    node: (
+                                        <SessionListViewMenu
+                                            view={listView}
+                                            onChange={setListView}
+                                            onReset={() => setListView(DEFAULT_SESSION_LIST_VIEW)}
+                                        />
+                                    )
+                                })
                                 if (renderHeader) {
                                     definedSlots.push({
                                         id: 'new',
@@ -2515,7 +2542,7 @@ export function SessionList(props: {
                     />
                 ) : null}
 
-                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null || showUnreadOnly) && groups.length === 0 && runningSessionTotal === 0 && activeSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
+                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null || showUnreadOnly || listView.status !== 'all') && groups.length === 0 && runningSessionTotal === 0 && activeSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.search.noResults')}
                     </div>
