@@ -43,6 +43,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
+- `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Optional `--machine ID|hostname` targets another runner (resolved via GET /api/machines); `--dir` must exist on the target. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`.
 - `hapi usage [--since 24h|7d|<ISO>|<ms>] [--until …] [--json]` - When agents were working across every machine on the hub, from `GET /api/activity`. `--json` prints one `hapi.activity.v1` report for other tools (time trackers); errors go to stderr with exit codes 2 (arguments), 3 (no token or refused), 4 (hub too old), 1 (other).
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
@@ -55,7 +56,7 @@ Use explicit `queue` for non-urgent updates that can wait. Use `steer` for
 important, time-sensitive findings the peer needs to know now, not after its
 current turn: a correction that invalidates its assumptions, a blocker, or a
 result that changes its next action. State why it matters now and what the peer
-should adjust. Steer requires insertion into an active Pi, Codex, or Cursor ACP
+should adjust. Steer requires insertion into an active Claude (remote), Pi, Codex, or Cursor ACP
 turn; it does not abort that turn or guarantee an immediate response. MCP `ping_peer` accepts
 the same optional `deliveryMode: "auto" | "queue" | "steer"` field. Auto is
 resolved by the peer sender; ordinary web/native chat delivery is unchanged.
@@ -276,6 +277,11 @@ composition owns the overall permission policy.
 
 For peer discovery and messaging, use the session's MCP `list_peers`,
 `inspect_peer`, and `ping_peer` tools, or the corresponding CLI commands.
+To create a new peer with work attached, use MCP `spawn_peer` or `hapi spawn-peer`.
+The first message is required and verified in the transcript before success;
+machine-spawn HTTP 200 alone does not prove the task was delivered. In-session
+spawns add a Parent `[title](/sessions/<uuid>)` citation so parent renames do not
+change its identity.
 On a remote runner host, configure the matching hub URL and token so shell
 commands reach the same hub (`hapi auth login` saves the token).
 

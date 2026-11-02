@@ -1228,7 +1228,7 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Pi, Codex, and Cursor ACP sessions; the
+     * (native steer). Supported for Claude, Pi, Codex, and Cursor ACP sessions; the
      * CLI's `steer-queued-message` handler is registered per flavor. Legacy
      * stream-json Cursor sessions and other flavors are rejected by the
      * capability gate.
@@ -1242,7 +1242,7 @@ export class SyncEngine {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions', localId: null }
+            return { status: 'failed', error: 'Steering is only supported for Claude, Pi, Codex, and Cursor ACP sessions', localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
@@ -1378,6 +1378,28 @@ export class SyncEngine {
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return false
+    }
+
+    private restoreForkSummaryMetadata(
+        childId: string,
+        namespace: string,
+        summary: NonNullable<Session['metadata']>['summary']
+    ): void {
+        if (!summary) return
+        for (let retry = 0; retry < 5; retry++) {
+            const current = this.sessionCache.refreshSession(childId)
+            if (!current?.metadata) return
+            if (current.metadata.name?.trim()) return
+            const updated = this.store.sessions.updateSessionMetadata(
+                childId,
+                { ...current.metadata, summary },
+                current.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (updated.result === 'success') { this.sessionCache.refreshSession(childId); return }
+            if (updated.result === 'error') return
+        }
     }
 
     /**
@@ -1766,6 +1788,7 @@ export class SyncEngine {
         if (rpcResult.sessionId) {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
             if (!child || child.metadata?.forkedFrom !== sessionId) return { type: 'error', message: 'Invalid shared-runtime fork binding' }
+            this.restoreForkSummaryMetadata(child.id, namespace, buildForkSessionSummary(source.metadata))
             return { type: 'success', sessionId: child.id }
         }
 
@@ -1885,6 +1908,10 @@ export class SyncEngine {
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
             }
+            // CLI bootstrap can replace the provisional fork metadata before
+            // the child becomes ready. Restore the generated fork title only
+            // when startup left the child without an explicit title or summary.
+            this.restoreForkSummaryMetadata(childId, namespace, forkSummary)
 
             // Claude fork is spawn+flag, not an RPC-time snapshot. Keep the
             // source history lock (caller holds historyActionsInFlight) until

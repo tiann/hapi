@@ -4,10 +4,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.text.format.DateUtils
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,18 +22,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -37,22 +45,33 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -69,24 +88,31 @@ import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
 import app.hapi.protocol.wire.TodoProgress
+import kotlinx.coroutines.delay
 
 /**
  * The session list (B-M2b) — standalone screen: navigation and app graph stay
  * outside; taps surface through [onOpenSession].
  *
  * Inventory (mirrors the web sidebar semantics):
- * - offline banner over snapshot data, pull-to-refresh, empty state and
- *   no-search-results state; search and filters live in the home toolbar;
+ * - amber "Offline · updated …" notice with Retry over snapshot data (only a
+ *   failed refresh; transient SSE states are a quiet top-bar subtitle shown
+ *   after 2s), pull-to-refresh, empty state and no-search-results state;
+ *   search and filters live in the home toolbar;
  * - duplicate agent-session views are collapsed and fresh "new session"
  *   stubs hidden (ViewModel pipeline, web sidebar parity);
  * - pinned section first (the sort already puts globalPinned/pinned rows on
- *   top; a header + divider make the boundary visible);
- * - per row: flavor brand icon + title, spinner while a turn is in flight,
- *   summary line, `project · worktree · machine` meta line (machine only
- *   when it disambiguates), relative `updatedAt`, pending-request badge,
- *   todo-progress chip, unread dot; disconnected rows are dimmed —
- *   connected is the resting state, so no presence dot (web parity);
- * - long-press → actions sheet: pin (none/project/global), rename (dialog),
+ *   top; compact "Pinned" / "Recent" headers mark the boundary);
+ * - per row: a two-line-tall flavor icon whose presence badge marks
+ *   connected sessions (pulsing while a turn is in flight), title with a
+ *   right-aligned relative `updatedAt` (unread: semibold title + accent
+ *   time, no dot), summary line, `project · worktree · machine` meta line
+ *   (machine only when it disambiguates) with todo chip and pending badge
+ *   trailing. Disconnected rows are not dimmed and have no spinner;
+ * - swipe: start→end pin/unpin (project), end→start archive (live) or
+ *   delete with confirmation (inactive); the row snaps back;
+ * - long-press → actions sheet: mark read (unread rows), pin
+ *   (none/project/global), rename (dialog),
  *   reopen (inactive rows; navigates into the possibly-superseding id),
  *   archive, delete (confirm; 409 while active) — optimistic store updates;
  *   failures land in a snackbar (B-M2b + B-M3ce).
@@ -144,6 +170,7 @@ fun SessionListScreen(
                     is SessionListError.DeleteFailed -> R.string.sessions_error_delete
                     is SessionListError.ReopenFailed -> R.string.sessions_error_reopen
                     is SessionListError.MachinesRefreshFailed -> R.string.sessions_error_machines
+                    is SessionListError.MarkReadFailed -> R.string.sessions_error_mark_read
                 },
             )
             // The 409-on-delete conflict gets explicit wording; other messages
@@ -168,7 +195,7 @@ fun SessionListScreen(
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (state.isOffline) {
-                OfflineBanner()
+                OfflineNotice(lastRefreshedAt = state.lastRefreshedAt, onRetry = viewModel::refresh)
             }
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
@@ -191,6 +218,13 @@ fun SessionListScreen(
                             onOpenSession(sessionId)
                         },
                         onLongPress = { sheetRow = it },
+                        onSwipePin = { row ->
+                            val pinned = row.summary.pinned == true || row.summary.globalPinned == true
+                            viewModel.setPinMode(row.id, if (pinned) PinMode.None else PinMode.Project)
+                        },
+                        onSwipeEnd = { row ->
+                            if (row.summary.active) viewModel.archiveSession(row.id) else deleteRow = row
+                        },
                     )
                 }
             }
@@ -238,6 +272,10 @@ fun SessionListScreen(
                 deleteRow = row
                 sheetRow = null
             },
+            onMarkRead = {
+                viewModel.markRead(row.id)
+                sheetRow = null
+            },
         )
     }
     renameRow?.let { row ->
@@ -269,6 +307,8 @@ private fun SessionRows(
     rows: List<SessionRowUi>,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
+    onSwipePin: (SessionRowUi) -> Unit = {},
+    onSwipeEnd: (SessionRowUi) -> Unit = {},
 ) {
     // The sort contract puts globalPinned/pinned rows first; the boundary
     // index is where the pinned section ends.
@@ -281,29 +321,99 @@ private fun SessionRows(
             item(key = "header-pinned") { SectionHeader(stringResource(R.string.sessions_section_pinned)) }
         }
         items(rows.take(pinnedCount), key = { it.id }) { row ->
-            SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
+            SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
         }
         if (pinnedCount in 1 until rows.size) {
-            item(key = "divider-pinned") {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                SectionHeader(stringResource(R.string.sessions_section_sessions))
-            }
+            // "Recent", not "Sessions": the top bar title already says so.
+            item(key = "header-recent") { SectionHeader(stringResource(R.string.sessions_section_recent)) }
         }
         items(rows.drop(pinnedCount), key = { it.id }) { row ->
+            SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
+        }
+    }
+}
+
+/** Compact header (iOS/Mail-style): small semibold secondary text. */
+@Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+    )
+}
+
+/**
+ * Swipe start→end toggles the project pin; end→start archives a live
+ * session or asks to delete an inactive one (the hub archives live sessions
+ * only). The row never dismisses: the action runs and the row snaps back.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableSessionRow(
+    row: SessionRowUi,
+    onOpen: (String) -> Unit,
+    onLongPress: (SessionRowUi) -> Unit,
+    onSwipePin: (SessionRowUi) -> Unit,
+    onSwipeEnd: (SessionRowUi) -> Unit,
+) {
+    val currentRow by rememberUpdatedState(row)
+    val state = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> onSwipePin(currentRow)
+                SwipeToDismissBoxValue.EndToStart -> onSwipeEnd(currentRow)
+                SwipeToDismissBoxValue.Settled -> Unit
+            }
+            false
+        },
+    )
+    SwipeToDismissBox(
+        state = state,
+        backgroundContent = { SwipeBackground(row, state.dismissDirection) },
+    ) {
+        Surface(color = MaterialTheme.colorScheme.surface) {
             SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
         }
     }
 }
 
 @Composable
-private fun SectionHeader(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-    )
+private fun SwipeBackground(row: SessionRowUi, direction: SwipeToDismissBoxValue) {
+    val summary = row.summary
+    val pinned = summary.pinned == true || summary.globalPinned == true
+    val (color, label, icon) = when (direction) {
+        SwipeToDismissBoxValue.StartToEnd -> Triple(
+            Color(0xFFFF9500),
+            stringResource(if (pinned) R.string.sessions_action_unpin else R.string.sessions_action_pin_project),
+            painterResource(R.drawable.ic_push_pin),
+        )
+        SwipeToDismissBoxValue.EndToStart -> if (summary.active) {
+            Triple(Color(0xFF5856D6), stringResource(R.string.sessions_action_archive), painterResource(R.drawable.ic_archive))
+        } else {
+            Triple(MaterialTheme.colorScheme.error, stringResource(R.string.sessions_action_delete), rememberVectorPainter(Icons.Default.Delete))
+        }
+        SwipeToDismissBoxValue.Settled -> return
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(color)
+            .padding(horizontal = 20.dp),
+        horizontalArrangement = if (direction == SwipeToDismissBoxValue.StartToEnd) Arrangement.Start else Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge)
+    }
 }
+
+private val ICON_SIZE = 30.dp
+private val ICON_SPACING = 12.dp
+private val PRESENCE_GREEN = Color(0xFF34C759)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -313,107 +423,156 @@ private fun SessionRow(
     onLongPress: (SessionRowUi) -> Unit,
 ) {
     val summary = row.summary
-    Column(
+    val unreadLabel = stringResource(R.string.sessions_unread)
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = { onOpen(row.id) },
                 onLongClick = { onLongPress(row) },
             )
-            // 8dp keeps the old content-to-gap rhythm: rows shrank from three
-            // text lines to two, and the unchanged 10dp read as oversized
-            // gaps between the now-shorter items (device feedback).
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            // Dimming expresses "disconnected" (web parity): connected is the
-            // resting state here, so only the exception gets marked — no
-            // per-row presence dot.
-            .alpha(if (summary.active) 1f else 0.5f),
+            .semantics(mergeDescendants = true) { if (row.unread) stateDescription = unreadLabel }
+            .padding(start = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AgentFlavorIcon(row.flavor, modifier = Modifier.size(16.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            // One weighted element only: the title takes ALL leftover
-            // width (start-aligned, ellipsis on true overflow). Splitting
-            // the slack with a weighted trailing spacer truncated even
-            // short names at ~half the row (device-observed).
-            Text(
-                text = row.title,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (row.unread) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+        // The agent owns a two-line-tall leading column; its presence badge
+        // marks connected sessions (pulsing while running) instead of
+        // dimming every disconnected row.
+        AgentIconWithPresence(row)
+        Spacer(modifier = Modifier.width(ICON_SPACING))
+        // The divider starts under the text column, as in Mail/Messages.
+        Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.padding(end = 16.dp, top = 10.dp, bottom = 10.dp)) {
+                TitleLine(row)
+                // Summary directly under the title (its prose continuation);
+                // the `project · machine` meta closes the row as a footer.
+                row.subtitle?.let { subtitle ->
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                MetaLine(row)
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        }
+    }
+}
+
+@Composable
+private fun AgentIconWithPresence(row: SessionRowUi) {
+    val summary = row.summary
+    Box(modifier = Modifier.size(ICON_SIZE)) {
+        AgentFlavorIcon(
+            row.flavor,
+            modifier = Modifier
+                .size(ICON_SIZE * 0.8f)
+                .align(Alignment.Center),
+        )
+        if (summary.active) {
+            val running = summary.thinking
+            val alpha = if (running) {
+                val transition = rememberInfiniteTransition(label = "presence")
+                transition.animateFloat(
+                    initialValue = 1f,
+                    targetValue = 0.35f,
+                    animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+                    label = "presence-pulse",
+                ).value
+            } else {
+                1f
+            }
+            val presence = stringResource(
+                if (running) R.string.sessions_presence_running else R.string.sessions_presence_connected,
             )
-            if (summary.active && summary.thinking) {
-                Spacer(modifier = Modifier.width(6.dp))
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 1.5.dp,
-                    color = Color(0xFF34C759),
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 2.dp, y = 2.dp)
+                    .size(12.dp)
+                    .background(MaterialTheme.colorScheme.surface, CircleShape)
+                    .padding(2.dp)
+                    .semantics { contentDescription = presence },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { this.alpha = alpha }
+                        .background(PRESENCE_GREEN, CircleShape),
                 )
             }
-            if (row.unread) {
-                Spacer(modifier = Modifier.width(6.dp))
-                UnreadDot()
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = localizedRelativeAge(summary.updatedAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
-        // Summary directly under the title (its prose continuation); the
-        // `project · machine` meta closes the row as a footer.
-        row.subtitle?.let { subtitle ->
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        MetaLine(row)
-        BadgeLine(summary)
+    }
+}
+
+/**
+ * Title + right-aligned relative age. Unread is a semibold title plus an
+ * accent timestamp — no dot, so the presence badge stays the row's only dot
+ * and every timestamp shares one column.
+ */
+@Composable
+private fun TitleLine(row: SessionRowUi) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        // One weighted element only: the title takes ALL leftover width
+        // (start-aligned, ellipsis on true overflow). Splitting the slack
+        // with a weighted trailing spacer truncated even short names at
+        // ~half the row (device-observed).
+        Text(
+            text = row.title,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = if (row.unread) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = localizedRelativeAge(row.summary.updatedAt),
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (row.unread) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (row.unread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
 // `project · worktree · machine`, composed in the ViewModel (machine only
-// when it disambiguates) — the row just renders it.
+// when it disambiguates). Attention (pending requests) and todo progress sit
+// trailing on this last line; routine activity lives on the icon badge.
 @Composable
 private fun MetaLine(row: SessionRowUi) {
-    val meta = listOfNotNull(row.meta, row.machine?.let { machineFilterLabel(it) }).joinToString(" · ").takeIf { it.isNotEmpty() } ?: return
-    Text(
-        text = meta,
-        // bodySmall, not labelSmall: as the row's only secondary line the
-        // meta carries the project scan key — label tracking (0.5sp at 11sp)
-        // reads stringy on path-like text (web parity: title 14 / meta 12).
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
-}
-
-@Composable
-private fun BadgeLine(summary: SessionSummary) {
+    val summary = row.summary
+    val meta = listOfNotNull(row.meta, row.machine?.let { machineFilterLabel(it) }).joinToString(" · ")
     val hasPending = summary.pendingRequestsCount > 0
     val todoProgress = summary.todoProgress
-    if (!hasPending && todoProgress == null) return
-    Row(
-        modifier = Modifier.padding(top = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (hasPending) {
-            PendingBadge(
-                count = summary.pendingRequestsCount,
-                kinds = summary.pendingRequestKinds,
-                requests = summary.pendingRequests,
-            )
+    if (meta.isEmpty() && !hasPending && todoProgress == null) return
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = meta,
+            // bodySmall, not labelSmall: the meta carries the project scan
+            // key — label tracking (0.5sp at 11sp) reads stringy on
+            // path-like text (web parity: title 14 / meta 12).
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (hasPending || todoProgress != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                todoProgress?.let { TodoChip(it) }
+                if (hasPending) {
+                    PendingBadge(
+                        count = summary.pendingRequestsCount,
+                        kinds = summary.pendingRequestKinds,
+                        requests = summary.pendingRequests,
+                    )
+                }
+            }
         }
-        todoProgress?.let { TodoChip(it) }
     }
 }
 
@@ -460,29 +619,46 @@ private fun TodoChip(progress: TodoProgress) {
     }
 }
 
-@Composable
-private fun UnreadDot() {
-    Box(
-        modifier = Modifier
-            .size(8.dp)
-            .background(MaterialTheme.colorScheme.primary, CircleShape),
-    )
-}
-
 // --------------------------------------------------------------- chrome --
 
+/**
+ * Only a failed list refresh (cached data on screen) is amber, with when the
+ * list last updated and Retry. Transient connection states stay quiet in the
+ * top bar subtitle instead (`HomeTopBar`).
+ */
 @Composable
-private fun OfflineBanner() {
-    Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
-        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-        modifier = Modifier.fillMaxWidth(),
+private fun OfflineNotice(lastRefreshedAt: Long?, onRetry: () -> Unit) {
+    // Minute ticks keep "updated … ago" honest while offline.
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(60_000)
+            value = System.currentTimeMillis()
+        }
+    }
+    val attention = if (isSystemInDarkTheme()) Color(0xFFD29922) else Color(0xFF9A6700)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .background(attention.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        Icon(painterResource(R.drawable.ic_cloud_off), contentDescription = null, tint = attention, modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = stringResource(R.string.sessions_offline_banner),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            text = lastRefreshedAt?.let {
+                val age = DateUtils.getRelativeTimeSpanString(it, now, DateUtils.MINUTE_IN_MILLIS).toString()
+                stringResource(R.string.sessions_offline_updated, age)
+            } ?: stringResource(R.string.sessions_offline_banner),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(vertical = 8.dp),
         )
+        TextButton(onClick = onRetry) {
+            Text(stringResource(R.string.sessions_offline_retry), fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -559,6 +735,7 @@ private fun SessionActionsSheet(
     onRename: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
+    onMarkRead: () -> Unit = {},
 ) {
     val summary = row.summary
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -570,6 +747,9 @@ private fun SessionActionsSheet(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
         HorizontalDivider()
+        if (row.unread) {
+            SheetAction(stringResource(R.string.sessions_action_mark_read), onClick = onMarkRead)
+        }
         if (summary.pinned == true || summary.globalPinned == true) {
             SheetAction(stringResource(R.string.sessions_action_unpin)) { onSetPinMode(PinMode.None) }
         }
