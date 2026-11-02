@@ -62,6 +62,7 @@ export const CliMessagesResponseSchema = z.object({
         seq: z.number(),
         createdAt: z.number(),
         localId: z.string().nullable().optional(),
+        invokedAt: z.number().nullable().optional(),
         content: z.unknown()
     }))
 })

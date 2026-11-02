@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Session } from './types'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas'
+import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
+import { OpenCodeRewind, OpenCodeRuntimeGate } from '../opencode/rewind'
+import { MessageQueue2 } from '../utils/MessageQueue2'
 
 const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
@@ -16,7 +24,8 @@ const socketHarness = vi.hoisted(() => ({
 }))
 
 const axiosHarness = vi.hoisted(() => ({
-    get: vi.fn()
+    get: vi.fn(),
+    post: vi.fn()
 }))
 
 vi.mock('socket.io-client', () => ({
@@ -92,6 +101,7 @@ vi.mock('socket.io-client', () => ({
 vi.mock('axios', () => ({
     default: {
         get: axiosHarness.get,
+        post: axiosHarness.post,
         isAxiosError: (error: unknown) => (
             typeof error === 'object'
             && error !== null
@@ -701,6 +711,701 @@ describe('ApiSessionClient agy transcript messages', () => {
 })
 
 describe('ApiSessionClient incoming user messages', () => {
+    it('does not reissue an evicted invoked postcommit row from durable Hub recovery backfill', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const database = join(mkdtempSync(join(tmpdir(), 'api-rewind-replay-')), 'hub.db')
+        const hubModule = (path: string) => JSON.stringify(new URL(`../../../hub/src/${path}`, import.meta.url).href)
+        const runHub = (body: string) => {
+            const source = `import { Store } from ${hubModule('store/index.ts')};
+                import { Database } from 'bun:sqlite';
+                import { registerSessionHandlers } from ${hubModule('socket/handlers/cli/sessionHandlers.ts')};
+                import { SyncEngine } from ${hubModule('sync/syncEngine.ts')};
+                import { RpcRegistry } from ${hubModule('socket/rpcRegistry.ts')};
+                const database = ${JSON.stringify(database)}; ${body}`
+            const result = spawnSync('bun', ['--eval', source], { encoding: 'utf8', timeout: 15_000 })
+            expect(result.status, result.stderr).toBe(0)
+            return JSON.parse(result.stdout.trim().split('\n').at(-1)!)
+        }
+        const initial = runHub(`
+            const store = new Store(database);
+            const session = store.sessions.getOrCreateSession('rewind-replay',
+                { path: '/tmp', host: 'test', flavor: 'opencode' }, null, 'default');
+            for (let n = 0; n < 9; n++) store.messages.addMessage(session.id,
+                { role: 'agent', content: { type: 'text', text: 'old-' + n } });
+            const oldTail = store.messages.getAllMessages(session.id).at(-1);
+            store.messages.truncateOpenCodeRewind(session.id, 3);
+            const user = text => ({ role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'webapp' } });
+            const invoked = store.messages.addMessage(session.id, user('invoked-X'), 'invoked-X');
+            const missed = store.messages.addMessage(session.id, user('missed-Y'), 'missed-Y');
+            const live = Array.from({ length: 300 }, (_, n) => store.messages.addMessage(session.id,
+                { role: 'agent', content: { type: 'text', text: 'later-' + n } }));
+            store.close();
+            console.log(JSON.stringify({ sessionId: session.id, oldTail, invoked, missed, live }));
+        `)
+        const response = deferred<{ messages: typeof initial.live }>()
+        const committed = { path: '/tmp', host: 'test', flavor: 'opencode' as const, opencodeRewind: {
+            operationId: 'eviction-recovery', nativeSessionId: 'native', workerId: 'worker', requestedLocalId: 'removed',
+            nativeMessageId: 'native-removed', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 9,
+            reservationVersion: 2, sourceTranscriptHash: 'a'.repeat(64), phase: 'committed' as const
+        } }
+        axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+            if (!url.endsWith('/messages')) return { data: { session: { metadataVersion: 2, metadata: committed } } }
+            const result = await response.promise
+            return { data: { messages: result.messages.filter((m: { seq: number }) => m.seq > config.params!.afterSeq).slice(0, 200) } }
+        })
+        const client = new ApiSessionClient('token', createSession({ id: initial.sessionId, metadataVersion: 1,
+            metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+        const socket = socketHarness.sockets[0]
+        const queue = new MessageQueue2(() => 'plain')
+        queue.onBatchConsumed = ids => client.emitMessagesConsumed(ids)
+        client.onUserMessage((message, localId) => queue.push(message.content.text, {}, localId))
+        const issued: string[] = []
+        await Promise.resolve()
+        socket.trigger('update', { body: { t: 'new-message', message: initial.oldTail } })
+        socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: committed } } })
+        socket.trigger('update', { body: { t: 'new-message', message: initial.invoked } })
+        try {
+            expect(initial.live.length).toBeGreaterThan(256)
+            const first = await queue.waitForMessagesAndGetAsString()
+            expect(first?.items.map(item => item.localId)).toEqual(['invoked-X'])
+            issued.push(...first!.items.map(item => item.localId!))
+            const ack = socket.emitted.find(event => event.event === 'messages-consumed')?.args[0]
+            expect(ack).toMatchObject({ sid: initial.sessionId, localIds: ['invoked-X'] })
+            const persisted = runHub(`
+                const store = new Store(database);
+                const session = store.sessions.getSession(${JSON.stringify(initial.sessionId)});
+                const handlers = new Map();
+                const socket = { on(event, handler) { handlers.set(event, handler); return this; },
+                    to() { return { emit() {} }; } };
+                registerSessionHandlers(socket, { store,
+                    resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {} });
+                handlers.get('messages-consumed')(${JSON.stringify(ack)});
+                store.close();
+                const reopened = new Store(database);
+                const probeDb = new Database(database);
+                const probe = probeDb.query('SELECT invoked_at, delivery_state FROM messages WHERE session_id = ? AND local_id = ?')
+                    .get(session.id, 'invoked-X');
+                probeDb.close();
+                const engine = new SyncEngine(reopened, {}, new RpcRegistry(), { broadcast() {} });
+                const messages = [];
+                let cursor = 2;
+                while (true) {
+                    const page = engine.getDeliverableMessagesAfter(session.id, { afterSeq: cursor, limit: 200, now: Date.now() });
+                    messages.push(...page);
+                    if (page.length < 200) break;
+                    cursor = page.at(-1).seq;
+                }
+                engine.stop(); reopened.close();
+                console.log(JSON.stringify({ probe, messages }));
+            `)
+            expect(persisted.probe).toMatchObject({ delivery_state: 'queued', invoked_at: expect.any(Number) })
+            expect(persisted.messages.find((m: { localId: string }) => m.localId === 'invoked-X'))
+                .toMatchObject({ invokedAt: persisted.probe.invoked_at })
+            expect(persisted.messages.find((m: { localId: string }) => m.localId === 'missed-Y'))
+                .toMatchObject({ invokedAt: null })
+            // Durable invocation/ACK precedes the later live burst that evicts X.
+            for (const message of initial.live) socket.trigger('update', { body: { t: 'new-message', message } })
+            expect((client as unknown as { incomingFilter: { seenIds: Set<string> } })
+                .incomingFilter.seenIds.has(initial.invoked.id)).toBe(false)
+            response.resolve(persisted)
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                expect.objectContaining({ params: { afterSeq: 2, limit: 200 } })))
+            await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
+                .backfillInFlight).toBeNull())
+            expect(queue.size()).toBeGreaterThan(0)
+            const catchup = await queue.waitForMessagesAndGetAsString()
+            issued.push(...catchup!.items.map(item => item.localId!))
+            expect(issued.filter(id => id === 'invoked-X')).toHaveLength(1)
+            expect(issued.filter(id => id === 'missed-Y')).toHaveLength(1)
+            expect(catchup?.items.map(item => item.localId)).toEqual(['missed-Y'])
+        } finally { response.resolve({ messages: [] }); client.close() }
+    })
+
+    describe('HAPI7-CURSOR-R2 invocation contract', () => {
+        const committed = { path: '/tmp', host: 'test', flavor: 'opencode' as const, opencodeRewind: {
+            operationId: 'invocation-contract', nativeSessionId: 'native', workerId: 'worker', requestedLocalId: 'removed',
+            nativeMessageId: 'native-removed', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 9,
+            reservationVersion: 2, sourceTranscriptHash: 'a'.repeat(64), phase: 'committed' as const
+        } }
+        const user = (id: string, seq: number, invokedAt?: number | null) => ({
+            id, seq, createdAt: seq, localId: id, ...(invokedAt === undefined ? {} : { invokedAt }),
+            content: { role: 'user', content: { type: 'text', text: id }, meta: { sentFrom: 'webapp' } }
+        })
+
+        it.each([false, true])('uses invocation proof only during rewind recovery (%s)', async recovery => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const metadata = recovery ? committed : { path: '/tmp', host: 'test', flavor: 'claude' as const }
+            const agent = { id: 'agent-output', seq: 6, createdAt: 6, localId: null, invokedAt: 123,
+                content: { role: 'agent', content: { type: 'text', text: 'history event' } } }
+            const messages = [user('invoked-zero', 3, 0), user('uninvoked', 4, null), user('legacy', 5), agent]
+            axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) =>
+                url.endsWith('/messages')
+                    ? { data: { messages: messages.filter(m => m.seq > config.params!.afterSeq) } }
+                    : { data: { session: { metadataVersion: 2, metadata } } })
+            const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                metadata: { path: '/tmp', host: 'test', flavor: metadata.flavor } }))
+            const socket = socketHarness.sockets[0]
+            const received = vi.fn()
+            const output = vi.fn()
+            client.onUserMessage(received)
+            client.on('message', output)
+            await Promise.resolve()
+            triggerIncomingUserMessage(socket, { id: 'initial', seq: 2, text: 'local history', sentFrom: 'cli' })
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            try {
+                await vi.waitFor(() => expect(output).toHaveBeenCalledWith(agent.content))
+                expect(received.mock.calls.map(([, id]) => id)).toEqual(recovery
+                    ? ['uninvoked', 'legacy'] : ['invoked-zero', 'uninvoked', 'legacy'])
+            } finally { client.close() }
+        })
+
+        it('advances past an invoked-only recovery page without enqueueing or repeating it', async () => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const messages = [user('already-invoked', 3, 1)]
+            axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) =>
+                url.endsWith('/messages')
+                    ? { data: { messages: messages.filter(m => m.seq > config.params!.afterSeq) } }
+                    : { data: { session: { metadataVersion: 2, metadata: committed } } })
+            const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+            const socket = socketHarness.sockets[0]
+            const received = vi.fn()
+            client.onUserMessage(received)
+            await Promise.resolve()
+            triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old local tail', sentFrom: 'cli' })
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            try {
+                await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 2, limit: 200 } })))
+                await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
+                    .backfillInFlight).toBeNull())
+                expect(received).not.toHaveBeenCalled()
+                axiosHarness.get.mockClear()
+                socket.connected = false
+                socket.trigger('disconnect', 'transport close')
+                socket.triggerConnect()
+                await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 3, limit: 200 } })))
+                expect(received).not.toHaveBeenCalled()
+            } finally { client.close() }
+        })
+    })
+
+    describe('HAPI7-CURSOR-R1 unscanned recovery floor', () => {
+        const metadata = (operationId = 'floor-a', cutoffSeq = 3) => ({
+            path: '/tmp', host: 'test', flavor: 'opencode' as const,
+            opencodeRewind: {
+                operationId, nativeSessionId: 'native', workerId: 'worker', requestedLocalId: 'removed',
+                nativeMessageId: 'native-removed', cutoffSeq, sourceEpoch: 0, sourceMaxSeq: 9,
+                reservationVersion: 2, sourceTranscriptHash: 'a'.repeat(64), phase: 'committed' as const
+            }
+        })
+        const prompt = (id: string, seq: number) => ({ id, seq, createdAt: seq, localId: id,
+            content: { role: 'user', content: { type: 'text', text: id }, meta: { sentFrom: 'webapp' } } })
+        const settled = async (client: ApiSessionClient) => {
+            await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
+                .backfillInFlight).toBeNull())
+        }
+
+        it.each(['old message request', 'reconnect metadata'] as const)(
+            'keeps queued3 below live4 while awaiting %s', async held => {
+                socketHarness.sockets.length = 0
+                axiosHarness.get.mockReset()
+                const old = deferred<{ data: { messages: unknown[] } }>()
+                const meta = deferred<{ data: { session: { metadataVersion: number; metadata: ReturnType<typeof metadata> } } }>()
+                const rows = [prompt('queued3', 3), prompt('live4', 4)]
+                let metaReads = 0
+                axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+                    if (!url.endsWith('/messages')) {
+                        if (++metaReads === 1 && held === 'reconnect metadata') return await meta.promise
+                        return { data: { session: { metadataVersion: 1,
+                            metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } } } }
+                    }
+                    if (config.params!.afterSeq === 9) return await old.promise
+                    return { data: { messages: rows.filter(m => m.seq > config.params!.afterSeq) } }
+                })
+                const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                    metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+                const socket = socketHarness.sockets[0]
+                const received = vi.fn()
+                client.onUserMessage(received)
+                await Promise.resolve() // Finish initial-connect continuation before disconnecting.
+                triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+                socket.connected = false
+                socket.trigger('disconnect', 'transport close')
+                socket.triggerConnect()
+                try {
+                    if (held === 'old message request') {
+                        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                            expect.objectContaining({ params: { afterSeq: 9, limit: 200 } })))
+                    } else {
+                        await vi.waitFor(() => expect(metaReads).toBe(1))
+                        expect(axiosHarness.get.mock.calls.filter(([url]) => String(url).endsWith('/messages'))).toHaveLength(0)
+                    }
+                    socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: metadata() } } })
+                    socket.trigger('update', { body: { t: 'new-message', message: rows[1] } })
+                    socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: metadata() } } })
+                    old.resolve({ data: { messages: [prompt('removed-old-suffix', 10)] } })
+                    meta.resolve({ data: { session: { metadataVersion: 2, metadata: metadata() } } })
+                    await vi.waitFor(() => expect(received).toHaveBeenCalledWith(expect.anything(), 'queued3'))
+                    expect(received).toHaveBeenCalledTimes(2)
+                    expect(received.mock.calls.some(([, id]) => id === 'removed-old-suffix')).toBe(false)
+                    socket.trigger('update', { body: { t: 'new-message', message: rows[0] } })
+                    socket.trigger('update', { body: { t: 'new-message', message: rows[1] } })
+                    expect(received).toHaveBeenCalledTimes(2)
+                    await settled(client)
+                } finally {
+                    old.resolve({ data: { messages: [] } })
+                    meta.resolve({ data: { session: { metadataVersion: 3, metadata: metadata() } } })
+                    client.close()
+                }
+            }
+        )
+
+        it('starts repair on live committed metadata without an old query or another reconnect', async () => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const rows = [prompt('queued3', 3), prompt('live4', 4)]
+            axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) =>
+                url.endsWith('/messages')
+                    ? { data: { messages: rows.filter(m => m.seq > config.params!.afterSeq) } }
+                    : { data: { session: { metadataVersion: 3, metadata: metadata() } } })
+            const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+            const socket = socketHarness.sockets[0]
+            const received = vi.fn()
+            client.onUserMessage(received)
+            await Promise.resolve() // No leftover initial-connect backfill in this live-only case.
+            triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+            try {
+                expect(axiosHarness.get).not.toHaveBeenCalled()
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: metadata() } } })
+                socket.trigger('update', { body: { t: 'new-message', message: rows[1] } })
+                await vi.waitFor(() => expect(received).toHaveBeenCalledWith(expect.anything(), 'queued3'))
+                await settled(client)
+                expect(received).toHaveBeenCalledTimes(2)
+                expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 2, limit: 200 } }))
+                const reads = axiosHarness.get.mock.calls.length
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: metadata() } } })
+                socket.trigger('update', { body: { t: 'new-message', message: rows[0] } })
+                expect(received).toHaveBeenCalledTimes(2)
+                expect(axiosHarness.get.mock.calls.length).toBe(reads)
+            } finally { client.close() }
+        })
+
+        it('starts the newer recovery epoch after a superseded old request rejects', async () => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const held = deferred<{ data: { messages: unknown[] } }>()
+            const rows = [prompt('queued3', 3), prompt('live4', 4)]
+            axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+                if (!url.endsWith('/messages')) return { data: { session: { metadataVersion: 1,
+                    metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } } } }
+                if (config.params!.afterSeq === 9) return await held.promise
+                return { data: { messages: rows.filter(m => m.seq > config.params!.afterSeq) } }
+            })
+            const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+            const socket = socketHarness.sockets[0]
+            const received = vi.fn()
+            client.onUserMessage(received)
+            await Promise.resolve()
+            triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            try {
+                await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 9, limit: 200 } })))
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: metadata() } } })
+                socket.trigger('update', { body: { t: 'new-message', message: rows[1] } })
+                held.reject(new Error('superseded request failed'))
+                await vi.waitFor(() => expect(received).toHaveBeenCalledWith(expect.anything(), 'queued3'))
+                await settled(client)
+                expect(received).toHaveBeenCalledTimes(2)
+                expect(axiosHarness.get.mock.calls.filter(([url]) => String(url).endsWith('/messages'))
+                    .map(([, config]) => config.params.afterSeq)).toEqual([9, 2])
+            } finally { held.resolve({ data: { messages: [] } }); client.close() }
+        })
+
+        it.each(['failed', 'interrupted'] as const)(
+            'does not raise an earlier floor when a newer rewind follows a %s scan', async outcome => {
+                socketHarness.sockets.length = 0
+                axiosHarness.get.mockReset()
+                let current = metadata()
+                let version = 2
+                let reads = 0
+                const first = deferred<{ data: { messages: unknown[] } }>()
+                const rows: ReturnType<typeof prompt>[] = []
+                axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+                    if (!url.endsWith('/messages')) return { data: { session: { metadataVersion: version, metadata: current } } }
+                    if (++reads === 1) return await first.promise
+                    return { data: { messages: rows.filter(m => m.seq > config.params!.afterSeq) } }
+                })
+                const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                    metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+                const socket = socketHarness.sockets[0]
+                const received = vi.fn()
+                client.onUserMessage(received)
+                await Promise.resolve()
+                triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+                socket.connected = false
+                socket.trigger('disconnect', 'transport close')
+                socket.triggerConnect()
+                try {
+                    await vi.waitFor(() => expect(reads).toBe(1))
+                    // The first response snapshot predates these queued rows.
+                    rows.push(prompt('queued3', 3), prompt('live4', 4))
+                    socket.trigger('update', { body: { t: 'new-message', message: rows[1] } })
+                    if (outcome === 'interrupted') {
+                        socket.connected = false
+                        socket.trigger('disconnect', 'transport close')
+                        first.resolve({ data: { messages: [] } })
+                    } else {
+                        first.reject(new Error('transient backfill failure'))
+                    }
+                    await settled(client)
+                    socket.connected = false
+                    socket.trigger('disconnect', 'transport close')
+                    current = metadata('floor-b', 5)
+                    version = 4
+                    expect(await client.refreshMetadata()).toBe(true)
+                    version = 5
+                    expect(await client.refreshMetadata()).toBe(true)
+                    axiosHarness.get.mockClear()
+                    socket.triggerConnect()
+                    await vi.waitFor(() => expect(received).toHaveBeenCalledWith(expect.anything(), 'queued3'))
+                    await settled(client)
+                    expect(received).toHaveBeenCalledTimes(2)
+                    expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                        expect.objectContaining({ params: { afterSeq: 2, limit: 200 } }))
+                    axiosHarness.get.mockClear()
+                    socket.connected = false
+                    socket.trigger('disconnect', 'transport close')
+                    socket.triggerConnect()
+                    await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                        expect.objectContaining({ params: { afterSeq: 4, limit: 200 } })))
+                    expect(received).toHaveBeenCalledTimes(2)
+                } finally { first.resolve({ data: { messages: [] } }); client.close() }
+            }
+        )
+
+        it('keeps the earlier floor when a newer reserved rewind suppresses a response', async () => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const held = deferred<{ data: { messages: unknown[] } }>()
+            const rows = [prompt('queued3', 3), prompt('live4', 4)]
+            let reads = 0
+            axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+                if (!url.endsWith('/messages')) return { data: { session: { metadataVersion: 2, metadata: metadata() } } }
+                if (++reads === 1) return await held.promise
+                return { data: { messages: rows.filter(m => m.seq > config.params!.afterSeq) } }
+            })
+            const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+            const socket = socketHarness.sockets[0]
+            const received = vi.fn()
+            client.onUserMessage(received)
+            await Promise.resolve()
+            triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            try {
+                await vi.waitFor(() => expect(reads).toBe(1))
+                socket.trigger('update', { body: { t: 'new-message', message: rows[1] } })
+                const next = metadata('floor-b', 5)
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: {
+                    ...next, opencodeRewind: { ...next.opencodeRewind, phase: 'reserved' }
+                } } } })
+                // Hub's durable pending-operation gate may return no deliverable
+                // rows. That is not evidence that the old prefix was drained.
+                held.resolve({ data: { messages: [] } })
+                await settled(client)
+                expect(received).toHaveBeenCalledTimes(1)
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 4, value: next } } })
+                await vi.waitFor(() => expect(received).toHaveBeenCalledWith(expect.anything(), 'queued3'))
+                await settled(client)
+                expect(received).toHaveBeenCalledTimes(2)
+                expect(axiosHarness.get.mock.calls.filter(([url]) => String(url).endsWith('/messages'))
+                    .map(([, config]) => config.params.afterSeq)).toEqual([2, 2])
+            } finally { held.resolve({ data: { messages: [] } }); client.close() }
+        })
+    })
+
+    it.each([false, true])('delivers a queued lower-seq prompt exactly once on the same client after disconnected commit/consumption (recovery=%s)', async recoverCommitted => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        axiosHarness.post.mockReset()
+        const operation: OpenCodeRewindOperation = {
+            operationId: 'same-client-delivery', nativeSessionId: 'native', workerId: 'worker',
+            requestedLocalId: 'two', nativeMessageId: 'u2', cutoffSeq: 3, sourceEpoch: 0,
+            sourceMaxSeq: 9, reservationVersion: 2, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved'
+        }
+        let authoritative = operation
+        let version = 2
+        const metadata = () => ({ path: '/tmp', host: 'test', flavor: 'opencode' as const,
+            opencodeSessionId: 'native', opencodeRewind: authoritative })
+        const queued: Array<{ id: string; seq: number; createdAt: number; localId: string; content: unknown }> = []
+        axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+            if (url.endsWith('/messages')) return { data: { messages: queued.filter(m => m.seq > config.params!.afterSeq) } }
+            return { data: { session: { metadataVersion: version, metadata: metadata() } } }
+        })
+        axiosHarness.post.mockImplementation(async (_url: string, { report }: { report: OpenCodeRewindReport }) => {
+            if (authoritative.phase !== 'committed') {
+                authoritative = { ...report.operation, phase: report.phase === 'applied' ? 'committed' : report.phase }
+                version += 1
+            }
+            return { data: { operation: authoritative } }
+        })
+        const client = new ApiSessionClient('token', createSession({ metadata: metadata(), metadataVersion: version }))
+        const socket = socketHarness.sockets[0]
+        const received = vi.fn()
+        client.onUserMessage(received)
+        triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old transcript', sentFrom: 'cli' })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        let rows = [{ id: 'u1', type: 'user' }, { id: 'a1', type: 'assistant' },
+            { id: 'u2', type: 'user' }, { id: 'a2', type: 'assistant' }]
+        let staged: string | undefined
+        const nativeRequest = vi.fn(async (url: string, init?: RequestInit) => {
+            if (url.endsWith('/revert/stage')) {
+                staged = JSON.parse(init!.body as string).messageID
+                return Response.json({})
+            }
+            if (url.endsWith('/revert/commit')) {
+                rows = rows.slice(0, 2)
+                staged = undefined
+                return new Response(null, { status: 204 })
+            }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} })
+            if (url.endsWith('/active')) return Response.json({ data: {} })
+            if (url.endsWith('/inbox')) return Response.json({ data: [] })
+            return Response.json({ data: { id: 'native', ...(staged ? { revert: { messageID: staged } } : {}) } })
+        })
+        let failConsumption = recoverCommitted
+        const consumeCommitted = vi.fn(async () => {
+            expect(socket.connected).toBe(false)
+            expect(authoritative.phase).toBe('committed')
+            // A runtime-consumption metadata update can carry the same committed
+            // receipt at a newer version, including recovery and duplicate use.
+            version += 1
+            expect(await client.refreshMetadata()).toBe(true)
+            if (failConsumption) {
+                failConsumption = false
+                throw new Error('interrupted committed runtime consumption')
+            }
+        })
+        const gate = new OpenCodeRuntimeGate()
+        const rewind = new OpenCodeRewind({
+            directory: mkdtempSync(join(tmpdir(), 'api-rewind-delivery-')), hapiSessionId: client.sessionId,
+            workerId: 'worker', gate, baseUrl: 'http://synthetic-native', nativeSessionId: 'native', headers: {},
+            request: nativeRequest, report: report => client.reportOpenCodeRewind(report),
+            flush: async () => true, isIdle: () => true,
+            sourceCheckpoint: () => ({ sessionId: 'native', messageIds: ['u1', 'a1', 'u2', 'a2'],
+                userMessageIds: ['u1', 'u2'], localMessageIds: [] }),
+            sourceIndexes: () => ({ one: 0, two: 1 }), requestsFromPreviousWorkerCannotRun: () => true,
+            consumeCommitted
+        })
+        try {
+            expect((await rewind.execute(operation)).success).toBe(!recoverCommitted)
+            expect(authoritative.phase).toBe('committed')
+            if (recoverCommitted) {
+                nativeRequest.mockClear()
+                expect((await rewind.recover(authoritative)).success).toBe(true)
+                expect(nativeRequest).not.toHaveBeenCalled()
+            }
+            expect(rewind.readIntent()?.phase).toBe('finalized')
+            expect(gate.isBlocked()).toBe(false)
+            expect(received).not.toHaveBeenCalled()
+            // The input is accepted only AFTER disconnected commit/consumption.
+            const prompt = { id: 'new-prompt', seq: 3, createdAt: 3, localId: 'new-input',
+                content: { role: 'user', content: { type: 'text', text: 'queued after commit' }, meta: { sentFrom: 'webapp' } } }
+            queued.push(prompt)
+            socket.triggerConnect()
+            await vi.waitFor(() => expect(received).toHaveBeenCalledWith(
+                expect.objectContaining({ content: { type: 'text', text: 'queued after commit' } }), 'new-input'))
+            expect(received).toHaveBeenCalledTimes(1)
+            triggerIncomingUserMessage(socket, { id: 'later', seq: 6, text: 'postcommit progress', sentFrom: 'webapp' })
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            // Real committed recovery/consumption runs again on the SAME API
+            // client after progress, without resetting it to the old cutoff.
+            expect((await rewind.recover(authoritative)).success).toBe(true)
+            axiosHarness.get.mockClear()
+            socket.triggerConnect()
+            await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                expect.objectContaining({ params: { afterSeq: 6, limit: 200 } })))
+            socket.trigger('update', { body: { t: 'new-message', message: prompt } })
+            triggerIncomingUserMessage(socket, { id: 'retained-scheduled', seq: 1, text: 'mature scheduled', sentFrom: 'webapp' })
+            triggerIncomingUserMessage(socket, { id: 'retained-scheduled', seq: 1, text: 'mature scheduled', sentFrom: 'webapp' })
+            expect(received).toHaveBeenCalledTimes(3)
+            expect(consumeCommitted).toHaveBeenCalledTimes(recoverCommitted ? 3 : 2)
+        } finally { client.close() }
+    })
+
+    it.each(['live update', 'reconnect refresh', 'metadata acknowledgement'] as const)(
+        'backfills an immediate prompt below the old cursor after committed rewind (%s)', async commitDelivery => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const metadata = { path: '/tmp', host: 'test', flavor: 'opencode' as const }
+            const committed = { ...metadata, opencodeRewind: {
+                operationId: 'rewind-delivery', nativeSessionId: 'native', workerId: 'worker',
+                requestedLocalId: 'removed-turn', nativeMessageId: 'native-removed',
+                cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 9, reservationVersion: 2,
+                sourceTranscriptHash: 'a'.repeat(64), phase: 'committed' as const
+            } }
+            let version = 2
+            const prompt = { id: 'post-rewind-prompt', seq: 3, createdAt: 3, localId: 'new-prompt',
+                content: { role: 'user', content: { type: 'text', text: 'queued during disconnect' },
+                    meta: { sentFrom: 'webapp' } } }
+            axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+                if (url.endsWith('/messages')) {
+                    return { data: { messages: config.params!.afterSeq < prompt.seq ? [prompt] : [] } }
+                }
+                return { data: { session: { metadataVersion: version, metadata: committed } } }
+            })
+            const client = new ApiSessionClient('token', createSession({ metadata, metadataVersion: 1 }))
+            const socket = socketHarness.sockets[0]
+            const received = vi.fn()
+            client.onUserMessage(received)
+            triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old local tail', sentFrom: 'cli' })
+            if (commitDelivery === 'live update') {
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version, value: committed } } })
+            } else if (commitDelivery === 'metadata acknowledgement') {
+                socket.emitWithAckImpl = async event => event === 'update-metadata'
+                    ? { result: 'success', version, metadata: committed } : {}
+                client.updateMetadata(meta => ({ ...meta, hostPid: 42 }))
+                expect(await client.flushMetadata()).toBe(true)
+            }
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            try {
+                await vi.waitFor(() => expect(received).toHaveBeenCalledWith(
+                    expect.objectContaining({ content: { type: 'text', text: 'queued during disconnect' } }), 'new-prompt'))
+                expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 2, limit: 200 } }))
+                // The same committed tombstone in later metadata must not
+                // repeatedly rewind the cursor or erase ID deduplication.
+                version = 3
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version, value: committed } } })
+                socket.trigger('update', { body: { t: 'new-message', message: prompt } })
+                expect(received).toHaveBeenCalledTimes(1)
+                triggerIncomingUserMessage(socket, { id: 'later', seq: 6, text: 'later prompt', sentFrom: 'webapp' })
+                axiosHarness.get.mockClear()
+                socket.connected = false
+                socket.trigger('disconnect', 'transport close')
+                socket.triggerConnect()
+                await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 6, limit: 200 } })))
+                expect(received).toHaveBeenCalledTimes(2)
+            } finally { client.close() }
+        }
+    )
+
+    it.each(['reserved', 'prepared', 'unknown', 'rejected'] as const)(
+        'does not rewind the delivery cursor for a noncommitted operation (%s)', async phase => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            const metadata = { path: '/tmp', host: 'test', flavor: 'opencode' as const, opencodeRewind: {
+                operationId: 'not-committed', nativeSessionId: 'native', workerId: 'worker',
+                requestedLocalId: 'removed', nativeMessageId: 'native-removed', cutoffSeq: 3,
+                sourceEpoch: 0, sourceMaxSeq: 9, reservationVersion: 2,
+                sourceTranscriptHash: 'a'.repeat(64), phase
+            } }
+            axiosHarness.get.mockImplementation(async (url: string) => url.endsWith('/messages')
+                ? { data: { messages: [] } } : { data: { session: { metadataVersion: 2, metadata } } })
+            const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+                metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+            const socket = socketHarness.sockets[0]
+            triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            try {
+                await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                    expect.objectContaining({ params: { afterSeq: 9, limit: 200 } })))
+            } finally { client.close() }
+        }
+    )
+
+    it.each([1, 201])('restarts an in-flight old-cursor backfill without losing postcommit progress (%s queued)', async queuedCount => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const metadata = { path: '/tmp', host: 'test', flavor: 'opencode' as const }
+        const pending = deferred<{ data: { messages: unknown[] } }>()
+        const prompts = Array.from({ length: queuedCount }, (_, index) => ({
+            id: `new-after-rewind-${index}`, seq: index + 3, createdAt: index + 3, localId: `new-prompt-${index}`,
+            content: { role: 'user', content: { type: 'text', text: `new retained history ${index}` }, meta: { sentFrom: 'webapp' } }
+        }))
+        axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+            if (!url.endsWith('/messages')) return { data: { session: { metadataVersion: 1, metadata } } }
+            if (config.params!.afterSeq === 9) return await pending.promise
+            return { data: { messages: prompts.filter(m => m.seq > config.params!.afterSeq).slice(0, 200) } }
+        })
+        const client = new ApiSessionClient('token', createSession({ metadata, metadataVersion: 1 }))
+        const socket = socketHarness.sockets[0]
+        const received = vi.fn()
+        client.onUserMessage(received)
+        triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        try {
+            await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                expect.objectContaining({ params: { afterSeq: 9, limit: 200 } })))
+            // A second reconnect must join the old request, not start another
+            // high-cursor backfill while that response is still outstanding.
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            await vi.waitFor(() => expect(axiosHarness.get.mock.calls.filter(([url]) => !String(url).endsWith('/messages'))).toHaveLength(2))
+            expect(axiosHarness.get.mock.calls.filter(([url]) => String(url).endsWith('/messages'))).toHaveLength(1)
+            const committed = {
+                ...metadata, opencodeRewind: {
+                    operationId: 'rewind-in-flight', nativeSessionId: 'native', workerId: 'worker',
+                    requestedLocalId: 'removed', nativeMessageId: 'native-removed', cutoffSeq: 3,
+                    sourceEpoch: 0, sourceMaxSeq: 9, reservationVersion: 2,
+                    sourceTranscriptHash: 'a'.repeat(64), phase: 'committed' as const
+                }
+            }
+            socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: committed } } })
+            const progressSeq = queuedCount + 20
+            triggerIncomingUserMessage(socket, { id: 'postcommit-progress', seq: progressSeq,
+                text: 'live postcommit progress', sentFrom: 'webapp' })
+            socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: committed } } })
+            pending.resolve({ data: { messages: [{ ...prompts[0], id: 'deleted-old-response', seq: 10,
+                localId: 'removed-prompt', content: { ...prompts[0].content,
+                    content: { type: 'text', text: 'deleted stale response' } } }] } })
+            await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(queuedCount + 1))
+            expect(received).toHaveBeenCalledWith(expect.objectContaining({
+                content: { type: 'text', text: 'new retained history 0' } }), 'new-prompt-0')
+            expect(received.mock.calls.some(([, id]) => id === 'removed-prompt')).toBe(false)
+            // ID duplicates stay rejected, and the next reconnect starts at the
+            // live progress cursor rather than the retained cutoff or old9.
+            socket.trigger('update', { body: { t: 'new-message', message: prompts[0] } })
+            expect(received).toHaveBeenCalledTimes(queuedCount + 1)
+            axiosHarness.get.mockClear()
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                expect.objectContaining({ params: { afterSeq: progressSeq, limit: 200 } })))
+        } finally { pending.resolve({ data: { messages: [] } }); client.close() }
+    })
+
     it.each([true, false])('replays explicitly marked native queue input only for shared sessions (%s)', shared => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({
@@ -982,6 +1687,21 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
         filter.accept({ id: 'a', seq: 11 })
         filter.accept({ id: 'b', seq: 10 })
         expect(filter.cursorSeq()).toBe(11)
+    })
+
+    it('rewinds only the sequence cursor and preserves seen IDs, including an empty retained prefix', () => {
+        const filter = new IncomingMessageFilter()
+        filter.accept({ id: 'old-tail', seq: 9 })
+        filter.rewindCursor(2)
+        expect(filter.cursorSeq()).toBe(2)
+        expect(filter.accept({ id: 'old-tail', seq: 9 })).toBe(false)
+        expect(filter.accept({ id: 'new-prompt', seq: 3 })).toBe(true)
+        filter.rewindCursor(8)
+        expect(filter.cursorSeq()).toBe(3)
+        filter.rewindCursor(0)
+        expect(filter.cursorSeq()).toBe(0)
+        expect(filter.accept({ id: 'first-new-turn', seq: 1 })).toBe(true)
+        expect(filter.accept({ id: 'new-prompt', seq: 3 })).toBe(false)
     })
 
     it('bounds the seen-id set to the configured capacity (LRU eviction)', () => {
