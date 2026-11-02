@@ -1701,7 +1701,9 @@ export function SessionList(props: {
                     if (pinInProgressSessions && !session.pinned && isPinnedInProgressSession(session)) return false
                     return true
                 }),
-                listView
+                // Search keeps its own contract: relevance first, then the stable
+                // last-message order for ties, whatever the list view says.
+                hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)

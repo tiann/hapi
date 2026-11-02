@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
@@ -97,4 +97,15 @@ it('shows archived sessions expanded when filtering to archived only', () => {
     window.localStorage.setItem('hapi-session-list-status', 'archived')
     const rowOrder = renderSessions(MIXED_ROWS)
     expect(rowOrder()).toEqual(['archivedNew', 'archivedOther'])
+})
+
+it('keeps the default project order for equally relevant search results', () => {
+    window.localStorage.setItem('hapi-session-list-sort', 'created')
+    const rowOrder = renderSessions([
+        { id: 'archivedNewer', path: '/x', active: false, lastUserMessageAt: 9_000 },
+        { id: 'liveOlder', path: '/y', active: true, lastUserMessageAt: 1_000 }
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Search sessions (title, path, Agent, machine name, ID, and more)' }))
+    fireEvent.change(screen.getByPlaceholderText('Search title/path/Agent/machine/ID…'), { target: { value: 'Row' } })
+    expect(rowOrder()).toEqual(['archivedNewer', 'liveOlder'])
 })
