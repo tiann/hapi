@@ -10,7 +10,8 @@ This README covers development builds.
 ## Current capabilities
 
 The app provides sessions/chat, approvals and questions, new sessions,
-attachments, scheduled sends, `/` command suggestions, files/Git, Scratchlist, standard dictation, usage/storage,
+attachments, scheduled sends, `/` command suggestions, `@` session/file references,
+files/Git, Scratchlist, standard dictation, usage/storage,
 settings and encrypted APNs notifications. It pairs with multiple hubs and
 keeps one active. The chat's … menu also forks the conversation, rewinds or
 forks at a loaded user message with a native history point (a separate sheet,
@@ -285,6 +286,30 @@ and superseding-session navigation when changing this wiring. The transcript
 uses `AnchoredTranscriptList` (`UICollectionView` with SwiftUI hosting) and
 prepares Markdown off the main thread; see
 [native transcript scrolling](../docs/native-chat-scrolling.md).
+
+## Composer references
+
+Type `@` at the start of a word to find another conversation on the active hub.
+The picker follows Web eligibility/search/ranking: conversations with content
+(including untitled ones), no empty stubs/current session/duplicate native-agent
+sessions, and archived conversations only once a search is typed. Codex and
+Copilot additionally search session files (50 results, best-effort); session
+suggestions stay available while file search is pending or fails.
+
+Selecting replaces only the token at the caret and preserves surrounding text.
+Session references are editable Markdown `[title](/sessions/id)` using the same
+wire format as Web rich mentions; native input does not render inline chips.
+Codex files insert `@"path"` with escaping; Copilot inserts `@path`. Drafts,
+queueing, scheduled sends and Scratchlist retain the serialized reference text.
+Suggestions close during text selection, IME composition, blur and Scratchlist
+input. The selection-aware native editor retains the one-to-six-line layout.
+
+Regression suites: package `ComposerMentionSuggestionsTests`,
+`ComposerMentionFilesTests`, `SessionMentionMetadataTests` and the mention cases
+in `ChatInteractorTests`; app-hosted `ComposerMentionPresentationTests` covers
+caret replacement, focus, marked text and layout. On a connected device, check
+Chinese input, VoiceOver selection, file lookup with an offline CLI, and send a
+reference from each supported file-mention agent.
 
 ## Scratchlist workflow
 

@@ -87,6 +87,7 @@ class MainActivity : AppCompatActivity() {
                 },
                 dynamicColor = theme.dynamicColor,
                 oled = theme.mode == ThemeMode.OLED,
+                preset = theme.preset,
             ) {
                 CompositionLocalProvider(LocalAppGraph provides appGraph) {
                     HapiNavigation()

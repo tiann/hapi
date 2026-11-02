@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import app.hapi.companion.ui.theme.ColorThemePreset
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.SqliteStorageUsageResponse
@@ -19,8 +20,9 @@ import java.time.LocalDate
  * Compile-checked previews doubling as visual regressions for the B-M4e
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
  * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
- * non-owner gating), the General subpage it drills into, and the expressive
- * choice dialogs that subpage opens (theme swatches in light and dark,
+ * non-owner gating), the General subpage it drills into (stock and under a
+ * color theme preset), and the expressive choice dialogs that subpage opens
+ * (theme swatches in light and dark, color-theme cards with accent strips,
  * language cards without swatches).
  */
 
@@ -188,11 +190,60 @@ private fun SettingsGeneralPreview() {
                 ),
                 onSetThemeMode = {},
                 onSetDynamicColor = {},
+                onSetPreset = {},
                 onSetLanguage = {},
                 onRetryHubInfo = {},
                 onBack = {},
             )
         }
+    }
+}
+
+@Preview(name = "Settings general · color theme", showBackground = true, heightDp = 1200)
+@Composable
+private fun SettingsGeneralPresetPreview() {
+    HapiTheme(darkTheme = true, dynamicColor = false, preset = ColorThemePreset.NORD) {
+        Surface {
+            SettingsGeneralContent(
+                theme = ThemeSettings(
+                    mode = ThemeMode.DARK,
+                    dynamicColor = false,
+                    preset = ColorThemePreset.NORD,
+                ),
+                language = AppLanguage.ENGLISH,
+                hubUrl = "https://hub.example",
+                hubInfo = HubInfoState.Loaded(
+                    HubHealthResponse(status = "ok", protocolVersion = 1),
+                ),
+                onSetThemeMode = {},
+                onSetDynamicColor = {},
+                onSetPreset = {},
+                onSetLanguage = {},
+                onRetryHubInfo = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Color theme choice dialog", showBackground = true)
+@Composable
+private fun ColorThemeChoiceDialogPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        ChoiceDialog(
+            title = "Color theme",
+            options = ColorThemePreset.entries.map { preset ->
+                ChoiceOption(
+                    value = preset,
+                    label = preset.name.lowercase().replaceFirstChar { it.uppercase() },
+                    swatch = colorThemePresetSwatch(preset),
+                )
+            },
+            selected = ColorThemePreset.NORD,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
     }
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { Store } from '../store'
 import { SyncEngine } from './syncEngine'
+import { ArchiveCleanupError } from './archiveCleanupError'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { MACHINE_CAPABILITIES, type Metadata } from '@hapi/protocol'
 import type { RpcGateway } from './rpcGateway'
@@ -153,7 +154,9 @@ describe('archived Codex fork coordination', () => {
             await f.engine.resumeSession(f.source.id, 'ns')
             f.rpc.killSession = async () => ({})
             f.rpc.stopRunnerSession = async () => 'unknown'
-            await expect(f.engine.archiveSession(f.source.id)).rejects.toThrow('still running')
+            const archiveFailure = await f.engine.archiveSession(f.source.id).catch(error => error)
+            expect(archiveFailure).toBeInstanceOf(ArchiveCleanupError)
+            expect(archiveFailure).toMatchObject({ code: 'archive-cleanup-unconfirmed', status: 409 })
             expect(f.engine.getSession(f.source.id)?.metadata?.codexResumePending).toBeDefined()
             f.rpc.stopRunnerSession = async () => 'already_gone'
             await f.engine.archiveSession(f.source.id)
