@@ -399,13 +399,13 @@ export function filterUnreadSessionsOnly(
     sessions: SessionSummary[],
     selectedSessionId: string | null | undefined,
     getLastSeenAt: (sessionId: string) => number,
-    getManualUnreadAt: (sessionId: string) => number | null = () => null,
+    getManualUnreadAt: (sessionId: string, readState?: SessionSummary['readState']) => number | null | undefined = () => undefined,
 ): SessionSummary[] {
     return sessions.filter(session =>
         session.id === selectedSessionId
         || sessionIsUnread(session, {
             lastSeenAt: getLastSeenAt(session.id),
-            manualUnreadAt: getManualUnreadAt(session.id)
+            manualUnreadAt: getManualUnreadAt(session.id, session.readState)
         })
     )
 }
@@ -1151,6 +1151,8 @@ const SessionItem = memo(function SessionItem(props: {
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const [forkOpen, setForkOpen] = useState(false)
+    const [forkPending, setForkPending] = useState(false)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1183,7 +1185,7 @@ const SessionItem = memo(function SessionItem(props: {
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || forkOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1222,6 +1224,13 @@ const SessionItem = memo(function SessionItem(props: {
         }
     }
 
+    const supportsCurrentFork = s.active && s.metadata?.flavor === 'codex'
+        && s.metadata?.conversationHistory?.forkCurrent === true
+    const supportsArchivedFork = !s.active && s.metadata?.flavor === 'codex'
+        && s.metadata?.lifecycleState === 'archived'
+        && Boolean(s.metadata.agentSessionId && s.metadata.machineId)
+    const forkDisabledReason = supportsCurrentFork && s.thinking ? t('session.action.forkRunning') : undefined
+
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
             haptic.impact('medium')
@@ -1242,7 +1251,7 @@ const SessionItem = memo(function SessionItem(props: {
             ? classifySessionAttention(s, {
                 selected,
                 lastSeenAt: getSessionLastSeenAt(s.id),
-                manualUnreadAt: getSessionManualUnreadAt(s.id)
+                manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState)
             })
             : null,
         [s, selected, showDetailedStatus, lastSeenVersion]
@@ -1289,7 +1298,11 @@ const SessionItem = memo(function SessionItem(props: {
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
-                onMarkUnread={() => markSessionUnread(s.id, s.updatedAt)}
+                onMarkUnread={() => markSessionUnread(s.id, s.readState)}
+                onForkSession={api && ((supportsCurrentFork && !s.thinking) || supportsArchivedFork)
+                    ? () => setForkOpen(true)
+                    : undefined}
+                forkDisabledReason={forkDisabledReason}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -1297,6 +1310,30 @@ const SessionItem = memo(function SessionItem(props: {
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
             />
+
+            {forkOpen ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => { if (!forkPending) setForkOpen(false) }}
+                    title={t('dialog.sessionFork.title')}
+                    description={t('dialog.sessionFork.description')}
+                    confirmLabel={t('dialog.sessionFork.confirm')}
+                    confirmingLabel={t('dialog.sessionFork.confirming')}
+                    isPending={forkPending}
+                    destructive
+                    centerTitle
+                    onConfirm={async () => {
+                        if (!api) return
+                        setForkPending(true)
+                        try {
+                            const result = await api.forkConversation(s.id)
+                            onSelect(result.sessionId)
+                        } finally {
+                            setForkPending(false)
+                        }
+                    }}
+                />
+            ) : null}
 
             {reopenError ? (
                 <ConfirmDialog

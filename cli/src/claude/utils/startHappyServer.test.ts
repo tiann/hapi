@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
 import * as peerMessages from '@/modules/pingPeer/pingPeer'
+import * as peerSpawn from '@/modules/spawnPeer/spawnPeer'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 type ToolResult = {
@@ -45,6 +46,8 @@ describe('startHappyServer skill_lookup', () => {
     async function connect(enableSkillLookup = true): Promise<Client> {
         sendAgentMessage = vi.fn()
         const sessionClient = {
+            sessionId: 'parent-id',
+            getMetadata: () => ({ name: 'Parent', path: workingDirectory, flavor: 'codex' }),
             updateMetadata: vi.fn(),
             sendAgentMessage,
             sendClaudeSessionMessage: vi.fn()
@@ -114,6 +117,7 @@ describe('startHappyServer skill_lookup', () => {
             'display_video',
             'display_media',
             'ping_peer',
+            'spawn_peer',
             'inspect_peer',
             'list_peers'
         ])
@@ -177,6 +181,42 @@ describe('startHappyServer skill_lookup', () => {
         }
     })
 
+    it('forwards cross-machine spawn settings with the calling session identity and cwd', async () => {
+        const spawn = vi.spyOn(peerSpawn, 'spawnPeer').mockResolvedValue({
+            sessionId: 'child-id', name: 'Worker'
+        })
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'spawn_peer',
+                arguments: {
+                    directory: '/srv/project',
+                    message: 'Run the tests',
+                    machine: 'remote-host',
+                    agent: 'codex',
+                    model: 'gpt-5.6-sol',
+                    effort: 'high',
+                    permissionMode: 'default',
+                },
+            }) as ToolResult
+            expect(result.isError).toBe(false)
+            expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+                directory: '/srv/project',
+                cwd: workingDirectory,
+                message: 'Run the tests',
+                machine: 'remote-host',
+                agent: 'codex',
+                model: 'gpt-5.6-sol',
+                effort: 'high',
+                permissionMode: 'default',
+                parent: { sessionId: 'parent-id', name: 'Parent', agentSessionId: null },
+                requireParent: true,
+            }))
+        } finally {
+            spawn.mockRestore()
+        }
+    })
+
     it('displays audio through display_media and emits a generated media message', async () => {
         const path = join(sandboxDir, 'sample.wav')
         await writeFile(path, Buffer.from('RIFFxxxxWAVE'))
@@ -231,12 +271,13 @@ describe('startHappyServer skill_lookup', () => {
         await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
         const tools = await mcp.listTools()
 
-        expect(server.toolNames).toEqual(['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'])
+        expect(server.toolNames).toEqual(['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'])
         expect(tools.tools.map((tool) => tool.name)).toEqual([
             'display_image',
             'display_video',
             'display_media',
             'ping_peer',
+            'spawn_peer',
             'inspect_peer',
             'list_peers'
         ])
@@ -416,6 +457,7 @@ describe('toClaudeAllowedHapiMcpTools', () => {
             'list_peers',
             'ping_peer',
             'inspect_peer',
+            'spawn_peer',
             'skill_lookup'
         ])).toEqual([
             'mcp__hapi__change_title',
@@ -425,6 +467,42 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         ])
         expect(toClaudeAllowedHapiMcpTools(['display_video'])).not.toContain('mcp__hapi__display_video')
         expect(toClaudeAllowedHapiMcpTools(['display_media'])).not.toContain('mcp__hapi__display_media')
+    })
+})
+
+describe('resolveMcpSpawnPeerCwd', () => {
+    it('prefers launcher workingDirectory over skillLookup and session path', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({
+            workingDirectory: '/launcher/cwd',
+            skillWorkingDirectory: '/skill/cwd',
+            sessionPath: '/session/path',
+        })).toBe('/launcher/cwd')
+    })
+
+    it('prefers skillLookup workingDirectory over session metadata path', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({
+            skillWorkingDirectory: '/skill/cwd',
+            sessionPath: '/session/path',
+        })).toBe('/skill/cwd')
+    })
+
+    it('falls back to session metadata.path when skillLookup is absent', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({
+            skillWorkingDirectory: undefined,
+            sessionPath: '/session/path',
+        })).toBe('/session/path')
+        expect(resolveMcpSpawnPeerCwd({
+            skillWorkingDirectory: '  ',
+            sessionPath: '  /session/path  ',
+        })).toBe('/session/path')
+    })
+
+    it('returns undefined when neither cwd source is available', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({})).toBeUndefined()
     })
 })
 
@@ -462,10 +540,10 @@ describe('startHappyServer peer tools kill switch', () => {
     it('registers peer tools by default', async () => {
         delete process.env.HAPI_DISABLE_PEER_TOOLS
         const { toolNames } = await startServer()
-        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
         const tools = await client!.listTools()
         const names = tools.tools.map((tool) => tool.name)
-        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
     })
 
     it('omits peer tools from registration and toolNames when HAPI_DISABLE_PEER_TOOLS is set', async () => {
@@ -477,6 +555,7 @@ describe('startHappyServer peer tools kill switch', () => {
         expect(names).not.toContain('list_peers')
         expect(names).not.toContain('ping_peer')
         expect(names).not.toContain('inspect_peer')
+        expect(names).not.toContain('spawn_peer')
         expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
     })
 })
