@@ -6,6 +6,7 @@ import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
 import { resolveClaudeLaunchModel } from './utils/claudeSettings';
 import type { RawJSONLines } from './types';
+import { ClaudeToolResultImages } from './utils/toolResultImages';
 
 // Local transcripts carry bare model ids and no context_window, so the web
 // guesses 200k. When the TUI runs a "[1m]" model, stamp 1M on messages from
@@ -30,6 +31,7 @@ function isInterruptMarker(message: RawJSONLines): boolean {
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
     let lastSystemModel = session.getModel();
+    const toolResultImages = new ClaudeToolResultImages();
 
     // Create scanner
     const scanner = await createSessionScanner({
@@ -93,12 +95,14 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 return
             }
             stampContextWindow(message, session.localContextModel)
-            if (message.type === 'assistant') {
-                const { context_usage: _contextUsage, ...outboundMessage } = message
+            const processed = toolResultImages.process(message)
+            if (processed.message.type === 'assistant') {
+                const { context_usage: _contextUsage, ...outboundMessage } = processed.message
                 session.client.sendClaudeSessionMessage(outboundMessage)
-                return
+            } else {
+                session.client.sendClaudeSessionMessage(processed.message)
             }
-            session.client.sendClaudeSessionMessage(message)
+            for (const image of processed.images) session.client.sendAgentMessage(image)
         }
     });
 

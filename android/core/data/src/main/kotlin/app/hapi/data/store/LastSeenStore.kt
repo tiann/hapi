@@ -178,8 +178,7 @@ class LastSeenStore(
             val server = SessionReadState.merge(state.server[summary.id], summary.readState) ?: SessionReadState()
             val pending = state.pending[summary.id]
             val manual = server.manualUnread && pending?.request?.expectedVersion != server.version
-            return manual || (!(summary.active && summary.thinking)
-                && (summary.contentRevision ?: 0) > maxOf(server.readRevision, state.lastSeen[summary.id] ?: 0))
+            return manual || (summary.contentRevision ?: 0) > maxOf(server.readRevision, state.lastSeen[summary.id] ?: 0)
         }
     }
 }

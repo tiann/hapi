@@ -14,6 +14,7 @@ import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBind
 import { startCodexGateway, record, string, type Envelope } from './gateway';
 import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
 import { SharedCodexRoot } from './root';
+import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
 type Reservation = { root: SharedCodexRoot; resumeId?: string };
@@ -169,13 +170,20 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     };
     const prepare = async (cwd: string, existingSessionId?: string, parent?: SharedCodexRoot): Promise<SharedCodexRoot> => {
         assertRunning();
+        // Seed the generated title before Shared Codex replays inherited history.
+        // A historical change_title item must not replace this fork identity.
+        const forkSummary = parent ? buildForkSessionSummary(parent.session.getMetadata()) : undefined;
         const shared = { flavor: 'codex', startedBy: options.startedBy ?? 'terminal', workingDirectory: cwd,
-            exportSessionEnv: false, reportStarted: false, metadataOverrides: { capabilities: {
-                terminal: true,
-                concurrentClients: true,
-                ...(existingSessionId ? { conversationHistory: undefined } : {})
-            },
-                ...(parent ? { forkedFrom: parent.session.sessionId } : {}) } } as const;
+            exportSessionEnv: false, reportStarted: false, metadataOverrides: {
+                ...(forkSummary ? { summary: forkSummary } : {}),
+                capabilities: {
+                    terminal: true,
+                    concurrentClients: true,
+                    ...(existingSessionId ? { conversationHistory: undefined } : {})
+                },
+                ...(parent ? { forkedFrom: parent.session.sessionId } : {})
+            }
+        } as const;
         // reservedSessionId names one preallocated hub row — single-use. A second
         // create()/fork must mint a fresh row, not re-adopt (#1911 Opus Major).
         const reservedSessionId = takeReservedSessionId(options);
