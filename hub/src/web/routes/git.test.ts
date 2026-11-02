@@ -331,6 +331,51 @@ describe('file search route', () => {
         expect(signals[1]).toBe(signals[0])
     })
 
+    it('forwards request signals through directory and exact-path branches', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/project' }
+        } as unknown as Session
+        const signals: Array<AbortSignal | undefined> = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async (
+                _sessionId: string,
+                _args: string[],
+                _cwd: string,
+                _fileSearch: { query: string; limit: number },
+                signal?: AbortSignal,
+            ) => {
+                signals.push(signal)
+                return { success: true, stdout: 'src/file.ts\n' }
+            },
+            statFiles: async (_sessionId: string, paths: string[], signal?: AbortSignal) => {
+                signals.push(signal)
+                return {
+                    success: true,
+                    entries: paths.map((path) => path === 'src'
+                        ? { path, type: 'directory' as const, size: 0, modified: 1 }
+                        : { path, type: 'file' as const, size: 1, modified: 1 })
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = buildApp(engine)
+
+        const directory = await app.request('/api/sessions/session-1/files?query=src%2F')
+        const exact = await app.request('/api/sessions/session-1/files?query=src%2Ffile.ts')
+
+        expect(directory.status).toBe(200)
+        expect(exact.status).toBe(200)
+        expect(signals).toHaveLength(4)
+        expect(signals[0]).toBeInstanceOf(AbortSignal)
+        expect(signals[1]).toBe(signals[0])
+        expect(signals[2]).toBe(signals[0])
+        expect(signals[3]).toBeInstanceOf(AbortSignal)
+        expect(signals[3]).not.toBe(signals[0])
+    })
+
     it('preserves backslashes in POSIX search queries', async () => {
         const session = {
             id: 'session-1',
