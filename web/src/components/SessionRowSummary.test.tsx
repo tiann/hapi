@@ -226,6 +226,21 @@ describe('SessionRowSummary background status', () => {
         expect(container.querySelector('.text-\\[var\\(--app-badge-warning-text\\)\\] svg')).not.toBeNull()
         expect(container.querySelectorAll('.rounded-full')).toHaveLength(1)
     })
+
+    it('marks a content-search snippet whose source message was truncated', () => {
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary()}
+                    contentSnippet="…tail phrase…"
+                    contentSearchTruncated={true}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByLabelText('This message was truncated for search; some content may be missing.'))
+            .toBeInTheDocument()
+    })
 })
 
 function expectUnread() {
