@@ -13,9 +13,9 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v23 through v28', () => {
-    it('backfills position using the previous newest-first order', () => {
-        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-'))
+describe('schema migrations through v31', () => {
+    it('backfills scratchlist position using the previous newest-first order', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-position-'))
         tempDirs.push(dir)
         const dbPath = join(dir, 'hapi.db')
 
@@ -47,19 +47,21 @@ describe('schema migration v23 through v28', () => {
         legacy.close()
 
         const migrated = new Store(dbPath)
-        expect(migrated.scratchlist.list('session-1').map((entry) => ({
-            entryId: entry.entryId,
-            position: entry.position,
-        }))).toEqual([
-            { entryId: 'newer', position: 0 },
-            { entryId: 'older', position: 1 },
-        ])
-        const internalDb = (migrated as unknown as { db: Database }).db
-        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-        expect(version.user_version).toBe(31)
-        migrated.close()
+        try {
+            expect(migrated.scratchlist.list('session-1').map((entry) => ({
+                entryId: entry.entryId,
+                position: entry.position,
+            }))).toEqual([
+                { entryId: 'newer', position: 0 },
+                { entryId: 'older', position: 1 },
+            ])
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+            expect(version.user_version).toBe(32)
+        } finally {
+            migrated.close()
+        }
     })
-
     it('adds fcm_devices.push_key to a V23 database and keeps existing rows', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-'))
         tempDirs.push(dir)
@@ -87,7 +89,7 @@ describe('schema migration v23 through v28', () => {
             expect(columns.some((col) => col.name === 'push_key')).toBe(true)
             const messageColumns = messageColumnsStatement.all() as Array<{ name: string }>
             expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
 
             // Existing Android rows survive with a NULL push key.
             const devices = migrated.fcm.getDevicesByNamespace('default')
@@ -137,7 +139,7 @@ describe('schema migration v23 through v28', () => {
             const version = versionStatement.get() as { user_version: number }
             const indexes = indexesStatement.all() as Array<{ name: string }>
             expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
                 'idx_messages_immediate_queued',
                 'idx_messages_future_scheduled_queued'

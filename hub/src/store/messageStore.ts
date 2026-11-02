@@ -23,7 +23,6 @@ import {
     bumpMessageEpoch,
     getLocalMessageStates,
     getMessagesByLocalIds,
-    getMessageById,
     getUninvokedLocalMessages,
     getMatureScheduledMessages,
     getImmediateQueuedLocalMessages,
@@ -45,6 +44,7 @@ import {
     getMessagesAfterSeq,
     getMinSeq,
     getMessageSeqById,
+    getMessageById,
     hasUninvokedAttachmentReference,
     rewriteMessageAttachments,
     truncateMessagesFromLocalId,
@@ -54,6 +54,13 @@ import {
     type MessagePosition,
     type MessageAttachmentRewrite,
 } from './messages'
+import {
+    hasPotentiallyIncompleteMessageContent,
+    searchMessageContent,
+    searchMessageContentInSession,
+    type MessageContentSearchMatch,
+    type SessionMessageContentSearchResult
+} from './messageContentSearch'
 
 export class MessageStore {
     private readonly db: Database
@@ -114,6 +121,7 @@ export class MessageStore {
     }
 
     hasUninvokedAttachmentReference(sessionId: string, path: string): boolean {
+
         return hasUninvokedAttachmentReference(this.db, sessionId, path)
     }
 
@@ -211,6 +219,32 @@ export class MessageStore {
 
     countMessages(sessionId: string): number {
         return countMessages(this.db, sessionId)
+    }
+
+    searchContent(
+        query: string,
+        namespace: string,
+        limit: number = 50,
+        sessionIds?: readonly string[]
+    ): MessageContentSearchMatch[] {
+        return searchMessageContent(this.db, query, namespace, limit, sessionIds)
+    }
+
+    searchContentInSession(
+        query: string,
+        namespace: string,
+        sessionId: string,
+        limit: number = 500
+    ): SessionMessageContentSearchResult {
+        return searchMessageContentInSession(this.db, query, namespace, sessionId, limit)
+    }
+
+    hasPotentiallyIncompleteContent(
+        namespace: string,
+        query: string,
+        sessionIds?: readonly string[]
+    ): boolean {
+        return hasPotentiallyIncompleteMessageContent(this.db, namespace, query, sessionIds)
     }
 
     cancelQueuedMessage(sessionId: string, messageId: string): CancelQueuedMessageResult {

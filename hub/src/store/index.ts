@@ -16,6 +16,12 @@ import { UserStore } from './userStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import {
+    backfillMessageContentSearchLookup,
+    backfillMessageContentSearchShortIndex,
+    createMessageContentSearchTable,
+    rebuildMessageContentSearch
+} from './messageContentSearch'
 
 export type {
     NativeDevicePlatform,
@@ -47,11 +53,14 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 31
+const SCHEMA_VERSION: number = 32
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
+    'message_content_search',
+    'message_content_search_lookup',
+    'message_content_search_short',
     'message_epochs',
     'users',
     'push_subscriptions',
@@ -391,6 +400,7 @@ export class Store {
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
             30: () => this.migrateFromV30ToV31(),
+            31: () => this.migrateFromV31ToV32(),
         })
 
         if (currentVersion === 0) {
@@ -419,6 +429,14 @@ export class Store {
         }
 
         const stepMigrations = buildStepMigrations(false)
+        if (currentVersion === 26) {
+            this.migrateFromV26ToV30()
+            this.migrateFromV29ToV30()
+            this.migrateFromV30ToV31()
+            this.migrateFromV31ToV32()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
         if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
             for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
                 const step = stepMigrations[v]
@@ -676,6 +694,7 @@ export class Store {
                 ON session_turns(session_id)
                 WHERE ended_at IS NULL;
         `)
+        createMessageContentSearchTable(this.db)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -1099,8 +1118,14 @@ export class Store {
         }
     }
 
-    /** v30→v31: persist scratchlist order and add its lookup index. */
+    /** v30→v31: create and backfill the message-content search index. */
     private migrateFromV30ToV31(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+    }
+
+    /** v31→v32: persist scratchlist order and add its lookup index. */
+    private migrateFromV31ToV32(): void {
         const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
         if (scratchlistColumns.length === 0) return
         if (!scratchlistColumns.some((column) => column.name === 'position')) {
@@ -1131,6 +1156,8 @@ export class Store {
 
     /** v28→v29: persist a stable, user-input-only list ordering clock. */
     private migrateFromV28ToV29(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchShortIndex(this.db)
         const columns = this.getSessionColumnNames()
         if (columns.size === 0 || columns.has('last_user_message_at')) return
         this.db.transaction(() => {
@@ -1141,6 +1168,11 @@ export class Store {
         })()
     }
 
+    private migrateFromV26ToV30(): void {
+        this.migrateFromV26ToV27()
+        this.migrateFromV27ToV28()
+        this.migrateFromV28ToV29()
+    }
     /**
      * v27→v28: persist when agents were working. `thinking` used to live only
      * in the session cache, so a hub restart forgot it and nothing could say
@@ -1150,6 +1182,8 @@ export class Store {
      * still continue until then.
      */
     private migrateFromV27ToV28(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchLookup(this.db)
         // In the legacy branch sessions may not exist yet; createSchema adds
         // the table once it does.
         if (this.getSessionColumnNames().size === 0) return

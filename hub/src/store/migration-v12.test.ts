@@ -67,7 +67,8 @@ describe('Store V11→V12 migration: session_scratchlist table', () => {
             expect(sessions.map((r) => r.id)).toEqual(['s1'])
         } finally {
             store?.close()
-            rmSync(dir, { recursive: true, force: true })
+            Bun.gc(true)
+            rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
         }
     })
 
@@ -90,7 +91,8 @@ describe('Store V11→V12 migration: session_scratchlist table', () => {
             expect(scratchCols).toContain('entry_id')
         } finally {
             store?.close()
-            rmSync(dir, { recursive: true, force: true })
+            Bun.gc(true)
+            rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
         }
     })
 
@@ -109,7 +111,8 @@ describe('Store V11→V12 migration: session_scratchlist table', () => {
         } finally {
             store2?.close()
             store1?.close()
-            rmSync(dir, { recursive: true, force: true })
+            Bun.gc(true)
+            rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
         }
     })
 
@@ -250,7 +253,9 @@ describe('ScratchlistStore: CRUD through the typed-table wrapper', () => {
 
 function getColumns(store: Store, table: string): string[] {
     const db: Database = (store as unknown as { db: Database }).db
-    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    const statement = db.prepare(`PRAGMA table_info(${table})`)
+    const rows = statement.all() as Array<{ name: string }>
+    statement.finalize()
     return rows.map((r) => r.name)
 }
 
