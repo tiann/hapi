@@ -24,6 +24,7 @@ data class MessagesPage(
     val snapshotHeadSeq: Long? = null,
     val snapshotHeadAt: Long? = null,
     val hasMore: Boolean,
+    val readThroughRevision: Long? = null,
 )
 
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */
@@ -49,6 +50,12 @@ data class SessionResponse(
 @Serializable
 data class MachinesResponse(
     val machines: List<Machine>,
+)
+
+/** `POST /api/machines/:id/restart-runner` — hub ack (`{message}`). */
+@Serializable
+data class RestartRunnerResponse(
+    val message: String,
 )
 
 /** `POST /api/auth` success body (`AuthResponse`, `shared/src/apiTypes.ts`). */

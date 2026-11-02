@@ -86,6 +86,13 @@ sealed class AgentEvent {
     class TurnDuration(override val raw: JsonObject) : AgentEvent() {
         val durationMs: Double? get() = asNumber(raw["durationMs"])
         val targetMessageId: String? get() = asString(raw["targetMessageId"])
+        /** `"codex"` when synthesized from a native turn-duration record. */
+        val provider: String? get() = asString(raw["provider"])
+        val turnId: String? get() = asString(raw["turnId"])
+    }
+
+    class TurnSummary(override val raw: JsonObject) : AgentEvent() {
+        val summary: RoundSummary? get() = decodeRoundSummary(raw["summary"])
     }
 
     class Microcompact(override val raw: JsonObject) : AgentEvent()
@@ -123,6 +130,7 @@ sealed class AgentEvent {
             "ready" -> Ready(raw)
             "api-error" -> ApiError(raw)
             "turn-duration" -> TurnDuration(raw)
+            "turn-summary" -> TurnSummary(raw)
             "microcompact" -> Microcompact(raw)
             "compact" -> Compact(raw)
             "compact-summary" -> CompactSummary(raw)
@@ -477,6 +485,7 @@ class AgentTextBlock(
     var durationMs: Double? = null,
     var usage: UsageData? = null,
     var model: String? = null,
+    var roundSummary: RoundSummary? = null,
     var text: String,
     override var meta: JsonElement?,
 ) : ChatBlock() {
@@ -491,6 +500,7 @@ class AgentReasoningBlock(
     var durationMs: Double? = null,
     var usage: UsageData? = null,
     var model: String? = null,
+    var roundSummary: RoundSummary? = null,
     var text: String,
     override var meta: JsonElement?,
 ) : ChatBlock() {
@@ -505,6 +515,7 @@ class CodexReviewBlock(
     var durationMs: Double? = null,
     var usage: UsageData? = null,
     var model: String? = null,
+    var roundSummary: RoundSummary? = null,
     val review: CodexReview,
     override var meta: JsonElement?,
 ) : ChatBlock() {
@@ -519,6 +530,7 @@ class CliOutputBlock(
     var durationMs: Double? = null,
     var usage: UsageData? = null,
     var model: String? = null,
+    var roundSummary: RoundSummary? = null,
     var text: String,
     /** `'user' | 'assistant'`. */
     val source: String,
@@ -536,6 +548,7 @@ class GeneratedImageBlock(
     val fileName: String,
     val mimeType: String?,
     val source: InlineMediaSource?,
+    var roundSummary: RoundSummary? = null,
     override var meta: JsonElement?,
 ) : ChatBlock() {
     override val kind: String get() = "generated-image"
@@ -560,6 +573,7 @@ class ToolCallBlock(
     var durationMs: Double? = null,
     var usage: UsageData? = null,
     var model: String? = null,
+    var roundSummary: RoundSummary? = null,
     var tool: ChatToolCall,
     var children: List<ChatBlock>,
     override var meta: JsonElement?,

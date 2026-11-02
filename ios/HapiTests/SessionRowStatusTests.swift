@@ -42,9 +42,10 @@ final class SessionRowStatusTests: XCTestCase {
         XCTAssertNil(SessionRowStatus(summary: summary))
     }
 
-    func testReadingDoesNotResolveAttentionAndResolutionKeepsTheProject() {
+    func testReadingDoesNotResolveAttentionAndResolutionKeepsTheProject() async throws {
         var summary = HomeFilterTestData.summary("a", machine: "mac")
         summary.metadata?.summary = .init(text: "Keep the session context visible")
+        summary.contentRevision = 1
         summary.pendingRequestsCount = 2
         summary.pendingRequestKinds = [.permission]
         let sessions = HomeFilterTestSessions([summary])
@@ -52,7 +53,8 @@ final class SessionRowStatusTests: XCTestCase {
         XCTAssertTrue(model.rows[0].unread)
         XCTAssertEqual(model.rows[0].status, .needsApproval(2))
 
-        model.onSessionOpened("a")
+        model.markAllRead()
+        try await Task.sleep(for: .milliseconds(30))
         XCTAssertFalse(model.rows[0].unread)
         XCTAssertEqual(model.rows[0].status, .needsApproval(2))
         XCTAssertEqual(model.rows[0].project, "hapi")
@@ -64,7 +66,7 @@ final class SessionRowStatusTests: XCTestCase {
         sessions.sessions[0].thinking = true
         XCTAssertEqual(model.rows[0].status, .running)
         sessions.sessions[0].updatedAt += 1
-        XCTAssertTrue(model.rows[0].unread, "Existing updatedAt-based unread semantics stay intact")
+        XCTAssertFalse(model.rows[0].unread, "Metadata changes do not create unread output")
     }
 
     func testMissingMetadataDoesNotCreatePlaceholderContent() {
