@@ -198,6 +198,41 @@ afterEach(() => {
     vi.unstubAllGlobals()
 })
 
+describe('QueuedMessagesBar compaction confirmation', () => {
+    it('shows waiting only for the observed message, then restores recovery controls when compaction ends', () => {
+        mocks.messageWindowState = { messages: [
+            makeQueuedMessage(null, 'compacting', { deliveryState: 'indeterminate' }),
+            makeQueuedMessage(null, 'older', { deliveryState: 'indeterminate' }),
+        ] }
+        const client = new QueryClient()
+        const bar = (ids?: string[]) => (
+            <QueryClientProvider client={client}>
+                <QueuedMessagesBar sessionId="session-1" api={null} pendingSchedule={null}
+                    pendingScheduleRevision={0} compactionPendingMessageIds={ids} />
+            </QueryClientProvider>
+        )
+        const view = render(bar(['local-compacting']))
+        expect(screen.getAllByText('queuedMessages.compactionPending')).toHaveLength(1)
+        expect(screen.getAllByText('queuedMessages.steerOutcomeUnknown')).toHaveLength(1)
+        expect(screen.getAllByRole('button', { name: 'queuedMessages.retryOutcome' })).toHaveLength(1)
+        view.rerender(bar())
+        expect(screen.queryByText('queuedMessages.compactionPending')).toBeNull()
+        expect(screen.getAllByText('queuedMessages.steerOutcomeUnknown')).toHaveLength(2)
+        expect(screen.getAllByRole('button', { name: 'queuedMessages.retryOutcome' })).toHaveLength(2)
+    })
+
+    it('does not change a queued message into an uncertain or consumed message', () => {
+        mocks.messageWindowState = { messages: [makeQueuedMessage(null, 'queued')] }
+        render(<QueryClientProvider client={new QueryClient()}>
+            <QueuedMessagesBar sessionId="session-1" api={null} pendingSchedule={null}
+                pendingScheduleRevision={0} compactionPendingMessageIds={['local-queued']} />
+        </QueryClientProvider>)
+        expect(screen.queryByText('queuedMessages.compactionPending')).toBeNull()
+        expect(screen.queryByText('queuedMessages.steerOutcomeUnknown')).toBeNull()
+        expect(mocks.markMessagesConsumed).not.toHaveBeenCalled()
+    })
+})
+
 describe('QueuedMessagesBar layout', () => {
     it('keeps the queue footer flush with the composer area', () => {
         renderQueuedMessage()

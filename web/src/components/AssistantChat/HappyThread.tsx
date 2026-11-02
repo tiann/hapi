@@ -1,3 +1,4 @@
+import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ThreadPrimitive, unstable_useThreadMessageIds, useAuiState } from '@assistant-ui/react'
 import type { ComponentProps } from 'react'
@@ -17,7 +18,7 @@ import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessag
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
-import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
 import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
@@ -29,6 +30,7 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { resolveSessionHeaderMachineLabel } from '@/components/SessionHeader'
+import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
@@ -531,6 +533,7 @@ export function HappyThread(props: {
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
+    allowInactiveFork?: boolean
     onRefresh: () => void
     onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
@@ -539,6 +542,7 @@ export function HappyThread(props: {
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
     onViewModeChange: (mode: 'tail' | 'history') => void
+    readThroughRevision?: number
     isSyncingTail: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
@@ -562,12 +566,18 @@ export function HappyThread(props: {
     const machineLabelsById = useMachineLabels(machines)
     const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
     const shareDialogOpen = shareTurn !== null
+    const getGeneratedMediaBlob = useCallback(
+        (imageId: string) => props.api.getGeneratedImageBlob(props.sessionId, imageId),
+        [props.api, props.sessionId]
+    )
     const shareTitle = shareTurn ? getSessionTitle(props.session) : ''
     const shareRelativeTimeTick = useMinuteTick(headerMetadata.lastActive && shareDialogOpen)
     const shareMetadataItems = useMemo(() => {
         const agentFlavor = props.session.metadata?.flavor ?? null
         const agentLabel = agentFlavor?.trim() || null
         const machineLabel = resolveSessionHeaderMachineLabel(props.session, machineLabelsById)
+        const projectPath = getSessionProjectPath(props.session.metadata)
+        const projectLabel = projectPath ? getSessionProjectLabel(projectPath) : null
         const modelLabel = getSessionModelLabel(props.session)
         const reasoningLabel = getShareTurnReasoningLabel(
             agentFlavor,
@@ -585,6 +595,9 @@ export function HappyThread(props: {
 
         return selectShareTurnMetadata(headerMetadata, {
             agent: agentLabel ? { text: agentLabel, flavor: agentFlavor } : undefined,
+            project: projectLabel ? {
+                text: `${headerMetadata.showLabels ? `${t('session.item.project')}: ` : ''}${projectLabel}`,
+            } : undefined,
             machine: machineLabel ? {
                 text: `${headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}${machineLabel}`,
             } : undefined,
@@ -605,7 +618,8 @@ export function HappyThread(props: {
             } : undefined,
         })
     }, [headerMetadata, locale, machineLabelsById, props.serviceTier, props.session, shareDialogOpen, shareRelativeTimeTick, t])
-    const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { terminalToolDisplayMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const hubSettingsQuery = useQuery({
         queryKey: queryKeys.hubSettings,
         queryFn: async () => props.api.getHubSettings(),
@@ -671,6 +685,9 @@ export function HappyThread(props: {
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
     const needsViewportCoverageRef = useRef<() => boolean>(() => false)
+    useSelectedSessionSeen(props.sessionId,
+        !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
+        props.session.readState?.version, viewportRef, contentRef)
     const atBottomRef = useRef(true)
     const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
@@ -878,6 +895,26 @@ export function HappyThread(props: {
             // scroll events cannot bypass backoff or a paused coverage run.
             if (needsCoverage) {
                 void requestOlderRef.current(explicitUpwardIntent ? 'user' : 'coverage')
+            }
+
+            // Content growth and viewport resizes (mobile keyboard) move the
+            // tail without any user gesture. While tail-follow is active, treat
+            // a non-upward scroll as layout churn and re-pin to the newest
+            // message instead of silently dropping out of tail mode.
+            if (
+                autoScrollEnabledRef.current
+                && !intent.isScrollingUp
+                && !tailScrollInProgressRef.current
+                && !pendingScrollRef.current
+            ) {
+                setShowScrollToBottom(false)
+                setAutoScrollMode(true)
+                setAtBottomMode(true)
+                if (!intent.isNearBottom) {
+                    viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
+                    lastScrollTopRef.current = viewport.scrollTop
+                }
+                return
             }
 
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
@@ -1737,6 +1774,7 @@ export function HappyThread(props: {
             onContinuePlan: props.onContinuePlan,
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
+            allowInactiveFork: props.allowInactiveFork,
             onForkConversation: props.onForkConversation,
             onRewindConversation: props.onRewindConversation,
             isLatestCompletedBoundary: props.isLatestCompletedBoundary,
@@ -1836,6 +1874,7 @@ export function HappyThread(props: {
                     metadataItems={shareMetadataItems}
                     sourceSnapshots={shareTurn?.snapshots ?? []}
                     sourceContentWidth={shareTurn?.sourceContentWidth ?? null}
+                    getGeneratedMediaBlob={getGeneratedMediaBlob}
                     onClose={() => setShareTurn(null)}
                 />
             </ThreadPrimitive.Root>

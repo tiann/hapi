@@ -78,7 +78,7 @@ struct CatalogTests {
 
     @Test func codexFamilyFlavorsShareTheCodexModeSet() {
         let expected: [PermissionMode] = [.default, .readOnly, .safeYolo, .yolo]
-        #expect(permissionModes(forFlavor: "codex") == expected)
+        #expect(permissionModes(forFlavor: "codex") == [.default, .readOnly, .autoReview, .yolo])
         #expect(permissionModes(forFlavor: "gemini") == expected)
         #expect(permissionModes(forFlavor: "kimi") == expected)
         #expect(permissionModes(forFlavor: "copilot") == expected)
@@ -117,7 +117,7 @@ struct CatalogTests {
         #expect(PermissionMode.default.label == "Default")
         #expect(PermissionMode.acceptEdits.label == "Accept Edits")
         #expect(PermissionMode.bypassPermissions.label == "Yolo")
-        #expect(PermissionMode.autoReview.label == "Auto-review")
+        #expect(PermissionMode.autoReview.label == "Auto")
         #expect(PermissionMode.readOnly.label == "Read Only")
         #expect(PermissionMode.plan.label == "Plan Mode")
         #expect(PermissionMode.alwaysProceed.label == "Always Proceed")
@@ -246,12 +246,10 @@ struct CatalogTests {
     @Test func newSessionCatalogsMatchTheWebOptionLists() {
         #expect(NewSessionCatalogs.claudeModels == [
             NewSessionOption(value: "auto", label: "Default"),
-            NewSessionOption(value: "sonnet", label: "Sonnet"),
-            NewSessionOption(value: "sonnet[1m]", label: "Sonnet 1M"),
             NewSessionOption(value: "opus", label: "Opus"),
-            NewSessionOption(value: "opus[1m]", label: "Opus 1M"),
             NewSessionOption(value: "fable", label: "Fable"),
-            NewSessionOption(value: "fable[1m]", label: "Fable 1M"),
+            NewSessionOption(value: "sonnet", label: "Sonnet"),
+            NewSessionOption(value: "haiku", label: "Haiku"),
         ])
         #expect(NewSessionCatalogs.claudeEfforts == [
             NewSessionOption(value: "auto", label: "Auto"),

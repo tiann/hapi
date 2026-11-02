@@ -14,6 +14,7 @@ export function HappyUserMessage() {
     const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
+    const threadIsRunning = useAuiState((s) => s.thread.isRunning)
     const elementId = getConversationMessageAnchorId(messageId)
     const text = useAuiState((s) => {
         if (s.message.role !== 'user') return ''
@@ -51,22 +52,29 @@ export function HappyUserMessage() {
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
 
-    const history = ctx.metadata?.capabilities?.conversationHistory
+    const history = ctx.allowInactiveFork
+        ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
+        : ctx.metadata?.capabilities?.conversationHistory
     const hasNativePoint = typeof localId === 'string'
         && localId.length > 0
         && ctx.metadata?.conversationHistoryPoints?.[localId] === true
     const isLatestBoundary = ctx.isLatestCompletedBoundary?.(messageId) === true
+    const forkEnabled = !ctx.disabled || ctx.allowInactiveFork === true
+    // A user-only finished turn can be the latest completed boundary while
+    // another turn runs. Branch before that user turn, never from the live tail.
+    const runningCodex = threadIsRunning && ctx.metadata?.flavor === 'codex'
     const showCurrentFork = Boolean(
         history?.forkCurrent
         && isLatestBoundary
-        && !ctx.disabled
+        && !runningCodex
+        && forkEnabled
         && ctx.onForkConversation
     )
     const showHistoricalFork = Boolean(
         history?.forkAtMessage
         && hasNativePoint
-        && !isLatestBoundary
-        && !ctx.disabled
+        && (!isLatestBoundary || runningCodex)
+        && forkEnabled
         && ctx.onForkConversation
     )
     const showFork = showCurrentFork || showHistoricalFork
@@ -127,6 +135,7 @@ export function HappyUserMessage() {
                 copyText={hasText ? text : undefined}
                 messageElementId={elementId}
                 showFork={showFork}
+                allowForkWhileRunning={showHistoricalFork && ctx.metadata?.flavor === 'codex'}
                 showRewind={showRewind}
                 historyActionPending={ctx.historyActionPending}
                 onFork={showCurrentFork

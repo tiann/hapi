@@ -5,7 +5,8 @@ import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
-import { CopyIcon } from '@/components/icons'
+import { CopyIcon, ForkIcon } from '@/components/icons'
+import { buildSessionWindowPath } from '@/lib/sessionNavigation'
 
 type SessionActionMenuProps = {
     isOpen: boolean
@@ -19,6 +20,8 @@ type SessionActionMenuProps = {
     onSetPinMode?: (mode: 'none' | 'project' | 'global') => void
     onExport?: () => void
     onMarkUnread?: () => void
+    onForkSession?: () => void
+    forkDisabledReason?: string
     onSyncCodex?: () => void
     onSyncPi?: () => void
     onArchive: () => void
@@ -185,9 +188,29 @@ function TrashIcon(props: { className?: string }) {
     )
 }
 
+function OpenWindowIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <rect x="3" y="7" width="13" height="13" rx="2" />
+            <rect x="8" y="3" width="13" height="13" rx="2" fill="var(--app-bg)" />
+        </svg>
+    )
+}
+
 export function SessionActionMenu(props: SessionActionMenuProps) {
     const { t } = useTranslation()
-    const { haptic } = usePlatform()
+    const { haptic, isTelegram } = usePlatform()
     const {
         isOpen,
         onClose,
@@ -200,6 +223,8 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onSetPinMode,
         onExport,
         onMarkUnread,
+        onForkSession,
+        forkDisabledReason,
         onSyncCodex,
         onSyncPi,
         onArchive,
@@ -253,6 +278,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleMarkUnread = () => {
         onClose()
         onMarkUnread?.()
+    }
+
+    const handleForkSession = () => {
+        onClose()
+        onForkSession?.()
     }
 
     const handleSyncCodex = () => {
@@ -314,6 +344,46 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     <CopyIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
                     {t('session.action.copyReference')}
                 </button>
+
+                {onForkSession || forkDisabledReason ? (
+                    <HoverTooltip
+                        id={`${resolvedMenuId}-fork-tooltip`}
+                        className="w-full [&>span:first-child]:w-full"
+                        align="start"
+                        revealOnParentFocusClass="group-focus-within:opacity-100 group-focus-within:visible"
+                        target={(
+                            <button
+                                type="button"
+                                role="menuitem"
+                                aria-disabled={forkDisabledReason ? true : undefined}
+                                aria-describedby={forkDisabledReason ? `${resolvedMenuId}-fork-tooltip` : undefined}
+                                className={`${baseItemClassName} ${forkDisabledReason
+                                    ? 'cursor-not-allowed opacity-50'
+                                    : 'hover:bg-[var(--app-subtle-bg)]'}`}
+                                onClick={forkDisabledReason ? undefined : handleForkSession}
+                            >
+                                <ForkIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                                {t('session.action.fork')}
+                            </button>
+                        )}
+                    >
+                        {forkDisabledReason ?? t('session.action.fork')}
+                    </HoverTooltip>
+                ) : null}
+
+                {!isTelegram ? (
+                    <a
+                        href={buildSessionWindowPath(sessionId)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        role="menuitem"
+                        className={`${baseItemClassName} hidden split:flex hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={onClose}
+                    >
+                        <OpenWindowIcon className="text-[var(--app-hint)]" />
+                        {t('session.action.openSeparateWindow')}
+                    </a>
+                ) : null}
 
                 {onMarkUnread ? (
                     <button

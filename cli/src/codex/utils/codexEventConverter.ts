@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER, type InclusiveInputTokenUsageMarker } from '@hapi/protocol/usage';
 import { z } from 'zod';
 import { logger } from '@/ui/logger';
+import { codexAssistantText } from './assistantText';
 
 const CodexSessionEventSchema = z.object({
     timestamp: z.string().optional(),
@@ -385,7 +386,7 @@ export function createCodexEventConverter(): CodexEventConverter {
         currentTurnId = extractEventTurnId(parsed.data) ?? currentTurnId;
         const projection = extractAssistantMessageProjection(parsed.data, currentTurnId);
         const converted = convertCodexEvent(parsed.data);
-        const convertedActions = convertProjectionToActions(converted, projection?.turnId ?? null);
+        const convertedActions = convertProjectionToActions(converted, projection?.turnId ?? extractEventTurnId(parsed.data));
         const payload = asRecord(parsed.data.payload);
 
         if (parsed.data.type === 'compacted') {
@@ -502,8 +503,9 @@ export function convertCodexEvent(rawEvent: unknown): CodexEventProjection | nul
         }
 
         if (eventType === 'agent_message') {
-            const message = extractVisibleAssistantText(
-                payloadRecord.message ?? payloadRecord.text ?? payloadRecord.content
+            const message = codexAssistantText(
+                extractVisibleAssistantText(payloadRecord.message ?? payloadRecord.text ?? payloadRecord.content),
+                payloadRecord.phase
             );
             if (!message) {
                 return null;
@@ -532,7 +534,9 @@ export function convertCodexEvent(rawEvent: unknown): CodexEventProjection | nul
             }
 
             if (itemType === 'agentmessage') {
-                const message = extractVisibleAssistantText(item?.content ?? item?.message ?? item?.text);
+                const message = codexAssistantText(
+                    extractVisibleAssistantText(item?.content ?? item?.message ?? item?.text), item?.phase
+                );
                 if (!message) return null;
                 return {
                     ...(turnId ? { turnId } : {}),
@@ -620,7 +624,7 @@ export function convertCodexEvent(rawEvent: unknown): CodexEventProjection | nul
                 // semantic user events represent visible chat input.
                 return null;
             }
-            const message = extractVisibleAssistantText(payloadRecord.content);
+            const message = codexAssistantText(extractVisibleAssistantText(payloadRecord.content), payloadRecord.phase);
             if (!message) {
                 return null;
             }

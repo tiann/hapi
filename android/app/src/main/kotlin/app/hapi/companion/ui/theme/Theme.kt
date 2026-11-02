@@ -3,6 +3,7 @@ package app.hapi.companion.ui.theme
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -59,13 +60,16 @@ private val OledColorScheme = darkColorScheme(
  *
  * [oled] selects the pure-black variant (implies dark, disables dynamic
  * color); the settings screen wires it up later -- callers default to the
- * regular schemes.
+ * regular schemes. [typography] defaults to the app-wide scale derived from
+ * [HapiTypography]'s reading tokens, so every Material widget and every
+ * direct token consumer share one type system.
  */
 @Composable
 fun HapiTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     oled: Boolean = false,
+    typography: Typography = HapiTypography.scale,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
@@ -86,6 +90,7 @@ fun HapiTheme(
     CompositionLocalProvider(LocalHapiExtendedColors provides extendedColors) {
         MaterialTheme(
             colorScheme = colorScheme,
+            typography = typography,
             content = content,
         )
     }

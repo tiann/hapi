@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -16,6 +16,7 @@ import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
 import { getMessageWindowState } from '../src/lib/message-window-store'
+import { buildConversationOutline } from '../src/chat/outline'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -97,7 +98,11 @@ window.__probe = {
 //   latest-tail refresh path can be tested independently from a cold window.
 // - ?holdLatest=1 — hold the latest response until `window.__probe.releaseLatest`
 //   is called, making the cached first paint observable.
+// - ?navigationShell=1 — add a pinned header/composer and outline controls.
+// - ?navigationMedia=1 — include generated-image previews in older history.
 const fixtureParams = new URLSearchParams(window.location.search)
+const navigationShell = fixtureParams.has('navigationShell')
+const navigationMedia = fixtureParams.has('navigationMedia')
 const shortPages = fixtureParams.has('shortPages')
 const failBeforeCount = Number(fixtureParams.get('failBefore') ?? '0')
 const filteredOlder = fixtureParams.has('filteredOlder')
@@ -120,7 +125,15 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
         id: `m-${seq}`,
         seq,
         localId: null,
-        content: filtered
+        content: navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
+            ? {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: { type: 'generated-image', imageId: `img-${seq}`, fileName: `image-${seq}.svg`, mimeType: 'image/svg+xml' },
+                },
+            }
+            : filtered
             ? { role: 'agent', content: { type: 'output', data: { isMeta: true } } }
             : { role: 'user', content: { type: 'text', text: `Fixture message ${seq}` } },
         createdAt: BASE_AT + seq,
@@ -172,6 +185,7 @@ function pageFrom(messages: DecryptedMessage[], overrides: Partial<MessagesRespo
 const fakeApi = {
     getHubSettings: async () => ({ sessionSummaryInChat: false }),
     getMachines: async () => ({ machines: [] }),
+    getGeneratedImageBlob: async () => new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="lightblue"/></svg>'], { type: 'image/svg+xml' }),
     getMessages: async (_sessionId: string, query: {
         limit?: number
         beforeAt?: number | null
@@ -270,6 +284,8 @@ const noopSend = () => {}
 const noopAbort = async () => {}
 
 function FixtureThread() {
+    const [outlineOpen, setOutlineOpen] = useState(false)
+    const [forceScrollToken, setForceScrollToken] = useState(0)
     const {
         messages,
         warning,
@@ -322,33 +338,49 @@ function FixtureThread() {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            <div className="flex h-screen min-h-0 flex-col">
-                <HappyThread
-                    api={fakeApi}
-                    session={fakeSession}
-                    sessionId={SESSION_ID}
-                    metadata={null}
-                    disabled={false}
-                    onRefresh={() => {}}
-                    onViewModeChange={setViewMode}
-                    isSyncingTail={isSyncingTail}
-                    messagesWarning={warning}
-                    hasMoreMessages={hasMore}
-                    isLoadingMoreMessages={isLoadingMore}
-                    onLoadMore={loadMore}
-                    onCancelLoadMore={cancelLoadMore}
-                    // This fixture drives HappyThread directly, bypassing the
-                    // SessionChat block reduction that computes the real count.
-                    unseenCount={0}
-                    rawMessagesCount={messages.length}
-                    normalizedMessagesCount={normalizedMessages.length}
-                    messagesVersion={messagesVersion}
-                    historyVersion={historyVersion}
-                    forceScrollToken={0}
-                    outlineOpen={false}
-                    outlineItems={[]}
-                    onOutlineOpenChange={() => {}}
-                />
+            <div className={navigationShell ? 'flex h-full min-h-0' : 'flex h-screen min-h-0 flex-col'}>
+                {navigationShell ? (
+                    <aside className="hidden w-64 shrink-0 sm:block">Session sidebar</aside>
+                ) : null}
+                <div className="flex h-full min-h-0 flex-1 flex-col">
+                    {navigationShell ? (
+                        <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
+                            <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>
+                            <button type="button" onClick={() => setForceScrollToken(value => value + 1)}>Latest messages</button>
+                        </header>
+                    ) : null}
+                    <HappyThread
+                        api={fakeApi}
+                        session={fakeSession}
+                        sessionId={SESSION_ID}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={() => {}}
+                        onViewModeChange={setViewMode}
+                        isSyncingTail={isSyncingTail}
+                        messagesWarning={warning}
+                        hasMoreMessages={hasMore}
+                        isLoadingMoreMessages={isLoadingMore}
+                        onLoadMore={loadMore}
+                        onCancelLoadMore={cancelLoadMore}
+                        // This fixture drives HappyThread directly, bypassing the
+                        // SessionChat block reduction that computes the real count.
+                        unseenCount={0}
+                        rawMessagesCount={messages.length}
+                        normalizedMessagesCount={normalizedMessages.length}
+                        messagesVersion={messagesVersion}
+                        historyVersion={historyVersion}
+                        forceScrollToken={forceScrollToken}
+                        outlineOpen={navigationShell && outlineOpen}
+                        outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
+                        onOutlineOpenChange={setOutlineOpen}
+                    />
+                    {navigationShell ? (
+                        <footer data-testid="navigation-composer" className={`h-[150px] shrink-0 p-3 ${outlineOpen ? 'max-sm:hidden' : ''}`}>
+                            <textarea aria-label="Fixture composer" className="w-full resize-none" />
+                        </footer>
+                    ) : null}
+                </div>
             </div>
         </AssistantRuntimeProvider>
     )

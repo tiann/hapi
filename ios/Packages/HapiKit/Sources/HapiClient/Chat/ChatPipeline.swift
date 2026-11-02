@@ -45,11 +45,16 @@ public actor ChatPipeline {
     public func run(
         messages: [WindowMessage],
         agentState: AgentState?,
-        hasMoreMessages: Bool
+        hasMoreMessages: Bool,
+        directSendLocalIds: Set<String> = []
     ) -> [VisibleChatBlock] {
-        // Composer-owned rows out; duplicate ids keep the first occurrence
-        // (merge output cannot contain duplicates — defensive, like Android).
-        let visibleRows = messages.filter { !$0.isQueuedForInvocation }
+        // Composer-owned rows out, except sends the idle agent is about to
+        // consume (`ChatInteractor.directSendLocalIds`); duplicate ids keep
+        // the first occurrence (merge output cannot contain duplicates —
+        // defensive, like Android).
+        let visibleRows = messages.filter {
+            !$0.isQueuedForInvocation || $0.localId.map(directSendLocalIds.contains) == true
+        }
 
         var normalized: [NormalizedMessage] = []
         normalized.reserveCapacity(visibleRows.count)

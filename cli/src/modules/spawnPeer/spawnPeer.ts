@@ -18,7 +18,7 @@ import axios, { type AxiosInstance } from 'axios'
 import { isObject, SESSION_NAME_MAX_LENGTH } from '@hapi/protocol'
 import {
     CREATABLE_AGENT_FLAVORS,
-    getLaunchPermissionModesForFlavor,
+    getPermissionModesForFlavor,
     type AgentFlavor,
     type PermissionMode
 } from '@hapi/protocol/modes'
@@ -34,6 +34,7 @@ import {
     type PeerParentIdentity,
 } from '@hapi/protocol/peerParentStamp'
 import { configuration } from '@/configuration'
+import { isPeerToolsDisabled } from '@/modules/common/peerTools'
 import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
 import { readSettings } from '@/persistence'
@@ -51,6 +52,7 @@ import {
 
 export type SpawnPeerErrorCode =
     | 'bad_args'
+    | 'disabled'
     | 'auth_failed'
     | 'spawn_failed'
     | 'empty_session'
@@ -60,6 +62,7 @@ export type SpawnPeerErrorCode =
     | 'resume_failed'
     | 'timeout'
     | 'send_failed'
+    | 'apply_failed'
 
 export class SpawnPeerError extends Error {
     readonly code: SpawnPeerErrorCode
@@ -473,6 +476,12 @@ async function verifySessionRemit(
 }
 
 export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerResult> {
+    if (isPeerToolsDisabled()) {
+        throw new SpawnPeerError(
+            'disabled',
+            'peer session tools are disabled on this machine (HAPI_DISABLE_PEER_TOOLS is set)'
+        )
+    }
     const rawDirectory = (options.directory ?? '').trim()
     const onProgress = options.onProgress
     if (!rawDirectory) {
@@ -583,7 +592,7 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
     // agent is omitted) — not a Claude preview before settings load.
     if (
         options.permissionMode
-        && !getLaunchPermissionModesForFlavor(resolved.agent).includes(options.permissionMode)
+        && !getPermissionModesForFlavor(resolved.agent).includes(options.permissionMode)
     ) {
         throw new SpawnPeerError(
             'bad_args',
@@ -598,7 +607,7 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
     }
     // Pi/DSH have empty launch-permission catalogs — omit permissionMode so the
     // machine route does not 400 invalid_permission_mode on inherited default.
-    if (getLaunchPermissionModesForFlavor(resolved.agent).length > 0) {
+    if (getPermissionModesForFlavor(resolved.agent).length > 0) {
         spawnBody.permissionMode = resolved.permissionMode
     }
     if (options.worktreeName) {
@@ -741,6 +750,7 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
 export function exitCodeForSpawnPeerError(error: SpawnPeerError): number {
     switch (error.code) {
         case 'bad_args':
+        case 'disabled':
         case 'auth_failed':
         case 'not_found':
         case 'ambiguous':
@@ -750,6 +760,7 @@ export function exitCodeForSpawnPeerError(error: SpawnPeerError): number {
             return 3
         case 'timeout':
         case 'send_failed':
+        case 'apply_failed':
         case 'empty_session':
         case 'verify_failed':
             return 4

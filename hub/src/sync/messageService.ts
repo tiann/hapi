@@ -21,6 +21,14 @@ import { EventPublisher } from './eventPublisher'
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
 
+/**
+ * localId prefix for peer submissions (`hapi ping-peer` / MCP `ping_peer`).
+ * Excludes peer rows from the session-end synthetic sweep so their invocation
+ * timestamps reflect real runtime consumption and unconsumed rows remain
+ * replayable. Shared with the CLI sender.
+ */
+export const PEER_MESSAGE_LOCAL_ID_PREFIX = 'ping-peer-'
+
 function messagePosition(message: StoredMessageForDelivery): MessagePosition {
     return {
         at: message.invokedAt ?? message.createdAt,
@@ -40,6 +48,7 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
     return {
         id: message.id,
         seq: message.seq,
+        ...(message.contentRevision ? { contentRevision: message.contentRevision } : {}),
         localId: message.localId,
         content: message.content,
         createdAt: message.createdAt,
@@ -378,6 +387,7 @@ export class MessageService {
         return {
             messages,
             page: {
+                ...(direction === 'latest' ? { readThroughRevision: this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 } : {}),
                 direction,
                 limit,
                 epoch,
@@ -405,10 +415,13 @@ export class MessageService {
             ? (comparePosition(requestedUntil, currentHead) <= 0 ? requestedUntil : currentHead)
             : requestedUntil ?? currentHead
 
+        const atCurrentHead = !currentHead || (snapshotHead !== null && comparePosition(snapshotHead, currentHead) === 0)
+        const readThroughRevision = atCurrentHead ? this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 : undefined
         if (!snapshotHead || comparePosition(snapshotHead, after) <= 0) {
             return {
                 messages: [],
                 page: {
+                    readThroughRevision,
                     direction: 'after',
                     limit,
                     epoch,
@@ -437,6 +450,7 @@ export class MessageService {
         return {
             messages: toVisibleDecryptedMessages(pageRows),
             page: {
+                ...(!hasMore && readThroughRevision !== undefined ? { readThroughRevision } : {}),
                 direction: 'after',
                 limit,
                 epoch,
@@ -881,10 +895,13 @@ export class MessageService {
             }
         }
 
+        // Every user message needs an identity: agents echo the turn back under
+        // it (Shared Codex clientUserMessageId), and (session, localId) is the
+        // only dedupe key. A sender that omits one gets a hub-minted id.
         const inserted = this.store.addMessageForCurrentSession(
             sessionId,
             content,
-            payload.localId ?? undefined,
+            payload.localId ?? randomUUID(),
             payload.scheduledAt ?? null
         )
         const actualSessionId = inserted.sessionId
@@ -957,6 +974,12 @@ export class MessageService {
      * see the row in the next mature-scan tick and the user's prompt would be
      * silently dropped.  See HAPI Bot R4 finding.
      *
+     * Peer rows (`ping-peer-` localIds) are also skipped: the sweep's synthetic
+     * invokedAt is not a runtime-consumption ACK, so stamping one would falsely
+     * confirm a delivery the recipient runtime never made. Skipped peer rows
+     * stay pending and replayable on re-attach; only a real runtime ACK
+     * (messages-consumed) confirms them.
+     *
      * Returns the list of localIds that were stamped and the invokedAt timestamp,
      * or null if no messages needed sweeping.
      */
@@ -967,7 +990,7 @@ export class MessageService {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
         const localIds = queued
             .map((m) => m.localId)
-            .filter((id): id is string => typeof id === 'string')
+            .filter((id): id is string => typeof id === 'string' && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX))
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)

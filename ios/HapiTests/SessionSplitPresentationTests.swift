@@ -7,7 +7,8 @@ import XCTest
 @testable import Hapi
 @testable import HapiUI
 
-/// Runs on a real iPad simulator, using the production split shell and list.
+/// Runs on a real iPad or iPhone Duo simulator, using the production split
+/// shell and list.
 /// No pairing, saved credentials or live hub: HTTP is faked, SSE uses closed
 /// loopback. Synthetic detail pages exercise native nested navigation; the
 /// chat test renders the real ChatView/composer/anchored transcript.
@@ -17,6 +18,8 @@ final class SessionSplitPresentationTests: XCTestCase {
 
     @Observable fileprivate final class Probe {
         var instances: [String: UUID] = [:]
+        /// The detail column's size class; ChatView keys folded-Duo chrome on it.
+        var detailSizeClass: UserInterfaceSizeClass?
     }
 
     /// SwiftUI accessibility elements need not be UIViews. Use native probes
@@ -34,6 +37,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     private struct DetailProbe: View {
         let sessionId: String
         let probe: Probe
+        @Environment(\.horizontalSizeClass) private var horizontalSizeClass
         @State private var instance = UUID()
         @State private var draft = ""
 
@@ -50,6 +54,9 @@ final class SessionSplitPresentationTests: XCTestCase {
                     .overlay { Presence(id: "detail-files").frame(width: 1, height: 1).allowsHitTesting(false) }
             }
             .onAppear { probe.instances[sessionId] = instance }
+            .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
+                probe.detailSizeClass = sizeClass
+            }
         }
     }
 
@@ -75,7 +82,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     }
 
     func testWideSelectionSurvivesFilteringAndNestedNavigationAcrossCollapse() async throws {
-        try requireIPad()
+        try await requireSplitDevice()
         let navigation = SessionNavigationState()
         let probe = Probe()
         let sessions = HomeFilterTestSessions([
@@ -84,7 +91,7 @@ final class SessionSplitPresentationTests: XCTestCase {
         ])
         let list = HomeFilterTestData.model(sessions: sessions)
         let (window, host) = try makeWindow(Harness(navigation: navigation, list: list, probe: probe),
-                                          width: 1194, height: 834)
+                                          width: wide.width, height: wide.height)
         defer { window.isHidden = true }
         try await settle { list.hasRefreshedOnce }
         XCTAssertTrue(probe.instances.isEmpty, "An empty detail must not start/mark a chat read")
@@ -94,6 +101,7 @@ final class SessionSplitPresentationTests: XCTestCase {
         navigation.open("a")
         try await settle { probe.instances["a"] != nil }
         let identity = try XCTUnwrap(probe.instances["a"])
+        XCTAssertEqual(probe.detailSizeClass, .regular, "A side-by-side detail must not get folded-screen chrome")
         let primaryView = try XCTUnwrap(split.viewController(for: .primary)?.view)
         let sidebar = try XCTUnwrap(self.findCollection(in: primaryView))
         let primaryFrame = primaryView.convert(primaryView.bounds, to: window)
@@ -113,11 +121,12 @@ final class SessionSplitPresentationTests: XCTestCase {
         try await settle { self.findView("detail-files", in: window) != nil }
         resize(window, host: host, width: 390, height: 844, compact: true)
         try await settle { split.isCollapsed }
+        XCTAssertEqual(probe.detailSizeClass, .compact)
         XCTAssertEqual(navigation.selectedSessionId, "a")
         XCTAssertEqual(navigation.detailPath.count, 1)
         XCTAssertNotNil(findView("detail-files", in: window))
 
-        resize(window, host: host, width: 1194, height: 834, compact: false)
+        resize(window, host: host, width: wide.width, height: wide.height, compact: false)
         try await settle { !split.isCollapsed }
         navigation.detailPath.removeLast()
         try await settle { self.findView("detail-a", in: window) != nil }
@@ -128,7 +137,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     }
 
     func testCompactProgrammaticOpenAndBackAfterAFilePush() async throws {
-        try requireIPad()
+        try await requireSplitDevice()
         let navigation = SessionNavigationState()
         let probe = Probe()
         let list = HomeFilterTestData.model(sessions: HomeFilterTestSessions([
@@ -179,7 +188,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     }
 
     func testRootRoutesNotificationsRemovalsAndHubSwitches() async throws {
-        try requireIPad()
+        try await requireSplitDevice()
         let suite = "ipad-root-\(UUID())"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -192,10 +201,12 @@ final class SessionSplitPresentationTests: XCTestCase {
         }
         let model = AppModel(registry: registry, credentialStore: credentials, performer: SplitTestHTTP())
         let firstHub = try XCTUnwrap(model.session)
-        let (window, host) = try makeWindow(RootView().environment(model), width: 1194, height: 834)
+        let (window, host) = try makeWindow(RootView().environment(model), width: current.size.width,
+                                            height: current.size.height, compact: current.compact)
         defer { window.isHidden = true; model.session?.shutdown(); firstHub.shutdown() }
         try await settle { firstHub.sessionStore.sessions.count == 2 }
         XCTAssertNil(firstHub.openChatSessionId)
+        XCTAssertNotNil(findController(UISplitViewController.self, in: host), "Home must use the split shell")
         XCTAssertNil(findController(TranscriptCollectionController<TranscriptRow>.self, in: host))
         model.pendingOpenSessionId = "a"
         try await settle { firstHub.openChatSessionId == "a" && self.findController(TranscriptCollectionController<TranscriptRow>.self, in: host) != nil }
@@ -222,7 +233,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     }
 
     func testRealChatResizePreservesTranscriptDraftAttachmentsAndSingleSurface() async throws {
-        try requireIPad()
+        try await requireSplitDevice()
         let credentials = InMemoryCredentialStore()
         let payload = Data(#"{"uid":1,"exp":4102444800,"ns":"test"}"#.utf8).base64EncodedString()
         try credentials.store(HubCredentials(hubUrl: "http://127.0.0.1:1", accessToken: "test", jwt: "e30.\(payload).test"))
@@ -237,7 +248,7 @@ final class SessionSplitPresentationTests: XCTestCase {
         ])
         let list = HomeFilterTestData.model(sessions: sessions)
         let (window, host) = try makeWindow(ChatHarness(navigation: navigation, list: list, hub: hub, model: model),
-                                          width: 1194, height: 834)
+                                          width: wide.width, height: wide.height)
         defer { window.isHidden = true; model.stop(); hub.shutdown() }
         try await settle { !model.isInitialLoading && !model.blocks.isEmpty && !model.isSyncingTail }
         let transcript = try XCTUnwrap(findController(TranscriptCollectionController<TranscriptRow>.self, in: host))
@@ -290,12 +301,44 @@ final class SessionSplitPresentationTests: XCTestCase {
         XCTAssertEqual(model.interactor.attachments.items.first?.id, attachment.id)
     }
 
-    private func requireIPad() throws {
-        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .pad, "Run with HAPI_TEST_DEVICE_TYPE=iPad-Air-11-inch-M2")
+    /// Landscape iPad Air, or the unfolded iPhone Duo inner screen. The test
+    /// simulator may boot folded (466×678pt, compact), so this is not read
+    /// from the current screen.
+    private var wide: CGSize {
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? CGSize(width: 1194, height: 834)
+            : CGSize(width: 951, height: 669)
+    }
+
+    /// iPad keeps its fixed wide window; a foldable uses its current screen and
+    /// size class so captures match the folded or unfolded device.
+    private var current: (size: CGSize, compact: Bool) {
+        guard UIDevice.current.userInterfaceIdiom != .pad,
+              let scene = hostScene
+        else { return (wide, false) }
+        return (scene.screen.bounds.size, scene.traitCollection.horizontalSizeClass == .compact)
+    }
+
+    /// The visible scene; an unfolded Duo also connects one for its outer display.
+    private var hostScene: UIWindowScene? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+    }
+
+    /// iPad, or a foldable iPhone once its hinge has been reported.
+    private func requireSplitDevice() async throws {
+        if UIDevice.current.userInterfaceIdiom == .pad || FoldableDevice.shared.hasHinge { return }
+        let (window, _) = try makeWindow(HingeProbe(), width: 390, height: 844)
+        defer { window.isHidden = true }
+        for _ in 0..<50 where !FoldableDevice.shared.hasHinge {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try XCTSkipIf(!FoldableDevice.shared.hasHinge,
+                      "Run with HAPI_TEST_DEVICE_TYPE=iPad-Air-11-inch-M2 or iPhone-Duo")
     }
 
     private func makeWindow<V: View>(_ view: V, width: CGFloat, height: CGFloat, compact: Bool = false) throws -> (UIWindow, UIHostingController<V>) {
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let scene = try XCTUnwrap(hostScene)
         let window = UIWindow(windowScene: scene)
         let host = UIHostingController(rootView: view)
         window.rootViewController = host

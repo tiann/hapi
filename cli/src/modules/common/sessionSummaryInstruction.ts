@@ -49,9 +49,10 @@ export const SESSION_SUMMARY_CONTRACT_LINE =
 export function buildSessionSummaryInstruction(): string {
     return [
         'Session status summary:',
-        'End every response with a single machine-readable status line (no backticks)',
-        'so this workspace\'s session tracking can record progress. Put it on its own',
-        'final line after all other content:',
+        'At the end of each turn, append exactly one machine-readable status line',
+        '(no backticks) to the final answer only, so this workspace\'s session tracking',
+        'can record progress. Do not emit this line in commentary, progress updates, or before tool calls.',
+        'Put it on its own final line after all other content:',
         SESSION_SUMMARY_CONTRACT_LINE,
         'Use the language used by the user in the current conversation for the',
         'human-readable "action" and "summary" values.',

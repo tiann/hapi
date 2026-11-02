@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, writeFileSync, unlinkSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readClaudeSettings, shouldIncludeCoAuthoredBy } from './claudeSettings';
+import { readClaudeSettings, resolveClaudeLaunchModel, shouldIncludeCoAuthoredBy } from './claudeSettings';
 
 describe('Claude Settings', () => {
   let testClaudeDir: string;
@@ -90,6 +90,44 @@ describe('Claude Settings', () => {
 
       const result = shouldIncludeCoAuthoredBy();
       expect(result).toBe(true);
+    });
+  });
+
+  describe('resolveClaudeLaunchModel', () => {
+    function writeProjectSettings(name: string, model: string) {
+      mkdirSync(join(testClaudeDir, 'project', '.claude'), { recursive: true });
+      writeFileSync(join(testClaudeDir, 'project', '.claude', name), JSON.stringify({ model }));
+    }
+
+    it('follows Claude Code precedence with the [1m] suffix intact', () => {
+      const cwd = join(testClaudeDir, 'project');
+      const env = { ANTHROPIC_MODEL: '' };
+      writeFileSync(join(testClaudeDir, 'settings.json'), JSON.stringify({ model: 'claude-opus-5[1m]' }));
+      expect(resolveClaudeLaunchModel({ cwd, env })).toBe('claude-opus-5[1m]');
+
+      writeProjectSettings('settings.json', 'sonnet');
+      expect(resolveClaudeLaunchModel({ cwd, env })).toBe('sonnet');
+
+      writeProjectSettings('settings.local.json', 'sonnet[1m]');
+      expect(resolveClaudeLaunchModel({ cwd, env })).toBe('sonnet[1m]');
+
+      expect(resolveClaudeLaunchModel({ cwd, env: { ANTHROPIC_MODEL: 'minimax-m3[1m]' } })).toBe('minimax-m3[1m]');
+      expect(resolveClaudeLaunchModel({ cwd, model: 'opus[1m]', env: { ANTHROPIC_MODEL: 'minimax-m3[1m]' } })).toBe('opus[1m]');
+    });
+
+    it('honors the user --model and --setting-sources args', () => {
+      const cwd = join(testClaudeDir, 'project');
+      const env = { ANTHROPIC_MODEL: '' };
+      writeFileSync(join(testClaudeDir, 'settings.json'), JSON.stringify({ model: 'opus' }));
+      writeProjectSettings('settings.json', 'opus[1m]');
+      expect(resolveClaudeLaunchModel({ cwd, env, args: ['--setting-sources', 'user'] })).toBe('opus');
+      expect(resolveClaudeLaunchModel({ cwd, env, args: ['--setting-sources=project'] })).toBe('opus[1m]');
+      expect(resolveClaudeLaunchModel({ cwd, env, args: ['--setting-sources', 'local'] })).toBe(null);
+      expect(resolveClaudeLaunchModel({ cwd, env, args: ['--model', 'sonnet[1m]'] })).toBe('sonnet[1m]');
+    });
+
+    it('returns null when nothing is configured', () => {
+      expect(resolveClaudeLaunchModel({ cwd: join(testClaudeDir, 'missing'), env: { ANTHROPIC_MODEL: '' } })).toBe(null);
     });
   });
 });

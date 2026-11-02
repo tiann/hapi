@@ -354,3 +354,43 @@ describe('explicit tail scrolling', () => {
         expect(onViewModeChange).not.toHaveBeenCalledWith('history')
     })
 })
+
+describe('tail following survives layout-driven movement', () => {
+    it('re-pins to the tail when content grows without a user gesture', () => {
+        const { viewport, onViewModeChange } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        expect(viewport.scrollTop).toBe(702)
+
+        // Streaming assistant output grows the transcript while the viewport
+        // sits still, so distanceFromBottom increases without any scroll input.
+        Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1_400 })
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+
+        expect(viewport.scrollTop).toBe(870)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+
+    it('re-pins to the tail when the mobile keyboard shrinks the viewport', () => {
+        const { viewport, onViewModeChange } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        expect(viewport.scrollTop).toBe(702)
+
+        // Opening the keyboard shortens the visual viewport; the browser
+        // reports a scroll without any upward gesture from the user.
+        Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 400 })
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+
+        expect(viewport.scrollTop).toBe(832)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+})

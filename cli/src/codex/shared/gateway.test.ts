@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
+import { CodexAppServerClient } from '../codexAppServerClient';
 import { startCodexGateway, type Envelope } from './gateway';
 
 async function fixture(after: (request: Envelope, response: Envelope, connection: string) => Promise<void>) {
@@ -31,6 +32,26 @@ async function fixture(after: (request: Envelope, response: Envelope, connection
     } };
 }
 describe('native gateway barriers', () => {
+    it('round-trips payloads larger than 64 MiB through the gateway and app-server client', async () => {
+        const f = await fixture(async () => {});
+        const client = new CodexAppServerClient({ endpoint: f.gateway.endpoint, token: 'secret' });
+        try {
+            await client.connect();
+            await client.initialize({ clientInfo: { name: 'large-history-test', version: '1.0.0' }, capabilities: null });
+            // Exercises all three receivers: gateway downstream, gateway upstream,
+            // and CodexAppServerClient. A small request afterwards checks usability.
+            const payload = 'x'.repeat(65 * 1024 * 1024);
+            const response = await client.request<{ thread: { id: string } }>('thread/read', payload);
+            expect(response.thread.id.length).toBe(payload.length);
+            expect(response.thread.id === payload).toBe(true);
+            const next = await client.request<{ thread: { id: string } }>('thread/read', 'small');
+            expect(next.thread.id).toBe('small');
+        } finally {
+            await client.disconnect();
+            await f.close();
+        }
+    }, 30_000);
+
     it('namespaces colliding native request IDs by connection and withholds replies until binding', async () => {
         let release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
         const after = vi.fn(async () => { await barrier; }); const f = await fixture(after);

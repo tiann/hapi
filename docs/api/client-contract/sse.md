@@ -165,7 +165,8 @@ The most bug-prone part of the protocol. `session-updated.data` is either a **fu
 
 Patch application, field by field:
 
-- **Flat fields** — `active`, `thinking`, `activeAt`, `model`, `modelReasoningEffort`, `effort`, `serviceTier`, `permissionMode`, `collaborationMode`, `copilotAgentMode`, `backgroundTaskCount`: last-write-wins assignment when present. `activeTurnStartedAt` appears in patches but the reference implementation deliberately never applies it from a patch (`web/src/lib/sessionPatch.ts`) — take it from full-session payloads only; the `sse/` fixtures pin this.
+- **Flat fields** — `active`, `thinking`, `activeAt`, `model`, `modelReasoningEffort`, `effort`, `serviceTier`, `permissionMode`, `collaborationMode`, `copilotAgentMode`, `backgroundTaskCount`, `backgroundTasks` (Claude's full `{id, type, description}` list): last-write-wins assignment when present. `activeTurnStartedAt` appears in patches but the reference implementation deliberately never applies it from a patch (`web/src/lib/sessionPatch.ts`) — take it from full-session payloads only; the `sse/` fixtures pin this.
+- **`lastUserMessageAt`** — max-monotonic when present, in both detail and summary caches. Include it in render-relevance checks: a patch containing only this field can reorder the list. Full-session summary upserts and delayed REST list responses must also retain a newer cached value.
 - **`updatedAt`** — max-monotonic: `updatedAt = max(cached.updatedAt, patch.updatedAt)`. A stale replay must never move the clock backward.
 - **Versioned sub-patches** — `metadata`, `agentState`, `todos`, `teamState` each arrive as a wrapper `{version: number, value: …}`. Apply `value` and store `version` **only when `version` is strictly greater than the cached watermark**:
 
@@ -184,7 +185,13 @@ Patch application, field by field:
 
 The CLI keep-alive makes the hub re-broadcast a patch roughly **every 10 s per active session**, in which typically only `activeAt` moves. Recommendation (web: `isRenderIrrelevantSessionPatch`): treat a patch as render-irrelevant when the only effective change is an `activeAt` delta **< 60 s** (relative-time labels only change at minute boundaries); the session-list path ignores `activeAt` entirely. Apply the data if you like, but do not re-render or re-sort six times a minute for it.
 
-Reference list sort (web): `globalPinned` > `pinned` > `active` > `pendingRequestsCount` (among active) > `updatedAt` desc.
+Reference session-list comparator (`shared/src/sessionOrder.ts`, mirrored by
+Android/iOS): `globalPinned` > `pinned` > `lastUserMessageAt ?? createdAt`
+descending, then creation time descending and ID ascending. Missing pin flags
+count as false. The ID tie-break makes refetch order irrelevant. Output,
+connection and pending-request changes do not reorder rows; a new user message
+does. Web project/machine groups use the same stable activity key, while search
+keeps relevance as its primary ranking.
 
 ### `active` is transport liveness, not agent health
 

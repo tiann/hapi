@@ -38,12 +38,12 @@ export const claudeCommand: CommandDefinition = {
                 }
                 options.permissionMode = mode as StartOptions['permissionMode']
                 hasExplicitPermissionMode = true
-            } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push('--dangerously-skip-permissions')
-            } else if (arg === '--dangerously-skip-permissions' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push(arg)
+            } else if (arg === '--yolo' || arg === '--dangerously-skip-permissions') {
+                // Not forwarded: Claude lets this flag override --permission-mode,
+                // so a later switch away from Yolo could never reach the TUI.
+                if (!hasExplicitPermissionMode) {
+                    options.permissionMode = 'bypassPermissions'
+                }
             } else if (arg === '--model') {
                 const model = args[++i]
                 if (!model) {

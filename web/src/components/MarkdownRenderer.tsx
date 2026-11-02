@@ -13,7 +13,9 @@ import {
     MARKDOWN_CLASSNAME,
     defaultComponents,
     denyOnlyTransform,
+    MarkdownFileBaseContext,
     UriConfirmProvider,
+    type MarkdownFileSearch,
 } from '@/components/assistant-ui/markdown-text'
 import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
 import type { CodeHeaderProps, SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
@@ -26,6 +28,11 @@ interface MarkdownRendererProps {
     preserveSingleLineBreaks?: boolean
     /** Render outside assistant-ui thread context (file pane, fixtures). */
     standalone?: boolean
+    /** Standalone only: session file the content came from, for relative links/images. */
+    sessionId?: string
+    filePath?: string
+    workspacePath?: string | null
+    fileSearch?: MarkdownFileSearch
 }
 
 function StandaloneCode(props: ComponentPropsWithoutRef<'code'>) {
@@ -77,19 +84,33 @@ function StandaloneMarkdownContent(props: MarkdownRendererProps) {
         code: StandaloneCode,
     }), [componentsRest])
 
+    const fileBase = useMemo(
+        () => props.sessionId && props.filePath
+            ? {
+                sessionId: props.sessionId,
+                filePath: props.filePath,
+                workspacePath: props.workspacePath ?? null,
+                fileSearch: props.fileSearch ?? {},
+            }
+            : null,
+        [props.sessionId, props.filePath, props.workspacePath, props.fileSearch]
+    )
+
     return (
-        <UriConfirmProvider>
-            <div className={cn(MARKDOWN_CLASSNAME, props.className)}>
-                <ReactMarkdown
-                    remarkPlugins={props.preserveSingleLineBreaks ? MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS : MARKDOWN_PLUGINS_STANDALONE}
-                    rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-                    components={components}
-                    urlTransform={denyOnlyTransform}
-                >
-                    {props.content}
-                </ReactMarkdown>
-            </div>
-        </UriConfirmProvider>
+        <MarkdownFileBaseContext.Provider value={fileBase}>
+            <UriConfirmProvider>
+                <div className={cn(MARKDOWN_CLASSNAME, props.className)}>
+                    <ReactMarkdown
+                        remarkPlugins={props.preserveSingleLineBreaks ? MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS : MARKDOWN_PLUGINS_STANDALONE}
+                        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                        components={components}
+                        urlTransform={denyOnlyTransform}
+                    >
+                        {props.content}
+                    </ReactMarkdown>
+                </div>
+            </UriConfirmProvider>
+        </MarkdownFileBaseContext.Provider>
     )
 }
 

@@ -339,6 +339,31 @@ class HapiApiTest {
     }
 
     @Test
+    fun `machine grok models pass cwd and keep auto support nullable`() {
+        server.enqueue(
+            ok(
+                """{"success":true,"availableModels":[{"modelId":"grok-4","name":"Grok 4"}],"currentModelId":"grok-4","autoPermissionModeSupported":false}"""
+            )
+        )
+
+        val response = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/home/dev/proj") }
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/machines/m1/grok-models", request.path!!.substringBefore('?'))
+        assertEquals("/home/dev/proj", request.requestUrl!!.queryParameter("cwd"))
+        assertTrue(response.success)
+        assertEquals(false, response.autoPermissionModeSupported)
+        assertEquals("grok-4", response.availableModels!!.single().modelId)
+        assertEquals("Grok 4", response.availableModels!!.single().name)
+        assertEquals("grok-4", response.currentModelId)
+
+        // Field omitted (runner never reported it): null — must never read as false.
+        server.enqueue(ok("""{"success":true,"availableModels":[]}"""))
+        val omitted = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/cwd") }
+        assertNull(omitted.autoPermissionModeSupported)
+    }
+
+    @Test
     fun `unregister device is a DELETE with a json body`() {
         server.enqueue(ok("""{"ok":true}"""))
 

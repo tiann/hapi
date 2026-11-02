@@ -11,7 +11,12 @@ async function expectScrollbarToHide(locator: Locator) {
     }).toBeNull()
 }
 
-test.use({ ...devices['Pixel 5'], viewport: { width: 412, height: 915 }, deviceScaleFactor: 1 })
+test.use({
+    ...devices['Pixel 5'],
+    viewport: { width: 412, height: 915 },
+    deviceScaleFactor: 1,
+    launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] }
+})
 
 test.describe('session scrollbar auto-hide', () => {
     test.describe.configure({ timeout: 60_000 })
@@ -103,3 +108,61 @@ test.describe('session scrollbar auto-hide', () => {
         await expect(fallback).toHaveAttribute('data-visible', 'true')
     })
 })
+
+for (const isMobile of [true, false]) {
+    test.describe(`touch scrollbar resize containment (mobile: ${isMobile})`, () => {
+        // A touch-capable desktop context also exercises physical scrollbars.
+        test.use({ isMobile, hasTouch: true })
+
+        test('keeps two expanded projects stable while the fallback thumb catches up with a shorter viewport', async ({ page }) => {
+            await page.addInitScript(() => localStorage.setItem('hapi-session-preview-limit', '99'))
+            await page.goto('/e2e-fixtures/session-list-scrollbar-fixture.html?two-projects')
+            const viewport = page.locator('.session-list-scrollbar-left')
+            await expect(viewport).toBeVisible()
+            await expect(viewport.locator('.collapsible-panel[data-open]')).toHaveCount(2)
+
+            const samples = await viewport.evaluate(async (element) => {
+                const root = document.documentElement
+                const toolbarHeight = element.getBoundingClientRect().top
+                const contentHeight = element.firstElementChild!.getBoundingClientRect().height
+                const height = contentHeight + toolbarHeight - 32
+                const setHeight = (value: number) => {
+                    root.style.height = `${value}px`
+                    document.body.style.height = `${value}px`
+                }
+                setHeight(height)
+                const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+                await nextFrame()
+                await nextFrame()
+                element.scrollTop = element.scrollHeight
+                await nextFrame()
+                await nextFrame()
+
+                const measure = () => ({
+                    width: element.getBoundingClientRect().width,
+                    bodyOverflow: document.body.scrollHeight - document.body.clientHeight,
+                    scrollTop: element.scrollTop
+                })
+                const frames = [measure()]
+                // Read layout synchronously after resizing, before ResizeObserver
+                // and the scheduled fallback-thumb update can run.
+                setHeight(height - 48)
+                element.scrollTop = element.scrollHeight
+                frames.push(measure())
+                for (let index = 0; index < 8; index++) {
+                    await nextFrame()
+                    frames.push(measure())
+                }
+                return frames
+            })
+
+            await test.info().attach('resize geometry', { body: JSON.stringify(samples), contentType: 'application/json' })
+
+            // The list must keep scrolling without making its ancestors scroll
+            // or changing its width, including before the thumb geometry updates.
+            expect(samples.every(sample => sample.scrollTop > 0)).toBe(true)
+            expect(samples.filter(sample => sample.bodyOverflow > 1)).toEqual([])
+            expect(samples.every(sample => sample.width === samples[0].width)).toBe(true)
+        })
+    })
+}

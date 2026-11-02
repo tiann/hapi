@@ -52,6 +52,12 @@ function createGateway() {
 }
 
 describe('RpcGateway RPC timeouts', () => {
+    it('allows Codex startup and preflight to finish before the outer RPC expires', async () => {
+        const { gateway, timeouts } = createGateway()
+        await gateway.spawnSession('machine-1', 'C:\\workspace', 'codex')
+        await gateway.spawnSession('machine-1', 'C:\\workspace', 'claude')
+        expect(timeouts).toEqual([60_000, 30_000])
+    })
     it('uses the default RPC timeout for regular machine RPCs', async () => {
         const { gateway, timeouts } = createGateway()
 
@@ -112,6 +118,45 @@ describe('RpcGateway RPC timeouts', () => {
                 homeDir: '/home/recorded-owner'
             })
         }])
+    })
+
+    it('uses machine-scoped RPCs for workspace file operations', async () => {
+        const { gateway, calls } = createGateway()
+
+        await gateway.readWorkspaceFile('machine-1', { cwd: '/workspace/project', path: 'src/index.ts' })
+        await gateway.listWorkspaceDirectory('machine-1', { cwd: '/workspace/project', path: 'src' })
+        await gateway.statWorkspaceFiles('machine-1', { cwd: '/workspace/project', paths: ['src/index.ts'] })
+        await gateway.getWorkspaceGitStatus('machine-1', { cwd: '/workspace/project' })
+        await gateway.getWorkspaceGitDiffNumstat('machine-1', { cwd: '/workspace/project', staged: true })
+        await gateway.getWorkspaceGitDiffFile('machine-1', {
+            cwd: '/workspace/project',
+            filePath: 'src/index.ts',
+            staged: false
+        })
+        await gateway.runWorkspaceRipgrep('machine-1', {
+            args: ['--files'],
+            cwd: '/workspace/project',
+            fileSearch: { query: '*.ts', limit: 20 }
+        })
+
+        expect(calls.map((call) => call.method)).toEqual([
+            'machine-1:workspace-read-file',
+            'machine-1:workspace-list-directory',
+            'machine-1:workspace-stat-files',
+            'machine-1:workspace-git-status',
+            'machine-1:workspace-git-diff-numstat',
+            'machine-1:workspace-git-diff-file',
+            'machine-1:workspace-ripgrep'
+        ])
+        expect(JSON.parse(calls[0].params)).toEqual({
+            cwd: '/workspace/project',
+            path: 'src/index.ts'
+        })
+        expect(JSON.parse(calls[5].params)).toEqual({
+            cwd: '/workspace/project',
+            filePath: 'src/index.ts',
+            staged: false
+        })
     })
 })
 

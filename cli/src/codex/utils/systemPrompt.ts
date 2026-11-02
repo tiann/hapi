@@ -6,8 +6,9 @@
  */
 
 import { trimIdent } from '@/utils/trimIdent';
-import { buildSessionCitationSteerInstruction } from '@hapi/protocol/sessionCitation';
+import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
 import { DISPLAY_IMAGE_PROMPT_CODEX, DISPLAY_MEDIA_PROMPT_CODEX, DISPLAY_VIDEO_PROMPT_CODEX } from '@/modules/common/displayImagePrompt';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
@@ -24,7 +25,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
     ${DISPLAY_IMAGE_PROMPT_CODEX}
     ${DISPLAY_VIDEO_PROMPT_CODEX}
     ${DISPLAY_MEDIA_PROMPT_CODEX}
-    ${buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'functions.hapi__inspect_peer',
         pingTool: 'functions.hapi__ping_peer',
         listPeersTool: 'functions.hapi__list_peers',

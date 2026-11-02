@@ -1,5 +1,6 @@
 import { trimIdent } from "@/utils/trimIdent";
-import { buildSessionCitationSteerInstruction } from "@hapi/protocol/sessionCitation";
+import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from "@hapi/protocol/sessionCitation";
+import { isPeerToolsDisabled } from "@/modules/common/peerTools";
 import { shouldIncludeCoAuthoredBy } from "./claudeSettings";
 import { DISPLAY_IMAGE_PROMPT_CLAUDE, DISPLAY_MEDIA_PROMPT_CLAUDE, DISPLAY_VIDEO_PROMPT_CLAUDE } from "@/modules/common/displayImagePrompt";
 import { withSessionSummaryInstruction } from "@/modules/common/sessionSummaryInstruction";
@@ -12,7 +13,7 @@ const BASE_SYSTEM_PROMPT = (() => trimIdent(`
     ${DISPLAY_IMAGE_PROMPT_CLAUDE}
     ${DISPLAY_VIDEO_PROMPT_CLAUDE}
     ${DISPLAY_MEDIA_PROMPT_CLAUDE}
-    ${buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'mcp__hapi__inspect_peer',
         pingTool: 'mcp__hapi__ping_peer',
         listPeersTool: 'mcp__hapi__list_peers',

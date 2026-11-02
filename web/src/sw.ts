@@ -9,6 +9,7 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
+import { cacheOkResponsesOnly } from './lib/swCachePolicy'
 
 const sharePath = shareTargetPathname()
 
@@ -37,6 +38,7 @@ registerRoute(
         cacheName: 'api-sessions',
         networkTimeoutSeconds: 10,
         plugins: [
+            cacheOkResponsesOnly,
             new ExpirationPlugin({
                 maxEntries: 10,
                 maxAgeSeconds: 60 * 5
@@ -51,6 +53,7 @@ registerRoute(
         cacheName: 'api-session-detail',
         networkTimeoutSeconds: 10,
         plugins: [
+            cacheOkResponsesOnly,
             new ExpirationPlugin({
                 maxEntries: 20,
                 maxAgeSeconds: 60 * 5
@@ -65,6 +68,7 @@ registerRoute(
         cacheName: 'api-machines',
         networkTimeoutSeconds: 10,
         plugins: [
+            cacheOkResponsesOnly,
             new ExpirationPlugin({
                 maxEntries: 5,
                 maxAgeSeconds: 60 * 10

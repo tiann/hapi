@@ -1,7 +1,8 @@
 import React from "react";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import { claudeRemote } from "./claudeRemote";
+import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
+import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
@@ -12,7 +13,10 @@ import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
-import { applySessionTitleFallback } from './utils/sessionTitleFallback';
+import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
+import { parseSpecialCommand } from "@/parsers/specialCommands";
+import { ClaudeToolResultImages } from './utils/toolResultImages';
+import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -51,6 +55,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private abortFuture: Future<void> | null = null;
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
+    /** The running plain turn that can take a steered queue row, if any. */
+    private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal } | null = null;
 
     constructor(session: Session) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -136,13 +142,114 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const permissionHandler = new PermissionHandler(session);
         this.permissionHandler = permissionHandler;
 
+        const toolResultImages = new ClaudeToolResultImages();
         const messageQueue = new OutgoingMessageQueue(
-            (logMessage) => session.client.sendClaudeSessionMessage(logMessage)
+            (logMessage) => toolResultImages.send(session.client, logMessage)
         );
 
         permissionHandler.setOnPermissionRequest((toolCallId: string) => {
             messageQueue.releaseToolCall(toolCallId);
         });
+
+        // Per-message steer from the waiting queue (web "Steer" button), the
+        // same as Ctrl+X Ctrl+S in the Claude TUI: the row is written to the
+        // running process and Claude folds it in at its next tool boundary.
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : '';
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' };
+                }
+                const active = this.steerTarget;
+                if (!active || active.signal.aborted) {
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' };
+                }
+                if (taken.item.isolate || parseSpecialCommand(taken.item.message).type !== null) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Control commands cannot be steered' };
+                }
+                if (taken.item.modeHash !== active.modeHash) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Queued message mode differs from the active turn' };
+                }
+                if (!session.queue.beginReservationDispatch(taken)) {
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
+                if (!dispatchStatePersisted) {
+                    session.queue.markReservationIndeterminate(taken);
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer state is indeterminate' };
+                }
+                const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (!taken.originIndeterminate) {
+                        const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                        if (!persisted) {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
+                        }
+                    }
+                    if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                        session.client.emitSteerIndeterminate([localId]);
+                        return false;
+                    }
+                    return true;
+                };
+                if (taken.state !== 'dispatching') {
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                if (this.steerTarget !== active || active.signal.aborted) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+
+                const deliveredText = session.expandSkillReference(taken.item.message);
+                session.client.notePendingHubPromptEcho(deliveredText, [localId]);
+                const delivery = active.target.steer(deliveredText);
+                if (!delivery) {
+                    session.client.discardPendingHubPromptEcho(localId);
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+                void delivery.delivered.then(async (delivered) => {
+                    if (delivered) {
+                        // Agent output preceding the pickup is already in the
+                        // outgoing queue; send it first so the steered row is
+                        // stamped after it, not above it.
+                        await messageQueue.flush();
+                        session.queue.commitReservation(taken);
+                        messageBuffer.addMessage(taken.item.message, 'user');
+                        session.client.emitMessagesConsumed([localId], { steered: true });
+                        return;
+                    }
+                    session.client.discardPendingHubPromptEcho(localId);
+                    if (active.signal.aborted) {
+                        // Abort killed the process with the row unacknowledged:
+                        // hold it for explicit Retry/Cancel instead of replaying
+                        // it into a turn the user just stopped.
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        return;
+                    }
+                    // Claude exited before it ever picked the row up, so it was
+                    // never part of the conversation: queue it again.
+                    await restoreQueuedReservation();
+                }).catch((error) => {
+                    logger.debug('[remote]: steered message settlement failed', error);
+                });
+                return { steered: true };
+            }
+        );
 
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
@@ -388,6 +495,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         mcpServers: session.mcpServers,
                         hookSettingsPath: session.hookSettingsPath,
                         canCallTool: permissionHandler.handleToolCall,
+                        setPermissionModeListener: session.setPermissionModeListener,
+                        onPermissionModeRejected: (mode, reason) => {
+                            session.setPermissionMode(mode);
+                            session.pushKeepAlive();
+                            session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
+                            session.client.sendSessionEvent({ type: 'message', message: reason });
+                        },
                         bootstrapMode: {
                             permissionMode: session.getPermissionMode() ?? 'default',
                             model: session.getModel() ?? undefined,
@@ -489,8 +603,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         claudeEnvVars: session.claudeEnvVars,
                         claudeArgs: session.claudeArgs,
                         onMessage,
+                        onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
                         onFirstResult: (initialMessage) => {
-                            applySessionTitleFallback(session.client, initialMessage);
+                            // SDK streams omit Claude Code's native ai-title; it is only in the transcript.
+                            const sessionId = session.sessionId;
+                            void (sessionId ? readNativeSessionTitle(session.path, sessionId) : Promise.resolve(null))
+                                .then((nativeTitle) => applySessionTitleFallback(
+                                    session.client,
+                                    nativeTitle ?? stripAttachmentReferences(initialMessage)
+                                ));
+                        },
+                        onResultAccepted: () => {
+                            // The input has completed at the SDK boundary even
+                            // if ready is deferred (compact summary lookup, or
+                            // a steer follow-up turn). A later stream failure
+                            // must not replay it.
+                            reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
                         },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
@@ -507,7 +636,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // just asked to clear.
                             session.consumeOneTimeFlags();
                         },
-                        onReady: async (completionEvent?: string) => {
+                        onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
                             // respawn-storm guard. The turn that led here is no
@@ -521,6 +650,36 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 logger.debug(`[remote]: Completion event: ${completionEvent}`);
                                 session.client.sendSessionEvent({ type: 'message', message: completionEvent });
                             }
+                            if (compactSummary) {
+                                logger.debug(`[remote]: Compact summary promoted (${compactSummary.summary.length} chars)`);
+                                session.client.sendSessionEvent({
+                                    type: 'compact-summary',
+                                    summary: compactSummary.summary,
+                                    tokensBefore: compactSummary.tokensBefore,
+                                    tokensAfter: compactSummary.tokensAfter
+                                });
+                            }
+                            if (compactContextTokens !== undefined) {
+                                // The status bar keeps the last pre-compaction
+                                // usage until the next model response; refresh
+                                // it with the boundary's post-tokens the same
+                                // way the Pi launcher does. Carry the resolved
+                                // context window along: the reducer replaces
+                                // latestUsage wholesale, so a context-only
+                                // sample would otherwise drop a known window
+                                // (e.g. 1M) and fall back to the heuristic.
+                                const convertedUsage = convertAgentMessage(
+                                    {
+                                        type: 'usage',
+                                        inputTokens: 0,
+                                        outputTokens: 0,
+                                        contextTokens: compactContextTokens,
+                                        contextWindow: sdkToLogConverter.currentContextWindow()
+                                    },
+                                    session.getModel()
+                                );
+                                if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
+                            }
 
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
@@ -532,6 +691,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             } else {
                                 logger.debug('[claudeRemoteLauncher][async-debug] ready event suppressed (pending input exists)');
                             }
+                        },
+                        onSteerTargetChange: (target) => {
+                            this.steerTarget = target
+                                ? { target, modeHash, signal: controller.signal }
+                                : null;
+                            session.client.updateAgentState((state) => ({ ...state, steeringActive: target !== null }));
                         },
                         signal: controller.signal,
                     });
@@ -675,6 +840,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.steerTarget = null;
 
         if (this.handleSessionFound) {
             this.session.removeSessionFoundCallback(this.handleSessionFound);

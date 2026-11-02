@@ -24,6 +24,10 @@ export interface SDKUserMessage extends SDKMessage {
      */
     isSynthetic?: boolean
     isMeta?: boolean
+    /** Stdin messages may set it; `--replay-user-messages` echoes it back. */
+    uuid?: string
+    /** Set on the `--replay-user-messages` echo of a stdin message. */
+    isReplay?: boolean
     message: {
         role: 'user'
         content: string | Array<{
@@ -61,6 +65,7 @@ export interface SDKSystemMessage extends SDKMessage {
     tools?: string[]
     skills?: string[]
     slash_commands?: string[]
+    permissionMode?: string
     /**
      * Present on `subtype: 'status'` messages that report a /compact outcome.
      * Claude emits a `status: 'compacting'` message first, then a second one
@@ -124,6 +129,11 @@ export interface ControlRequest {
 
 export interface InterruptRequest extends ControlRequest {
     subtype: 'interrupt'
+}
+
+export interface SetPermissionModeRequest extends ControlRequest {
+    subtype: 'set_permission_mode'
+    mode: ClaudePermissionMode
 }
 
 export interface CanUseToolRequest extends ControlRequest {
@@ -205,6 +215,11 @@ export interface QueryOptions {
     fallbackModel?: string
     settingsPath?: string
     strictMcpConfig?: boolean
+    /**
+     * Echo every stdin user message back (`isReplay: true`, same uuid) when
+     * Claude starts processing it. Requires a streaming prompt.
+     */
+    replayUserMessages?: boolean
     canCallTool?: CanCallToolCallback
     promptFailureCleanupTimeoutMs?: number
 }

@@ -44,6 +44,7 @@ data class SessionPatch(
     val activeTurnStartedAt: OptionalField<Long?> = OptionalField.Absent,
     val activeAt: Long? = null,
     val updatedAt: Long? = null,
+    val lastUserMessageAt: Long? = null,
     val metadata: VersionedValue<SessionMetadata>? = null,
     val agentState: VersionedValue<AgentState>? = null,
     val todos: VersionedValue<List<TodoItem>>? = null,
@@ -58,15 +59,20 @@ data class SessionPatch(
     val backgroundTaskCount: Int? = null,
     /** Bare refetch trigger for `GET /sessions/:id/scratchlist`; carries no data. */
     val scratchlistUpdatedAt: Long? = null,
+    val contentRevision: Long? = null,
+    val readState: SessionReadState? = null,
 )
 
 object SessionPatches {
     private val KNOWN_KEYS = setOf(
-        "active", "thinking", "activeTurnStartedAt", "activeAt", "updatedAt",
+        "contentRevision", "readState",
+        "active", "thinking", "activeTurnStartedAt", "activeAt", "updatedAt", "lastUserMessageAt",
         "metadata", "agentState", "todos", "teamState",
         "model", "modelReasoningEffort", "effort", "serviceTier",
         "permissionMode", "collaborationMode", "copilotAgentMode",
         "backgroundTaskCount", "scratchlistUpdatedAt",
+        // Web-only status-panel list; accepted so the patch is not refetched.
+        "backgroundTasks",
     )
 
     /**
@@ -90,11 +96,14 @@ object SessionPatches {
         if (obj.isEmpty() || obj.keys.any { it !in KNOWN_KEYS }) return null
         return try {
             SessionPatch(
+                contentRevision = obj["contentRevision"]?.let { it.longOrNull?.takeIf { n -> n >= 0 } ?: return null },
+                readState = obj["readState"]?.let { HapiJson.decodeFromJsonElement(SessionReadState.serializer(), it) },
                 active = obj["active"]?.let { it.boolOrNull ?: return null },
                 thinking = obj["thinking"]?.let { it.boolOrNull ?: return null },
                 activeTurnStartedAt = optionalNullableLong(obj, "activeTurnStartedAt") ?: return null,
                 activeAt = obj["activeAt"]?.let { it.longOrNull ?: return null },
                 updatedAt = obj["updatedAt"]?.let { it.longOrNull ?: return null },
+                lastUserMessageAt = obj["lastUserMessageAt"]?.let { it.longOrNull ?: return null },
                 metadata = obj["metadata"]?.let { wrapper ->
                     versioned(wrapper) { value ->
                         if (value is JsonNull) null

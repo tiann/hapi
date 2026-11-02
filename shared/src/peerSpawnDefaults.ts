@@ -2,7 +2,7 @@ import { z } from 'zod'
 import {
     AgentFlavorSchema,
     CREATABLE_AGENT_FLAVORS,
-    getLaunchPermissionModesForFlavor,
+    getPermissionModesForFlavor,
     type AgentFlavor,
     type PermissionMode
 } from './modes'
@@ -57,7 +57,7 @@ export function resolvePermissionModeForFlavor(
     mode: PermissionMode,
     flavor: AgentFlavor
 ): PermissionMode {
-    const launchModes = getLaunchPermissionModesForFlavor(flavor)
+    const launchModes = getPermissionModesForFlavor(flavor)
     if (launchModes.includes(mode)) {
         return mode
     }

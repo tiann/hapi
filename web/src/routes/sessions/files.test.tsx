@@ -263,6 +263,37 @@ describe('FilesPage reopen draft transfer', () => {
     })
 })
 
+describe('FilesPage change errors', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        mocks.gitStatus = { status: null, error: null, isLoading: false, refetch: vi.fn() }
+        mocks.search = { tab: 'changes', query: undefined }
+        window.localStorage.clear()
+        window.sessionStorage.clear()
+    })
+
+    it('collapses long Git status errors until clicked', () => {
+        const tail = 'FULL GIT STATUS ERROR TAIL'
+        const longError = `Command failed: git status --porcelain=v2 --branch --untracked-files=all ${'diagnostic '.repeat(30)}${tail}`
+        mocks.gitStatus.error = longError
+
+        renderFilesPage()
+
+        const errorToggle = screen.getByRole('button', { name: /Show full error/ })
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).toHaveTextContent('…')
+        expect(errorToggle).not.toHaveTextContent(tail)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'true')
+        expect(errorToggle).toHaveTextContent(longError)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).not.toHaveTextContent(tail)
+    })
+})
+
 describe('FilesPage file context menu', () => {
     beforeEach(() => {
         vi.clearAllMocks()

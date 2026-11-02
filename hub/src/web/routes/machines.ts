@@ -12,7 +12,7 @@ import {
     type PeerSpawnDefaults,
     type ResolvedPeerSpawnDefaults
 } from '@hapi/protocol/peerSpawnDefaults'
-import { getLaunchPermissionModesForFlavor } from '@hapi/protocol/modes'
+import { getPermissionModesForFlavor } from '@hapi/protocol/modes'
 import { Hono } from 'hono'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
@@ -167,7 +167,7 @@ export function createMachinesRoutes(
         }
         if (
             parsed.data.permissionMode !== undefined
-            && !getLaunchPermissionModesForFlavor(effectiveAgent).includes(parsed.data.permissionMode)
+            && !getPermissionModesForFlavor(effectiveAgent).includes(parsed.data.permissionMode)
         ) {
             return c.json({
                 error: `permission mode ${parsed.data.permissionMode} is not supported by ${effectiveAgent}`,
@@ -189,7 +189,7 @@ export function createMachinesRoutes(
         const permissionModeForSpawn =
             parsed.data.permissionMode === undefined && parsed.data.yolo !== undefined
                 ? undefined
-                : getLaunchPermissionModesForFlavor(resolved.agent).length === 0
+                : getPermissionModesForFlavor(resolved.agent).length === 0
                     ? undefined
                     : resolved.permissionMode
 
@@ -333,6 +333,28 @@ export function createMachinesRoutes(
         }
     })
 
+    app.get('/machines/:id/dsh-models', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ success: false, error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        try {
+            return c.json(await engine.listDshModelsForMachine(machineId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list DSH models'
+            }, 500)
+        }
+    })
+
     app.get('/machines/:id/pi-models', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -359,6 +381,36 @@ export function createMachinesRoutes(
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Pi models'
+            }, 500)
+        }
+    })
+
+    app.get('/machines/:id/claude-models', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ success: false, error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        try {
+            const result = await engine.listClaudeModelsForMachine(machineId)
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Claude models'
             }, 500)
         }
     })

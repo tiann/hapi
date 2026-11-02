@@ -191,7 +191,12 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
     if (result.error || result.status !== 0) {
         throw result.error ?? new Error(`powershell Win32_Process exit ${result.status}`)
     }
-    const raw = (result.stdout ?? '').trim()
+    return parseWindowsProcessSnapshot((result.stdout ?? '').toString())
+}
+
+/** Reject incomplete/invalid listings before absence can prove a PID exited. */
+export function parseWindowsProcessSnapshot(stdout: string): ProcessSnapshot[] {
+    const raw = stdout.trim()
     // Empty stdout is a failed scan, not "no processes" — a live Windows host
     // always has System/Idle. Match process.ts collectWindowsProcessTree
     // fail-closed semantics so orphan reap does not claim archive-ok (#1911).
@@ -202,7 +207,11 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
         | Array<{ ProcessId?: number; Name?: string; CommandLine?: string; CreationDate?: string }>
         | { ProcessId?: number; Name?: string; CommandLine?: string; CreationDate?: string }
     const rows = Array.isArray(parsed) ? parsed : [parsed]
-    return rows
+    if (!rows.length || rows.some(row => !row || typeof row.ProcessId !== 'number'
+        || !Number.isInteger(row.ProcessId) || row.ProcessId < 0)) {
+        throw new Error('powershell Win32_Process returned an invalid process snapshot')
+    }
+    const processes = rows
         .map((row) => ({
             pid: Number(row.ProcessId),
             name: row.Name ?? '',
@@ -212,6 +221,8 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
                 : null,
         }))
         .filter((proc) => Number.isFinite(proc.pid) && proc.pid > 0)
+    if (!processes.length) throw new Error('powershell Win32_Process returned no verifiable processes')
+    return processes
 }
 
 export async function listProcessesForOrphanScan(): Promise<ProcessSnapshot[]> {

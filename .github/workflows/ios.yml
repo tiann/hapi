@@ -19,8 +19,9 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    # Xcode 27.1+ is required: the app uses iOS 27.1 SDK APIs (e.g. UIHingeInteraction).
     package-tests:
-        runs-on: macos-15
+        runs-on: xcode-27
         steps:
             - uses: actions/checkout@v4
             - name: Show toolchain versions
@@ -31,7 +32,7 @@ jobs:
               run: swift test --package-path ios/Packages/HapiKit
 
     app-build:
-        runs-on: macos-15
+        runs-on: xcode-27
         steps:
             - uses: actions/checkout@v4
             - name: Show toolchain versions

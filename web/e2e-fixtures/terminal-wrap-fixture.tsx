@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import '../src/index.css'
 import { CliOutputBlock } from '../src/components/CliOutputBlock'
 import { DiffView } from '../src/components/DiffView'
+import { MarkdownRenderer } from '../src/components/MarkdownRenderer'
 import { ToolCard } from '../src/components/ToolCard/ToolCard'
 import { I18nProvider } from '../src/lib/i18n-context'
 import type { ApiClient } from '../src/api/client'
@@ -27,6 +28,17 @@ const codexDiffBlock: ToolCallBlock = {
     }, children: [],
 }
 
+const markdownCode = Array.from({ length: 123 }, (_, index) => {
+    const line = index + 1
+    if (line === 10) return 'const tenth = "two-digit gutter"'
+    if (line === 100) return 'const oneHundredth = "three-digit gutter"'
+    return `const line${line} = "sample"`
+}).join('\n')
+
+function fencedCode(language: 'markdown' | 'md') {
+    return [`\`\`\`${language}`, markdownCode, '\`\`\`'].join('\n')
+}
+
 function TerminalWrapFixture() {
     return (
         <div className="flex flex-col gap-4" data-testid="terminal-wrap-fixture">
@@ -49,6 +61,17 @@ function TerminalWrapFixture() {
             </div>
             <div data-testid="toolcard-codex-diff">
                 <ToolCard api={{} as ApiClient} sessionId="fixture-session" metadata={null} terminalToolDisplayMode="detailed" disabled={false} onDone={() => {}} block={codexDiffBlock} />
+            </div>
+            <div data-testid="markdown-gutter-fixtures" className="flex flex-col gap-4">
+                <div data-testid="markdown-gutter-markdown">
+                    <MarkdownRenderer content={fencedCode('markdown')} />
+                </div>
+                <div data-testid="markdown-gutter-md">
+                    <MarkdownRenderer content={fencedCode('md')} />
+                </div>
+                <div data-testid="markdown-gutter-standalone">
+                    <MarkdownRenderer standalone content={fencedCode('markdown')} />
+                </div>
             </div>
         </div>
     )

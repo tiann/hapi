@@ -83,6 +83,25 @@ describe('generated images route', () => {
     })
 })
 
+describe('session file route', () => {
+    it('forwards a bounded read size to the session RPC', async () => {
+        const session = { id: 'session-1', namespace: 'default', active: true, metadata: { path: '/workspace' } } as unknown as Session
+        let readOptions: { maxBytes?: number } | undefined
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            readSessionFile: async (_sessionId: string, _path: string, options?: { maxBytes?: number }) => {
+                readOptions = options
+                return { success: true, content: '' }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/file?path=images%2Fpage.png&maxBytes=1024')
+
+        expect(response.status).toBe(200)
+        expect(readOptions).toEqual({ maxBytes: 1024 })
+    })
+})
+
 describe('file search route', () => {
     it('normalizes Windows path separators in search queries before invoking ripgrep', async () => {
         const session = {

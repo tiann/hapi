@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
     canApplyVersionedSummaryPatch,
@@ -11,9 +12,21 @@ import {
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
     isRenderIrrelevantSessionPatch,
+    sameSessionSummaryMetadata,
     shouldInvalidateSessionListForEvent,
     useSSE
 } from './useSSE'
+
+describe('session summary metadata equality', () => {
+    it('detects capability changes that control list actions', () => {
+        const base = { path: '/p', host: 'h' }
+        expect(sameSessionSummaryMetadata(base, { ...base, conversationHistory: { forkCurrent: true } })).toBe(false)
+        expect(sameSessionSummaryMetadata(
+            { ...base, conversationHistory: { forkCurrent: true } },
+            { ...base, conversationHistory: { forkCurrent: true } },
+        )).toBe(true)
+    })
+})
 
 class FakeEventSource {
     static instances: FakeEventSource[] = []
@@ -45,11 +58,13 @@ class FakeEventSource {
     }
 }
 
-function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
+function renderUseSSE(options?: {
+    onDisconnect?: (reason: string) => void
+}) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
-    return renderHook(() => useSSE({
+    const hook = renderHook(() => useSSE({
         enabled: true,
         token: 'test-token',
         baseUrl: 'http://hub.test',
@@ -57,6 +72,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
+    return { ...hook, queryClient }
 }
 
 describe('useSSE connection liveness (mobile suspend/resume)', () => {
@@ -430,5 +446,52 @@ describe('applySessionDetailPatch (PR #897 review, Copilot keep-alive)', () => {
             activeAt: 11_000,
             copilotAgentMode: 'interactive'
         })).toBeNull()
+    })
+})
+
+describe('useSSE user-activity ordering', () => {
+    beforeEach(() => {
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('ignores agent/status updates, promotes new input, and rejects stale replay', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const sessions = [
+            makeSummary({ id: 'new', createdAt: 3_000, lastUserMessageAt: 8_000 }),
+            makeSummary({ id: 'old', createdAt: 1_000, lastUserMessageAt: 5_000 })
+        ]
+        queryClient.setQueryData(queryKeys.sessions, { sessions })
+        const patch = (sessionId: string, data: Record<string, unknown>) => act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId, data })
+        })
+        const read = () => queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)!.sessions
+        for (let i = 0; i < 10; i++) {
+            patch('old', { updatedAt: 90_000 + i, thinking: true, active: true })
+            patch('new', { updatedAt: 100_000 + i, thinking: false, active: false })
+            expect(read().map(s => s.id)).toEqual(['new', 'old'])
+        }
+        patch('old', { lastUserMessageAt: 200_000 })
+        expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        patch('old', { lastUserMessageAt: 4_000 })
+        expect(read()[0]!.lastUserMessageAt).toBe(200_000)
+        expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        unmount()
+    })
+
+    it('preserves the user timestamp through a stale full-session event', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({ id: 'session-1', lastUserMessageAt: 9_000 })] })
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0, lastUserMessageAt: 1_000
+            }
+        }))
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.lastUserMessageAt).toBe(9_000)
+        unmount()
     })
 })

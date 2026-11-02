@@ -8,7 +8,7 @@ type FakeAgentState = {
 };
 
 function createHarness(
-    mode: 'default' | 'read-only' | 'safe-yolo' | 'yolo',
+    mode: 'default' | 'read-only' | 'yolo',
     collaborationMode?: 'default' | 'plan'
 ) {
     let agentState: FakeAgentState = {
@@ -89,23 +89,6 @@ describe('CodexPermissionHandler', () => {
         });
 
         await expect(resultPromise).resolves.toMatchObject({ decision: 'approved' });
-    });
-
-    it('auto-approves safe-yolo requests once', async () => {
-        const { handler, getAgentState } = createHarness('safe-yolo');
-
-        await expect(handler.handleToolCall('perm-1', 'CodexBash', { command: 'pwd' })).resolves.toEqual({
-            decision: 'approved'
-        });
-
-        expect(getAgentState().requests).toEqual({});
-        expect(getAgentState().completedRequests).toMatchObject({
-            'perm-1': {
-                tool: 'CodexBash',
-                status: 'approved',
-                decision: 'approved'
-            }
-        });
     });
 
     it('keeps default mode requests pending until a permission RPC arrives', async () => {

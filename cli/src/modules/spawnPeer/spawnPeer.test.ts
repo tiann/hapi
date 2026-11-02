@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     SpawnPeerError,
     exitCodeForSpawnPeerError,
@@ -128,11 +128,31 @@ describe('spawnPeer', () => {
     let nowMs: number
 
     beforeEach(() => {
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', '')
         nowMs = 1_000_000
         // Unit tests must not inherit the wrapping HAPI session identity.
         delete process.env.HAPI_SESSION_ID
         delete process.env.HAPI_SESSION_NAME
         delete process.env.HAPI_AGENT_SESSION_ID
+    })
+
+    afterEach(() => {
+        vi.unstubAllEnvs()
+    })
+
+    it('refuses disabled peer tools before authenticating or spawning a child', async () => {
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', '1')
+        const http = createHttpMock({})
+        await expect(spawnPeer({
+            directory: '/srv/project',
+            message: 'Run the tests',
+            machineId: MACHINE_ID,
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never,
+        })).rejects.toMatchObject({ code: 'disabled' })
+        expect(http.post).not.toHaveBeenCalled()
+        expect(http.get).not.toHaveBeenCalled()
     })
 
     it('rejects an empty remit', async () => {
@@ -620,7 +640,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
         expect(spawnedBody).not.toHaveProperty('text')
         expect(spawnedBody).not.toHaveProperty('yolo')
         expect(spawnedBody).toHaveProperty('permissionMode', 'yolo')
-        expect(delivered).toEqual({ text: 'do the work' })
+        expect(delivered).toEqual({ text: 'do the work', localId: expect.stringMatching(/^ping-peer-/) })
         expect(http.patch).toHaveBeenCalledTimes(1)
     })
 

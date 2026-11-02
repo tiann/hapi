@@ -167,6 +167,11 @@ object SummaryPatching {
         thinking = session.thinking,
         activeAt = session.activeAt,
         updatedAt = session.updatedAt,
+        contentRevision = session.contentRevision,
+        readState = session.readState,
+        createdAt = session.createdAt,
+        lastUserMessageAt = session.lastUserMessageAt,
+        hasConversationContent = session.hasConversationContent,
         pinned = session.pinned ?: false,
         globalPinned = session.globalPinned ?: false,
         metadata = toSessionSummaryMetadata(session.metadata),
@@ -210,10 +215,13 @@ object SummaryPatching {
      */
     fun applySessionSummaryPatch(current: SessionSummary, patch: SessionPatch): SessionSummary {
         var next = current.copy(
+            contentRevision = patch.contentRevision?.let { max(current.contentRevision ?: 0, it) } ?: current.contentRevision,
+            readState = SessionReadState.merge(current.readState, patch.readState),
             active = patch.active ?: current.active,
             thinking = patch.thinking ?: current.thinking,
             activeAt = patch.activeAt ?: current.activeAt,
             updatedAt = patch.updatedAt?.let { max(current.updatedAt, it) } ?: current.updatedAt,
+            lastUserMessageAt = patch.lastUserMessageAt?.let { max(current.lastUserMessageAt ?: 0, it) } ?: current.lastUserMessageAt,
             backgroundTaskCount = patch.backgroundTaskCount ?: current.backgroundTaskCount,
             model = when (val model = patch.model) {
                 is OptionalField.Present -> model.value
@@ -305,9 +313,11 @@ object SummaryPatching {
      * effect is suppressing a re-render that stores an equal-rendering value.
      */
     fun isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): Boolean {
-        return current.active == next.active
+        return current.contentRevision == next.contentRevision && current.readState == next.readState &&
+            current.active == next.active
             && current.thinking == next.thinking
             && current.updatedAt == next.updatedAt
+            && current.lastUserMessageAt == next.lastUserMessageAt
             && current.backgroundTaskCount == next.backgroundTaskCount
             && current.model == next.model
             && current.modelReasoningEffort == next.modelReasoningEffort
