@@ -6,6 +6,9 @@ describe('release notes catalog', () => {
         expect(RELEASE_NOTES.length).toBeGreaterThan(0)
         expect(RELEASE_NOTES.length).toBeGreaterThanOrEqual(75)
         expect(RELEASE_NOTES.some((release) => release.version === __APP_VERSION__)).toBe(true)
+        expect(RELEASE_NOTES.some((release) => release.version === '0.33.4')).toBe(true)
+        expect(RELEASE_NOTES.some((release) => release.version === '0.33.5')).toBe(true)
+        expect(RELEASE_NOTES.some((release) => release.version === '0.33.6')).toBe(true)
         expect(new Set(RELEASE_NOTES.map((release) => release.version)).size).toBe(RELEASE_NOTES.length)
 
         for (const [index, release] of RELEASE_NOTES.entries()) {

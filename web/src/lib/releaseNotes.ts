@@ -92,6 +92,35 @@ export const RELEASE_NOTES = [
                 change('fix', 'Prevent premature archive failures on Windows.', '防止 Windows 上过早出现归档失败。'),
                 change('fix', 'Resume DSH ACP sessions after a HAPI restart.', '在 HAPI 重启后恢复 DSH ACP 会话。'),
             ]),
+        ]),    releaseNote('0.33.6', '2026-11-01',
+        'Fork active and archived sessions from the Web session list and reveal unavailable Agents on demand.',
+        '支持从 Web 会话列表派生活动与归档会话，并按需显示不可用的 Agent。',
+        [
+            group('Session list actions', '会话列表操作', [
+                change('feature', 'Fork active and archived sessions directly from the session list.', '支持直接从会话列表派生活动和归档会话。'),
+                change('feature', 'Show unavailable Agents on demand instead of permanently hiding their entries.', '按需显示不可用的 Agent，而不是永久隐藏其入口。'),
+            ]),
+        ]),
+    releaseNote('0.33.5', '2026-11-01',
+        'Maintenance release; the official release notes list no user-facing functional changes.',
+        '维护版本；官方 Release 未列出面向用户的功能变更。',
+        [
+            group('Release maintenance', '版本维护', [
+                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            ]),
+        ]),
+    releaseNote('0.33.4', '2026-11-01',
+        'Add first-prompt session titles, compaction summaries and token counts, archived-session forks, and persistent AGY streams; improve Web history/status behavior, SQLite shutdown, model selection, and iOS settings.',
+        '增加基于首条提示的会话标题、压缩摘要与 token 计数、归档会话派生和持久化 AGY 流；改进 Web 历史与状态行为、SQLite 关闭、模型选择以及 iOS 设置。',
+        [
+            group('Session and agent features', '会话与 Agent 功能', [
+                change('feature', 'Title untitled sessions from their first prompt, show Codex/OpenCode compaction summaries and token counts, and reuse a persistent AGY headless stream.', '使用首条提示为未命名会话生成标题，显示 Codex/OpenCode 压缩摘要与 token 计数，并复用持久化的 AGY 无头流。'),
+                change('feature', 'Fork archived Codex sessions without reopening the source and move iOS hub controls into Settings.', '支持在不重新打开源会话的情况下派生归档 Codex 会话，并将 iOS Hub 控件移入设置。'),
+            ]),
+            group('Reliability and interaction fixes', '可靠性与交互修复', [
+                change('fix', 'Keep subagent parents while trimming history, preserve completed status summaries after follow-up sends, release SQLite statements before close, and separate AGY model from effort selection.', '在裁剪历史时保留子 Agent 父消息，在后续发送后保留已完成状态摘要，在关闭前释放 SQLite statements，并分离 AGY 模型与力度选择。'),
+                change('fix', 'Show resolved Claude model versions in pickers and make shared launch-path assertions cross-platform.', '在模型选择器中显示解析后的 Claude 模型版本，并让共享启动路径断言跨平台稳定。'),
+            ]),
         ]),    releaseNote('0.33.3', '2026-10-29',
         'Offer the current Claude model presets with 1M context defaults, support local Markdown images in chat, add Android file and text sharing, and default peer messages to Codex-aware auto delivery; improve post-reboot session recovery, Codex thread replay, and Web composer and directory interactions.',
         '提供当前四款默认 1M 上下文的 Claude 模型预设，在聊天中支持本地 Markdown 图片，增加 Android 文件与文本分享，并将对等消息默认设为感知 Codex 的自动投递；改进主机重启后的会话恢复、Codex 线程重放以及 Web 输入框与目录交互。',
