@@ -12,7 +12,8 @@ import UniformTypeIdentifiers
 /// primary action is stateful: Stop while a turn runs with an empty draft,
 /// otherwise Send (long-press offers "Send & steer" during a turn). The card
 /// also hosts dictation and attachment controls, and a `/` command list
-/// above the card while the input is a lone slash token.
+/// above the card while the input is a lone slash token, plus selection-aware
+/// `@` session/file suggestions.
 struct ChatComposerView: View {
     @Environment(\.hapiTypography) private var typography
     let interactor: ChatInteractor
@@ -30,7 +31,9 @@ struct ChatComposerView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
     @State private var cameraOpen = false
     @State private var filePickerOpen = false
-    @FocusState private var textFocused: Bool
+    @State private var textFocused = false
+    @State private var textSelection = NSRange(location: 0, length: 0)
+    @State private var isComposing = false
     @State private var preparingAttachment = false
     @State private var schedulePickerOpen = false
     // Secondary tools are bare symbols; only the primary action is a filled
@@ -61,13 +64,28 @@ struct ChatComposerView: View {
         })
     }
 
+    private var mentionRequest: ComposerMentionFiles.Request? {
+        guard textFocused, !isComposing, !scratchlistMode,
+              let query = ComposerMentionSuggestions.query(in: interactor.composerText, selection: textSelection) else { return nil }
+        return .init(query: query.search, flavor: interactor.mentionFlavor)
+    }
+
     var body: some View {
         let composer = interactor.composer
         let attachments = interactor.attachments.items
         let slashSuggestions = interactor.slashSuggestions
+        let mentionSuggestions = mentionRequest == nil ? [] : interactor.mentionSuggestions(selection: textSelection)
         let collapsed = isCollapsed(composer, attachments: attachments)
         VStack(spacing: 0) {
-            if !slashSuggestions.isEmpty {
+            if !mentionSuggestions.isEmpty {
+                ComposerMentionList(suggestions: mentionSuggestions, surface: composerSurfaceColor) { suggestion in
+                    if let selection = interactor.selectMention(suggestion, selection: textSelection) {
+                        textSelection = selection
+                        textFocused = true
+                    }
+                }
+                .padding(.bottom, 6)
+            } else if !slashSuggestions.isEmpty {
                 SlashCommandList(commands: slashSuggestions, surface: composerSurfaceColor) { command in
                     interactor.selectSlashCommand(command)
                 }
@@ -107,14 +125,23 @@ struct ChatComposerView: View {
                 // and expanded layouts so focus survives the switch.
                 HStack(spacing: 0) {
                     if collapsed { addAttachmentButton }
-                    TextField(composerPrompt, text: text, prompt: Text(composerPrompt).foregroundColor(.secondary), axis: .vertical)
-                        .focused($textFocused)
-                        .font(typography.bodyFont)
-                        .lineLimit(1...6)
-                        .textFieldStyle(.plain)
-                        .padding(.horizontal, collapsed ? 2 : 14)
-                        .padding(.top, collapsed ? 0 : 12)
-                        .padding(.bottom, collapsed ? 0 : 4)
+                    ZStack(alignment: .topLeading) {
+                        if interactor.composerText.isEmpty {
+                            Text(composerPrompt)
+                                .font(typography.bodyFont)
+                                .foregroundStyle(.secondary)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        ComposerTextView(text: text, selection: $textSelection, isFocused: $textFocused,
+                            isComposing: $isComposing,
+                            font: .systemFont(ofSize: typography.bodySize, weight: typography.boldText ? .semibold : .regular),
+                            accessibilityLabel: scratchlistMode
+                                ? String(localized: "Keep an instruction for later…") : String(localized: "Message the agent…"))
+                    }
+                    .padding(.horizontal, collapsed ? 2 : 14)
+                    .padding(.top, collapsed ? 0 : 12)
+                    .padding(.bottom, collapsed ? 0 : 4)
                     if collapsed { trailingActions(composer, attachments: attachments) }
                 }
                 .padding(.horizontal, collapsed ? 4 : 0)
@@ -142,6 +169,9 @@ struct ChatComposerView: View {
         // keyboard is down; above a keyboard the normal gap applies.
         .padding(.bottom, hugsBottomEdge && !textFocused ? -8 : 8)
         .animation(.snappy, value: hugsBottomEdge && !textFocused)
+        .task(id: mentionRequest) {
+            await interactor.mentionFiles.load(mentionRequest)
+        }
         .onChange(of: interactor.composerFocusRequest) {
             textFocused = true
         }

@@ -50,6 +50,7 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
     }
 
     public var name: String?
+    public var promptTitle: String?
     public var path: String
     public var machineId: String?
     public var summary: Summary?
@@ -62,6 +63,7 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
 
     public init(
         name: String? = nil,
+        promptTitle: String? = nil,
         path: String,
         machineId: String? = nil,
         summary: Summary? = nil,
@@ -72,6 +74,7 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
         hapiMcpUrl: String? = nil
     ) {
         self.name = name
+        self.promptTitle = promptTitle
         self.path = path
         self.machineId = machineId
         self.summary = summary
@@ -91,6 +94,8 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
 public struct SessionSummary: Codable, Equatable, Sendable {
     public var contentRevision: Int?
     public var readState: SessionReadState?
+    /// Hub-computed eligibility for session references; empty stubs are excluded.
+    public var hasConversationContent: Bool?
     /// Server-side cap on `pendingRequests` entries
     /// (`PENDING_REQUEST_SUMMARY_CAP`, `shared/src/sessionSummary.ts`).
     public static let pendingRequestSummaryCap = 5
@@ -125,6 +130,7 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public init(
         contentRevision: Int? = nil,
         readState: SessionReadState? = nil,
+        hasConversationContent: Bool? = nil,
         id: String,
         active: Bool,
         thinking: Bool,
@@ -152,6 +158,7 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         self.id = id
         self.contentRevision = contentRevision
         self.readState = readState
+        self.hasConversationContent = hasConversationContent
         self.active = active
         self.thinking = thinking
         self.activeAt = activeAt
