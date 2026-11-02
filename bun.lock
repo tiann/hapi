@@ -13,7 +13,7 @@
     },
     "cli": {
       "name": "@twsxtd/hapi",
-      "version": "0.33.5",
+      "version": "0.33.6",
       "bin": {
         "hapi": "bin/hapi.cjs",
       },

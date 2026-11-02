@@ -114,12 +114,22 @@ public final class ChatInteractor {
     private var codexPlanErrors: [String: String] = [:]
 
     private var queuedOpPending = false
+    /// Sends dispatched while the agent was idle: the CLI consumes them right
+    /// away, so they render in the thread instead of flashing through the
+    /// queued bar while `invokedAt` is still null. Each entry expires
+    /// ``directSendGrace`` after the POST settles; a row still uninvoked by
+    /// then is genuinely waiting and moves to the bar.
+    public private(set) var directSendLocalIds: Set<String> = []
+    private let directSendGrace: Duration
     /// Raw override map; the published view prunes settled requests.
     private var overridesStore: [String: PermissionRowOverride] = [:]
 
     /// One-shot effects: renavigation on supersede, toast notices. Set by the
     /// owning screen model; replaced wholesale on re-activation.
     @ObservationIgnored public var onEvent: (@MainActor (ChatInteractionEvent) -> Void)?
+
+    /// ``directSendLocalIds`` changed; the screen re-runs the thread pipeline.
+    @ObservationIgnored public var onDirectSendsChanged: (@MainActor () -> Void)?
 
     /// The host defers source-session removal while /resume is in flight,
     /// and retains the tray before navigating to a replacement session.
@@ -150,6 +160,7 @@ public final class ChatInteractor {
         drafts: (any ChatDrafts)? = nil,
         attachments: ComposerAttachments? = nil,
         draftSaveDebounce: Duration = .milliseconds(300),
+        directSendGrace: Duration = .seconds(5),
         now: @escaping () -> Int = { Int(Date().timeIntervalSince1970 * 1000) },
         makeLocalId: @escaping () -> String = { "local-\(UUID().uuidString)" }
     ) {
@@ -159,6 +170,7 @@ public final class ChatInteractor {
         self.windows = windows
         self.drafts = drafts
         self.draftSaveDebounce = draftSaveDebounce
+        self.directSendGrace = directSendGrace
         self.now = now
         self.makeLocalId = makeLocalId
         self.attachments = attachments ?? ComposerAttachments(api: api, sessionId: sessionId)
@@ -494,6 +506,11 @@ public final class ChatInteractor {
     ) async -> String? {
         defer { isSending = false }
         let target = targetSessionId ?? scratchlistSendTarget ?? sessionId
+        // Decide before the POST: the hub flips `thinking` on as soon as it
+        // queues the message, so the state afterwards says nothing.
+        let direct = scheduledAt == nil && !currentSessionState().thinking
+        if direct { setDirectSend(localId, true) }
+        defer { if direct { expireDirectSend(localId) } }
         let store = target == sessionId ? await windowController() : await windows.open(sessionId: target)
         if isRetry {
             await store.updateStatus(localId: localId, status: .sending)
@@ -523,6 +540,21 @@ public final class ChatInteractor {
         } catch {
             await store.updateStatus(localId: localId, status: .failed)
             return nil
+        }
+    }
+
+    private func setDirectSend(_ localId: String, _ isDirect: Bool) {
+        let changed = isDirect
+            ? directSendLocalIds.insert(localId).inserted
+            : directSendLocalIds.remove(localId) != nil
+        if changed { onDirectSendsChanged?() }
+    }
+
+    private func expireDirectSend(_ localId: String) {
+        let grace = directSendGrace
+        Task { [weak self] in
+            try? await Task.sleep(for: grace)
+            self?.setDirectSend(localId, false)
         }
     }
 
@@ -594,7 +626,9 @@ public final class ChatInteractor {
     public var queuedRows: [QueuedMessageRow] {
         guard let windowState else { return [] }
         let thinking = currentSessionState().thinking
-        let queued = windowState.messages.filter { $0.isQueuedForInvocation }
+        let queued = windowState.messages.filter {
+            $0.isQueuedForInvocation && $0.localId.map(directSendLocalIds.contains) != true
+        }
         let sorted = queued.enumerated().sorted { lhs, rhs in
             let lhsScheduled = lhs.element.scheduledAt != nil
             let rhsScheduled = rhs.element.scheduledAt != nil
