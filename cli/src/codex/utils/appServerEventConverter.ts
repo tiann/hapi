@@ -1,4 +1,5 @@
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
+import { fileURLToPath } from 'node:url';
 import { logger } from '@/ui/logger';
 import { codexAssistantText } from './assistantText';
 
@@ -78,6 +79,17 @@ function extractGeneratedImageFileName(item: Record<string, unknown>, savedPath:
     const direct = asString(item.fileName ?? item.file_name ?? item.filename ?? item.name);
     if (direct) return direct;
     return savedPath.split(/[\\/]/).filter(Boolean).pop() ?? 'generated-image.png';
+}
+
+// imageView paths are a LegacyAppPathString: a plain path or a file:// URL.
+function extractViewedImagePath(value: unknown): string | null {
+    const raw = asString(value);
+    if (!raw?.startsWith('file://')) return raw;
+    try {
+        return fileURLToPath(raw);
+    } catch {
+        return null;
+    }
 }
 
 function extractChanges(value: unknown): Record<string, unknown> | null {
@@ -1147,6 +1159,16 @@ export class AppServerEventConverter {
                         file_name: extractGeneratedImageFileName(item, savedPath),
                         ...(extractGeneratedImageMimeType(item) ? { mime_type: extractGeneratedImageMimeType(item) } : {})
                     }));
+                }
+                return events;
+            }
+
+            if (itemType === 'imageview') {
+                // The item id is the view_image tool call id (exec-* inside code mode),
+                // so clients can tie the shown image to that tool card.
+                const path = extractViewedImagePath(item.path);
+                if (method === 'item/completed' && path) {
+                    events.push(scoped({ type: 'viewed_image', call_id: itemId, path }));
                 }
                 return events;
             }

@@ -14,6 +14,7 @@ type PendingUploadAttachment = PendingAttachment & {
     path?: string
     previewUrl?: string
     uploadSessionId?: string
+    retryable?: boolean
 }
 
 export type ChatAttachmentAdapter = AttachmentAdapter & {
@@ -115,8 +116,9 @@ export function createAttachmentAdapter(
                         name: file.name,
                         contentType,
                         file,
-                        status: { type: 'incomplete', reason: 'error' }
-                    }
+                        status: { type: 'incomplete', reason: 'error' },
+                        retryable: false,
+                    } as PendingUploadAttachment
                     return
                 }
 
@@ -170,8 +172,9 @@ export function createAttachmentAdapter(
                         name: file.name,
                         contentType,
                         file,
-                        status: { type: 'incomplete', reason: 'error' }
-                    }
+                        status: { type: 'incomplete', reason: 'error' },
+                        retryable: true,
+                    } as PendingUploadAttachment
                     return
                 }
 
@@ -194,8 +197,9 @@ export function createAttachmentAdapter(
                     name: file.name,
                     contentType,
                     file,
-                    status: { type: 'incomplete', reason: 'error' }
-                }
+                    status: { type: 'incomplete', reason: 'error' },
+                    retryable: true,
+                } as PendingUploadAttachment
             }
         },
 

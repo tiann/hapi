@@ -563,43 +563,33 @@ describe('HappyComposer send-error atomic restore', () => {
         mockClearDraftsAfterSend.mockReset()
     })
 
-    it('collapses an expanded composer only after an accepted send succeeds', async () => {
-        const controls = renderComposer('message', null)
+    it('collapses an expanded composer immediately when a send is submitted', () => {
+        renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
 
         send()
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
-
-        act(() => controls.current!.acceptSend())
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
-
-        act(() => controls.current!.settleSend())
-        await waitFor(() => expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded'))
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
-    it('keeps the composer expanded when an accepted send later fails', async () => {
+    it('keeps the composer collapsed when a submitted send later fails', async () => {
         const controls = renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         send()
 
-        act(() => controls.current!.acceptSend())
-        act(() => controls.current!.settleSend(fail(1, 'message', null)))
+        setError(controls, fail(1, 'message', null))
 
         await waitFor(() => expect(input()).toHaveValue('message'))
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
-    it('keeps the composer expanded when an attachment send later fails', () => {
+    it('keeps the composer collapsed when an attachment send later fails', () => {
         const controls = renderComposer('', null)
         act(() => controls.current!.addAttachment())
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         send()
 
-        act(() => controls.current!.acceptSend())
-        act(() => controls.current!.settleAttachmentSendFailure())
-
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
         expect(screen.queryByTestId('composer-send-error')).toBeNull()
     })
 

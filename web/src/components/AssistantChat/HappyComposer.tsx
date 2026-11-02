@@ -74,7 +74,8 @@ import { useDictation } from '@/hooks/useDictation'
 import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import type { SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
-import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import type { AttachmentRetryHandler } from './AttachmentItem'
 
 export interface TextInputState {
     text: string
@@ -298,6 +299,8 @@ export function HappyComposer(props: {
     onUploadDraftSnapshot?: (text: string, attachments: AttachmentDraftInput[]) => void
     onReleaseSentAttachments?: (ids: readonly string[]) => void
     canRestoreAttachments?: boolean
+    /** False when SessionChat has no attachment adapter for this session. */
+    attachmentsEnabled?: boolean
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
@@ -507,6 +510,7 @@ export function HappyComposer(props: {
     const attachments = useAuiState((s) => s.composer.attachments)
     const localAttachmentOrderRef = useRef<string[]>([])
     const attachmentOrderRef = externalAttachmentOrderRef ?? localAttachmentOrderRef
+    const retryingAttachmentIdsRef = useRef<Set<string>>(new Set())
     const attachmentIds = useMemo(
         () => attachments.map((attachment) => attachment.id),
         [attachments],
@@ -523,6 +527,16 @@ export function HappyComposer(props: {
         if (sessionId) recordComposerDraftChange(sessionId)
         setAttachmentOrderRevision((revision) => revision + 1)
     }, [attachmentIds, attachmentOrderRef, sessionId])
+    const handleAttachmentRetry = useCallback<AttachmentRetryHandler>((originalId, retryId, originalIndex) => {
+        const currentIndex = attachmentOrderRef.current.indexOf(originalId)
+        attachmentOrderRef.current = replaceAttachmentId(
+            attachmentOrderRef.current,
+            originalId,
+            retryId,
+            currentIndex >= 0 ? currentIndex : originalIndex,
+        )
+        setAttachmentOrderRevision((revision) => revision + 1)
+    }, [attachmentOrderRef])
     const orderedAttachments = orderItemsById(attachments, orderedAttachmentIds)
     const threadIsRunning = useAuiState((s) => s.thread.isRunning)
     const threadIsDisabled = useAuiState((s) => s.thread.isDisabled)
@@ -1539,6 +1553,10 @@ export function HappyComposer(props: {
             pendingSendAttachmentGenerationRef.current = userAttachmentGenerationRef.current
             pendingSendScheduleGenerationRef.current = userScheduleGenerationRef.current
             pendingSendAttachmentIdsRef.current = attachments.map((attachment) => attachment.id)
+            // The editor is a transient full-screen editing surface. Collapse
+            // when the submit action is dispatched, rather than waiting for a
+            // queued or slow network request to settle.
+            setIsExpanded(false)
             api.composer().send()
         } catch (error) {
             resetPendingSendIntent()
@@ -2057,6 +2075,12 @@ export function HappyComposer(props: {
     }, [isNarrowViewport, onModelChange, agentFlavor, selectedPiModel, model, modelOptions, selectedModelBase])
     const effortValueLabel = useMemo(() => {
         if (isNarrowViewport) return undefined
+        // Codex/OpenCode keep effort in modelReasoningEffort; same button, same wording.
+        if (showModelReasoningEffortSettings) {
+            if (!modelReasoningEffort) return t('composer.effortDefault')
+            const option = codexReasoningEffortOptions.find((candidate) => candidate.value === modelReasoningEffort)
+            return option?.label ?? modelReasoningEffort
+        }
         if (!onEffortChange || !supportsEffort(agentFlavor)) return undefined
         if (agentFlavor === 'agy' && !availableEffortOptions?.length) return undefined
         // Pi: without a resolved catalog entry there is no capability map to
@@ -2070,9 +2094,10 @@ export function HappyComposer(props: {
                 ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
                 : undefined
         }
+        if (!effort) return t('composer.effortDefault')
         const option = claudeEffortOptions.find((candidate) => candidate.value === effort)
-        return option?.label ?? (effort ? effort : undefined)
-    }, [isNarrowViewport, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions, availableEffortOptions])
+        return option?.label ?? effort
+    }, [isNarrowViewport, showModelReasoningEffortSettings, modelReasoningEffort, codexReasoningEffortOptions, t, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions, availableEffortOptions])
 
     // Wrapper for DOM onClick consumers: never leak the MouseEvent into the
     // `section` parameter (the gear must always open the full sheet).
@@ -2244,7 +2269,7 @@ export function HappyComposer(props: {
                         {sheetModelReasoningEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.reasoningEffort')}
+                                    {t('misc.effort')}
                                 </div>
                                 {codexReasoningEffortOptions.map((option) => (
                                     <button
@@ -2657,6 +2682,9 @@ export function HappyComposer(props: {
                                         disabled={controlsDisabled}
                                         onRemove={handleAttachmentRemove}
                                         onReorder={handleAttachmentReorder}
+                                        attachmentOrderRef={attachmentOrderRef}
+                                        retryingAttachmentIdsRef={retryingAttachmentIdsRef}
+                                        onRetry={handleAttachmentRetry}
                                     />
                                 </div>
                             ) : null}
@@ -2783,6 +2811,7 @@ export function HappyComposer(props: {
                                 onSchedule={handleUserSchedule}
                                 onClearSchedule={onUserClearSchedule}
                                 hasAttachments={blocksScheduling}
+                                attachmentsEnabled={props.attachmentsEnabled}
                                 modelValueLabel={modelValueLabel}
                                 modelValueDisabled={modelEffortControlsDisabled}
                                 modelValueOpen={showSettings && settingsSection !== 'effort'}

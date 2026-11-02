@@ -12,8 +12,9 @@ import {
     useRef,
     useState,
 } from 'react'
+import type { MutableRefObject } from 'react'
 import { type AttachmentDropPosition } from '@/lib/attachmentOrder'
-import { AttachmentItem, type AttachmentDragHandleProps } from './AttachmentItem'
+import { AttachmentItem, type AttachmentDragHandleProps, type AttachmentRetryHandler } from './AttachmentItem'
 
 const DRAG_START_DISTANCE_PX = 6
 
@@ -35,6 +36,9 @@ type SortableComposerAttachmentProps = {
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void
     onContextMenu: (event: ReactMouseEvent<Element>, id: string) => void
     onClick: (event: ReactMouseEvent<Element>, id: string) => void
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
 }
 
 type AttachmentDropTarget = {
@@ -42,14 +46,19 @@ type AttachmentDropTarget = {
     position: AttachmentDropPosition
 }
 
-const AttachmentDragHandleContext = createContext<{
+type AttachmentItemContextValue = {
     dragHandleProps?: AttachmentDragHandleProps
     onRemove?: () => void
-} | undefined>(undefined)
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
+}
+
+const AttachmentDragHandleContext = createContext<AttachmentItemContextValue | undefined>(undefined)
 
 function SortableAttachmentItem() {
     const context = useContext(AttachmentDragHandleContext)
-    return <AttachmentItem dragHandleProps={context?.dragHandleProps} onRemove={context?.onRemove} />
+    return <AttachmentItem {...context} />
 }
 
 // Updating drag handlers must not replace the attachment component and reset its image viewer.
@@ -81,6 +90,9 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         onKeyDown,
         onContextMenu,
         onClick,
+        attachmentOrderRef,
+        retryingAttachmentIdsRef,
+        onRetry,
     } = props
     const handlePointerDown = useCallback(
         (event: ReactPointerEvent<HTMLButtonElement>) => onPointerDown(event, attachment.id, false),
@@ -116,6 +128,16 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
             },
         [attachment.name, disabled, handleClick, handleContextMenu, handleKeyDown, handlePointerDown, handleSurfacePointerDown],
     )
+    const attachmentItemContext = useMemo<AttachmentItemContextValue>(
+        () => ({
+            dragHandleProps,
+            onRemove,
+            attachmentOrderRef,
+            retryingAttachmentIdsRef,
+            onRetry,
+        }),
+        [attachmentOrderRef, dragHandleProps, onRemove, onRetry, retryingAttachmentIdsRef],
+    )
 
     return (
         <div
@@ -123,7 +145,7 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
             data-hapi-composer-attachment-dragging={isDragging || undefined}
             className={isDragging ? 'opacity-60' : undefined}
         >
-            <AttachmentDragHandleContext.Provider value={{ dragHandleProps, onRemove }}>
+            <AttachmentDragHandleContext.Provider value={attachmentItemContext}>
                 <ComposerPrimitive.AttachmentByIndex
                     index={index}
                     components={SORTABLE_ATTACHMENT_COMPONENTS}
@@ -139,8 +161,20 @@ export function SortableComposerAttachments(props: {
     disabled?: boolean
     onRemove?: () => void
     onReorder: (activeId: string, targetId: string, position: AttachmentDropPosition) => void
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
 }) {
-    const { attachments, orderedAttachmentIds, onReorder, onRemove = () => {}, disabled = false } = props
+    const {
+        attachments,
+        orderedAttachmentIds,
+        onReorder,
+        disabled = false,
+        onRemove = () => {},
+        attachmentOrderRef,
+        retryingAttachmentIdsRef,
+        onRetry,
+    } = props
     const [draggingId, setDraggingId] = useState<string | null>(null)
     const dragRef = useRef<DragState | null>(null)
     const suppressClickIdRef = useRef<string | null>(null)
@@ -284,6 +318,9 @@ export function SortableComposerAttachments(props: {
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}
                         onClick={handleClick}
+                        attachmentOrderRef={attachmentOrderRef}
+                        retryingAttachmentIdsRef={retryingAttachmentIdsRef}
+                        onRetry={onRetry}
                     />
                 )
             })}
