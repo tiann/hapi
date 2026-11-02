@@ -13,6 +13,7 @@ export default defineConfig({
         'codex-session-list-fork.spec.ts',
         'late-codex-command-session.spec.ts',
         'codex-rewind-session.spec.ts',
+        'image-preview-back-session.spec.ts',
     ],
     timeout: 120_000,
     expect: { timeout: 20_000 },

@@ -77,6 +77,22 @@ describe('Query', () => {
         stdout.end()
     })
 
+    it('changes effort through apply_flag_settings, with null restoring the default', async () => {
+        const { Query } = await import('./query')
+        const stdin = new PassThrough()
+        const stdout = new PassThrough()
+        const query = new Query(stdin, stdout, Promise.resolve())
+
+        for (const effort of ['low', null]) {
+            const applied = query.setEffort(effort)
+            const request = JSON.parse(stdin.read().toString())
+            expect(request.request).toEqual({ subtype: 'apply_flag_settings', settings: { effortLevel: effort } })
+            stdout.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: request.request_id } }) + '\n')
+            await expect(applied).resolves.toBeUndefined()
+        }
+        stdout.end()
+    })
+
     it('rejects unsupported context usage requests without ending the message stream', async () => {
         const { Query } = await import('./query')
         const stdin = new PassThrough()

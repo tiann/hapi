@@ -9121,6 +9121,23 @@
         }
       }
     },
+    "Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сессия"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话"
+          }
+        }
+      }
+    },
     "Session Settings" : {
       "extractionState" : "manual",
       "localizations" : {
