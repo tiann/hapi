@@ -35,6 +35,7 @@ import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.ModelCatalog
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
+import app.hapi.protocol.chat.ChatBlock
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
@@ -1867,7 +1868,7 @@ class ChatViewModel(
         val agentState = inputs.detail?.agentState
         val reduced = reduceChatBlocks(normalized, agentState)
         val visibleBlocks = buildVisibleChatBlocks(
-            reduced.blocks,
+            filterEmptyReasoning(reduced.blocks),
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
         )
         previousGroups = visibleBlocks.filterIsInstance<ToolGroupBlock>()
@@ -1914,6 +1915,15 @@ class ChatViewModel(
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
         )
     }
+
+    // Web's assistant-ui drops blank reasoning parts; hide them before native
+    // presentation too, including in nested agent processes.
+    private fun filterEmptyReasoning(blocks: List<ChatBlock>): List<ChatBlock> =
+        blocks.filterNot { it is AgentReasoningBlock && it.text.isBlank() }.onEach { block ->
+            if (block is ToolCallBlock && block.children.isNotEmpty()) {
+                block.children = filterEmptyReasoning(block.children)
+            }
+        }
 
     /** A settled request (gone from `agentState.requests`) drops its override. */
     private fun prunePermissionOverrides(

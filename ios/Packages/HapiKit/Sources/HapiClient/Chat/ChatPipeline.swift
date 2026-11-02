@@ -20,6 +20,9 @@ import HapiProtocol
 ///   run's `ToolGroupBlock`s back through `ToolGroupingOptions.previousGroups`
 ///   (web `buildVisibleChatBlocks`'s `previousGroups` contract) — scroll
 ///   anchoring and expansion state key off `ToolGroupBlock.id`.
+/// - **Empty reasoning is hidden at presentation time**, including in agent
+///   processes. Web's assistant-ui adapter drops blank reasoning parts; native
+///   rows need the same policy without changing protocol normalization/reduction.
 ///
 /// An `actor` so (a) the synchronous pipeline body runs on the cooperative
 /// pool, off the main actor that publishes the result, and (b) the memo
@@ -89,7 +92,7 @@ public actor ChatPipeline {
 
         let reduced = reduceChatBlocks(normalized, agentState: agentState)
         let visible = buildVisibleChatBlocks(
-            reduced.blocks,
+            Self.filterEmptyReasoning(reduced.blocks),
             options: ToolGroupingOptions(
                 hasMoreMessages: hasMoreMessages,
                 previousGroups: previousGroups
@@ -100,6 +103,20 @@ public actor ChatPipeline {
             return nil
         }
         return visible
+    }
+
+    private static func filterEmptyReasoning(_ blocks: [ChatBlock]) -> [ChatBlock] {
+        blocks.compactMap { block in
+            switch block {
+            case .agentReasoning(let reasoning):
+                return reasoning.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : block
+            case .toolCall(var tool) where !tool.children.isEmpty:
+                tool.children = filterEmptyReasoning(tool.children)
+                return .toolCall(tool)
+            default:
+                return block
+            }
+        }
     }
 
     /// Forget all memo state (session switch / tests).
