@@ -22,7 +22,7 @@ describe('Claude model options', () => {
 describe('Claude effort options', () => {
     it('matches supported effort presets in expected order', () => {
         expect(CLAUDE_EFFORT_OPTIONS).toEqual([
-            { value: 'auto', label: 'Auto' },
+            { value: 'auto', label: 'Default' },
             { value: 'low', label: 'Low' },
             { value: 'medium', label: 'Medium' },
             { value: 'high', label: 'High' },

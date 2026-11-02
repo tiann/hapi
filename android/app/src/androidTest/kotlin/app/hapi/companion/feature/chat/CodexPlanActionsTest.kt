@@ -98,7 +98,7 @@ class CodexPlanActionsTest {
                         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                             ToolCallBlockView(proposal("exit_plan_mode"), null)
                         }
-                        ChatComposer(state = composer.value, onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {})
+                        ChatComposer(state = composer.value, onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {})
                     }
                 }
             }

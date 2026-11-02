@@ -264,6 +264,7 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
                 machineId: 'machine-1',
@@ -311,6 +312,7 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',
                 machineId: 'machine-1',
