@@ -38,6 +38,7 @@ import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
+import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
@@ -77,6 +78,7 @@ import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
 import app.hapi.data.auth.AuthTerminalReason
+import app.hapi.data.sse.SseSubscriptionKey
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -367,6 +369,8 @@ fun HapiNavigation() {
                 onOpenSession = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
                 onNewSession = { navController.navigate(Routes.newSession()) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                connectionChrome = hubGraph.connectionChrome,
+                runnerSkewChrome = hubGraph.runnerSkewChrome,
             )
         }
 
@@ -475,10 +479,25 @@ fun HapiNavigation() {
             BackHandler(enabled = assignedShare != null, onBack = closeChat)
             ChatHost(
                 viewModel = holder.viewModel,
-                media = remember(hubGraph, sessionId) {
-                    ChatMedia(hubGraph.imageLoader) { imageId ->
-                        hubGraph.generatedImageUrl(sessionId, imageId)
-                    }
+                media = remember(hubGraph, sessionId, appContext) {
+                    ChatMedia(
+                        imageLoader = hubGraph.imageLoader,
+                        generatedImageUrl = { imageId ->
+                            hubGraph.generatedImageUrl(sessionId, imageId)
+                        },
+                        // Non-image generated media (video/audio/file): same
+                        // endpoint, same authed client (JWT + silent 401
+                        // re-auth + ETag disk cache) as the image loader.
+                        fetchGeneratedMedia = { url, imageId, fileName ->
+                            fetchGeneratedMediaFile(
+                                hubGraph.session.imageClient,
+                                url,
+                                appContext.cacheDir,
+                                imageId,
+                                fileName,
+                            )
+                        },
+                    )
                 },
                 onBack = closeChat,
                 onNavigateToSession = { supersededId ->
@@ -790,6 +809,7 @@ private class SessionListViewModelHolder : ViewModel() {
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
+            connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
         ).also { model = it }
     }
 

@@ -65,7 +65,7 @@ import {
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
-import { getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
@@ -89,7 +89,7 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
-import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
+import type { SendMessageAcceptance } from '@/hooks/mutations/useSendMessage'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
@@ -183,9 +183,9 @@ export function buildAgyComposerModelOptions(
         return undefined
     }
 
-    return availableModels.map((model) => ({
+    return getAgyModelChoices(availableModels).map((model) => ({
         value: model.modelId,
-        label: model.name ?? model.modelId
+        label: model.name
     }))
 }
 
@@ -588,6 +588,7 @@ function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
 }
 
 type SessionChatProps = {
+    readThroughRevision?: number
     api: ApiClient
     titleSuggestionAvailable?: boolean
     session: Session
@@ -600,7 +601,6 @@ type SessionChatProps = {
     isSyncingTail: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
-    sendSettlement: SendMessageSettlement | null
     viewMode: 'tail' | 'history'
     messagesVersion: number
     historyVersion: number
@@ -1214,6 +1214,22 @@ function SessionChatInner(props: SessionChatProps) {
             ? buildAgyComposerModelOptions(agyModelsState.availableModels)
             : undefined
     ), [agentFlavor, agyModelsState.availableModels])
+    const agyChoices = useMemo(() => getAgyModelChoices(
+        agyModelsState.availableModels.length > 0
+            ? agyModelsState.availableModels
+            : AGY_MODEL_PRESETS.map((modelId) => ({ modelId, name: AGY_MODEL_LABELS[modelId] }))
+    ), [agyModelsState.availableModels])
+    const agySelection = splitAgyModelSelection(props.session.model)
+    const agySelectedChoice = agyChoices.find((choice) => choice.modelId === props.session.model)
+        ?? agyChoices.find((choice) => choice.modelId === agySelection.model)
+    const agyCurrentModel = agySelectedChoice?.modelId ?? props.session.model
+    const agyCurrentEffort = agySelectedChoice?.supportedEfforts.length
+        ? props.session.effort ?? agySelection.effort
+        : null
+    const agyEffortOptions = agySelectedChoice?.supportedEfforts.map((level) => ({
+        value: level,
+        name: level === 'xhigh' ? 'XHigh' : level.charAt(0).toUpperCase() + level.slice(1)
+    })) ?? []
     const claudeModelsState = useClaudeModels({
         api: props.api,
         machineId: sessionMachineId,
@@ -1688,11 +1704,18 @@ function SessionChatInner(props: SessionChatProps) {
         })
         // Sent in the same request so the session never runs the new model
         // with an effort it does not offer.
-        const effortChange = resolveEffortForModelChange({
-            currentEffort: props.session.effort ?? null,
-            model,
-            claudeModels: claudeModelsState.availableModels
-        })
+        const agyNextChoice = agentFlavor === 'agy' && typeof model === 'string'
+            ? agyChoices.find((choice) => choice.modelId === model)
+            : undefined
+        const effortChange = agentFlavor === 'agy'
+            ? { effort: agyNextChoice?.supportedEfforts.some((level) => level === agyCurrentEffort)
+                ? agyCurrentEffort
+                : null }
+            : resolveEffortForModelChange({
+                currentEffort: props.session.effort ?? null,
+                model,
+                claudeModels: claudeModelsState.availableModels
+            })
 
         try {
             await applyModelChangeWithReasoningRollback({
@@ -1712,6 +1735,8 @@ function SessionChatInner(props: SessionChatProps) {
         agentFlavor,
         codexModelsState.models,
         claudeModelsState.availableModels,
+        agyChoices,
+        agyCurrentEffort,
         props.session.effort,
         props.session.modelReasoningEffort,
         setModelReasoningEffort,
@@ -1774,14 +1799,18 @@ function SessionChatInner(props: SessionChatProps) {
 
     const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
-            await setEffort(effort)
+            if (agentFlavor === 'agy') {
+                await setModel(agyCurrentModel, { effort })
+            } else {
+                await setEffort(effort)
+            }
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set effort:', e)
         }
-    }, [setEffort, props.onRefresh, haptic])
+    }, [agentFlavor, agyCurrentModel, setModel, setEffort, props.onRefresh, haptic])
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
         try {
@@ -1834,7 +1863,6 @@ function SessionChatInner(props: SessionChatProps) {
     // absolute epoch-ms using Date.now() at that moment (send-time base for presets).
     const [pendingSchedule, setPendingSchedule] = useState<PendingSchedule | null>(null)
     const [pendingScheduleRevision, setPendingScheduleRevision] = useState(0)
-    const [sendAcceptance, setSendAcceptance] = useState<{ attemptId: string | null } | null>(null)
     const updatePendingSchedule = useCallback((next: PendingSchedule | null) => {
         setPendingSchedule(next)
         setPendingScheduleRevision((revision) => revision + 1)
@@ -1916,7 +1944,6 @@ function SessionChatInner(props: SessionChatProps) {
         })
         const accepted = await onSendForComposer(text, attachments, scheduledAt, deliveryMode)
         if (!accepted) return
-        setSendAcceptance({ attemptId: accepted.attemptId })
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
             // accepted - covers both pre-mutation guards AND async
@@ -2085,14 +2112,17 @@ function SessionChatInner(props: SessionChatProps) {
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
                         disabled={sessionInactive}
+                        allowInactiveFork={sessionInactive && props.session.metadata?.flavor === 'codex'
+                            && Boolean(props.session.metadata?.codexSessionId && props.session.metadata?.machineId)}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
                         historyActionPending={historyActionPending}
-                        onForkConversation={controlledByUser ? undefined : onForkConversation}
+                        onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
                         onViewModeChange={props.onViewModeChange}
+                        readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
@@ -2178,6 +2208,7 @@ function SessionChatInner(props: SessionChatProps) {
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         canRestoreAttachments={props.session.active}
+                        attachmentsEnabled={attachmentAdapter !== undefined}
                         onUploadDraftSnapshot={(text, attachments) => {
                             uploadDraftSnapshotRef.current = { text, attachments }
                         }}
@@ -2185,16 +2216,14 @@ function SessionChatInner(props: SessionChatProps) {
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
-                        sendAcceptance={sendAcceptance}
-                        sendSettlement={props.sendSettlement}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
-                        model={props.session.model}
+                        model={agentFlavor === 'agy' ? agyCurrentModel : props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
-                        effort={props.session.effort}
+                        effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
                         availableModelOptions={
                             agentFlavor === 'codex'
@@ -2238,7 +2267,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     : undefined
                         }
                         availableEffortOptions={
-                            agentFlavor === 'grok' && grokEffortState.options.length > 0
+                            agentFlavor === 'agy'
+                                ? agyEffortOptions
+                                : agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
                                 : claudeEffortOptions
                         }
@@ -2336,7 +2367,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onEffortChange={
-                            agentFlavor === 'grok'
+                            agentFlavor === 'agy'
+                                ? (props.session.active && !controlledByUser && agyEffortOptions.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'grok'
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
                                     ? handleEffortChange
                                     : undefined)
