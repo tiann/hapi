@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
     CommandResponse,
     DirectoryEntry,
+    FileMetadataEntry,
     FileReadResponse,
     ListDirectoryResponse,
     StatFilesResponse,
@@ -251,8 +252,14 @@ export function registerWorkspaceFileHandlers(
                 entries.push(...await Promise.all(batch.map(async ({ requested, path }) => {
                     try {
                         const stats = await stat(path)
+                        const type: FileMetadataEntry['type'] = stats.isFile()
+                            ? 'file'
+                            : stats.isDirectory()
+                                ? 'directory'
+                                : 'other'
                         return {
                             path: requested,
+                            type,
                             size: stats.size,
                             modified: stats.mtime.getTime(),
                         }

@@ -14,7 +14,7 @@ export type OpencodeCompactResult =
     | { ok: false; error: string };
 
 export type CompactionResult =
-    | { status: 'success'; text: string }
+    | { status: 'success'; text: string; compactionId?: string }
     | { status: 'failed'; reason: string }
     | { status: 'unverified'; reason: string };
 
@@ -561,7 +561,7 @@ export async function fetchCompactionResult(opts: OpencodeCompactCallOpts & {
     }
 
     if (result.info?.summary === true && isTerminal(result) && text && text.trim().length > 0) {
-        return { status: 'success', text };
+        return { status: 'success', text, compactionId: newMarkerIds[0] };
     }
 
     return { status: 'unverified', reason: 'Compaction result could not be verified.' };
@@ -744,7 +744,7 @@ export async function fetchCompactionResultV2(opts: {
         }
         if (status === 'completed') {
             if (summary && summary.trim().length > 0) {
-                return { status: 'success', text: summary };
+                return { status: 'success', text: summary, ...(typeof entryRecord?.id === 'string' ? { compactionId: entryRecord.id } : {}) };
             }
             // Native provider compaction (verified 2026-10-18 against the v2
             // binary: `model.compaction?.type === "native"` skips the summary
@@ -757,7 +757,7 @@ export async function fetchCompactionResultV2(opts: {
             // shape with the same test.
             const nativeRecord = isObjectRecord(entryRecord?.native) ? entryRecord.native : null;
             if (isObjectRecord(entryRecord?.providerContext) || nativeRecord?.messages !== undefined) {
-                return { status: 'success', text: '' };
+                return { status: 'success', text: '', ...(typeof entryRecord?.id === 'string' ? { compactionId: entryRecord.id } : {}) };
             }
             return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
         }

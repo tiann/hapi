@@ -1,10 +1,10 @@
 import { logger } from '@/ui/logger'
-import { readdir, stat } from 'fs/promises'
+import { readdir, realpath, stat } from 'fs/promises'
 import { basename, join, resolve } from 'path'
-import type { DirectoryEntry, ListDirectoryResponse, StatFilesResponse } from '@hapi/protocol/apiTypes'
+import type { DirectoryEntry, FileMetadataEntry, ListDirectoryResponse, StatFilesResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
-import { validatePath } from '../pathSecurity'
+import { resolveRealPathWithinWorkingDirectory, validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface ListDirectoryRequest {
@@ -24,19 +24,6 @@ const STAT_FILES_BATCH_SIZE = 16
 
 type StatFileEntry = NonNullable<StatFilesResponse['entries']>[number]
 
-async function statFile(path: string, workingDirectory: string): Promise<StatFileEntry> {
-    try {
-        const stats = await stat(resolve(workingDirectory, path))
-        return {
-            path,
-            size: stats.size,
-            modified: stats.mtime.getTime()
-        }
-    } catch (error) {
-        logger.debug(`Failed to stat ${path}:`, error)
-        return { path }
-    }
-}
 
 interface TreeNode {
     name: string
@@ -127,11 +114,46 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
             }
         }
 
+        if (data.paths.length === 0) {
+            return { success: true, entries: [] }
+        }
+
+        const resolvedWorkingDirectory = await realpath(workingDirectory).catch(() => null)
+        if (!resolvedWorkingDirectory) {
+            return { success: true, entries: data.paths.map((path) => ({ path })) }
+        }
+
         const entries: StatFileEntry[] = []
         for (let index = 0; index < data.paths.length; index += STAT_FILES_BATCH_SIZE) {
             signal?.throwIfAborted()
             const batch = data.paths.slice(index, index + STAT_FILES_BATCH_SIZE)
-            entries.push(...await Promise.all(batch.map((path) => statFile(path, workingDirectory))))
+            entries.push(...await Promise.all(batch.map(async (path) => {
+                try {
+                    const resolvedPath = await resolveRealPathWithinWorkingDirectory(
+                        path,
+                        workingDirectory,
+                        resolvedWorkingDirectory
+                    )
+                    if (!resolvedPath) {
+                        return { path }
+                    }
+                    const stats = await stat(resolvedPath)
+                    const type: FileMetadataEntry['type'] = stats.isFile()
+                        ? 'file'
+                        : stats.isDirectory()
+                            ? 'directory'
+                            : 'other'
+                    return {
+                        path,
+                        type,
+                        size: stats.size,
+                        modified: stats.mtime.getTime()
+                    }
+                } catch (error) {
+                    logger.debug(`Failed to stat ${path}:`, error)
+                    return { path }
+                }
+            })))
         }
         signal?.throwIfAborted()
 

@@ -61,12 +61,15 @@ final class SettingsModel {
     }
 }
 
-/// Settings home (A-M4e), presented as a sheet off the home toolbar menu:
-/// Appearance (theme mode), Language (persist-only until M5), the owner-only
-/// Usage/Storage entries, and About (app/protocol versions + hub health).
+/// Settings home (A-M4e), presented as a sheet off the home toolbar: Hubs
+/// (switch / add / sign out), Appearance (theme mode), Language (persist-only
+/// until M5), the owner-only Usage/Storage entries, and About (app/protocol
+/// versions + hub health).
 struct SettingsView: View {
     @State private var model: SettingsModel
     @State private var languagePrefs: LanguagePrefs
+    @State private var confirmSignOut = false
+    @Environment(AppModel.self) private var appModel
     @Environment(ThemePrefs.self) private var themePrefs
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -82,6 +85,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                hubsSection
                 appearanceSection
                 languageSection
                 notificationsSection
@@ -110,6 +114,53 @@ struct SettingsView: View {
     }
 
     // MARK: - Sections
+
+    /// Every action here leaves Settings: switching or signing out replaces
+    /// the home screen (it is keyed by hub), and pairing opens from home.
+    private var hubsSection: some View {
+        Section("Hubs") {
+            ForEach(appModel.hubs, id: \.self) { hub in
+                let isActive = hub == session.hubUrl
+                Button {
+                    guard !isActive else { return }
+                    dismiss()
+                    appModel.switchHub(to: hub)
+                } label: {
+                    HStack {
+                        Text(HubDisplay.host(hub))
+                            .foregroundStyle(Color.primary)
+                        Spacer()
+                        if isActive {
+                            Image(systemName: "checkmark")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                }
+                .accessibilityAddTraits(isActive ? .isSelected : [])
+            }
+            Button("Add Hub…") {
+                // Pairing opens from home, where an incoming bind link can
+                // close it to make room for the root confirm sheet.
+                dismiss()
+                appModel.showAddHub = true
+            }
+            Button("Sign Out…", role: .destructive) {
+                confirmSignOut = true
+            }
+            .confirmationDialog(
+                "Sign out of \(HubDisplay.host(session.hubUrl))?",
+                isPresented: $confirmSignOut,
+                titleVisibility: .visible
+            ) {
+                Button("Sign Out", role: .destructive) {
+                    dismiss()
+                    appModel.signOut(hub: session.hubUrl)
+                }
+            } message: {
+                Text("Removes the stored access token for this hub. Pair again to reconnect.")
+            }
+        }
+    }
 
     private var appearanceSection: some View {
         Section("Appearance") {

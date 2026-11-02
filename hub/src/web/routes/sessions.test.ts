@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
@@ -1586,6 +1587,27 @@ describe('sessions routes', () => {
     // rows and for split-brain rows whose CLI is gone but the in-memory `active`
     // flag has not been reconciled to false yet.
     describe('POST /sessions/:id/archive (tiann/hapi#916)', () => {
+        it.each(['timeout', 'unavailable', 'unconfirmed'] as const)('returns a structured cleanup %s without claiming archive success', async (reason) => {
+            const error = new ArchiveCleanupError(reason)
+            const { app } = createApp(createSession({ active: true }), {
+                archiveSession: async () => { throw error },
+            })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(error.status)
+            expect(await response.json()).toEqual({ error: error.message, code: error.code })
+        })
+
+        it('rechecks Runner cleanup for an already inactive archived row on retry', async () => {
+            let calls = 0
+            const session = createSession({ active: false, metadata: {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', machineId: 'machine-1',
+                lifecycleState: 'archived', startedBy: 'runner',
+            } })
+            const { app } = createApp(session, { archiveSession: async () => { calls++ } })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(200)
+            expect(calls).toBe(1)
+        })
         it('returns 2xx and calls archiveSession for an active session', async () => {
             const calls: string[] = []
             const session = createSession({ active: true })
@@ -1748,6 +1770,22 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
             expect(calls).toEqual(['session-1'])
         })
+    })
+
+    it('dispatches an archived source fork to the engine without requiring an active CLI', async () => {
+        const source = createSession({ active: false, metadata: { path: '/work', host: 'test', flavor: 'codex', lifecycleState: 'archived' } })
+        const calls: unknown[][] = []
+        const { app } = createApp(source, { forkConversation: async (...args) => {
+            calls.push(args)
+            return { type: 'success', sessionId: 'new-child' }
+        } })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageLocalId: 'boundary' })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'new-child' })
+        expect(calls[0]?.[0]).toBe('session-1')
+        expect(calls[0]?.[2]).toBe('boundary')
     })
 
     it('forks via POST /sessions/:id/fork and returns the child session id', async () => {
