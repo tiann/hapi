@@ -14,6 +14,7 @@ import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
+import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
 import app.hapi.data.api.ApiError
@@ -41,6 +42,7 @@ import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildVisibleChatBlocks
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
@@ -159,6 +161,10 @@ data class ChatUiState(
     val processSteps: Map<String, Int> = emptyMap(),
     val readThroughRevision: Long? = null,
     val renderedReadState: SessionReadState? = null,
+    /** Summed usage metadata per response group, keyed by first-block id. */
+    val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
+    /** Context-remaining readout for the composer strip; null until usage arrives. */
+    val contextUsage: ContextUsageIndicator? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -1891,12 +1897,22 @@ class ChatViewModel(
         // syncGeneration 0 = no tail sync has even begun (the moment between
         // open and syncTail) — still "loading", never a flash of empty state.
         val syncSettled = !window.isSyncingTail && window.syncGeneration > 0
+        val flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor
+        // Composer-strip context readout rides the session-level usage
+        // projection; the window falls back to a flavor/model estimate when
+        // the usage signal omits one.
+        val contextUsage = ContextUsage.indicator(
+            usage = reduced.latestUsage,
+            sessionModel = inputs.detail?.model,
+            flavor = flavor,
+        )
         return ChatUiState(
             sessionId = sessionId,
             header = buildHeader(inputs),
-            flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
+            flavor = flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
             blocks = transcriptProjection.project(visibleBlocks),
+            messageAggregates = aggregateResponseGroups(visibleBlocks),
             processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
                 .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,
@@ -1913,6 +1929,7 @@ class ChatViewModel(
             requiresLatestReset = window.requiresLatestReset,
             readThroughRevision = window.readThroughRevision,
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
+            contextUsage = contextUsage,
         )
     }
 
