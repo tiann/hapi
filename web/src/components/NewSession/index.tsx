@@ -124,9 +124,9 @@ export function NewSession(props: {
     // restrictive hub config. Errors unlock Create with local/sticky defaults.
     const hubDefaultsPending = hubSettingsQuery.isPending
     const seededFromHubRef = useRef(false)
-    // Snapshot sticky localStorage keys before mount effects call
-    // savePreferredAgent / savePreferredYoloMode (those write keys even on a
-    // fresh browser, which would permanently skip hub seeding).
+    // Snapshot sticky localStorage keys before the mount effect persists the
+    // agent. Only explicit toggle edits persist a Yolo preference; mounting or
+    // seeding hub defaults must not manufacture a legacy migration candidate.
     const [initialStickyPreferences] = useState(() => {
         try {
             return {
@@ -262,10 +262,6 @@ export function NewSession(props: {
             setCodexImportError(null)
         }
     }, [agent])
-
-    useEffect(() => {
-        savePreferredYoloMode(yoloMode)
-    }, [yoloMode])
 
     useEffect(() => {
         if (props.initialDirectory !== undefined) {
@@ -2473,6 +2469,7 @@ export function NewSession(props: {
                 onYoloToggle={(value) => {
                     editedPermissionRef.current = true
                     setYoloMode(value)
+                    savePreferredYoloMode(value)
                 }}
             />
             <CollaborationModeSelector

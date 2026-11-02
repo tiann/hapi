@@ -315,9 +315,10 @@ vi.mock('./ModelSelector', () => ({
     )
 }))
 vi.mock('./ActionButtons', () => ({
-    ActionButtons: (props: { onCreate: () => void; onChooseFolder?: () => void; canCreate: boolean }) => (
+    ActionButtons: (props: { onCreate: () => void; onCancel: () => void; onChooseFolder?: () => void; canCreate: boolean }) => (
         <>
             <button type="button" data-testid="create" disabled={!props.canCreate} onClick={props.onCreate}>create</button>
+            <button type="button" data-testid="cancel" onClick={props.onCancel}>cancel</button>
             {props.onChooseFolder ? <button type="button" data-testid="browse" onClick={props.onChooseFolder}>browse</button> : null}
         </>
     )
@@ -1736,6 +1737,93 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('read-only')
         })
         expect(screen.getByTestId('create')).not.toBeDisabled()
+    })
+
+    it.each([
+        { agent: 'codex', permissionMode: 'read-only', cached: true },
+        { agent: 'codex', permissionMode: 'read-only', cached: false },
+        { agent: 'claude', permissionMode: 'plan', cached: true },
+        { agent: 'cursor', permissionMode: 'plan', cached: true }
+    ] as const)(
+        'preserves hub $agent/$permissionMode after cancel and remount (cached: $cached)',
+        async ({ agent, permissionMode, cached }) => {
+            localStorage.clear()
+            const settings = {
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: { agent, permissionMode, models: {} }
+            }
+            const sharedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+            if (cached) sharedClient.setQueryData(queryKeys.hubSettings, settings)
+            const onCancel = vi.fn()
+            mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+            for (const reopen of [false, true]) {
+                let resolveSettings!: (value: typeof settings) => void
+                const deferred = new Promise<typeof settings>((resolve) => {
+                    resolveSettings = resolve
+                })
+                const hubApi = {
+                    getHubSettings: vi.fn(() => cached ? Promise.resolve(settings) : deferred)
+                } as unknown as ApiClient
+                const client = cached
+                    ? sharedClient
+                    : new QueryClient({ defaultOptions: { queries: { retry: false } } })
+                const view = render(
+                    <QueryClientProvider client={client}>
+                        <NewSession
+                            api={hubApi}
+                            machines={[machine]}
+                            initialMachineId="machine-1"
+                            initialDirectory="C:\\repo"
+                            onSuccess={mocks.onSuccess}
+                            onCancel={onCancel}
+                        />
+                    </QueryClientProvider>
+                )
+                if (!cached) {
+                    expect(screen.getByTestId('create')).toBeDisabled()
+                    await act(async () => {
+                        resolveSettings(settings)
+                        await deferred
+                    })
+                }
+                await waitFor(() => {
+                    expect(screen.getByDisplayValue(agent)).toBeChecked()
+                    expect(screen.getByTestId('permission-mode')).toHaveTextContent(permissionMode)
+                    expect(screen.getByTestId('create')).toBeEnabled()
+                })
+                if (!reopen) {
+                    fireEvent.click(screen.getByTestId('cancel'))
+                    expect(onCancel).toHaveBeenCalledOnce()
+                    expect(mocks.spawnSession).not.toHaveBeenCalled()
+                    expect(loadPreferredLaunchSettings('machine-1', agent)).toBeNull()
+                    view.unmount()
+                } else {
+                    fireEvent.click(screen.getByTestId('create'))
+                    await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+                    expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+                        agent,
+                        permissionMode
+                    }))
+                }
+            }
+            expect(localStorage.getItem('hapi:newSession:yolo')).toBeNull()
+        }
+    )
+
+    it('persists explicit YOLO toggle edits across remounts', async () => {
+        savePreferredAgent('agy')
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form)
+        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-off'))
+        expect(localStorage.getItem('hapi:newSession:yolo')).toBeNull()
+
+        fireEvent.click(screen.getByTestId('yolo-toggle'))
+        expect(localStorage.getItem('hapi:newSession:yolo')).toBe('true')
+        view.unmount()
+        renderWithQuery(form)
+        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-on'))
     })
 
     it('keeps Create disabled while getHubSettings is pending', async () => {
