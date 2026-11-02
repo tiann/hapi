@@ -12,6 +12,12 @@ import androidx.compose.ui.graphics.Color
  * code, and diff surfaces. Values mirror the web client's CSS custom
  * properties (`web/src/index.css`) for its light / dark / OLED themes so both
  * clients read the same.
+ *
+ * [HapiExtendedColors.warning] extends the set with the amber caution accent
+ * the web renders via Tailwind's `text-amber-500`; here it splits per theme
+ * so small text keeps WCAG-AA contrast (amber-700 on light, amber-400 on
+ * dark/OLED). Being outside the M3 scheme also keeps it stable under dynamic
+ * color, where `tertiary` follows the wallpaper.
  */
 @Immutable
 data class HapiExtendedColors(
@@ -35,6 +41,8 @@ data class HapiExtendedColors(
     val diffHunkBackground: Color,
     val link: Color,
     val hint: Color,
+    /** Amber caution accent for warning bands (context indicator, cautions). */
+    val warning: Color,
 )
 
 /** Mirrors `:root` (light) tokens in web/src/index.css. */
@@ -58,6 +66,8 @@ val HapiLightExtendedColors = HapiExtendedColors(
     diffHunkBackground = Color(0xFFECEFF2),
     link = Color(0xFF111827),
     hint = Color(0xFF6B7280),
+    // Amber-700: 5.0:1 on white.
+    warning = Color(0xFFB45309),
 )
 
 /** Mirrors `[data-theme="dark"]` tokens in web/src/index.css. */
@@ -81,6 +91,8 @@ val HapiDarkExtendedColors = HapiExtendedColors(
     diffHunkBackground = Color(0xFF353B43),
     link = Color(0xFFFFFFFF),
     hint = Color(0xFF8E8E93),
+    // Amber-400: 10.2:1 on the M3 dark surface.
+    warning = Color(0xFFFBBF24),
 )
 
 /**
@@ -107,6 +119,8 @@ val HapiOledExtendedColors = HapiExtendedColors(
     diffHunkBackground = Color(0xFF161618),
     link = Color(0xFF4EA1FF),
     hint = Color(0xFF8E8E93),
+    // Amber-400 on the pure-black canvas.
+    warning = Color(0xFFFBBF24),
 )
 
 val LocalHapiExtendedColors = staticCompositionLocalOf { HapiLightExtendedColors }

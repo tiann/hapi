@@ -304,3 +304,17 @@ describe('persisted Codex duration provenance', () => {
         } })).toBeNull()
     })
 })
+
+describe('compact-summary exact and estimated token propagation', () => {
+    it.each(['event', 'codex'])('preserves distinct exact and estimated facts in the %s envelope', type => {
+        const data = { type: 'compact-summary', summary: '', tokensBefore: 300, tokensAfter: 20, estimatedTokensAfter: 25 }
+        const normalized = normalizeAgentRecord('compact-facts', null, 1, { type, data })
+        expect(normalized).toMatchObject({ role: 'event', content: data })
+    })
+})
+
+it('does not invent content or a zero before count for a native completion boundary', () => {
+    const normalized = normalizeAgentRecord('boundary', null, 1, { type: 'codex', data: { type: 'context_compacted', id: 'native-compact' } })
+    expect(normalized).toMatchObject({ role: 'event', content: { type: 'compact-summary', summary: '', compactionId: 'native-compact' } })
+    expect(normalized?.role === 'event' && normalized.content).not.toHaveProperty('tokensBefore', 0)
+})

@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.data.sse.ConnectionState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
@@ -17,12 +18,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 
 // ------------------------------------------------------------------ fakes --
@@ -32,6 +36,8 @@ private class FakeSessionStore : SessionListStore {
     override val sessions: StateFlow<List<SessionSummary>> = backing
     val calls = MutableStateFlow<List<String>>(emptyList())
     var failRefresh = false
+    /** When set, `refresh()` suspends until it completes. */
+    var refreshGate: CompletableDeferred<Unit>? = null
 
     fun set(vararg rows: SessionSummary) {
         backing.value = sortSessionSummaries(rows.toList())
@@ -43,6 +49,7 @@ private class FakeSessionStore : SessionListStore {
 
     override suspend fun refresh() {
         record("refresh")
+        refreshGate?.await()
         if (failRefresh) throw RuntimeException("offline")
     }
 
@@ -164,6 +171,7 @@ private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
+    connection: MutableStateFlow<ConnectionState> = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected)),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -172,6 +180,8 @@ private fun TestScope.buildViewModel(
         scope = backgroundScope,
         hubKey = "hub-test",
         zoneProvider = zoneProvider,
+        connectionState = connection,
+        nowMs = { currentTime },
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -179,6 +189,72 @@ private fun TestScope.buildViewModel(
 // ------------------------------------------------------------------ tests --
 
 class SessionListViewModelTest {
+    @Test
+    fun `transient connection status appears only after the reveal delay and keeps its clock across phases`() = runTest {
+        val connection = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected))
+        val (viewModel) = buildViewModel(connection = connection)
+        runCurrent()
+        assertNull(viewModel.uiState.value.connectionStatus)
+
+        connection.value = ConnectionState(ConnectionState.Phase.Connecting)
+        advanceTimeBy(CONNECTION_REVEAL_MS - 500)
+        runCurrent()
+        assertNull(viewModel.uiState.value.connectionStatus, "A quick reconnect never flashes")
+
+        // Connecting → Backoff keeps the outage clock running.
+        connection.value = ConnectionState(ConnectionState.Phase.Backoff, outageStartedAtMs = 0)
+        advanceTimeBy(600)
+        runCurrent()
+        assertEquals(HomeConnectionStatus.Reconnecting, viewModel.uiState.value.connectionStatus)
+
+        connection.value = ConnectionState(ConnectionState.Phase.Connected)
+        runCurrent()
+        assertNull(viewModel.uiState.value.connectionStatus)
+
+        // Idle is "no subscription", not an outage.
+        connection.value = ConnectionState(ConnectionState.Phase.Idle)
+        advanceTimeBy(CONNECTION_REVEAL_MS * 2)
+        runCurrent()
+        assertNull(viewModel.uiState.value.connectionStatus)
+    }
+
+    @Test
+    fun `successful refresh records lastRefreshedAt and a failure keeps it`() = runTest {
+        val (viewModel, sessions) = buildViewModel()
+        advanceTimeBy(5_000)
+        viewModel.refresh()
+        val refreshed = viewModel.uiState.first { it.lastRefreshedAt != null && !it.isRefreshing }
+        assertEquals(5_000L, refreshed.lastRefreshedAt)
+
+        sessions.failRefresh = true
+        advanceTimeBy(60_000)
+        viewModel.refresh()
+        val offline = viewModel.uiState.first { it.isOffline }
+        assertEquals(5_000L, offline.lastRefreshedAt)
+    }
+
+    @Test
+    fun `reset clears machine and date filters while preserving search`() = runTest {
+        val (viewModel, sessions) = buildViewModel()
+        sessions.set(
+            summary("one", name = "Matching session", machineId = "m1"),
+            summary("two", name = "Matching session", machineId = "m2"),
+            summary("three", name = "Other", machineId = "m2"),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+        viewModel.setMachineFilter("m1")
+        viewModel.setDateRange(0, 0)
+        viewModel.setSearchQuery("Matching")
+        val filtered = viewModel.uiState.first { it.activeMachineFilter == "m1" && it.dateRange != null && it.isSearching }
+        assertTrue(filtered.hasActiveFilters)
+        assertEquals(listOf("one"), filtered.rows.map { it.id })
+
+        viewModel.clearFilters()
+        val reset = viewModel.uiState.first { !it.hasActiveFilters }
+        assertEquals("Matching", reset.searchQuery)
+        assertEquals(setOf("one", "two"), reset.rows.map { it.id }.toSet())
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
     fun `vanished filter stays cleared when sessions return and is isolated per home`() = runTest {
@@ -221,9 +297,9 @@ class SessionListViewModelTest {
         val (viewModel, sessions, machines) = buildViewModel()
         machines.backing.value = listOf(machine("m1", host = "devbox.local", displayName = "Devbox"))
         sessions.set(
-            summary("s1", updatedAt = 900, name = "Named session", machineId = "m1", summaryText = "working on it"),
-            summary("s2", updatedAt = 500, summaryText = "summary title", machineId = "offline-machine-id"),
-            summary("s3", updatedAt = 100, path = "/repo/tail-name"),
+            summary("s1", updatedAt = 900, name = "Named session", machineId = "m1", summaryText = "working on it").copy(contentRevision = 1),
+            summary("s2", updatedAt = 500, summaryText = "summary title", machineId = "offline-machine-id").copy(contentRevision = 1),
+            summary("s3", updatedAt = 100, path = "/repo/tail-name").copy(contentRevision = 1),
         )
 
         val state = viewModel.uiState.first { it.rows.size == 3 }
@@ -354,6 +430,25 @@ class SessionListViewModelTest {
     }
 
     @Test
+    fun `entry refresh is silent so predictive back never flashes the indicator`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        val gate = CompletableDeferred<Unit>()
+        sessions.refreshGate = gate
+        viewModel.start()
+        sessions.calls.first { "refresh" in it }
+        runCurrent()
+        assertFalse(viewModel.uiState.value.isRefreshing)
+
+        // A pull joining the in-flight entry refresh still shows the indicator.
+        viewModel.refresh()
+        viewModel.uiState.first { it.isRefreshing }
+        gate.complete(Unit)
+        viewModel.uiState.first { !it.isRefreshing && it.lastRefreshedAt != null }
+        assertEquals(listOf("refresh"), sessions.calls.value)
+        viewModel.stop()
+    }
+
+    @Test
     fun `pin failure surfaces on the errors flow`() = runTest {
         val (viewModel, sessions, _) = buildViewModel()
         sessions.set(summary("s1"))
@@ -369,13 +464,13 @@ class SessionListViewModelTest {
     }
 
     @Test
-    fun `onSessionOpened stamps the last-seen watermark and clears unread`() = runTest {
+    fun `onSessionOpened preserves unread until transcript renders`() = runTest {
         val (viewModel, sessions, _) = buildViewModel()
-        sessions.set(summary("s1", updatedAt = 900))
+        sessions.set(summary("s1", updatedAt = 900).copy(contentRevision = 1))
         assertTrue(viewModel.uiState.first { it.rows.size == 1 }.rows.single().unread)
 
         viewModel.onSessionOpened("s1")
-        assertFalse(viewModel.uiState.first { !it.rows.single().unread }.rows.single().unread)
+        assertTrue(viewModel.uiState.value.rows.single().unread)
     }
 
     // -------------------------------------------- rename / delete / reopen --

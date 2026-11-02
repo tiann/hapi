@@ -40,13 +40,16 @@ public enum SessionListSearch {
     // MARK: - Titles
 
     /// `getSessionTitle` (`web/src/lib/sessionTitle.ts`): name → summary
-    /// text → path tail → id prefix.
+    /// text → prompt title → path tail → id prefix.
     public static func sessionTitle(_ summary: SessionSummary) -> String {
         if let name = summary.metadata?.name, !name.isEmpty {
             return name
         }
         if let text = summary.metadata?.summary?.text, !text.isEmpty {
             return text
+        }
+        if let title = summary.metadata?.promptTitle, !title.isEmpty {
+            return title
         }
         if let path = summary.metadata?.path,
            let tail = path.split(separator: "/").last(where: { !$0.isEmpty }) {

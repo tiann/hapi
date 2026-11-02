@@ -120,7 +120,7 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 Modular session creation:
 
 - Machine selector
-- Directory input with recent paths
+- Directory input with recent paths. The path tail is revealed after loading or selecting a path and after leaving the editor. Unfocused inputs support horizontal touch scrolling; focused inputs retain native editing and text selection.
 - Agent type selector
 - Model selector
 - Per-agent permission, effort, and collaboration controls when supported

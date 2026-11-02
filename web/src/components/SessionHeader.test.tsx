@@ -136,7 +136,7 @@ describe('SessionHeader', () => {
         expect(metadata).toHaveTextContent('codex')
         expect(metadata).toHaveTextContent('machine')
         expect(metadata).toHaveTextContent('gpt-5.4')
-        expect(metadata).toHaveTextContent('reasoning xhigh')
+        expect(metadata).toHaveTextContent('effort xhigh')
         expect(metadata).toHaveTextContent('fast')
         expect(metadata).toHaveTextContent('feature/mobile-title-scroll')
         expect(metadata.textContent).toMatch(/Created|Updated|创建|更新/)
@@ -300,26 +300,26 @@ describe('SessionHeader', () => {
         renderHeader(baseSession(), { serviceTier: 'priority' })
         expect(screen.getByTestId('session-header-fast')).toBeInTheDocument()
         expect(screen.getByTestId('session-header-metadata')).toHaveTextContent('fast')
-        expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
+        expect(screen.queryByText('effort default')).not.toBeInTheDocument()
     })
 
-    it('shows Pi ordinary effort as reasoning metadata', () => {
+    it('shows Pi ordinary effort as effort metadata', () => {
         renderHeader(baseSession({
             metadata: { flavor: 'pi', path: '/repo', host: 'machine' },
             modelReasoningEffort: null,
             effort: 'max'
         }))
 
-        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('reasoning max')
+        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('effort max')
     })
 
-    it('keeps model reasoning effort for Codex and hides ordinary effort for non-Pi flavors', () => {
+    it('uses model reasoning effort for Codex and ordinary effort for Claude', () => {
         const { rerender } = renderHeader(baseSession({
             modelReasoningEffort: 'xhigh',
             effort: 'max'
         }))
 
-        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('reasoning xhigh')
+        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('effort xhigh')
 
         rerender(
             <QueryClientProvider client={new QueryClient()}>
@@ -339,7 +339,7 @@ describe('SessionHeader', () => {
             </QueryClientProvider>
         )
 
-        expect(screen.queryByTestId('session-header-reasoning')).not.toBeInTheDocument()
+        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('effort max')
     })
 
     it('hides Pi reasoning metadata when the header reasoning setting is disabled', () => {

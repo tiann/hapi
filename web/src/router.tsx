@@ -41,7 +41,8 @@ import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { buildSessionReferenceText, matchSessionsForMention } from '@/lib/sessionReference'
-import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
+import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { ApiError } from '@/api/client'
@@ -56,12 +57,12 @@ import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
 import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
-import { initializeSessionLastSeen } from '@/lib/sessionLastSeen'
-import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
+import { configureSessionReadState, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
 import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
+import { buildFileMentionSearchQuery } from '@/lib/file-search-query'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -186,14 +187,22 @@ function SessionsPage() {
         () => selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) ?? null : null,
         [selectedSessionId, sessions]
     )
+    const readStateScope = api?.getReadStateScope()
+    useEffect(() => {
+        const scope = readStateScope
+        if (!api || !scope) return
+        return configureSessionReadState(scope, (id, request) => {
+            if (api.getReadStateScope() !== scope) return Promise.reject(new Error('Read-state identity changed'))
+            return api.updateSessionReadState(id, request)
+        })
+    }, [api, readStateScope])
     useEffect(() => {
         if (isLoading || error) {
             return
         }
-        initializeSessionLastSeen(baseUrl, sessions)
+        observeSessionReadStates(sessions)
         setInitializedHub(baseUrl)
     }, [baseUrl, error, isLoading, sessions])
-    useSelectedSessionSeen(selectedSessionId, selectedSession?.updatedAt)
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebarSearch = useLocation({ select: location => location.search })
     const [isSidebarVisible, setIsSidebarVisible] = useState(
@@ -404,6 +413,7 @@ function SessionPage() {
         messagesVersion,
         historyVersion,
         tailRevision,
+        readThroughRevision,
         setViewMode,
     } = useMessages(api, sessionId)
 
@@ -638,7 +648,6 @@ function SessionPage() {
         sendMessage,
         retryMessage,
         isSending,
-        sendSettlement,
     } = useSendMessage(api, sessionId, {
         isSessionThinking: session?.thinking ?? false,
         onSuccess: (sentSessionId) => {
@@ -731,7 +740,9 @@ function SessionPage() {
         return t('machine.unknown')
     }, [mentionMachineLabelsById, t])
 
-    const getAutocompleteSuggestions = useCallback(async (query: string) => {
+    const fileSuggestions = useMemo(() => createDeferredSuggestions(), [api, sessionId, agentType])
+
+    const getAutocompleteSuggestions = useCallback(async (query: string, context: SuggestionRequestContext) => {
         if (query.startsWith('@')) {
             const search = query.slice(1)
             // v1: plain-text expansion (same grammar as Copy reference) — #1213.
@@ -757,26 +768,34 @@ function SessionPage() {
                 }
             })
 
-            const fileHits: Suggestion[] = []
             if ((agentType === 'codex' || agentType === 'copilot') && api && sessionId) {
-                const response = await api.searchSessionFiles(sessionId, search, 50)
-                if (response.success && response.files) {
-                    for (const file of response.files) {
-                        // Codex App Server expects @"path"; Copilot CLI uses @path (relative preferred).
-                        const mentionText = agentType === 'copilot'
-                            ? `@${file.fullPath}`
-                            : `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
-                        fileHits.push({
-                            key: mentionText,
-                            text: mentionText,
-                            label: `@${file.fileName}`,
-                            description: file.filePath || file.fullPath,
-                        })
+                return fileSuggestions(JSON.stringify([sessionId, agentType, search]), sessionHits, async () => {
+                    const response = await api.searchSessionFiles(
+                        sessionId,
+                        buildFileMentionSearchQuery(search),
+                        50,
+                        context.signal
+                    )
+                    if (!response.success) throw new Error(response.error ?? 'File search failed')
+                    const fileHits: Suggestion[] = []
+                    if (response.files) {
+                        for (const file of response.files) {
+                            // Codex App Server expects @"path"; Copilot CLI uses @path (relative preferred).
+                            const mentionText = agentType === 'copilot'
+                                ? `@${file.fullPath}`
+                                : `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
+                            fileHits.push({
+                                key: mentionText,
+                                text: mentionText,
+                                label: `@${file.fileName}`,
+                                description: file.filePath || file.fullPath,
+                            })
+                        }
                     }
-                }
+                    return fileHits
+                }, context)
             }
-
-            return [...sessionHits, ...fileHits]
+            return sessionHits
         }
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
@@ -784,6 +803,7 @@ function SessionPage() {
         return await getSlashSuggestions(query)
     }, [
         agentType,
+        fileSuggestions,
         api,
         sessionId,
         allSessions,
@@ -842,6 +862,7 @@ function SessionPage() {
 
     return (
         <SessionChat
+            readThroughRevision={readThroughRevision}
             api={api}
             titleSuggestionAvailable={titleSuggestionAvailable}
             session={session}
@@ -854,7 +875,6 @@ function SessionPage() {
             isSyncingTail={messagesSyncingTail}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
-            sendSettlement={sendSettlement}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}

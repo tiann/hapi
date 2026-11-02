@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { execFile, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { promisify } from 'node:util'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { clearGeneratedImages, decodeGeneratedImageBase64, detectAudioMimeType, detectDisplayMediaMimeType, detectImageMimeType, detectVideoMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BASE64_CHARS, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath, safeAcpFileName } from './generatedImages'
+
+const execFileAsync = promisify(execFile)
 
 describe('generatedImages', () => {
     it('detects supported image MIME types from file bytes', () => {
@@ -242,6 +249,46 @@ describe('generatedImages', () => {
 
         await expect(readBoundedRegularFile(path, 512)).rejects.toThrow(/too large/i)
         await expect(readBoundedRegularFile(path, MAX_GENERATED_IMAGE_BYTES)).resolves.toHaveLength(1024)
+    })
+
+    it.skipIf(process.platform === 'win32')('rejects a POSIX FIFO without waiting for a writer', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-bounded-fifo-'))
+        const fifo = join(dir, 'image.png')
+        try {
+            await execFileAsync('mkfifo', [fifo])
+            const moduleUrl = pathToFileURL(join(process.cwd(), 'src/modules/common/generatedImages.ts')).href
+            const script = `
+                const { readBoundedRegularFile } = await import(${JSON.stringify(moduleUrl)})
+                try {
+                    await readBoundedRegularFile(process.env.HAPI_FIFO_PATH, 1024)
+                    console.log('unexpected success')
+                } catch (error) {
+                    console.log(error instanceof Error ? error.message : String(error))
+                }
+            `
+            const bunExec = process.env.HAPI_BUN_EXEC
+            if (!bunExec) throw new Error('HAPI_BUN_EXEC is required for the FIFO subprocess test')
+            const child = spawn(bunExec, ['--eval', script], {
+                cwd: process.cwd(),
+                env: { ...process.env, HAPI_FIFO_PATH: fifo },
+                stdio: ['ignore', 'pipe', 'pipe'],
+            })
+            const stdout: Buffer[] = []
+            child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+            const result = await Promise.race([
+                once(child, 'close').then(([code]) => ({ timedOut: false, code: code as number | null })),
+                new Promise<{ timedOut: true }>((resolve) => setTimeout(() => resolve({ timedOut: true }), 2000)),
+            ])
+            if (result.timedOut) {
+                child.kill('SIGKILL')
+                await once(child, 'close').catch(() => undefined)
+                throw new Error('bounded FIFO read timed out')
+            }
+            expect(result.code).toBe(0)
+            expect(Buffer.concat(stdout).toString()).toContain('Path is not a regular file')
+        } finally {
+            await rm(dir, { recursive: true, force: true })
+        }
     })
 
     it('safeAcpFileName rejects data URIs and strips signed URL query secrets', async () => {

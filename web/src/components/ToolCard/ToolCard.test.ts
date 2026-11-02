@@ -191,7 +191,7 @@ describe('getToolTimingDetails', () => {
 describe('formatSubagentModelLabel', () => {
     it('uses getClaudeModelLabel for a preset alias', () => {
         expect(formatSubagentModelLabel('opus')).toBe('Opus')
-        expect(formatSubagentModelLabel('sonnet[1m]')).toBe('Sonnet 1M')
+        expect(formatSubagentModelLabel('fable')).toBe('Fable')
     })
 
     it('extracts name + version from a full SDK model id, dropping the date suffix', () => {

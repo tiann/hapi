@@ -33,7 +33,7 @@ describe('parsePingPeerArgs', () => {
         expect(() => parsePingPeerArgs(['--host', 'evil'])).toThrow(PingPeerError)
     })
 
-    it.each(['queue', 'steer'] as const)('parses delivery mode %s in both flag forms', (mode) => {
+    it.each(['auto', 'queue', 'steer'] as const)('parses delivery mode %s in both flag forms', (mode) => {
         for (const flags of [['--delivery-mode', mode], [`--delivery-mode=${mode}`]]) {
             expect(parsePingPeerArgs(['abc', 'hello', ...flags]).deliveryMode).toBe(mode)
         }
@@ -57,6 +57,10 @@ describe('handlePingPeerCommand receipts', () => {
 
     it.each([
         [undefined, 'accepted'],
+        [undefined, 'steered'],
+        ['auto', 'accepted'],
+        ['auto', 'steered'],
+        ['auto', 'invoked'],
         ['queue', 'accepted'],
         ['steer', 'steered'],
         ['steer', 'invoked']
