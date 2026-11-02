@@ -5,12 +5,13 @@ import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from
 import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
+import { hashObject } from "@/utils/deterministicJson";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
-import { EnhancedMode } from "./loop";
+import { claudeProcessModeKey, EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
@@ -448,6 +449,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 this.abortFuture = new Future<void>();
                 let modeHash: string | null = null;
                 let mode: EnhancedMode | null = null;
+                let applyEffort: ((effort: string | null) => Promise<boolean>) | null = null;
                 // True once onReady() has fired at least once during this
                 // attempt. Used to distinguish an immediate/deterministic
                 // failure (never reached ready) from a failure after real
@@ -496,6 +498,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         hookSettingsPath: session.hookSettingsPath,
                         canCallTool: permissionHandler.handleToolCall,
                         setPermissionModeListener: session.setPermissionModeListener,
+                        setEffortApplier: (applier) => {
+                            applyEffort = applier;
+                        },
                         onPermissionModeRejected: (mode, reason) => {
                             session.setPermissionMode(mode);
                             session.pushKeepAlive();
@@ -552,7 +557,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             let msg = await session.queue.waitForMessagesAndGetAsString(controller.signal);
 
                             if (msg) {
-                                if ((modeHash && msg.hash !== modeHash) || msg.isolate) {
+                                // An effort-only change is applied to the running process;
+                                // if Claude refuses it, fall through to the restart below.
+                                const effortOnlyChange = Boolean(modeHash && msg.hash !== modeHash && !msg.isolate && mode
+                                    && hashObject(claudeProcessModeKey(msg.mode)) === hashObject(claudeProcessModeKey(mode)));
+                                const effortApplied = effortOnlyChange && applyEffort !== null
+                                    && await applyEffort(msg.mode.effort ?? null);
+                                if (((modeHash && msg.hash !== modeHash) || msg.isolate) && !effortApplied) {
                                     // Parked into `pending`, not handed to the
                                     // SDK -- deliberately NOT tracked as
                                     // inFlightMessage. `pending` is declared

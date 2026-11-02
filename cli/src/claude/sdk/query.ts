@@ -15,6 +15,7 @@ import {
     type SDKControlRequest,
     type ControlRequest,
     type SetPermissionModeRequest,
+    type ApplyFlagSettingsRequest,
     type SDKControlResponse,
     type CanCallToolCallback,
     type CanUseToolControlRequest,
@@ -207,6 +208,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             subtype: 'set_permission_mode',
             mode
         } as SetPermissionModeRequest, this.childStdin)
+    }
+
+    /**
+     * Change the session effort without restarting the process; null restores
+     * the model default. Older Claude Code builds reject the request.
+     */
+    async setEffort(effort: string | null): Promise<void> {
+        if (!this.childStdin) {
+            throw new Error('setEffort requires --input-format stream-json')
+        }
+
+        await this.request({
+            subtype: 'apply_flag_settings',
+            settings: { effortLevel: effort }
+        } as ApplyFlagSettingsRequest, this.childStdin)
     }
 
     /**
