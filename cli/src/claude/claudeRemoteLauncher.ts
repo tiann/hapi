@@ -613,10 +613,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     nativeTitle ?? stripAttachmentReferences(initialMessage)
                                 ));
                         },
-                        onCompactResultAccepted: () => {
-                            // The command has completed at the SDK boundary even
-                            // if transcript summary lookup is still pending. A
-                            // later stream failure must not replay /compact.
+                        onResultAccepted: () => {
+                            // The input has completed at the SDK boundary even
+                            // if ready is deferred (compact summary lookup, or
+                            // a steer follow-up turn). A later stream failure
+                            // must not replay it.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
                         },

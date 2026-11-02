@@ -21,10 +21,10 @@ vi.mock('@/claude/sdk/utils', () => ({
  */
 function createFakeClaude() {
     const stdin: SDKUserMessage[] = [];
-    const outbox: Array<SDKMessage | null> = [];
+    const outbox: Array<SDKMessage | Error | null> = [];
     let wake: (() => void) | null = null;
     let options: Record<string, unknown> | null = null;
-    const emit = (message: SDKMessage | null) => {
+    const emit = (message: SDKMessage | Error | null) => {
         outbox.push(message);
         wake?.();
         wake = null;
@@ -44,6 +44,7 @@ function createFakeClaude() {
                     }
                     const next = outbox.shift()!;
                     if (next === null) return;
+                    if (next instanceof Error) throw next;
                     yield next;
                 }
             },
@@ -63,7 +64,8 @@ function createFakeClaude() {
             message: message.message
         } as SDKMessage),
         result: () => emit({ type: 'result', subtype: 'success' } as SDKMessage),
-        close: () => emit(null)
+        close: () => emit(null),
+        fail: (error: Error) => emit(error)
     };
 }
 
@@ -85,6 +87,7 @@ async function startRemote(firstMessage = 'Run the tests') {
     const relayed: SDKMessage[] = [];
     const thinking: boolean[] = [];
     const onReady = vi.fn();
+    const onResultAccepted = vi.fn();
     let delivered = false;
     const run = claudeRemote({
         sessionId: null,
@@ -101,6 +104,7 @@ async function startRemote(firstMessage = 'Run the tests') {
             return null;
         },
         onReady,
+        onResultAccepted,
         isAborted: () => false,
         onSessionFound: () => {},
         onThinkingChange: (value) => thinking.push(value),
@@ -115,6 +119,7 @@ async function startRemote(firstMessage = 'Run the tests') {
         relayed,
         thinking,
         onReady,
+        onResultAccepted,
         currentTarget: () => targets.at(-1) ?? null,
         restore: () => querySpy.mockRestore()
     };
@@ -182,6 +187,55 @@ describe('claudeRemote steering', () => {
 
         fake.close();
         await remote.run;
+    });
+
+    it('retires the completed prompt when the stream fails during a steer follow-up turn', async () => {
+        const remote = await startRemote();
+        restore = remote.restore;
+        const { fake } = remote;
+        fake.replay(fake.stdin[0]!);
+        const delivery = remote.currentTarget()!.steer('Then summarize')!;
+        await waitFor(() => fake.stdin.length === 2);
+
+        fake.result();
+        await waitFor(() => remote.onResultAccepted.mock.calls.length === 1);
+        expect(remote.onReady).not.toHaveBeenCalled();
+
+        fake.fail(new Error('Claude exited'));
+        await expect(remote.run).rejects.toThrow('Claude exited');
+        await expect(delivery.delivered).resolves.toBe(false);
+        expect(remote.currentTarget()).toBeNull();
+    });
+
+    it('closes the steer target when query setup throws', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(() => {
+            throw new Error('Fallback model cannot be the same as the main model');
+        });
+        restore = () => querySpy.mockRestore();
+        const { claudeRemote } = await import('./claudeRemote');
+        const targets: Array<ClaudeSteerTarget | null> = [];
+        let delivered = false;
+        await expect(claudeRemote({
+            sessionId: null,
+            path: process.cwd(),
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => {
+                if (delivered) return null;
+                delivered = true;
+                return { message: 'Run the tests', mode: { permissionMode: 'default' } };
+            },
+            onReady: () => {},
+            isAborted: () => false,
+            onSessionFound: () => {},
+            onMessage: () => {},
+            onSteerTargetChange: (target) => targets.push(target)
+        })).rejects.toThrow('Fallback model');
+
+        expect(targets).toHaveLength(2);
+        expect(targets[1]).toBeNull();
+        expect(targets[0]!.steer('stranded')).toBeNull();
     });
 
     it('reports an unacknowledged steer as undelivered when the stream closes', async () => {

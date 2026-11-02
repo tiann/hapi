@@ -88,7 +88,11 @@ export async function claudeRemote(opts: {
     onMessage: (message: SDKMessage) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
     onFirstResult?: (initialMessage: string) => void,
-    onCompactResultAccepted?: () => void,
+    /**
+     * The delivered input finished at the SDK boundary although onReady is
+     * still deferred (compact summary lookup, or a steer follow-up turn).
+     */
+    onResultAccepted?: () => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
@@ -190,6 +194,16 @@ export async function claudeRemote(opts: {
         };
         steerTarget = target;
         opts.onSteerTargetChange?.(target);
+    };
+    // Once no reader drains stdin, close the target and settle every
+    // unacknowledged steer as undelivered.
+    const closeSteering = () => {
+        responseClosed = true;
+        setSteerable(false);
+        for (const resolveSteer of pendingSteers.values()) {
+            resolveSteer(false);
+        }
+        pendingSteers.clear();
     };
 
     // Success-only: a failed compaction keeps its failure line, an unknown
@@ -371,10 +385,17 @@ export async function claudeRemote(opts: {
     };
 
     // Start the loop
-    const response = query({
-        prompt: messages,
-        options: sdkOptions,
-    });
+    let response: ReturnType<typeof query>;
+    try {
+        response = query({
+            prompt: messages,
+            options: sdkOptions,
+        });
+    } catch (e) {
+        // The initial prompt already opened the steer target.
+        closeSteering();
+        throw e;
+    }
 
     // plan/auto are enforced by Claude itself, so a mid-turn switch into or out
     // of them must reach the running process; otherwise it waits for a restart.
@@ -698,6 +719,9 @@ export async function claudeRemote(opts: {
                     // The turn ended before Claude reached a tool boundary for
                     // a steered message; it starts a follow-up turn for it.
                     logger.debug(`${debugPrefix} result #${resultSeq} received with ${pendingSteers.size} pending steer(s); turn continues`);
+                    // The delivered prompt is complete; a later stream failure
+                    // must recover only the outstanding steer, not replay it.
+                    opts.onResultAccepted?.();
                     continue;
                 }
 
@@ -723,7 +747,7 @@ export async function claudeRemote(opts: {
                     // bar with it, since the next real usage only arrives
                     // with the next model response.
                     compactState.active = null;
-                    opts.onCompactResultAccepted?.();
+                    opts.onResultAccepted?.();
 
                     compactCompletion = (async () => {
                         let compactSummary = await lookupCompactSummary(
@@ -790,12 +814,7 @@ export async function claudeRemote(opts: {
             throw e;
         }
     } finally {
-        responseClosed = true;
-        setSteerable(false);
-        for (const resolveSteer of pendingSteers.values()) {
-            resolveSteer(false);
-        }
-        pendingSteers.clear();
+        closeSteering();
         if (compactCompletion) {
             compactCompletionAbort.abort();
             await Promise.allSettled([compactCompletion]);
