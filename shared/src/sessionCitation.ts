@@ -32,7 +32,7 @@ export const PEER_DELIVERY_MODE_DESCRIPTION =
     'steer: use for important, time-sensitive findings the peer needs to know now, not after finishing its current turn ' +
     '(e.g. a correction that invalidates its assumptions, a blocker, or a result that changes its next action). ' +
     'State why the finding matters now and what the peer should adjust. ' +
-    'Steer requires insertion into an active Pi, Codex, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
+    'Steer requires insertion into an active Claude, Pi, Codex, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
     'Steering does not abort the current turn or guarantee an immediate response. ' +
     'If send or steer is unconfirmed after submission, inspect the target before retrying; do not resend automatically.'
 
