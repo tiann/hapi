@@ -1003,19 +1003,6 @@ class ChatViewModelInteractionTest {
             },
         )
     }
-            id = id,
-            seq = 7,
-            localId = localId,
-            createdAt = 500,
-            invokedAt = OptionalField.Present(null),
-            scheduledAt = scheduledAt,
-            content = buildJsonObject {
-                put("role", "user")
-                put("content", messageContent)
-            },
-            scheduledAt = scheduledAt,
-        )
-    }
 
     @Test
     fun `queued cancel invoked-race ingests the authoritative row as sent`() = runTest {
