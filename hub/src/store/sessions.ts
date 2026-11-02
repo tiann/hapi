@@ -79,7 +79,8 @@ const SIMPLE_RESUME_TOKENS = [
     'cursorSessionId',
     'kimiSessionId',
     'copilotSessionId',
-    'piSessionId'
+    'piSessionId',
+    'dshSessionId'
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AgentAvailabilityEntry, ClaudeModelSummary, Machine, PiModelSummary } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
 import {
     loadPreferredLaunchSettings,
@@ -250,6 +253,12 @@ vi.mock('./PermissionField', () => ({
             <button type="button" data-testid="permission-mode-plan" onClick={() => props.onNativeChange('plan')}>
                 {props.nativeValue}
             </button>
+            <button type="button" data-testid="permission-mode-default" onClick={() => props.onNativeChange('default')}>
+                {props.nativeValue}
+            </button>
+            <button type="button" data-testid="yolo-toggle" onClick={() => props.onYoloToggle(!props.yoloMode)}>
+                {props.yoloMode ? 'yolo-on' : 'yolo-off'}
+            </button>
         </>
     )
 }))
@@ -306,9 +315,10 @@ vi.mock('./ModelSelector', () => ({
     )
 }))
 vi.mock('./ActionButtons', () => ({
-    ActionButtons: (props: { onCreate: () => void; onChooseFolder?: () => void; canCreate: boolean }) => (
+    ActionButtons: (props: { onCreate: () => void; onCancel: () => void; onChooseFolder?: () => void; canCreate: boolean }) => (
         <>
             <button type="button" data-testid="create" disabled={!props.canCreate} onClick={props.onCreate}>create</button>
+            <button type="button" data-testid="cancel" onClick={props.onCancel}>cancel</button>
             {props.onChooseFolder ? <button type="button" data-testid="browse" onClick={props.onChooseFolder}>browse</button> : null}
         </>
     )
@@ -317,7 +327,42 @@ vi.mock('./ActionButtons', () => ({
 import { NewSession } from './index'
 
 const machine = { id: 'machine-1' } as Machine
-const api = {} as ApiClient
+const api = {
+    getHubSettings: vi.fn().mockResolvedValue({
+        sessionSummaryContract: false,
+        sessionSummaryInChat: false,
+        // Neutral defaults so launch-preference tests control New Session via UI /
+        // sticky localStorage (bypassPermissions here would seed YOLO and skew asserts).
+        peerSpawnDefaults: {
+            agent: 'claude',
+            permissionMode: 'default',
+            models: { claude: 'sonnet' }
+        }
+    })
+} as unknown as ApiClient
+
+function renderWithQuery(ui: ReactElement) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    // Pre-seed hub settings so useQuery is warm on first paint — a late resolve
+    // re-runs the preferred-launch effect and can wipe an in-test model pick.
+    client.setQueryData(queryKeys.hubSettings, {
+        sessionSummaryContract: false,
+        sessionSummaryInChat: false,
+        peerSpawnDefaults: {
+            agent: 'claude',
+            permissionMode: 'default',
+            models: { claude: 'sonnet' }
+        }
+    })
+    const wrap = (node: ReactElement) => (
+        <QueryClientProvider client={client}>{node}</QueryClientProvider>
+    )
+    const result = render(wrap(ui))
+    return {
+        ...result,
+        rerender: (node: ReactElement) => result.rerender(wrap(node))
+    }
+}
 
 describe('NewSession launch preferences', () => {
     beforeEach(() => {
@@ -371,7 +416,7 @@ describe('NewSession launch preferences', () => {
             { agent: 'codex', available: true }
         )
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -395,7 +440,7 @@ describe('NewSession launch preferences', () => {
             { agent: 'agy', available: false, reason: 'not_found' }
         )
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -415,7 +460,7 @@ describe('NewSession launch preferences', () => {
     })
 
     it('does not claim Agents are missing when no machine is connected', () => {
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[]}
@@ -430,7 +475,7 @@ describe('NewSession launch preferences', () => {
     it('claims Agents are missing only after inspecting a connected machine', () => {
         mocks.availableAgents.splice(0, mocks.availableAgents.length)
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -451,7 +496,7 @@ describe('NewSession launch preferences', () => {
         }))
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'unexpected' })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -478,7 +523,7 @@ describe('NewSession launch preferences', () => {
             permissionMode: 'safe-yolo'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -500,7 +545,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('claude')
         savePreferredYoloMode(true)
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -522,7 +567,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('codex')
         savePreferredYoloMode(true)
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -544,7 +589,7 @@ describe('NewSession launch preferences', () => {
             { modelId: 'auto', name: 'Auto' }
         ]
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -572,7 +617,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -594,7 +639,7 @@ describe('NewSession launch preferences', () => {
             { modelId: 'openrouter-union-alpha', provider: 'openrouter' }
         ]
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -628,7 +673,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -664,7 +709,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -698,7 +743,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -727,7 +772,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -756,7 +801,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default'
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -789,7 +834,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -824,7 +869,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent(agent)
         savePreferredLaunchSettings('machine-1', agent, settings)
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -841,7 +886,7 @@ describe('NewSession launch preferences', () => {
     it('saves changed launch settings only after creation succeeds', async () => {
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -879,7 +924,7 @@ describe('NewSession launch preferences', () => {
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
         const onSessionCreated = vi.fn()
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -905,7 +950,7 @@ describe('NewSession launch preferences', () => {
             copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
             grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
         })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
     })
 
@@ -917,7 +962,7 @@ describe('NewSession launch preferences', () => {
             copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
             grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
         })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
     })
 
@@ -926,7 +971,7 @@ describe('NewSession launch preferences', () => {
         // change while the form is open. A model the user chose is theirs to
         // keep — unlike a restored one, which the two tests above drop.
         savePreferredAgent('agy')
-        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const view = renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         fireEvent.click(screen.getByTestId('agy-model'))
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
@@ -940,7 +985,7 @@ describe('NewSession launch preferences', () => {
     it('falls back to Default when a preferred AGY model is no longer advertised', async () => {
         savePreferredAgent('agy')
         savePreferredLaunchSettings('machine-1', 'agy', { model: 'removed-model', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
     })
 
@@ -948,7 +993,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('agy')
         savePreferredLaunchSettings('machine-1', 'agy', { model: 'gemini-3.6-flash-low', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
         mocks.agyModelsLoading = true
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
@@ -956,7 +1001,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('dsh')
         savePreferredYoloMode(true)
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
@@ -974,7 +1019,7 @@ describe('NewSession launch preferences', () => {
             { modelId: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' },
         ]
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => {
             expect(screen.getByTestId('model-options')).toHaveTextContent('DeepSeek-V4-Pro')
@@ -995,7 +1040,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('dsh')
         mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => {
             expect(screen.getByTestId('model-options')).toHaveTextContent('DeepSeek-V41-Flash')
@@ -1014,7 +1059,7 @@ describe('NewSession launch preferences', () => {
         savePreferredLaunchSettings('machine-1', 'dsh', { model: '["deepseek-official","deepseek-flash"]', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
         mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
-        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const view = renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('deepseek-flash'))
 
@@ -1022,7 +1067,7 @@ describe('NewSession launch preferences', () => {
         // launch settings (not just the in-form draft) and survive the
         // catalog validation effect.
         view.unmount()
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('deepseek-flash'))
 
         fireEvent.click(screen.getByTestId('create'))
@@ -1038,7 +1083,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('dsh')
         savePreferredLaunchSettings('machine-1', 'dsh', { model: '["deepseek-official","removed-model"]', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
         mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('auto'))
     })
@@ -1046,7 +1091,7 @@ describe('NewSession launch preferences', () => {
     it('lets Claude create with a chosen permission mode instead of the global YOLO toggle', async () => {
         savePreferredAgent('claude')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         fireEvent.click(screen.getByTestId('permission-mode-plan'))
         fireEvent.click(screen.getByTestId('create'))
@@ -1062,7 +1107,7 @@ describe('NewSession launch preferences', () => {
     it('does not carry a permission mode picked under another flavor into the Claude spawn payload', async () => {
         savePreferredAgent('codex')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'claude-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         // Starts as codex; picking the mocked native-select button sets the
         // shared nativePermissionMode state to 'yolo', a value 'claude' does
@@ -1084,7 +1129,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('claude')
         savePreferredYoloMode(true)
 
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => {
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('bypassPermissions')
@@ -1099,7 +1144,7 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('cursor')
         savePreferredYoloMode(true)
 
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => expect(screen.getByDisplayValue('cursor')).toBeChecked())
         fireEvent.click(screen.getByDisplayValue('claude'))
@@ -1112,7 +1157,7 @@ describe('NewSession launch preferences', () => {
     it('keeps an explicit OpenCode Default selection instead of restoring a concrete model', async () => {
         savePreferredAgent('opencode')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'opencode-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         // The catalog advertises a concrete default; the user picks Default.
         fireEvent.click(screen.getByTestId('opencode-model-default'))
         await waitFor(() => expect(screen.getByTestId('opencode-model')).toHaveTextContent('default'))
@@ -1127,7 +1172,7 @@ describe('NewSession launch preferences', () => {
     it('uses the probed current model variants for an explicit OpenCode Default selection', async () => {
         savePreferredAgent('opencode')
         mocks.opencodeVariants = { 'provider/current': ['low', 'high'] }
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         fireEvent.click(screen.getByTestId('opencode-model-default'))
         await waitFor(() => expect(screen.getByTestId('opencode-variants')).toHaveTextContent('low,high'))
@@ -1137,7 +1182,7 @@ describe('NewSession launch preferences', () => {
     it('waits for OpenCode variants before launching a non-default effort', async () => {
         savePreferredAgent('opencode')
         mocks.opencodeVariantsLoading = true
-        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const view = renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         fireEvent.click(screen.getByTestId('reasoning'))
         expect(screen.getByTestId('create')).toBeDisabled()
@@ -1151,7 +1196,7 @@ describe('NewSession launch preferences', () => {
     it('does not probe OpenCode variants until the working directory is verified', () => {
         savePreferredAgent('opencode')
         mocks.directoryExists = undefined
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         expect(mocks.opencodeVariantsEnabled).toBe(false)
     })
@@ -1160,14 +1205,14 @@ describe('NewSession launch preferences', () => {
         savePreferredAgent('opencode')
         savePreferredLaunchSettings('machine-1', 'opencode', { model: 'provider/model', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'high' })
         mocks.opencodeModels = [{ modelId: 'provider/model', name: 'Model' }]
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('opencode-model')).toHaveTextContent('provider/model'))
     })
 
     it('persists the selected AGY model only after a successful launch', async () => {
         savePreferredAgent('agy')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         fireEvent.click(screen.getByTestId('agy-model'))
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
@@ -1183,7 +1228,7 @@ describe('NewSession launch preferences', () => {
             { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
         ]
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         fireEvent.change(screen.getByTestId('agy-model-select'), { target: { value: 'gemini-4-argon' } })
         expect(screen.getByRole('option', { name: 'Gemini 4 Argon' })).toBeTruthy()
         expect(screen.queryByRole('option', { name: 'Gemini 4 Argon (High)' })).toBeNull()
@@ -1207,7 +1252,7 @@ describe('NewSession launch preferences', () => {
             { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
         ]
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model-select')).toHaveValue('gemini-4-argon'))
         expect(screen.getByTestId('agy-effort-options')).toHaveValue(expectedEffort)
         fireEvent.change(screen.getByTestId('agy-model-select'), { target: { value: 'gpt-oss-120b-medium' } })
@@ -1226,7 +1271,7 @@ describe('NewSession launch preferences', () => {
             { modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }
         ]
         mocks.spawnSession.mockResolvedValue({ type: 'error', message: 'spawn failed' })
-        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.5-flash-low'))
         fireEvent.click(screen.getByTestId('agy-model'))
         fireEvent.click(screen.getByTestId('create'))
@@ -1241,7 +1286,7 @@ describe('NewSession launch preferences', () => {
         }))
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1285,7 +1330,7 @@ describe('NewSession launch preferences', () => {
             reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-imported-1', resumed: true })
         } as unknown as ApiClient
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={piApi}
                 machines={[machine]}
@@ -1336,7 +1381,7 @@ describe('NewSession launch preferences', () => {
             reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-machine-b', resumed: true })
         } as unknown as ApiClient
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={piApi}
                 machines={[machineA, machineB]}
@@ -1408,7 +1453,7 @@ describe('NewSession launch preferences', () => {
             })
         } as unknown as ApiClient
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={piApi}
                 machines={[machine]}
@@ -1435,7 +1480,7 @@ describe('NewSession launch preferences', () => {
     it('does not save changed launch settings when creation fails', async () => {
         mocks.spawnSession.mockResolvedValue({ type: 'error', message: 'spawn failed' })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1480,7 +1525,7 @@ describe('NewSession launch preferences', () => {
             worktreeName: ''
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1509,7 +1554,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default',
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1545,7 +1590,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default',
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1578,7 +1623,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default',
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1610,7 +1655,7 @@ describe('NewSession launch preferences', () => {
             modelReasoningEffort: 'default',
         })
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1644,7 +1689,7 @@ describe('NewSession launch preferences', () => {
             { provider: 'opencode-go', modelId: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
         ]
 
-        render(
+        renderWithQuery(
             <NewSession
                 api={api}
                 machines={[machine]}
@@ -1673,6 +1718,786 @@ describe('NewSession launch preferences', () => {
         expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
             agent: 'pi',
             model: 'opencode-go/deepseek-v4-pro',
+        }))
+    })
+
+    it('seeds Codex hub defaults on a fresh browser before sticky keys are written', async () => {
+        localStorage.clear()
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByTestId('create')).toBeDisabled()
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'read-only',
+                    models: { codex: 'gpt-5' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('read-only')
+        })
+        expect(screen.getByTestId('create')).not.toBeDisabled()
+    })
+
+    it.each([
+        { agent: 'codex', permissionMode: 'read-only', cached: true },
+        { agent: 'codex', permissionMode: 'read-only', cached: false },
+        { agent: 'claude', permissionMode: 'plan', cached: true },
+        { agent: 'cursor', permissionMode: 'plan', cached: true }
+    ] as const)(
+        'preserves hub $agent/$permissionMode after cancel and remount (cached: $cached)',
+        async ({ agent, permissionMode, cached }) => {
+            localStorage.clear()
+            const settings = {
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: { agent, permissionMode, models: {} }
+            }
+            const sharedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+            if (cached) sharedClient.setQueryData(queryKeys.hubSettings, settings)
+            const onCancel = vi.fn()
+            mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+            for (const reopen of [false, true]) {
+                let resolveSettings!: (value: typeof settings) => void
+                const deferred = new Promise<typeof settings>((resolve) => {
+                    resolveSettings = resolve
+                })
+                const hubApi = {
+                    getHubSettings: vi.fn(() => cached ? Promise.resolve(settings) : deferred)
+                } as unknown as ApiClient
+                const client = cached
+                    ? sharedClient
+                    : new QueryClient({ defaultOptions: { queries: { retry: false } } })
+                const view = render(
+                    <QueryClientProvider client={client}>
+                        <NewSession
+                            api={hubApi}
+                            machines={[machine]}
+                            initialMachineId="machine-1"
+                            initialDirectory="C:\\repo"
+                            onSuccess={mocks.onSuccess}
+                            onCancel={onCancel}
+                        />
+                    </QueryClientProvider>
+                )
+                if (!cached) {
+                    expect(screen.getByTestId('create')).toBeDisabled()
+                    await act(async () => {
+                        resolveSettings(settings)
+                        await deferred
+                    })
+                }
+                await waitFor(() => {
+                    expect(screen.getByDisplayValue(agent)).toBeChecked()
+                    expect(screen.getByTestId('permission-mode')).toHaveTextContent(permissionMode)
+                    expect(screen.getByTestId('create')).toBeEnabled()
+                })
+                if (!reopen) {
+                    fireEvent.click(screen.getByTestId('cancel'))
+                    expect(onCancel).toHaveBeenCalledOnce()
+                    expect(mocks.spawnSession).not.toHaveBeenCalled()
+                    expect(loadPreferredLaunchSettings('machine-1', agent)).toBeNull()
+                    view.unmount()
+                } else {
+                    fireEvent.click(screen.getByTestId('create'))
+                    await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+                    expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+                        agent,
+                        permissionMode
+                    }))
+                }
+            }
+            expect(localStorage.getItem('hapi:newSession:yolo')).toBeNull()
+        }
+    )
+
+    it('persists explicit YOLO toggle edits across remounts', async () => {
+        savePreferredAgent('agy')
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form)
+        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-off'))
+        expect(localStorage.getItem('hapi:newSession:yolo')).toBeNull()
+
+        fireEvent.click(screen.getByTestId('yolo-toggle'))
+        expect(localStorage.getItem('hapi:newSession:yolo')).toBe('true')
+        view.unmount()
+        renderWithQuery(form)
+        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-on'))
+    })
+
+    it('keeps Create disabled while getHubSettings is pending', async () => {
+        localStorage.clear()
+        const deferred = new Promise(() => {})
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByTestId('create')).toBeDisabled()
+        fireEvent.click(screen.getByTestId('create'))
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('keeps an explicit Default permission when hub settings resolve after the edit', async () => {
+        localStorage.clear()
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        // Explicit Default (same value as mount default) must still count as an edit.
+        fireEvent.click(screen.getByTestId('permission-mode-default'))
+        expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'claude',
+                    permissionMode: 'bypassPermissions',
+                    models: { claude: 'sonnet' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+        })
+    })
+
+    it('keeps Cursor Plan when hub settings resolve late with a different agent default', async () => {
+        localStorage.clear()
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        fireEvent.click(screen.getByDisplayValue('cursor'))
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        expect(screen.getByTestId('permission-mode')).toHaveTextContent('plan')
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'yolo',
+                    models: { codex: 'gpt-5' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('plan')
+        })
+
+        act(() => {
+            mocks.spawnSession.mockImplementation(async () => ({ type: 'success', sessionId: 'session-1' }))
+        })
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'cursor',
+            permissionMode: 'plan'
+        }))
+    })
+
+    it('seeds Grok Plan from delayed hub defaults after agent initialization', async () => {
+        localStorage.clear()
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'grok',
+                    permissionMode: 'plan',
+                    models: {}
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('plan')
+        })
+
+        act(() => {
+            mocks.spawnSession.mockImplementation(async () => ({ type: 'success', sessionId: 'session-1' }))
+        })
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'grok',
+            permissionMode: 'plan'
+        }))
+    })
+
+    it('applies delayed hub permission with a sticky agent and no launch prefs', async () => {
+        localStorage.clear()
+        savePreferredAgent('codex')
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'claude',
+                    permissionMode: 'read-only',
+                    models: { claude: 'sonnet' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('read-only')
+        })
+        expect(screen.getByDisplayValue('codex')).toBeChecked()
+    })
+
+    it.each(['untouched', 'default', 'concrete'] as const)(
+        'seeds delayed DSH model defaults while preserving an %s selection',
+        async (selection) => {
+            savePreferredAgent('dsh')
+            const hubModel = '["deepseek-official","deepseek-flash"]'
+            const pickedModel = '["deepseek-official","deepseek-v4-pro"]'
+            mocks.dshModels = [
+                { modelId: hubModel, name: 'DeepSeek-V41-Flash' },
+                { modelId: pickedModel, name: 'DeepSeek-V4-Pro' }
+            ]
+            mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+            let resolveSettings!: (value: unknown) => void
+            const deferred = new Promise((resolve) => {
+                resolveSettings = resolve
+            })
+            const slowApi = {
+                getHubSettings: vi.fn(() => deferred)
+            } as unknown as ApiClient
+            const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+            render(
+                <QueryClientProvider client={client}>
+                    <NewSession
+                        api={slowApi}
+                        machines={[machine]}
+                        initialMachineId="machine-1"
+                        initialDirectory="C:\\repo"
+                        onSuccess={mocks.onSuccess}
+                        onCancel={() => {}}
+                    />
+                </QueryClientProvider>
+            )
+
+            expect(screen.getByDisplayValue('dsh')).toBeChecked()
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+            if (selection !== 'untouched') {
+                mocks.nextModelValue = selection === 'default' ? 'auto' : pickedModel
+                fireEvent.click(screen.getByTestId('model'))
+                expect(screen.getByTestId('model')).toHaveTextContent(mocks.nextModelValue)
+            }
+
+            await act(async () => {
+                resolveSettings({
+                    sessionSummaryContract: false,
+                    sessionSummaryInChat: false,
+                    peerSpawnDefaults: {
+                        agent: 'claude',
+                        permissionMode: 'default',
+                        models: { dsh: hubModel }
+                    }
+                })
+                await deferred
+            })
+
+            const expectedModel = selection === 'untouched'
+                ? hubModel
+                : selection === 'concrete' ? pickedModel : undefined
+            await waitFor(() => {
+                expect(screen.getByDisplayValue('dsh')).toBeChecked()
+                expect(screen.getByTestId('model')).toHaveTextContent(expectedModel ?? 'auto')
+            })
+            await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+            fireEvent.click(screen.getByTestId('create'))
+            await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+            expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+                agent: 'dsh',
+                model: expectedModel
+            }))
+        }
+    )
+
+    it('preserves a saved Default model over a cached hub model', async () => {
+        localStorage.clear()
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
+        })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+        renderWithQuery(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+        })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude'
+        }))
+        expect(mocks.spawnSession.mock.calls[0]![0].model).toBeUndefined()
+    })
+
+    it('seeds OpenCode model state from hub when no launch preference exists', async () => {
+        localStorage.clear()
+        mocks.opencodeModels = [
+            { modelId: 'provider/hub-model', name: 'Hub' },
+            { modelId: 'provider/current', name: 'Current' }
+        ]
+        mocks.opencodeCurrentModelId = 'provider/current'
+        const hubApi = {
+            getHubSettings: vi.fn().mockResolvedValue({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'opencode',
+                    permissionMode: 'default',
+                    models: { opencode: 'provider/hub-model' }
+                }
+            })
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        client.setQueryData(queryKeys.hubSettings, {
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            peerSpawnDefaults: {
+                agent: 'opencode',
+                permissionMode: 'default',
+                models: { opencode: 'provider/hub-model' }
+            }
+        })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={hubApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('opencode-model')).toHaveTextContent('provider/hub-model')
+        })
+    })
+
+    it('migrates Cursor YOLO=false over hub yolo into native Default', async () => {
+        localStorage.clear()
+        savePreferredAgent('cursor')
+        savePreferredYoloMode(false)
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+        const hubApi = {
+            getHubSettings: vi.fn().mockResolvedValue({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'cursor',
+                    permissionMode: 'yolo',
+                    models: {}
+                }
+            })
+        } as unknown as ApiClient
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        client.setQueryData(queryKeys.hubSettings, {
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            peerSpawnDefaults: {
+                agent: 'cursor',
+                permissionMode: 'yolo',
+                models: {}
+            }
+        })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={hubApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('cursor')).toBeChecked()
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+        })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'cursor',
+            permissionMode: 'default'
+        }))
+    })
+
+    it('does not apply Cursor YOLO migration after switching agent before hub settings', async () => {
+        localStorage.clear()
+        savePreferredAgent('cursor')
+        savePreferredYoloMode(true)
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        fireEvent.click(screen.getByDisplayValue('codex'))
+        await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
+        expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'read-only',
+                    models: {}
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('codex')).toBeChecked()
+            // Hub read-only — not Cursor sticky YOLO → yolo
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('read-only')
+        })
+    })
+
+    it('keeps an explicit Claude model when hub settings resolve late with Codex', async () => {
+        localStorage.clear()
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByDisplayValue('claude')).toBeChecked()
+        fireEvent.click(screen.getByTestId('model'))
+        expect(screen.getByTestId('model')).toHaveTextContent(mocks.nextModelValue)
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'read-only',
+                    models: { codex: 'gpt-5' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('claude')).toBeChecked()
+            expect(screen.getByTestId('model')).toHaveTextContent(mocks.nextModelValue)
+        })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude',
+            model: mocks.nextModelValue
+        }))
+    })
+
+    it('keeps an explicit OpenCode Default when hub settings resolve late', async () => {
+        localStorage.clear()
+        mocks.opencodeModels = [
+            { modelId: 'provider/hub-model', name: 'Hub' },
+            { modelId: 'provider/current', name: 'Current' }
+        ]
+        mocks.opencodeCurrentModelId = 'provider/current'
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        fireEvent.click(screen.getByDisplayValue('opencode'))
+        fireEvent.click(screen.getByTestId('opencode-model-default'))
+        expect(screen.getByTestId('opencode-model')).toHaveTextContent('default')
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'opencode',
+                    permissionMode: 'default',
+                    models: { opencode: 'provider/hub-model' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByTestId('opencode-model')).toHaveTextContent('default')
+        })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'opencode',
+            model: undefined
+        }))
+    })
+
+    it('seeds AGY spawn model from hub when no launch preference exists', async () => {
+        localStorage.clear()
+        mocks.agyModels = [
+            { modelId: 'hub-agy-model', name: 'Hub AGY' },
+            { modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+        const hubApi = {
+            getHubSettings: vi.fn().mockResolvedValue({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'agy',
+                    permissionMode: 'default',
+                    models: { agy: 'hub-agy-model' }
+                }
+            })
+        } as unknown as ApiClient
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        client.setQueryData(queryKeys.hubSettings, {
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            peerSpawnDefaults: {
+                agent: 'agy',
+                permissionMode: 'default',
+                models: { agy: 'hub-agy-model' }
+            }
+        })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={hubApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('agy-model')).toHaveTextContent('hub-agy-model')
+        })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'agy',
+            model: 'hub-agy-model'
         }))
     })
 })

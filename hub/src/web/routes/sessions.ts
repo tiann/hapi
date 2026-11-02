@@ -44,6 +44,7 @@ import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlist
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
 import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
+import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -589,18 +590,28 @@ export function createSessionsRoutes(
         }
 
         const lifecycleState = sessionResult.session.metadata?.lifecycleState
-        if (!sessionResult.session.active && lifecycleState === 'archived') {
+        const runnerOwned = sessionResult.session.metadata?.startedBy === 'runner'
+            || sessionResult.session.metadata?.startedFromRunner === true
+        if (!runnerOwned && !sessionResult.session.active && lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
         }
 
         // tiann/hapi#1820: `idle` is a live lifecycle too — a session the hub
         // reconciled as keepalive-only must stay archivable once its socket
         // finally drops, exactly like a stale `running` row.
-        if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)) {
+        if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)
+            && !(runnerOwned && lifecycleState === 'archived')) {
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
-        await engine.archiveSession(sessionResult.sessionId)
+        try {
+            await engine.archiveSession(sessionResult.sessionId)
+        } catch (error) {
+            if (error instanceof ArchiveCleanupError) {
+                return c.json({ error: error.message, code: error.code }, error.status)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 

@@ -99,7 +99,7 @@ export function EffortField(props: EffortFieldProps) {
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                {isReasoningEffort ? t('newSession.reasoningEffort') : t('newSession.effort')}{' '}
+                {t('newSession.effort')}{' '}
                 <span className="font-normal">({t('newSession.model.optional')})</span>
             </label>
             <SelectControl

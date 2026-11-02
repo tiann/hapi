@@ -23,6 +23,7 @@ import { hubCommand } from './hub'
 import { pingPeerCommand } from './pingPeer'
 import { inspectPeerCommand } from './inspectPeer'
 import { linkIssueCommand } from './linkIssue'
+import { spawnPeerCommand } from './spawnPeer'
 import { usageCommand } from './usage'
 import { setModeCommand } from './setMode'
 import type { CommandContext, CommandDefinition } from './types'
@@ -69,6 +70,7 @@ const COMMANDS: CommandDefinition[] = [
     pingPeerCommand,
     inspectPeerCommand,
     linkIssueCommand,
+    spawnPeerCommand,
     setModeCommand,
     usageCommand
 ]

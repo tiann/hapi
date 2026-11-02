@@ -84,7 +84,7 @@ export function isOpencodeReasoningEffortValid(
 }
 
 export const CLAUDE_EFFORT_OPTIONS: { value: LaunchEffort; label: string }[] = [
-    { value: 'auto', label: 'Auto' },
+    { value: 'auto', label: 'Default' },
     ...CLAUDE_EFFORT_LEVELS.map((value) => ({ value, label: CLAUDE_EFFORT_LABELS[value] })),
 ]
 
