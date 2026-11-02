@@ -124,6 +124,7 @@ internal fun ChatScreen(
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
+    val pendingSchedule by viewModel.pendingSchedule.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -196,6 +197,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val mentionSuggestions by viewModel.mentionSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -357,7 +359,7 @@ internal fun ChatScreen(
                     )
                     ChatComposer(
                         state = composerState,
-                        onTextChange = viewModel::setComposerText,
+                        onTextChange = viewModel::onComposerChange,
                         onSend = { viewModel.sendMessage() },
                         onSendSteer = { viewModel.sendMessage(steer = true) },
                         onAbort = viewModel::abortSession,
@@ -367,6 +369,11 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        mentionSuggestions = mentionSuggestions,
+                        onMentionSelected = viewModel::selectMentionSuggestion,
+                        pendingSchedule = pendingSchedule,
+                        onScheduleSelected = viewModel::setPendingSchedule,
+                        onClearSchedule = { viewModel.setPendingSchedule(null) },
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
@@ -688,6 +695,8 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
+    ChatNotice.QueuedEditScheduleDropped -> context.getString(R.string.chat_notice_edit_schedule_dropped)
+    ChatNotice.ScheduleAttachmentConflict -> context.getString(R.string.chat_notice_schedule_attachment_conflict)
     ChatNotice.QueuedAlreadyDelivered -> context.getString(R.string.chat_notice_already_delivered)
     ChatNotice.PermissionAlreadyHandled -> context.getString(R.string.chat_notice_request_already_handled)
     ChatNotice.DeleteConflictActive -> context.getString(R.string.sessions_error_delete_active)
