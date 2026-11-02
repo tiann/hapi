@@ -204,6 +204,7 @@ final class HubSession {
             sessionStore: sessionStore,
             windows: windows,
             drafts: UserDefaultsChatDrafts(scope: hubUrl),
+            machineStore: machineStore,
             attachments: composer?.attachments
         )
         if let composer { interactor.setComposerText(composer.text) }

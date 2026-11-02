@@ -279,6 +279,9 @@ final class ChatModel {
                 if message != self.interactor.scratchlistError { self.showNotice(message) }
             }
         }
+        interactor.onDirectSendsChanged = { [weak self] in
+            self?.scheduleRecompute()
+        }
         interactor.activate()
         dictation.onEvent = { [weak self] event in
             guard let self else { return }
@@ -579,7 +582,8 @@ final class ChatModel {
                 let visible = await pipeline.run(
                     messages: window.messages,
                     agentState: detail?.agentState,
-                    hasMoreMessages: window.hasMore
+                    hasMoreMessages: window.hasMore,
+                    directSendLocalIds: interactor.directSendLocalIds
                 )
                 let sources = Set(visible.flatMap { block -> [String] in
                     guard case .block(let value) = block else { return [] }

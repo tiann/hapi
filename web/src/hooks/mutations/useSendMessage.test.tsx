@@ -64,10 +64,6 @@ describe('useSendMessage', () => {
         await waitFor(() => {
             expect(onSuccess).toHaveBeenCalledWith('session-A')
         })
-        expect(result.current.sendSettlement).toEqual({
-            attemptId: 'local-id-1',
-            status: 'success',
-        })
     })
 
     it('reports the settlement through the durable lifecycle callback', async () => {
@@ -528,10 +524,6 @@ describe('useSendMessage', () => {
 
             await waitFor(() => {
                 expect(updateMock).toHaveBeenCalledWith('session-A', 'local-id-1', 'failed')
-            })
-            expect(result.current.sendSettlement).toEqual({
-                attemptId: 'local-id-1',
-                status: 'error',
             })
             // No composer-restore: onError is NOT fired and the optimistic
             // row is NOT removed -- both would destroy the attachment UX.
