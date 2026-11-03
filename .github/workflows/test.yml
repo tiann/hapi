@@ -15,7 +15,7 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun typecheck
             - run: bunx playwright install --with-deps chromium
-            - run: cd web && bunx playwright install --with-deps chromium
+            - run: echo "PLAYWRIGHT_CHROME_PATH=$(bun -e 'console.log(require("playwright").chromium.executablePath())')" >> "$GITHUB_ENV"
             # Required by cli/src/utils/windowsProcessTree.pwsh.test.ts — image
             # inspect alone does not pull; silent skip was fake B1 coverage (#1911).
             - run: docker pull mcr.microsoft.com/powershell:latest
