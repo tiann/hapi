@@ -52,6 +52,7 @@ ${chalk.bold('Agent contract:')}
   job run without launch counts + continuous ${chalk.bold('job update')}). Launch
   --done/--total on bare job run are stamps only — frozen 0/N under live heartbeats.
   Never invent a fake percent.
+  Do not wrap hapi-restart-hub / stack-switch in job run (hub down → zombie running meter).
 
 ${chalk.bold('Usage:')}
   hapi job run <session> <job-key> --label <text> [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]

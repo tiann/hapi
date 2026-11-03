@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { basename } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { constants as osConstants } from 'node:os'
 import type { AttachedJobUpsert } from '@hapi/protocol'
@@ -33,12 +34,75 @@ export type RunSessionJobOptions = SessionJobClientOptions & {
     clearIntervalImpl?: typeof clearInterval
     /** Injected for tests (terminal-status retry backoff). */
     sleepImpl?: (ms: number) => Promise<void>
+    /** Injected for tests — wall clock for hub-down terminal retry deadline. */
+    nowImpl?: () => number
+    /**
+     * How long to keep retrying terminal PATCH while the hub is unreachable
+     * (ECONNREFUSED after `hapi-restart-hub`, brief remat, etc.). Default 10m.
+     */
+    terminalHubDownDeadlineMs?: number
     /** Injected for tests — defaults to tree-kill via killProcessByChildProcess. */
     killChildImpl?: (child: ChildProcess, signal: NodeJS.Signals) => void | Promise<boolean>
 }
 
 const DEFAULT_HEARTBEAT_MS = 5 * 60 * 1000
 const TERMINAL_STATUS_ATTEMPTS = 3
+const DEFAULT_TERMINAL_HUB_DOWN_DEADLINE_MS = 10 * 60 * 1000
+const TERMINAL_HUB_DOWN_BACKOFF_CAP_MS = 30_000
+
+/** Argv tokens that take this hub (or active stack) down mid-supervision. */
+const HUB_STACK_CONTROL_BASENAMES = new Set([
+    'hapi-restart-hub',
+    'hapi-use-worktree',
+    'hapi-use-driver',
+    'hapi-watch-activate-driver',
+])
+
+/**
+ * True when the supervised argv would restart/swap this hub while `job run`
+ * still needs a terminal PATCH — wrapping these creates zombie `running` meters
+ * unless the hub is reachable again within the hub-down retry window.
+ */
+export function commandLooksLikeHubStackControl(command: string[]): boolean {
+    for (const arg of command) {
+        for (const token of arg.split(/[\s]+/).filter(Boolean)) {
+            const base = basename(token)
+            if (HUB_STACK_CONTROL_BASENAMES.has(base)) return true
+        }
+    }
+    return false
+}
+
+/** Connection / gateway failures where retrying after hub restart can succeed. */
+export function isHubUnreachableError(error: unknown): boolean {
+    if (error instanceof SessionJobError) {
+        if (error.code === 'run_mismatch' || error.code === 'not_found') return false
+        if (/HTTP 502|HTTP 503|HTTP 504|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|hub unreachable|Network Error/i.test(error.message)) {
+            return true
+        }
+    }
+    if (error && typeof error === 'object') {
+        const e = error as { code?: string; message?: string; cause?: unknown }
+        if (typeof e.code === 'string'
+            && /^(ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|EHOSTUNREACH)$/.test(e.code)) {
+            return true
+        }
+        if (typeof e.message === 'string'
+            && /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|Network Error|hub unreachable/i.test(e.message)) {
+            return true
+        }
+        if (e.cause !== undefined) return isHubUnreachableError(e.cause)
+    }
+    if (error instanceof Error) {
+        return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|Network Error|hub unreachable/i.test(error.message)
+    }
+    return false
+}
+
+function terminalBackoffMs(attempt: number, hubDown: boolean): number {
+    if (!hubDown) return 1_000 * 2 ** attempt
+    return Math.min(2_000 * 2 ** attempt, TERMINAL_HUB_DOWN_BACKOFF_CAP_MS)
+}
 
 async function markTerminalWithRetry(options: {
     clientOpts: SessionJobClientOptions & { resolved: SessionJobResolvedClient }
@@ -47,9 +111,14 @@ async function markTerminalWithRetry(options: {
     detail?: string
     expectedRunId: string
     sleep: (ms: number) => Promise<void>
+    now: () => number
+    hubDownDeadlineMs: number
 }): Promise<void> {
     let lastError: unknown
-    for (let attempt = 0; attempt < TERMINAL_STATUS_ATTEMPTS; attempt += 1) {
+    let attempt = 0
+    const startedAt = options.now()
+    let loggedHubDownWait = false
+    for (;;) {
         try {
             await updateSessionJob({
                 ...options.clientOpts,
@@ -67,19 +136,34 @@ async function markTerminalWithRetry(options: {
             if (error instanceof SessionJobError && error.code === 'run_mismatch') {
                 break
             }
+
+            const hubDown = isHubUnreachableError(error)
+            const elapsed = options.now() - startedAt
+            const withinHubDownBudget = hubDown && elapsed < options.hubDownDeadlineMs
+            const withinShortBudget = !hubDown && attempt < TERMINAL_STATUS_ATTEMPTS - 1
+
             // Operator cleared the meter while the child still ran — detached, not a
-            // supervision failure. Retry transient 404s; accept absence on last attempt.
-            if (
-                error instanceof SessionJobError
-                && error.code === 'not_found'
-                && attempt === TERMINAL_STATUS_ATTEMPTS - 1
-            ) {
-                return
-            }
-            if (attempt === TERMINAL_STATUS_ATTEMPTS - 1) {
+            // supervision failure. Retry transient 404s; accept absence when budget ends.
+            if (error instanceof SessionJobError && error.code === 'not_found') {
+                if (!withinShortBudget && !withinHubDownBudget) {
+                    return
+                }
+            } else if (!withinShortBudget && !withinHubDownBudget) {
                 break
             }
-            await options.sleep(1_000 * 2 ** attempt)
+
+            if (hubDown && !loggedHubDownWait) {
+                loggedHubDownWait = true
+                const message = error instanceof Error ? error.message : String(error)
+                console.error(
+                    `[hapi job run] hub unreachable after child exit (${message}); `
+                    + `retrying terminal ${options.status} for up to `
+                    + `${Math.round(options.hubDownDeadlineMs / 1000)}s`
+                )
+            }
+
+            await options.sleep(terminalBackoffMs(attempt, hubDown))
+            attempt += 1
         }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError))
@@ -88,6 +172,16 @@ async function markTerminalWithRetry(options: {
 export async function runSessionJob(options: RunSessionJobOptions): Promise<number> {
     if (options.command.length === 0) {
         throw new SessionJobError('bad_args', 'run requires a command after --')
+    }
+
+    if (commandLooksLikeHubStackControl(options.command)) {
+        throw new SessionJobError(
+            'bad_args',
+            'do not wrap hapi-restart-hub / hapi-use-worktree / hapi-use-driver / '
+            + 'hapi-watch-activate-driver in `hapi job run` — the hub is down exactly when '
+            + 'the terminal status PATCH must land, leaving a zombie running meter. '
+            + 'Run the hub restart outside the job (job = remat/work only; restart after exit).'
+        )
     }
 
     // Hub stamps startedAt when runId starts a new generation (runner/hub
@@ -126,6 +220,8 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const clearIntervalFn = options.clearIntervalImpl ?? clearInterval
     const sleep = options.sleepImpl
         ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+    const now = options.nowImpl ?? Date.now
+    const hubDownDeadlineMs = options.terminalHubDownDeadlineMs ?? DEFAULT_TERMINAL_HUB_DOWN_DEADLINE_MS
     const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
 
     const child: ChildProcess = spawnFn(options.command[0]!, options.command.slice(1), {
@@ -227,6 +323,8 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
                     ? { detail: 'failed to terminate the complete child process tree' }
                     : {}),
             sleep,
+            now,
+            hubDownDeadlineMs,
         })
     } catch (error) {
         // run_mismatch means another generation owns the key — not our meter to fix.

@@ -108,7 +108,10 @@ Do **not**:
 
 - MCP `session_job` `set` or one-shot CLI `set` + background the real work (no heartbeat).
 - `hapi job run --done 0 --total N -- cmd` with **no** continuous count writer (**frozen 0/N under a live heartbeat** — the common agent footgun).
+- Wrap `hapi-restart-hub` / `hapi-use-worktree` / `hapi-use-driver` / `hapi-watch-activate-driver` inside `hapi job run`. The hub is down exactly when the terminal `completed`/`failed` PATCH must land → `ECONNREFUSED` → zombie `running` meter (CLI refuses these argv tokens). Run remat/work under the job; run the hub restart **after** the job exits (same shape as soup remat `#205`).
 - Claim done / invite archive while a zombie `running` meter remains.
+
+If the hub is briefly unreachable for other reasons after the child exits, `job run` keeps retrying the terminal PATCH for up to ~10 minutes (connection / 502–504). If it still cannot mark the meter, the supervisor exits **1** even when the child exited 0 — do not treat that as a silent success.
 
 ### Hygiene (list on resume / before done)
 

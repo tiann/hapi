@@ -306,7 +306,8 @@ describe('runSessionJob', () => {
                 }
             })),
             patch: vi.fn(async () => {
-                throw new Error('hub unreachable')
+                // Non-connection failure: short retry budget only (3 attempts).
+                throw new Error('permanent write rejected')
             })
         }
 
@@ -326,7 +327,59 @@ describe('runSessionJob', () => {
         })
 
         expect(exitCode).toBe(1)
-        expect(http.patch).toHaveBeenCalled()
+        expect(http.patch).toHaveBeenCalledTimes(3)
+        expect(err).toHaveBeenCalledWith(expect.stringMatching(/failed to mark job completed/i))
+        err.mockRestore()
+    })
+
+    it('exits 1 when hub stays unreachable past the terminal hub-down deadline', async () => {
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async () => {
+                throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3006'), {
+                    code: 'ECONNREFUSED'
+                })
+            })
+        }
+
+        const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+        let nowMs = 0
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => fakeChild(0)) as never,
+            setIntervalImpl: ((() => 1) as never),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async (ms) => { nowMs += ms },
+            nowImpl: () => nowMs,
+            terminalHubDownDeadlineMs: 8_000
+        })
+
+        expect(exitCode).toBe(1)
+        expect(http.patch.mock.calls.length).toBeGreaterThan(3)
+        expect(err).toHaveBeenCalledWith(expect.stringMatching(/hub unreachable after child exit/i))
         expect(err).toHaveBeenCalledWith(expect.stringMatching(/failed to mark job completed/i))
         err.mockRestore()
     })
@@ -690,5 +743,104 @@ describe('runSessionJob', () => {
         expect(lastPatch?.detail).toMatch(/complete child process tree/i)
         expect(err).toHaveBeenCalledWith(expect.stringMatching(/complete child process tree/i))
         err.mockRestore()
+    })
+
+    it('keeps retrying terminal completed after ECONNREFUSED until hub returns (hub restart)', async () => {
+        let patchCalls = 0
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'restart-hub',
+                        label: 'restart',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async (_url: string, body: { status?: string }) => {
+                patchCalls += 1
+                if (body.status === 'completed' && patchCalls < 6) {
+                    throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:3006'), {
+                        code: 'ECONNREFUSED'
+                    })
+                }
+                return {
+                    status: 200,
+                    data: {
+                        job: {
+                            key: 'restart-hub',
+                            label: 'restart',
+                            status: body.status ?? 'running',
+                            heartbeatAt: 2,
+                            startedAt: 1,
+                            updatedAt: 2
+                        }
+                    }
+                }
+            })
+        }
+
+        const sleeps: number[] = []
+        let nowMs = 0
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'restart-hub',
+            label: 'restart',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => fakeChild(0)) as never,
+            setIntervalImpl: ((() => 1) as never),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async (ms) => {
+                sleeps.push(ms)
+                nowMs += ms
+            },
+            nowImpl: () => nowMs,
+            terminalHubDownDeadlineMs: 60_000
+        })
+
+        expect(exitCode).toBe(0)
+        expect(patchCalls).toBe(6)
+        expect(sleeps.length).toBeGreaterThanOrEqual(5)
+        const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
+        expect(lastPatch.status).toBe('completed')
+    })
+
+    it('refuses wrapping hapi-restart-hub in job run before creating a meter', async () => {
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(),
+            patch: vi.fn()
+        }
+
+        await expect(runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'restart-hub',
+            label: 'Patient hub restart',
+            command: ['env', 'HAPI_AGENT_LABEL=x', 'hapi-restart-hub'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })).rejects.toMatchObject({
+            code: 'bad_args',
+            message: expect.stringMatching(/hapi-restart-hub|outside the job|hub restart/i)
+        })
+        expect(http.put).not.toHaveBeenCalled()
+        expect(http.patch).not.toHaveBeenCalled()
     })
 })
