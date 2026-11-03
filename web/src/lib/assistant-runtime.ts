@@ -53,6 +53,8 @@ export type HappyChatMessageMetadata = {
      * per-message footer is rendered unchanged.
      */
     turnCount?: number
+    /** Raw HAPI message ids represented by this rendered assistant-ui card. */
+    sourceMessageIds?: string[]
 }
 
 export type HappyRuntimeExtras = Readonly<{
@@ -398,6 +400,120 @@ export function assignThreadMessageIds(
     return assignThreadMessageIdsWithStableWrappers(blocks, new WeakMap())
 }
 
+function getSourceMessageIdsForBlock(block: VisibleChatBlock): string[] {
+    if (
+        block.kind === 'agent-text'
+        || block.kind === 'agent-reasoning'
+    ) {
+        if (block.sourceMessageIds && block.sourceMessageIds.length > 0) {
+            return block.sourceMessageIds
+        }
+        const separator = block.id.lastIndexOf(':')
+        return [separator > 0 ? block.id.slice(0, separator) : block.id]
+    }
+
+    if (block.kind === 'codex-review' || block.kind === 'generated-image') {
+        const separator = block.id.lastIndexOf(':')
+        return [separator > 0 ? block.id.slice(0, separator) : block.id]
+    }
+
+    if (
+        block.kind === 'user-text'
+        || block.kind === 'agent-event'
+        || block.kind === 'cli-output'
+    ) {
+        return [block.id]
+    }
+
+    // Tool-call ids are native tool ids rather than HAPI message ids. A
+    // neighboring text/reasoning block still contributes its source id to an
+    // assistant-ui joined card, which covers the common search-hit path.
+    return []
+}
+
+type SourceAwareTextMessagePart = {
+    type: 'text'
+    text: string
+    sourceMessageId?: string
+    sourceMessageIds?: string[]
+}
+
+type SourceAwareReasoningMessagePart = {
+    type: 'reasoning'
+    text: string
+    sourceMessageId?: string
+    sourceMessageIds?: string[]
+}
+
+// A block that kept both its live and terminal rows carries several source
+// ids. Exposing only the first leaves a search hit on any later id to fall
+// back to the group-wide marker, which then matches the first occurrence
+// anywhere in the joined reply (tiann/hapi#1598 review).
+function createTextMessagePart(block: VisibleChatBlock, text: string): SourceAwareTextMessagePart {
+    const sourceMessageIds = getSourceMessageIdsForBlock(block)
+    const sourceMessageId = sourceMessageIds[0]
+    return {
+        type: 'text',
+        text,
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(sourceMessageIds.length > 0 ? { sourceMessageIds } : {})
+    }
+}
+
+function createReasoningMessagePart(block: VisibleChatBlock, text: string): SourceAwareReasoningMessagePart {
+    const sourceMessageIds = getSourceMessageIdsForBlock(block)
+    const sourceMessageId = sourceMessageIds[0]
+    return {
+        type: 'reasoning',
+        text,
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(sourceMessageIds.length > 0 ? { sourceMessageIds } : {})
+    }
+}
+
+function mergeUniqueMessageIds(target: string[], ids: readonly string[]): void {
+    for (const id of ids) {
+        if (id && !target.includes(id)) target.push(id)
+    }
+}
+
+/**
+ * Assistant-ui joins adjacent assistant messages into one rendered card.
+ * Preserve the raw ids represented by that whole group on the first card so
+ * a search hit can still locate the card after the join.
+ */
+export function buildSourceMessageIdsByBlock(
+    blocks: readonly VisibleChatBlock[]
+): Map<VisibleChatBlock, string[]> {
+    const sourceIdsByBlock = new Map<VisibleChatBlock, string[]>()
+
+    for (let index = 0; index < blocks.length; index += 1) {
+        const block = blocks[index]
+        if (visibleBlockRole(block) !== 'assistant') {
+            sourceIdsByBlock.set(block, getSourceMessageIdsForBlock(block))
+            continue
+        }
+
+        const group: VisibleChatBlock[] = [block]
+        let cursor = index + 1
+        while (cursor < blocks.length && visibleBlockRole(blocks[cursor]!) === 'assistant') {
+            group.push(blocks[cursor]!)
+            cursor += 1
+        }
+
+        const sourceIds: string[] = []
+        for (const groupBlock of group) {
+            mergeUniqueMessageIds(sourceIds, getSourceMessageIdsForBlock(groupBlock))
+        }
+        for (const groupBlock of group) {
+            sourceIdsByBlock.set(groupBlock, sourceIds)
+        }
+        index = cursor - 1
+    }
+
+    return sourceIdsByBlock
+}
+
 /**
  * Finds the latest conversation-history boundary that is safe to fork.
  * While the main agent is running, every block from the latest invoked user
@@ -500,7 +616,7 @@ function toThreadMessageLike(
             role: 'user',
             id: threadMessageId,
             createdAt: new Date(timestamp),
-            content: [{ type: 'text', text: block.text }],
+            content: [createTextMessagePart(block, block.text)],
             metadata: {
                 custom: {
                     kind: 'user',
@@ -520,7 +636,7 @@ function toThreadMessageLike(
             role: 'assistant',
             id: threadMessageId,
             createdAt: new Date(timestamp),
-            content: [{ type: 'text', text: block.text }],
+            content: [createTextMessagePart(block, block.text)],
             metadata: {
                 custom: {
                     kind: 'assistant',
@@ -560,7 +676,7 @@ function toThreadMessageLike(
             role: 'assistant',
             id: threadMessageId,
             createdAt: new Date(timestamp),
-            content: [{ type: 'reasoning', text: block.text }],
+            content: [createReasoningMessagePart(block, block.text)],
             metadata: {
                 custom: {
                     kind: 'assistant',
@@ -578,7 +694,7 @@ function toThreadMessageLike(
             role: 'assistant',
             id: threadMessageId,
             createdAt: new Date(timestamp),
-            content: [{ type: 'text', text: formatCodexReviewText(block.review) }],
+            content: [createTextMessagePart(block, formatCodexReviewText(block.review))],
             metadata: {
                 custom: {
                     kind: 'codex-review',
@@ -616,7 +732,7 @@ function toThreadMessageLike(
             role: 'system',
             id: threadMessageId,
             createdAt: new Date(timestamp),
-            content: [{ type: 'text', text: renderEventLabel(block.event) }],
+            content: [createTextMessagePart(block, renderEventLabel(block.event))],
             metadata: {
                 custom: {
                     kind: 'event',
@@ -633,7 +749,7 @@ function toThreadMessageLike(
             role: block.source === 'user' ? 'user' : 'assistant',
             id: threadMessageId,
             createdAt: new Date(timestamp),
-            content: [{ type: 'text', text: block.text }],
+            content: [createTextMessagePart(block, block.text)],
             metadata: {
                 custom: {
                     kind: 'cli-output',
@@ -894,6 +1010,10 @@ export function useHappyRuntime(props: {
         ),
         [props.blocks]
     )
+    const sourceMessageIdsByBlock = useMemo(
+        () => buildSourceMessageIdsByBlock(props.blocks),
+        [props.blocks]
+    )
 
     const aggregates = useMemo(
         () => aggregateResponseGroups(props.blocks),
@@ -912,7 +1032,8 @@ export function useHappyRuntime(props: {
                 responseGroupTimestamps.get(block) ?? getBlockPresentationTimestamp(block)
             )
             const aggregate = aggregates.get(block.id)
-            if (!aggregate) return message
+            const sourceMessageIds = sourceMessageIdsByBlock.get(block)
+            if (!aggregate && (!sourceMessageIds || sourceMessageIds.length === 0)) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
             return {
                 ...message,
@@ -920,17 +1041,20 @@ export function useHappyRuntime(props: {
                     ...message.metadata,
                     custom: {
                         ...(existing ?? { kind: 'assistant' }),
-                        usage: aggregate.usage,
-                        model: aggregate.model,
-                        invokedAt: aggregate.invokedAt,
-                        durationMs: aggregate.durationMs,
-                        turnCount: aggregate.turnCount,
-                        roundSummary: aggregate.roundSummary
+                        ...(aggregate ? {
+                            usage: aggregate.usage,
+                            model: aggregate.model,
+                            invokedAt: aggregate.invokedAt,
+                            durationMs: aggregate.durationMs,
+                            turnCount: aggregate.turnCount,
+                            roundSummary: aggregate.roundSummary
+                        } : {}),
+                        ...(sourceMessageIds && sourceMessageIds.length > 0 ? { sourceMessageIds } : {})
                     } satisfies HappyChatMessageMetadata
                 }
             }
         },
-        [aggregates, responseGroupTimestamps]
+        [aggregates, responseGroupTimestamps, sourceMessageIdsByBlock]
     )
 
     // Use cached message converter for performance optimization

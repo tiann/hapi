@@ -212,6 +212,28 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByRole('button', { name: 'High' })).toBeNull()
     })
 
+    it('gives Codex reasoning effort the same Effort button and section as Claude', () => {
+        const onModelReasoningEffortChange = vi.fn()
+        renderComposer('codex', {
+            effort: undefined,
+            modelReasoningEffort: 'high',
+            onModelReasoningEffortChange
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Low' }))
+        expect(onModelReasoningEffortChange).toHaveBeenCalledWith('low')
+    })
+
+    it('labels an unset effort as the default effort on every flavor', () => {
+        renderComposer('claude', { effort: null })
+        expect(screen.getByRole('button', { name: 'Default effort' })).toBeTruthy()
+        cleanup()
+        renderComposer('codex', { effort: undefined, modelReasoningEffort: null, onModelReasoningEffortChange: vi.fn() })
+        expect(screen.getByRole('button', { name: 'Default effort' })).toBeTruthy()
+    })
+
     it('hides value buttons on narrow viewports, keeping settings', () => {
         runtime.narrowViewport = true
         renderComposer('claude')

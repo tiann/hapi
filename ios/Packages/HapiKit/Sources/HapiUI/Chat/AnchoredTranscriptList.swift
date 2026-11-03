@@ -22,6 +22,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public var isInspectionPresented: Bool
     public var onViewport: (TranscriptViewport) -> Void
     public var onLayout: (Int, Bool) -> Void
+    public var onTailDisplayed: () -> Void
     public var spacingBefore: (Item?, Item) -> CGFloat
     public var content: (Item) -> AnyView
     fileprivate var environment = EnvironmentValues()
@@ -30,6 +31,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
                 isInspectionPresented: Bool = false,
                 onViewport: @escaping (TranscriptViewport) -> Void,
                 onLayout: @escaping (Int, Bool) -> Void,
+                onTailDisplayed: @escaping () -> Void = {},
                 spacingBefore: @escaping (Item?, Item) -> CGFloat = { _, _ in 12 },
                 content: @escaping (Item) -> AnyView) {
         self.items = items
@@ -39,6 +41,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
         self.isInspectionPresented = isInspectionPresented
         self.onViewport = onViewport
         self.onLayout = onLayout
+        self.onTailDisplayed = onTailDisplayed
         self.spacingBefore = spacingBefore
         self.content = content
     }
@@ -483,6 +486,10 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
             isAtBottom: bottomDistance <= 1,
             isAwayFromBottom: bottomProximity.isAwayFromBottom
         )
+        if viewport.isAtBottom && viewport.followsTail && configuration?.isInspectionPresented != true
+            && !collection.isDragging && !collection.isDecelerating {
+            configuration?.onTailDisplayed()
+        }
         guard viewport != lastViewport else { return }
         lastViewport = viewport
         configuration?.onViewport(viewport)
