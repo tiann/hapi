@@ -186,6 +186,44 @@ tail reload. Local transcript timing uses the original start and completion
 timestamps; imported history and turns without an observed live start do not
 receive a new duration.
 
+### Codex model catalog
+
+HAPI enables local model catalogs by default (`HAPI_CODEX_MODEL_CATALOG_MODE=auto`)
+for both standalone and shared Codex app-servers, including resumed sessions.
+It uses `models_cache.json` inside `CODEX_HOME`, or the current user's `.codex`
+directory when unset:
+
+| Platform | Default location |
+| --- | --- |
+| macOS | `/Users/<user>/.codex/models_cache.json` |
+| Linux | `/home/<user>/.codex/models_cache.json` |
+| Windows | `<user profile>\.codex\models_cache.json` |
+
+Home directories are resolved through the OS, not hardcoded. Windows npm shims
+are launched through Node so paths with spaces and JSON arguments remain intact.
+
+A valid cache is passed as `-c model_catalog_json=...`, preventing each long-lived
+server from repeatedly downloading model metadata. When missing, invalid, older
+than 24 hours, or older than `auth.json`, HAPI first runs a bounded discovery
+process without creating a user turn. A cross-process lock coordinates simultaneous
+session starts. The discovery process exits before the session engine starts.
+If discovery fails (for example offline or with a provider that produces no
+catalog), HAPI logs a warning and falls back to native discovery.
+
+Refresh is checked at startup; there is no per-session refresh timer. Active
+servers keep their catalog until restarted. HAPI does not edit global Codex
+configuration. Inference traffic is unaffected.
+
+To opt out, set `HAPI_CODEX_MODEL_CATALOG_MODE=native` on the CLI/runner machine.
+To pin a specific catalog, set `HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute
+path or `~/...`. This explicit path overrides the mode; an explicit launch
+`-c 'model_catalog_json="/path/to/catalog.json"'` takes precedence over both.
+Explicit files must contain the full Codex `models` array and metadata; invalid
+files fail startup. Pinned files are not refreshed automatically.
+
+Restart the runner after changing its environment. Already-running sessions must
+be safely stopped and resumed to pick up a changed catalog configuration.
+
 ### Codex MCP servers
 
 Codex sessions keep the MCP servers configured in the user's Codex

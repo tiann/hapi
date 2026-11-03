@@ -5,6 +5,7 @@ import { resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable
 import { parseCodexCliOverrides, stripCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
+import { resolveModelCatalogArgs } from '../utils/modelCatalog';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 export const SharedLaunchSchema = z.object({
@@ -136,6 +137,7 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     // Launch-wide flags also apply to later native /new roots, not just the
     // initial HAPI-created root. Explicit config layers keep their order.
     for (const [key, value] of Object.entries(config)) serverArgs.push('-c', `${key}=${JSON.stringify(value)}`);
+    serverArgs.push(...resolveModelCatalogArgs(serverArgs));
     return {
         cwd: directory, serverArgs, tuiArgs,
         threadParams: {
