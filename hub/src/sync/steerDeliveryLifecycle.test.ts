@@ -97,8 +97,12 @@ it('does not confuse closing Steer admission with a live request finishing its d
 it.each(['codex', 'cursor'] as const)('preserves the separate %s runtime delivery owner on metadata replacement', (flavor) => {
     const { store, engine, session } = createEngine(new Store(':memory:'), flavor)
     try {
-        const metadata = { ...session.metadata!, hostPid: 101, hostStartMarker: 'worker-B' }
-        const update = store.sessions.updateSessionMetadata(session.id, metadata, session.metadataVersion, 'default')
+        // createEngine's returned session object can lag the DB: handleSessionAlive
+        // may bump metadata (e.g. titleSuggestionTurn) and refresh the cache to a
+        // new object while this local binding still holds the pre-alive version.
+        const current = store.sessions.getSession(session.id)!
+        const metadata = { ...current.metadata!, hostPid: 101, hostStartMarker: 'worker-B' }
+        const update = store.sessions.updateSessionMetadata(session.id, metadata, current.metadataVersion, 'default')
         if (update.result !== 'success') throw new Error('metadata update failed')
         engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data: { metadata: { version: update.version, value: metadata } } })
         expect(engine.getQueuedState(session.id, ['pending']).dispatchingLocalIds).toEqual(['pending'])
