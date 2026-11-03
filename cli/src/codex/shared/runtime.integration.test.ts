@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,16 +10,20 @@ import { CodexAppServerClient } from '../codexAppServerClient';
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
+import { notifyRunnerSessionStarted } from '@/runner/controlClient';
+import { asyncQuestionsForItem } from './asyncQuestions';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
-class MockSession {
+const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
+class MockSession extends EventEmitter {
     readonly sessionId = randomUUID();
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
     messages: unknown[] = []; consumed: string[] = []; dead = false;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
     rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
-    constructor(cwd: string) { this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
+    constructor(cwd: string) { super(); this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
     getMetadata() { return this.metadata; }
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
@@ -39,7 +44,9 @@ vi.mock('@/agent/sessionFactory', () => ({ bootstrapSession: async (options: { w
     await state.beforeBootstrap?.();
     const session = new MockSession(options.workingDirectory); session.metadata = { ...session.metadata, ...options.metadataOverrides };
     state.sessions.set(session.sessionId, session);
-    return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: session.metadata,
+    // session.getMetadata() is the hub's view; a hub without the field strips
+    // hostStartMarker, so only the local bootstrap metadata still carries it.
+    return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: { ...session.metadata, hostStartMarker: BOOTSTRAP_START_MARKER },
         workingDirectory: options.workingDirectory, machineId: 'test', startedBy: 'terminal', api: {} };
 }, bootstrapExistingSession: vi.fn() }));
 vi.mock('@/runner/controlClient', () => ({ notifyRunnerSessionStarted: vi.fn(async () => ({})) }));
@@ -48,6 +55,117 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it('projects native async questions and delivers answers during generation and after completion', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const modelRequests: Record<string, unknown>[] = [];
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const questions = [{ title: 'Which client?', options: ['Web', 'Terminal'] }, { title: 'Any details?' }];
+        const http = createServer((request, response) => {
+            const chunks: Buffer[] = [];
+            request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            request.on('end', () => { void (async () => {
+                if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+                modelRequests.push(record(JSON.parse(Buffer.concat(chunks).toString())));
+                const count = modelRequests.length;
+                if (count === 2) await gate;
+                const id = randomUUID();
+                const item = count === 1 ? { type: 'function_call', call_id: 'call_async', name: 'request_user_input_async', arguments: JSON.stringify({ questions }) }
+                    : { type: 'message', role: 'assistant', id: `msg_${id}`, content: [{ type: 'output_text', text: 'MOCK DONE' }] };
+                const events = [{ type: 'response.created', response: { id } }, { type: 'response.output_item.done', item },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            })(); });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        // This model's bundled tool catalog includes request_user_input_async.
+        // All Responses traffic goes to the isolated mock; no model credentials.
+        await writeFile(join(ch, 'config.toml'), `model = "gpt-6.1-sol"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[features]\nsend_message_to_user_async = true\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        let client: CodexAppServerClient | undefined;
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const threadId = runtime.sessions[sessionId].threadId;
+            const web = state.sessions.get(sessionId)!;
+            client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
+            const nativeRequests = vi.fn(); client.setServerRequestHandler(nativeRequests); await initializeSharedClient(client);
+            await client.request('thread/resume', { threadId });
+            web.user?.({ content: { text: 'ASK ASYNC' } }, 'async-prompt');
+            await vi.waitFor(() => expect(Object.keys(web.state.requests ?? {})).toHaveLength(2), { timeout: 15_000 });
+            expect(nativeRequests).not.toHaveBeenCalled();
+            const [choice, details] = asyncQuestionsForItem(threadId, { type: 'agentMessage', id: 'call_async', delivery: 'async', questions });
+            expect(web.messages).toContainEqual(expect.objectContaining({ type: 'tool-call', name: 'request_user_input', callId: choice.id }));
+            await vi.waitFor(() => expect(modelRequests.length).toBe(2));
+            await web.rpc.get('permission')!({ id: choice.id, approved: true, answers: { [choice.questionItemId]: ['Web'] } });
+            release();
+            await vi.waitFor(() => expect(web.state.completedRequests?.[choice.id]?.status).toBe('resolved'), { timeout: 15_000 });
+            await vi.waitFor(() => expect(web.state.steeringActive).toBe(false), { timeout: 15_000 });
+            expect(web.state.requests?.[details.id]).toBeDefined();
+            await web.rpc.get('permission')!({ id: details.id, approved: true, answers: { [details.questionItemId]: ['user_note: From mobile'] } });
+            await vi.waitFor(() => expect(web.state.completedRequests?.[details.id]?.status).toBe('resolved'), { timeout: 15_000 });
+            await vi.waitFor(() => expect(web.messages).toContainEqual({ user: 'Any details?\nFrom mobile' }));
+            await vi.waitFor(() => expect(JSON.stringify(modelRequests)).toContain('From mobile'), { timeout: 15_000 });
+            expect(JSON.stringify(modelRequests)).toContain('send_user_message_question_reply');
+            const history = record(record(await client.request('thread/read', { threadId, includeTurns: true })).thread);
+            const items = (history.turns as Array<{ items: unknown[] }>).flatMap(turn => turn.items);
+            expect(items).toContainEqual(expect.objectContaining({ type: 'agentMessage', id: 'call_async', delivery: 'async',
+                questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }, { title: 'Any details?', options: null }] }));
+            expect(Object.keys(web.state.requests ?? {})).toHaveLength(0);
+        } finally {
+            release(); abort.abort(); await running.catch(() => {}); await client?.disconnect();
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
+    it('seeds the generated fork title before binding child history', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-fork-summary-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const http = createServer((request, response) => {
+            if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+            request.resume();
+            request.on('end', () => {
+                const id = randomUUID();
+                const events = [
+                    { type: 'response.created', response: { id } },
+                    { type: 'response.output_item.done', item: { id: `msg_${id}`, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'MOCK' }] } },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }
+                ];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        try {
+            const { sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const source = state.sessions.get(sessionId)!;
+            source.updateMetadata(metadata => ({ ...metadata, name: 'Source title' }));
+            const result = record(await source.rpc.get(RPC_METHODS.ForkConversation)!({}));
+            const child = state.sessions.get(String(result.sessionId))!;
+            expect(result.sessionId).not.toBe(sessionId);
+            expect(child.metadata.summary).toMatchObject({ text: 'Fork: Source title' });
+            expect(child.metadata.name).toBeUndefined();
+        } finally {
+            abort.abort(); await running.catch(() => {});
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
     it('rejects a child ID before creating a HAPI binding or calling native resume', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-child-'); state.home = home;
         const ch = join(home, 'codex'); await mkdir(ch);
@@ -96,6 +214,25 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(session.dead).toBe(true); expect(session.metadata.lifecycleState).not.toBe('archived');
             }
         } finally { release(); abort.abort(); await running.catch(() => {}); await rm(home, { recursive: true, force: true }); }
+    }, 30_000);
+    it('reports the bootstrap start marker to the runner although the hub view of the metadata lacks it', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-marker-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock"\n[model_providers.mock]\nname = "No model calls"\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            // The runner adopts an untracked runner-started webhook only when the
+            // marker proves the process generation (decideUntrackedRunnerWebhook),
+            // so the webhook must not depend on the hub echoing the field back.
+            expect(vi.mocked(notifyRunnerSessionStarted)).toHaveBeenCalledWith(sessionId,
+                expect.objectContaining({ codexSessionId: runtime.sessions[sessionId].threadId, hostStartMarker: BOOTSTRAP_START_MARKER }));
+        } finally { abort.abort(); await running.catch(() => {}); await rm(home, { recursive: true, force: true, maxRetries: 3 }); }
     }, 30_000);
     it('binds empty roots, exchanges messages, isolates /new, and archives only the selected root', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-test-'); state.home = home;

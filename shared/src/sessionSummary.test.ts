@@ -69,6 +69,10 @@ describe('getPendingRequestKinds', () => {
 })
 
 describe('toSessionSummary', () => {
+    it('carries createdAt for the fixed-order list sort', () => {
+        expect(toSessionSummary(makeSession({ createdAt: 1_234 })).createdAt).toBe(1_234)
+    })
+
     it('includes the pinned state', () => {
         expect(toSessionSummary(makeSession({ pinned: true })).pinned).toBe(true)
         expect(toSessionSummary(makeSession({ globalPinned: true })).globalPinned).toBe(true)
@@ -102,17 +106,18 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.agentSessionId).toBe('cursor-session-1')
     })
 
-    it('does not claim a native resume token for fresh-only DSH ACP', () => {
+    it('uses the DSH native session id as the resume token', () => {
         const summary = toSessionSummary(makeSession({
             metadata: {
                 path: '/proj',
                 host: 'local',
                 flavor: 'dsh',
-                codexSessionId: 'stale-codex-id'
+                codexSessionId: 'stale-codex-id',
+                dshSessionId: 'dsh-session-1'
             }
         }))
 
-        expect(summary.metadata?.agentSessionId).toBeUndefined()
+        expect(summary.metadata?.agentSessionId).toBe('dsh-session-1')
     })
 
     it('does not fall back to a stale cross-agent id for a known flavor', () => {
@@ -342,5 +347,15 @@ describe('summary derivation helpers', () => {
             cursorSessionId: 'cursor-xyz'
         })
         expect(summary?.agentSessionId).toBe('cursor-xyz')
+    })
+
+    it('carries current-fork capability into list summaries', () => {
+        const summary = toSessionSummaryMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'codex',
+            capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } }
+        })
+        expect(summary?.conversationHistory).toEqual({ forkCurrent: true, forkAtMessage: true })
     })
 })

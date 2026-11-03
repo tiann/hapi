@@ -1,7 +1,7 @@
 import {
     getAgentConfigDescriptor,
     getPermissionModeLabel,
-    getLaunchPermissionModesForFlavor,
+    getPermissionModesForFlavor,
     resolveHapiYoloPermissionMode,
     type PermissionMode
 } from '@hapi/protocol'
@@ -61,7 +61,7 @@ export function PermissionField(props: PermissionFieldProps) {
     }
 
     if (field.kind === 'select' && usesNativePermissionSelect(props.agent)) {
-        const options = getLaunchPermissionModesForFlavor(props.agent)
+        const options = getPermissionModesForFlavor(props.agent)
         return (
             <div className="flex flex-col gap-1.5 px-3 py-3">
                 <label className="text-xs font-medium text-[var(--app-hint)]">

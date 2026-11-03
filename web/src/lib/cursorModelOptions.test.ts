@@ -74,7 +74,7 @@ describe('buildCursorModelCatalog', () => {
             { modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' },
         ])
         expect(catalog.baseOptions.map((o) => o.value)).toEqual([
-            null,
+            'auto',
             'composer-2.5',
             'composer-2.5-fast',
         ])

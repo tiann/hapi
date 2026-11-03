@@ -24,8 +24,8 @@ data class MessagesPage(
     val snapshotHeadSeq: Long? = null,
     val snapshotHeadAt: Long? = null,
     val hasMore: Boolean,
+    val readThroughRevision: Long? = null,
 )
-
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */
 @Serializable
 data class MessagesResponse(
@@ -49,6 +49,12 @@ data class SessionResponse(
 @Serializable
 data class MachinesResponse(
     val machines: List<Machine>,
+)
+
+/** `POST /api/machines/:id/restart-runner` — hub ack (`{message}`). */
+@Serializable
+data class RestartRunnerResponse(
+    val message: String,
 )
 
 /** `POST /api/auth` success body (`AuthResponse`, `shared/src/apiTypes.ts`). */
@@ -270,6 +276,33 @@ data class CodexModelSummary(
     val supportedReasoningEfforts: List<String>? = null,
     /** Service tier ids advertised for this model in the current auth/plan context (e.g. `fast`). */
     val serviceTiers: List<String>? = null,
+)
+
+/**
+ * `GET /api/machines/:id/grok-models?cwd=` (RPC-wrapped: check [success]) —
+ * the directory-scoped Grok probe; `GrokModelsResponse` in
+ * `shared/src/apiTypes.ts`. This slice consumes only
+ * [autoPermissionModeSupported] (the create-form Auto gate); model discovery
+ * stays deferred and unknown fields are ignored by [HapiJson].
+ */
+@Serializable
+data class GrokModelsResponse(
+    val success: Boolean,
+    val availableModels: List<GrokModelSummary>? = null,
+    val currentModelId: String? = null,
+    /**
+     * Nullable on purpose: the server may omit it, and the gate fires only on
+     * a literal `false` (web guards with `=== false`).
+     */
+    val autoPermissionModeSupported: Boolean? = null,
+    val error: String? = null,
+)
+
+/** `GrokModelSummary` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class GrokModelSummary(
+    val modelId: String,
+    val name: String? = null,
 )
 
 /** `POST /api/sessions/:id/upload` (RPC-wrapped: check [success]). */

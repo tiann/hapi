@@ -50,7 +50,8 @@ export async function attachSharedSession(runtime: CodexRuntimeRecord, sessionId
 
 export async function runSharedCodex(raw: SharedLaunchOptions): Promise<void> {
     const options = SharedLaunchSchema.parse({ ...raw, workingDirectory: raw.workingDirectory ?? getInvokedCwd() });
-    if (options.existingSessionId) {
+    // reservedSessionId is fresh adopt-stub — never treat as reopen (#1911 Codex Major).
+    if (options.existingSessionId && !options.reservedSessionId) {
         const api = await ApiClient.create();
         const session = await api.getSession(options.existingSessionId);
         const runtime = await findRuntime(session.id);

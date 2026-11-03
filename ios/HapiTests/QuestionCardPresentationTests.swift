@@ -24,7 +24,6 @@ final class QuestionCardPresentationTests: XCTestCase {
         let presentation = ChatPresentationState()
         let interactor: ChatInteractor
         @ObservationIgnored var height: CGFloat = 0
-        @ObservationIgnored var appeared = 0
         init(tool: ChatToolCall) {
             self.tool = tool
             let url = URL(string: "http://127.0.0.1:1")!
@@ -53,7 +52,7 @@ final class QuestionCardPresentationTests: XCTestCase {
                 .environment(\.chatPresentationState, driver.presentation)
                 .background(GeometryReader { geometry in
                     Color.clear
-                        .onAppear { driver.height = geometry.size.height; driver.appeared += 1 }
+                        .onAppear { driver.height = geometry.size.height }
                         .onChange(of: geometry.size.height) { _, height in driver.height = height }
                 })
                 .hapiReadingColumn()
@@ -92,6 +91,40 @@ final class QuestionCardPresentationTests: XCTestCase {
         ChatToolCall(id: "question", name: "functions.request_user_input", state: .running,
                      input: try JSONDecoder().decode(JSONValue.self, from: Data(input.utf8)), createdAt: 0,
                      permission: ToolPermission(id: "reply", status: .pending))
+    }
+
+    func testOtherNotesStayOnTheCurrentQuestionAndRenderRecordedAnswers() async throws {
+        let source = #"{"questions":[{"id":"choice","header":"选择","question":"请选择一项","isOther":true,"options":[{"label":"Alpha"},{"label":"Beta"}]},{"id":"last","question":"Next question","options":[{"label":"Finish"}]}]}"#
+        for (name, theme, size, width) in [("light", HapiTheme.light, DynamicTypeSize.large, CGFloat(390)),
+                                          ("large-type", .dark, .accessibility3, 320)] {
+            let driver = Driver(tool: try makeTool(source))
+            let (window, _) = try host(Specimen(driver: driver, theme: theme, typeSize: size), width: width)
+            defer { window.isHidden = true }
+            try await settle { driver.height > 100 }
+            let initialHeight = driver.height
+            let form = QuestionAnswerForm(tool: driver.tool)
+            driver.draft.select(2, at: 0, in: form)
+            XCTAssertEqual(driver.draft.page, 0)
+            XCTAssertTrue(driver.draft.isAnswered(at: 0, in: form))
+            try await settle { driver.height > initialHeight }
+            driver.draft.setText("自定义\n说明", at: 0, in: form)
+            driver.tool.description = "Unrelated SSE update"
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(driver.draft.selections[0], [2])
+            XCTAssertEqual(driver.draft.text(at: 0, in: form), "自定义\n说明")
+            XCTAssertFalse(questionToolDetails(driver.tool).hasAnswers)
+            try capture(window, name: "other-notes-\(name)")
+            driver.tool.state = .completed
+            driver.tool.permission = ToolPermission(id: "reply", status: .resolved)
+            XCTAssertFalse(questionToolDetails(driver.tool).hasAnswers, "Resolution does not prove which answer won")
+            driver.tool.result = .object(["answers": .object(["choice": .object([
+                "answers": .array([.string("None of the above"), .string("user_note: 自定义\n说明")]),
+            ])])])
+            try await settle { driver.height < initialHeight }
+            let details = questionToolDetails(driver.tool)
+            XCTAssertEqual(details.questions[0].options.map(\.selected), [false, false, true])
+            XCTAssertEqual(details.questions[0].note, "自定义\n说明")
+        }
     }
 
     func testQuestionCardsFitThemesAndTypeSizesAndCollapseOnlyWithRecordedAnswers() async throws {
@@ -178,38 +211,47 @@ final class QuestionCardPresentationTests: XCTestCase {
         let collection = try XCTUnwrap(findCollection(host.view))
         try await settle { collection.numberOfItems(inSection: 0) == 40 }
         func browse(_ index: Int) async throws {
+            let indexPath = IndexPath(item: index, section: 0)
             collection.delegate?.scrollViewWillBeginDragging?(collection)
-            collection.scrollToItem(at: IndexPath(item: index, section: 0), at: .top, animated: false)
-            try await settle { collection.cellForItem(at: IndexPath(item: index, section: 0)) != nil }
+            collection.scrollToItem(at: indexPath, at: .top, animated: false)
+            try await settle {
+                rowIntersectsViewport(index, in: collection)
+                    && collection.cellForItem(at: indexPath) != nil
+            }
         }
         try await browse(10)
-        let cell = try XCTUnwrap(collection.cellForItem(at: IndexPath(item: 10, section: 0)))
-        let offset = cell.frame.minY - collection.contentOffset.y
+        let offset = try XCTUnwrap(rowOffset(10, in: collection))
         let form = QuestionAnswerForm(tool: driver.tool)
         driver.draft.select(0, at: 0, in: form)
         driver.draft.select(1, at: 1, in: form)
         driver.draft.toggleText(at: 1, in: form)
         driver.draft.setText("A multiline draft\nthat must survive recycling", at: 1, in: form)
         try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(cell.frame.minY - collection.contentOffset.y, offset, accuracy: 1)
+        let offsetAfterEdit = try XCTUnwrap(rowOffset(10, in: collection))
+        XCTAssertEqual(offsetAfterEdit, offset, accuracy: 1)
         let draft = driver.draft
-        let appearances = driver.appeared
+        // UIHostingConfiguration may keep SwiftUI roots alive while UIKit
+        // removes a cell from the viewport, so onAppear is not a reliable
+        // recycling signal. Assert the actual row geometry instead.
         try await browse(32)
+        try await settle { !rowIntersectsViewport(10, in: collection) }
+        XCTAssertFalse(rowIntersectsViewport(10, in: collection))
         try await browse(10)
+        try await settle { rowIntersectsViewport(10, in: collection) }
+        XCTAssertTrue(rowIntersectsViewport(10, in: collection))
         XCTAssertEqual(driver.draft, draft)
-        XCTAssertGreaterThan(driver.appeared, appearances, "The card must actually leave and reenter the viewport")
         XCTAssertEqual(driver.draft.page, 1, "Restoring the selected step must not advance it")
         driver.draft.previous(in: form)
         driver.draft.setText("Retained note", at: 0, in: form)
-        let anchor = try XCTUnwrap(collection.cellForItem(at: IndexPath(item: 10, section: 0)))
-        let anchorOffset = anchor.frame.minY - collection.contentOffset.y
+        let anchorOffset = try XCTUnwrap(rowOffset(10, in: collection))
         let expandedHeight = driver.height
         driver.tool.permission = ToolPermission(id: "reply", status: .approved, answers: .object([
             "a": .object(["answers": .array([.string("A")])]),
             "b": .object(["answers": .array([.string("D")])]),
         ]))
         try await settle { driver.height < expandedHeight }
-        XCTAssertEqual(anchor.frame.minY - collection.contentOffset.y, anchorOffset, accuracy: 1)
+        let anchorOffsetAfterCollapse = try XCTUnwrap(rowOffset(10, in: collection))
+        XCTAssertEqual(anchorOffsetAfterCollapse, anchorOffset, accuracy: 1)
     }
 
     private func host<V: View>(_ view: V, width: CGFloat) throws -> (UIWindow, UIHostingController<V>) {
@@ -231,6 +273,25 @@ final class QuestionCardPresentationTests: XCTestCase {
     private func findScroll(_ view: UIView) -> UIScrollView? {
         if let scroll = view as? UIScrollView { return scroll }
         return view.subviews.lazy.compactMap(findScroll).first
+    }
+
+    private func rowIntersectsViewport(_ index: Int, in collection: UICollectionView) -> Bool {
+        collection.layoutIfNeeded()
+        guard let frame = collection.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else {
+            return false
+        }
+        let top = collection.contentOffset.y + collection.adjustedContentInset.top
+        let bottom = collection.contentOffset.y + collection.bounds.height - collection.adjustedContentInset.bottom
+        return frame.maxY > top && frame.minY < bottom
+    }
+
+    private func rowOffset(_ index: Int, in collection: UICollectionView) -> CGFloat? {
+        collection.layoutIfNeeded()
+        guard let frame = collection.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else {
+            return nil
+        }
+        let top = collection.contentOffset.y + collection.adjustedContentInset.top
+        return frame.minY - top
     }
 
     private func settle(_ condition: () -> Bool) async throws {

@@ -1,9 +1,12 @@
+import { compareSessionSummaries } from '@hapi/protocol'
 import {
+    SessionReadStateRequestSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
     getPermissionModesForFlavor,
+    isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     SetSessionPinnedRequestSchema,
@@ -25,17 +28,28 @@ import {
     toSessionSummary,
     UploadFileRequestSchema
 } from '@hapi/protocol'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { RPC_METHODS, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import {
+    MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES,
+    serializeContentSearchSessionIds
+} from '../../store/messageContentSearch'
+import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+// Leave room for the query, limit, and JSON envelope; the serialized session
+// scope itself remains bounded by MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES.
+const MAX_CONTENT_SEARCH_REQUEST_BYTES = MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES + 4 * 1024
+const MAX_CONTENT_SEARCH_QUERY_CHARACTERS = 200
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -77,8 +91,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
-
         const namespace = c.get('namespace')
         const limitRaw = c.req.query('limit')
         const parsedLimit = limitRaw === undefined ? null : Number(limitRaw)
@@ -93,24 +105,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 if (order === 'updatedAt') {
                     return b.updatedAt - a.updatedAt
                 }
-                if (Boolean(a.globalPinned) !== Boolean(b.globalPinned)) {
-                    return a.globalPinned ? -1 : 1
-                }
-                if (Boolean(a.pinned) !== Boolean(b.pinned)) {
-                    return a.pinned ? -1 : 1
-                }
-                // Active sessions first (web session list)
-                if (a.active !== b.active) {
-                    return a.active ? -1 : 1
-                }
-                // Within active sessions, sort by pending requests count
-                const aPending = getPendingCount(a)
-                const bPending = getPendingCount(b)
-                if (a.active && aPending !== bPending) {
-                    return bPending - aPending
-                }
-                // Then by updatedAt
-                return b.updatedAt - a.updatedAt
+                return compareSessionSummaries(a, b)
             })
         if (limit !== null) {
             sessionRecords = sessionRecords.slice(0, limit)
@@ -127,6 +122,192 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         })
 
         return c.json({ sessions })
+    })
+
+    const respondToSessionContentSearch = (
+        c: Context<WebAppEnv>,
+        engine: SyncEngine,
+        query: string,
+        limit: number,
+        sessionIds?: readonly string[]
+    ) => {
+        if (!query) return c.json({ results: [], hasPotentiallyIncompleteResults: false })
+        if (Array.from(query).length > MAX_CONTENT_SEARCH_QUERY_CHARACTERS) {
+            return c.json({ error: 'Content search query too long' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const sessionsById = new Map(
+            engine.getSessionsByNamespace(namespace).map((session) => [session.id, session])
+        )
+        const normalizedSessionIds = sessionIds === undefined
+            ? undefined
+            : [...new Set(sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean))]
+        const scopedSessionIds = normalizedSessionIds?.filter((sessionId) => sessionsById.has(sessionId))
+        if (scopedSessionIds && serializeContentSearchSessionIds(scopedSessionIds) === null) {
+            return c.json({ error: 'sessionIds too large' }, 400)
+        }
+        const matches = engine.searchSessionContent(query, namespace, limit, scopedSessionIds)
+        const hasPotentiallyIncompleteResults = engine.hasPotentiallyIncompleteSessionContent(
+            namespace,
+            query,
+            scopedSessionIds
+        )
+        const matchedSessionIds = matches.map((match) => match.sessionId)
+        const scheduledCounts = engine.getFutureScheduledMessageCounts(matchedSessionIds)
+        const nextScheduledAt = engine.getNextScheduledAtBySessionIds(matchedSessionIds)
+        const results = matches
+            .flatMap((match) => {
+                const session = sessionsById.get(match.sessionId)
+                if (!session) return []
+                const summary = toSessionSummary(session)
+                return [{
+                    session: {
+                        ...summary,
+                        futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
+                        nextScheduledAt: nextScheduledAt.get(session.id) ?? null
+                    },
+                    match: {
+                        messageId: match.messageId,
+                        role: match.role,
+                        seq: match.seq,
+                        createdAt: match.createdAt,
+                        snippet: match.snippet,
+                        truncated: match.truncated
+                    }
+                }]
+            })
+
+        return c.json({ results, hasPotentiallyIncompleteResults })
+    }
+
+    app.get('/sessions/content-search', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const query = c.req.query('query')?.trim() ?? ''
+        const limitRaw = Number(c.req.query('limit'))
+        const limit = Number.isFinite(limitRaw)
+            ? Math.min(100, Math.max(1, Math.floor(limitRaw)))
+            : 50
+        const searchUrl = new URL(c.req.url)
+        const requestedSessionIds = searchUrl.searchParams.getAll('sessionId')
+            .map((sessionId) => sessionId.trim())
+            .filter(Boolean)
+        const sessionIds = searchUrl.searchParams.has('sessionId')
+            ? [...new Set(requestedSessionIds)]
+            : undefined
+        return respondToSessionContentSearch(c, engine, query, limit, sessionIds)
+    })
+
+    app.post(
+        '/sessions/content-search',
+        bodyLimit({
+            maxSize: MAX_CONTENT_SEARCH_REQUEST_BYTES,
+            onError: (c) => c.json({ error: 'Content search request too large' }, 413)
+        }),
+        async (c) => {
+            const engine = requireSyncEngine(c, getSyncEngine)
+            if (engine instanceof Response) {
+                return engine
+            }
+
+            let body: {
+                query?: unknown
+                limit?: unknown
+                sessionIds?: unknown
+            } | null
+            try {
+                body = await c.req.json() as {
+                    query?: unknown
+                    limit?: unknown
+                    sessionIds?: unknown
+                }
+            } catch (error) {
+                if (error instanceof Error && error.name === 'BodyLimitError') {
+                    return c.json({ error: 'Content search request too large' }, 413)
+                }
+                body = null
+            }
+            if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+                return c.json({ error: 'Invalid body' }, 400)
+            }
+            if (body.query !== undefined && typeof body.query !== 'string') {
+                return c.json({ error: 'Invalid query' }, 400)
+            }
+            if (body.sessionIds !== undefined && (
+                !Array.isArray(body.sessionIds)
+                || body.sessionIds.some((sessionId) => typeof sessionId !== 'string')
+            )) {
+                return c.json({ error: 'Invalid sessionIds' }, 400)
+            }
+
+            const query = typeof body.query === 'string' ? body.query.trim() : ''
+            const limitRaw = Number(body.limit)
+            const limit = Number.isFinite(limitRaw)
+                ? Math.min(100, Math.max(1, Math.floor(limitRaw)))
+                : 50
+            const sessionIds = body.sessionIds === undefined
+                ? undefined
+                : [...new Set(
+                    (body.sessionIds as string[])
+                        .map((sessionId) => sessionId.trim())
+                        .filter(Boolean)
+                )]
+            return respondToSessionContentSearch(c, engine, query, limit, sessionIds)
+        }
+    )
+
+    app.get('/sessions/:id/content-search', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const query = c.req.query('query')?.trim() ?? ''
+        if (!query) return c.json({ matches: [], total: 0, hasPotentiallyIncompleteResults: false })
+        if (Array.from(query).length > MAX_CONTENT_SEARCH_QUERY_CHARACTERS) {
+            return c.json({ error: 'Content search query too long' }, 400)
+        }
+
+        const limitRaw = Number(c.req.query('limit'))
+        const limit = Number.isFinite(limitRaw)
+            ? Math.min(1000, Math.max(1, Math.floor(limitRaw)))
+            : 500
+        const result = engine.searchSessionContentMatches(
+            query,
+            c.get('namespace'),
+            sessionResult.session.id,
+            limit
+        )
+
+        return c.json({
+            matches: result.matches.map(({ sessionId: _sessionId, ...match }) => match),
+            total: result.total,
+            hasPotentiallyIncompleteResults: result.hasPotentiallyIncompleteResults
+        })
+    })
+
+    app.put('/sessions/:id/read-state', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const access = requireSessionFromParam(c, engine)
+        if (access instanceof Response) return access
+        // A revision belongs to one session ID. Never apply an old ID's
+        // pending operation to a replacement session via alias resolution.
+        if (access.sessionId !== c.req.param('id')) return c.json({ error: 'Session replaced' }, 409)
+        const body = SessionReadStateRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!body.success) return c.json({ error: 'Invalid read state' }, 400)
+        const result = engine.updateReadState(access.sessionId, c.get('namespace'), body.data)
+        if (!result) return c.json({ error: 'Session not found' }, 404)
+        return c.json(result, result.status === 'invalid' ? 400 : result.status === 'conflict' ? 409 : 200)
     })
 
     app.get('/sessions/:id/export', (c) => {
@@ -370,7 +551,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -450,15 +631,28 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const lifecycleState = sessionResult.session.metadata?.lifecycleState
-        if (!sessionResult.session.active && lifecycleState === 'archived') {
+        const runnerOwned = sessionResult.session.metadata?.startedBy === 'runner'
+            || sessionResult.session.metadata?.startedFromRunner === true
+        if (!runnerOwned && !sessionResult.session.active && lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
         }
 
-        if (!sessionResult.session.active && lifecycleState !== 'running') {
+        // tiann/hapi#1820: `idle` is a live lifecycle too — a session the hub
+        // reconciled as keepalive-only must stay archivable once its socket
+        // finally drops, exactly like a stale `running` row.
+        if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)
+            && !(runnerOwned && lifecycleState === 'archived')) {
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
-        await engine.archiveSession(sessionResult.sessionId)
+        try {
+            await engine.archiveSession(sessionResult.sessionId)
+        } catch (error) {
+            if (error instanceof ArchiveCleanupError) {
+                return c.json({ error: error.message, code: error.code }, error.status)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 
@@ -710,8 +904,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
         }
 
+        // Pi commits the model before setting its thinking level, so a failure
+        // in between would leave half of the request applied.
+        const { model, effort } = parsed.data
+        if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
+            return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
+        }
+
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
+            await engine.applySessionConfig(sessionResult.sessionId, effort === undefined ? { model } : { model, effort })
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model'
@@ -839,11 +1040,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const body = await c.req.json().catch(() => null)
         const parsed = RenameSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body: name is required' }, 400)
+            return c.json({ error: 'Invalid body: name or titleLocked is required' }, 400)
         }
 
         try {
-            await engine.renameSession(sessionResult.sessionId, parsed.data.name)
+            await engine.renameSession(sessionResult.sessionId, parsed.data.name, parsed.data.titleLocked)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to rename session'
@@ -895,7 +1096,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text)
+            await engine.updateSessionSummary(sessionResult.sessionId, parsed.data.text, parsed.data.titleLocked)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to update session summary'
@@ -1385,6 +1586,13 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const result = await engine.listCodexModelsForSession(sessionResult.sessionId)
             return c.json(result)
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Codex models'
@@ -1470,6 +1678,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.get('/sessions/:id/dsh-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'dsh') {
+            return c.json({ success: false, error: 'DSH models are only available for DeepSeek Harness sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listDshModelsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list DSH models'
+            }, 500)
+        }
+    })
+
     app.get('/sessions/:id/grok-reasoning-effort-options', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) return engine
@@ -1502,6 +1728,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Copilot models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/kimi-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'kimi') {
+            return c.json({ success: false, error: 'Kimi models are only available for Kimi sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listKimiModelsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Kimi models'
             }, 500)
         }
     })

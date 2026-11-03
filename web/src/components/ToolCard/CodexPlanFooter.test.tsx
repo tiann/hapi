@@ -26,22 +26,48 @@ function fixture(overrides: Partial<HappyChatContextValue> = {}) {
         tool: { id: 'plan', name: 'ExitPlanMode', input: { plan: '# Durable proposal' }, state: 'completed',
             createdAt: 1, startedAt: 1, completedAt: 2, execStartedAt: null, execCompletedAt: null, description: null, result: null }
     }
+    let cardMount = 0
     const ui = () => <HappyChatProvider value={{ ...ctx }}>
-        <ToolCard block={block} api={ctx.api} sessionId={ctx.sessionId} metadata={ctx.metadata}
+        <ToolCard key={`${block.id}:${cardMount}`} block={{ ...block, tool: { ...block.tool } }} api={ctx.api} sessionId={ctx.sessionId} metadata={ctx.metadata}
             disabled={ctx.disabled} onDone={ctx.onRefresh} terminalToolDisplayMode="compact" />
     </HappyChatProvider>
     const view = render(ui())
-    return { ctx, implement, continued, refresh, rerender: () => view.rerender(ui()) }
+    return {
+        ctx, block, implement, continued, refresh,
+        remount: () => { cardMount++; view.rerender(ui()) },
+        rerender: () => view.rerender(ui())
+    }
 }
 
 describe('shared Codex plan card', () => {
-    it('offers execution and composer focus without creating an approval request', () => {
+    it('dismisses actions and focuses the composer without creating an approval request', () => {
         const f = fixture()
         expect(screen.getByText('# Durable proposal')).toBeInTheDocument()
         expect(screen.queryByText('tool.waitingForApproval')).not.toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'tool.plan.continue' }))
         expect(f.continued).toHaveBeenCalledOnce()
         expect(f.implement).not.toHaveBeenCalled()
+        expect(screen.queryByRole('button', { name: 'tool.plan.continue' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'tool.plan.implement' })).not.toBeInTheDocument()
+        expect(screen.getByText('# Durable proposal')).toBeInTheDocument()
+        // Recycling the card and a stale live proposal must not revive the menu.
+        f.remount()
+        f.ctx.codexPlanProposalId = null
+        f.rerender()
+        f.ctx.codexPlanProposalId = 'plan'
+        f.rerender()
+        expect(screen.queryByRole('button', { name: 'tool.plan.continue' })).not.toBeInTheDocument()
+    })
+
+    it('offers actions for a new proposal after continuing the previous one', () => {
+        const f = fixture()
+        fireEvent.click(screen.getByRole('button', { name: 'tool.plan.continue' }))
+        f.ctx.codexPlanProposalId = 'new-plan'
+        f.block.id = 'new-plan'
+        f.block.tool.id = 'new-plan'
+        f.rerender()
+        expect(screen.getByRole('button', { name: 'tool.plan.continue' })).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'tool.plan.implement' })).toBeEnabled()
     })
 
     it('submits once and keeps pending feedback while the native action removes the available id', async () => {
@@ -69,6 +95,16 @@ describe('shared Codex plan card', () => {
         expect(screen.getByText('# Durable proposal')).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'tool.plan.implement' })).not.toBeInTheDocument()
         expect(f.implement).toHaveBeenCalledOnce()
+    })
+
+    it('dismisses an earlier implementation error along with the actions', async () => {
+        const f = fixture()
+        f.implement.mockRejectedValue(new Error('Try again'))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.plan.implement' }))
+        await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Try again'))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.plan.continue' }))
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'tool.plan.implement' })).not.toBeInTheDocument()
     })
 
     it.each([null, 'child-plan', 'newer-plan'])('keeps historical plans read-only when the current id is %s', codexPlanProposalId => {

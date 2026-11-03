@@ -1,322 +1,477 @@
 import HapiClient
 import HapiProtocol
+import HapiUI
 import PhotosUI
 import SwiftUI
 
-/// Per-session scratchlist workbench (A-M4b): notes/drafts parked until the
-/// operator promotes them — presented as a sheet off the chat toolbar's note
-/// icon. Entry cards (text preview, age, attachment thumbs) open an edit
-/// sheet; the toolbar + drafts a new note; "To composer" inserts an entry's
-/// text into the chat composer and closes the sheet.
-///
-/// Placement divergence from Android (deliberate, A-M3f owns the composer
-/// UI): "Park current draft" lives in this screen's header instead of the
-/// composer bar. The seam itself (`ChatInteractor.parkComposerDraft`) matches
-/// Android — the composer clears only after the hub accepts, and an at-cap or
-/// failed park keeps the draft.
+/// Full inventory and a single navigation stack for reading/editing drafts.
 struct ScratchlistView: View {
     @State private var model: ScratchlistScreenModel
     private let attachments: ScratchlistAttachmentLoader
     private let interactor: ChatInteractor?
-
+    private let initialEntry: ScratchlistEntry?
+    private let initiallyEditing: Bool
     @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var path: [String] = []
     @State private var viewerAttachment: ScratchlistAttachment?
+    @State private var discardAndClose = false
 
-    init(
-        store: ScratchlistStore,
-        sessionId: String,
-        attachments: ScratchlistAttachmentLoader,
-        interactor: ChatInteractor? = nil
-    ) {
+    init(store: any SessionScratchlistStoring, sessionId: String, attachments: ScratchlistAttachmentLoader,
+         interactor: ChatInteractor? = nil, initialEntry: ScratchlistEntry? = nil, initiallyEditing: Bool = false) {
         _model = State(initialValue: ScratchlistScreenModel(sessionId: sessionId, store: store))
         self.attachments = attachments
         self.interactor = interactor
+        self.initialEntry = initialEntry
+        self.initiallyEditing = initiallyEditing
+    }
+
+    private var entries: [ScratchlistEntry] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.state.entries.filter {
+            query.isEmpty || $0.text.localizedStandardContains(query)
+                || $0.attachments.contains { $0.filename.localizedStandardContains(query) }
+        }
     }
 
     var body: some View {
-        NavigationStack {
-            content
+        NavigationStack(path: $path) {
+            inventory
+                .navigationTitle("Scratchlist")
                 .navigationBarTitleDisplayMode(.inline)
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search drafts")
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Done") {
-                            dismiss()
-                        }
-                    }
-                    ToolbarItem(placement: .principal) {
-                        VStack(spacing: 0) {
-                            Text("Scratchlist")
-                                .font(.headline)
-                            Text(countLine)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    if interactor != nil {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            parkButton
-                        }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            model.openEditor(nil)
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("New note")
-                    }
+                    ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
                 }
-                .overlay(alignment: .bottom) {
-                    noticeToast
+                .navigationDestination(for: String.self) { entryId in
+                    ScratchlistDetailView(model: model, entryId: entryId, loader: attachments,
+                        interactor: interactor, onRestore: { dismiss() },
+                        onOpenAttachment: { viewerAttachment = $0 })
                 }
         }
-        .sheet(isPresented: editorPresented) {
-            ScratchlistEditorSheet(
-                model: model,
-                attachments: attachments,
-                onOpenAttachment: { viewerAttachment = $0 }
-            )
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .background(ScratchlistDismissGuard(blocked: model.editor?.isDirty == true || model.editor?.isSaving == true) {
+            if model.editor?.isSaving != true { discardAndClose = true }
+        })
+        .confirmationDialog("Discard your changes?", isPresented: $discardAndClose, titleVisibility: .visible) {
+            Button("Discard changes", role: .destructive) { model.dismissEditor(); dismiss() }
+            Button("Keep editing", role: .cancel) {}
         }
         .fullScreenCover(item: $viewerAttachment) { attachment in
             ScratchlistAttachmentViewer(attachment: attachment, loader: attachments)
         }
         .onAppear {
             model.start()
+            if path.isEmpty, let initialEntry {
+                path = [initialEntry.entryId]
+                if initiallyEditing { model.openEditor(initialEntry) }
+            }
         }
         .onDisappear {
             model.stop()
+            if viewerAttachment == nil { model.dismissEditor() }
         }
     }
-
-    // MARK: - Content states
 
     @ViewBuilder
-    private var content: some View {
-        let state = model.state
-        VStack(spacing: 0) {
-            if !state.uploadsInFlight.isEmpty {
-                ProgressView()
-                    .progressViewStyle(.linear)
-            }
-            if model.isLoading {
-                Spacer()
-                ProgressView()
-                Spacer()
-            } else if state.loadFailed {
-                loadFailedState
-            } else if state.entries.isEmpty {
-                emptyState
-            } else {
-                entryList(state.entries)
-            }
-        }
-    }
-
-    private func entryList(_ entries: [ScratchlistEntry]) -> some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(entries) { entry in
-                    ScratchlistEntryCard(
-                        entry: entry,
-                        attachments: attachments,
-                        onOpen: { model.openEditor(entry) },
-                        onSendToComposer: sendToComposerAction(entry),
-                        onOpenAttachment: { viewerAttachment = $0 }
-                    )
+    private var inventory: some View {
+        if model.isLoading {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.state.loadFailed {
+            ContentUnavailableView {
+                Label("Couldn't load the scratchlist", systemImage: "wifi.slash")
+            } description: {
+                Text("Check the connection to your hub and try again.")
+            } actions: { Button("Retry") { model.retry() }.buttonStyle(.borderedProminent) }
+        } else {
+            List {
+                Section {
+                    if let notice = model.notice {
+                        ScratchlistErrorBanner(message: notice, actionTitle: "Dismiss") { model.clearNotice() }
+                    }
+                    if model.state.refreshFailed {
+                        ScratchlistErrorBanner(message: String(localized: "Couldn't refresh — showing saved drafts")) { model.retry() }
+                    }
+                    if model.state.atCap {
+                        Text("Scratchlist is full (200 entries)").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(entries) { entry in
+                        ScratchlistEntryRow(entry: entry, interactor: interactor,
+                            onOpen: { path.append(entry.entryId) },
+                            onEdit: { model.openEditor(entry); path.append(entry.entryId) },
+                            onDelete: { model.deleteEntry(entry.entryId) }, onRestore: { dismiss() })
+                            .disabled(model.deletingEntryId != nil)
+                    }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-    }
-
-    /// "To composer": insert the entry's text into the chat composer and
-    /// close the sheet (the entry itself stays on the scratchlist). Nil when
-    /// no interactor is wired (previews) — the affordance is hidden.
-    private func sendToComposerAction(_ entry: ScratchlistEntry) -> (() -> Void)? {
-        guard let interactor else { return nil }
-        return {
-            interactor.insertComposerText(entry.text)
-            dismiss()
-        }
-    }
-
-    private var loadFailedState: some View {
-        ContentUnavailableView {
-            Label("Couldn't load the scratchlist", systemImage: "wifi.slash")
-        } description: {
-            Text("Check the connection to your hub and try again.")
-        } actions: {
-            Button("Retry") {
-                model.retry()
-            }
-            .buttonStyle(.borderedProminent)
-        }
-    }
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No notes yet", systemImage: "note.text")
-        } description: {
-            Text("Park drafts from the header, or tap + to jot a note for this session.")
-        }
-    }
-
-    // MARK: - Chrome
-
-    private var countLine: String {
-        let state = model.state
-        if !model.isLoading, state.entries.isEmpty {
-            return String(localized: "No notes")
-        }
-        return state.entries.count == 1
-            ? String(localized: "1 note")
-            : String(format: String(localized: "%lld notes"), Int64(state.entries.count))
-    }
-
-    /// "Park current draft": the composer draft becomes an entry (disabled
-    /// while the composer is blank or the list is at cap; the new row appears
-    /// optimistically once the hub accepts).
-    @ViewBuilder
-    private var parkButton: some View {
-        if let interactor {
-            let blank = interactor.composer.text
-                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            Button {
-                interactor.parkComposerDraft()
-            } label: {
-                Image(systemName: "tray.and.arrow.down")
-            }
-            .disabled(blank || model.state.atCap)
-            .accessibilityLabel("Park current draft")
-        }
-    }
-
-    @ViewBuilder
-    private var noticeToast: some View {
-        if let notice = model.notice {
-            Text(notice)
-                .font(.footnote)
-                .lineLimit(3)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .shadow(radius: 4, y: 2)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 8)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
-    }
-
-    private var editorPresented: Binding<Bool> {
-        Binding(
-            get: { model.editor != nil },
-            set: { open in
-                if !open {
-                    model.dismissEditor()
+            .listStyle(.insetGrouped)
+            .overlay {
+                if model.state.entries.isEmpty {
+                    ContentUnavailableView {
+                        Label("No drafts yet", systemImage: "tray")
+                    } actions: {
+                        if let interactor {
+                            Button("Write draft") {
+                                interactor.setComposerDestination(.scratchlist)
+                                interactor.focusComposer()
+                                dismiss()
+                            }.buttonStyle(.borderedProminent)
+                        }
+                    }
+                } else if entries.isEmpty {
+                    ContentUnavailableView.search(text: query)
                 }
             }
-        )
+            .refreshable { await model.refresh() }
+        }
     }
 }
 
-// MARK: - Entry card
-
-/// One note: attachment strip, 4-line text preview, relative age, and the
-/// optional "To composer" promote action.
-private struct ScratchlistEntryCard: View {
+/// Each affordance is a real button: tapping a row never also takes a draft.
+struct ScratchlistEntryRow: View {
+    @Environment(\.hapiTypography) private var typography
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let entry: ScratchlistEntry
-    let attachments: ScratchlistAttachmentLoader
+    let interactor: ChatInteractor?
     let onOpen: () -> Void
-    let onSendToComposer: (() -> Void)?
-    let onOpenAttachment: (ScratchlistAttachment) -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    var onRestore: () -> Void = {}
+    var compact = false
+    var showsPreview = true
+    var showsEditAction = true
+    @State private var confirmRestore = false
+    @State private var confirmDelete = false
+    @State private var restoreError: String?
+
+    private var queued: Bool { interactor?.queuedScratchlistEntries.contains(entry.entryId) == true }
+    private var busy: Bool { interactor?.scratchlistBusy == true || interactor?.isSending == true }
+    // The compact row shares the composer's error banner. Do not repeat a
+    // failed park/restore there; the sheet needs its own local feedback.
+    private var error: String? {
+        (compact ? nil : restoreError) ?? interactor?.scratchlistEntryErrors[entry.entryId]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if !entry.attachments.isEmpty {
-                ScratchlistAttachmentStrip(
-                    attachments: entry.attachments,
-                    loader: attachments,
-                    thumbSize: 64,
-                    onOpen: onOpenAttachment,
-                    onRemove: nil
-                )
-            }
-            if entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Attachment only")
-                    .font(.subheadline)
-                    .italic()
-                    .foregroundStyle(.secondary)
+            if dynamicTypeSize.isAccessibilitySize {
+                if showsPreview { preview }
+                actions.frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                Text(entry.text)
-                    .font(.subheadline)
-                    .lineLimit(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack {
-                Text(scratchlistRelativeAge(
-                    nowMs: Int(Date().timeIntervalSince1970 * 1000),
-                    thenMs: entry.updatedAt
-                ))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                Spacer()
-                if let onSendToComposer {
-                    Button("To composer", action: onSendToComposer)
-                        .font(.caption.weight(.medium))
-                        .buttonStyle(.borderless)
+                HStack(alignment: .center, spacing: 12) {
+                    if showsPreview { preview }
+                    else { Spacer(minLength: 0) }
+                    actions
                 }
             }
+            if let error {
+                Text(LocalizedNoticeMapper.map(error)).font(.footnote).foregroundStyle(.red)
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture(perform: onOpen)
+        .confirmationDialog("You already have a draft", isPresented: $confirmRestore, titleVisibility: .visible) {
+            Button("Append to input") { restore(.append) }
+            Button("Save input, then take draft") { restore(.parkCurrent) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Delete this draft?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private var preview: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(entry.text.isEmpty ? String(localized: "Attachment only") : entry.text)
+                    .font(typography.bodyFont)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !compact, !entry.attachments.isEmpty {
+                    Label {
+                        Text(verbatim: "\(entry.attachments.count)")
+                    } icon: { Image(systemName: "paperclip") }
+                    .font(typography.captionFont).foregroundStyle(.secondary)
+                    .accessibilityLabel(Text("\(entry.attachments.count) attachments"))
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("View the full draft")
+        .accessibilityIdentifier("scratchlist.preview.\(entry.entryId)")
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            if let interactor {
+                Button {
+                    if queued { queue() }
+                    else if interactor.hasComposerDraft { confirmRestore = true }
+                    else { restore(.append) }
+                } label: {
+                    Text(queued ? "Retry removal" : "Take draft")
+                        .font(.subheadline.weight(.medium))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("scratchlist.take.\(entry.entryId)")
+                .disabled(busy)
+            }
+            if !compact {
+                Menu {
+                    if interactor != nil, !queued {
+                        Button("Add to send queue", systemImage: "text.line.first.and.arrowtriangle.forward", action: queue)
+                    }
+                    if showsEditAction {
+                        Button("Edit", systemImage: "pencil", action: onEdit).disabled(queued)
+                    }
+                    Button("Copy text", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
+                        .disabled(entry.text.isEmpty)
+                    Button("Delete", systemImage: "trash", role: .destructive) { confirmDelete = true }.disabled(queued)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 18, weight: .medium))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Draft actions")
+                .accessibilityIdentifier("scratchlist.actions.\(entry.entryId)")
+                .disabled(busy)
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+    }
+
+    private func queue() {
+        guard let interactor else { return }
+        restoreError = nil
+        Task { if await interactor.queueScratchlistEntry(entry) { onRestore() } }
+    }
+
+    private func restore(_ choice: ScratchlistRestoreChoice) {
+        guard let interactor else { return }
+        restoreError = nil
+        Task {
+            if await interactor.restoreScratchlistEntry(entry, choice: choice) { onRestore() }
+            else { restoreError = interactor.scratchlistError }
+        }
     }
 }
 
-/// Relative age like the session list's Android `formatRelativeAge`.
-private func scratchlistRelativeAge(nowMs: Int, thenMs: Int) -> String {
-    let delta = nowMs - thenMs
-    if delta < 60_000 { return String(localized: "now") }
-    let minutes = delta / 60_000
-    if minutes < 60 { return "\(minutes)m" }
-    let hours = minutes / 60
-    if hours < 24 { return "\(hours)h" }
-    let days = hours / 24
-    if days < 7 { return "\(days)d" }
-    let weeks = days / 7
-    if weeks < 5 { return "\(weeks)w" }
-    let months = days / 30
-    if months < 12 { return "\(months)mo" }
-    return "\(days / 365)y"
+struct ScratchlistErrorBanner: View {
+    let message: String
+    var actionTitle: LocalizedStringKey = "Retry"
+    let retry: () -> Void
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+            Text(LocalizedNoticeMapper.map(message)).font(.footnote).frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: retry) {
+                Text(actionTitle).frame(minHeight: 44).contentShape(Rectangle())
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
 }
 
+private struct ScratchlistAgeLabel: View {
+    let updatedAt: Int
+    @Environment(\.locale) private var locale
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            Text(verbatim: age(relativeTo: context.date))
+        }
+    }
+    private func age(relativeTo now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: Date(timeIntervalSince1970: Double(updatedAt) / 1000), relativeTo: now)
+    }
+}
+
+private struct ScratchlistDetailView: View {
+    let model: ScratchlistScreenModel
+    let entryId: String
+    let loader: ScratchlistAttachmentLoader
+    let interactor: ChatInteractor?
+    let onRestore: () -> Void
+    let onOpenAttachment: (ScratchlistAttachment) -> Void
+    @Environment(\.hapiTypography) private var typography
+    @State private var discardChanges = false
+
+    private var entry: ScratchlistEntry? { model.state.entries.first { $0.entryId == entryId } }
+
+    var body: some View {
+        Group {
+            if model.editor != nil {
+                ScratchlistEditorView(model: model, attachments: loader, onOpenAttachment: onOpenAttachment)
+            } else if let entry {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        if let notice = model.notice {
+                            ScratchlistErrorBanner(message: notice, actionTitle: "Dismiss") { model.clearNotice() }
+                        }
+                        Text(entry.text).font(typography.bodyFont).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !entry.attachments.isEmpty {
+                            ScratchlistAttachmentStrip(attachments: entry.attachments, loader: loader,
+                                thumbSize: 88, onOpen: onOpenAttachment, onRemove: nil, showsFilenames: true)
+                        }
+                        ScratchlistAgeLabel(updatedAt: entry.updatedAt)
+                            .font(typography.captionFont).foregroundStyle(.secondary)
+                        ScratchlistEntryRow(entry: entry, interactor: interactor, onOpen: {},
+                            onEdit: { model.openEditor(entry) }, onDelete: { model.deleteEntry(entryId) }, onRestore: onRestore,
+                            showsPreview: false, showsEditAction: false)
+                    }.padding(16)
+                }
+            } else {
+                ContentUnavailableView("Draft no longer available", systemImage: "tray")
+            }
+        }
+        .navigationTitle(model.editor == nil ? "Draft" : "Edit draft")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(model.editor != nil)
+        .toolbar {
+            if let editor = model.editor {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        if editor.isDirty { discardChanges = true } else { model.dismissEditor() }
+                    }.disabled(editor.isSaving)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") { model.saveEditor() }.disabled(!editor.canSave)
+                }
+            } else if let entry {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Edit") { model.openEditor(entry) }
+                        .disabled(interactor?.scratchlistBusy == true || interactor?.queuedScratchlistEntries.contains(entryId) == true)
+                }
+            }
+        }
+        .confirmationDialog("Discard your changes?", isPresented: $discardChanges, titleVisibility: .visible) {
+            Button("Discard changes", role: .destructive) { model.dismissEditor() }
+            Button("Keep editing", role: .cancel) {}
+        }
+    }
+}
+
+private struct ScratchlistEditorView: View {
+    let model: ScratchlistScreenModel
+    let attachments: ScratchlistAttachmentLoader
+    let onOpenAttachment: (ScratchlistAttachment) -> Void
+    @Environment(\.hapiTypography) private var typography
+    @State private var pickedItem: PhotosPickerItem?
+    @State private var photosPickerOpen = false
+    @State private var filePickerOpen = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let editor = model.editor {
+                if editor.isSaving { ProgressView().frame(maxWidth: .infinity) }
+                if let error = editor.error {
+                    ScratchlistErrorBanner(message: error, actionTitle: model.editorErrorIsRetryable ? "Retry" : "Dismiss",
+                        retry: model.retryEditorOperation)
+                }
+                if editor.text.utf16.count > ScratchlistCaps.maxTextLength {
+                    Text("Drafts can contain at most 10,000 characters — shorten the text before saving")
+                        .font(.footnote).foregroundStyle(.red)
+                }
+                TextEditor(text: Binding(get: { model.editor?.text ?? "" }, set: model.setEditorText))
+                    .font(typography.bodyFont)
+                    .accessibilityLabel("Draft text")
+                    .disabled(editor.isSaving)
+                if !editor.attachments.isEmpty {
+                    ScratchlistAttachmentStrip(attachments: editor.attachments, loader: attachments, thumbSize: 72,
+                        onOpen: onOpenAttachment, onRemove: model.removeAttachment)
+                        .frame(height: 78)
+                        .disabled(editor.isSaving || editor.isUploading)
+                }
+                if let filename = editor.failedUploadName {
+                    HStack {
+                        Label(filename, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.red)
+                        Spacer()
+                        Button("Remove", role: .destructive) { model.removeFailedUpload() }.frame(minHeight: 44)
+                    }.disabled(editor.isUploading)
+                }
+                HStack {
+                    Menu {
+                        Button("Photo library", systemImage: "photo") { photosPickerOpen = true }
+                        Button("Files", systemImage: "doc") { filePickerOpen = true }
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Add attachment")
+                    .accessibilityIdentifier("scratchlist.editor.attach")
+                    Spacer()
+                    if editor.isUploading { ProgressView() }
+                }
+                .frame(minHeight: 44)
+                .disabled(editor.isSaving || editor.isUploading || editor.failedUploadName != nil)
+            }
+        }
+        .padding(16)
+        .photosPicker(isPresented: $photosPickerOpen, selection: $pickedItem, matching: .images)
+        .onChange(of: pickedItem) {
+            guard let item = pickedItem else { return }
+            pickedItem = nil
+            model.addAttachment(item)
+        }
+        .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item]) { result in
+            guard case .success(let url) = result else { return }
+            let editorId = model.editor?.id
+            Task {
+                let prepared = await AttachmentPreparer.prepare(fileURL: url)
+                guard model.editor?.id == editorId else { return }
+                switch prepared {
+                case .ready(let prepared):
+                    model.addPreparedAttachment(prepared)
+                case .tooLarge(let filename, _):
+                    model.reportEditorError(String(format: String(localized: "%@ is over the 50 MB upload limit"), filename))
+                case .unreadable(let filename):
+                    model.reportEditorError(String(format: String(localized: "Couldn't read %@"), filename))
+                }
+            }
+        }
+    }
+}
 // MARK: - Attachment strip
 
 /// Horizontal thumbnails: images render through the authed loader, other
 /// mime types (pdf/text) degrade to filename chips; an optional ✕ badge
 /// removes (editor strip).
-private struct ScratchlistAttachmentStrip: View {
+struct ScratchlistAttachmentStrip: View {
     let attachments: [ScratchlistAttachment]
     let loader: ScratchlistAttachmentLoader
     let thumbSize: CGFloat
     let onOpen: (ScratchlistAttachment) -> Void
     let onRemove: ((ScratchlistAttachment) -> Void)?
+    var showsFilenames = false
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: showsFilenames ? 12 : 6) {
                 ForEach(attachments) { attachment in
-                    ScratchlistAttachmentThumb(
-                        attachment: attachment,
-                        loader: loader,
-                        size: thumbSize,
-                        onOpen: { onOpen(attachment) },
-                        onRemove: removeAction(for: attachment)
-                    )
+                    VStack(spacing: 6) {
+                        ScratchlistAttachmentThumb(
+                            attachment: attachment,
+                            loader: loader,
+                            size: thumbSize,
+                            onOpen: { onOpen(attachment) },
+                            onRemove: removeAction(for: attachment),
+                            showsFilename: !showsFilenames
+                        )
+                        if showsFilenames {
+                            Text(verbatim: attachment.filename)
+                                .font(.caption).foregroundStyle(.secondary)
+                                .frame(width: max(thumbSize, 140))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
         }
@@ -329,12 +484,13 @@ private struct ScratchlistAttachmentStrip: View {
 }
 
 /// One thumbnail (image via the authed loader, otherwise a filename chip).
-private struct ScratchlistAttachmentThumb: View {
+struct ScratchlistAttachmentThumb: View {
     let attachment: ScratchlistAttachment
     let loader: ScratchlistAttachmentLoader
     let size: CGFloat
     let onOpen: () -> Void
     let onRemove: (() -> Void)?
+    var showsFilename = true
 
     @State private var image: UIImage?
     @State private var failed = false
@@ -349,6 +505,7 @@ private struct ScratchlistAttachmentThumb: View {
                 tile
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(attachment.filename)
             if let onRemove {
                 Button(action: onRemove) {
                     Image(systemName: "xmark.circle.fill")
@@ -356,7 +513,7 @@ private struct ScratchlistAttachmentThumb: View {
                         .foregroundStyle(.white, .black.opacity(0.6))
                 }
                 .buttonStyle(.plain)
-                .padding(2)
+                .frame(minWidth: 44, minHeight: 44)
                 .accessibilityLabel("Remove \(attachment.filename)")
             }
         }
@@ -387,108 +544,29 @@ private struct ScratchlistAttachmentThumb: View {
             .background(Color(uiColor: .tertiarySystemFill))
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         } else {
-            Text(verbatim: "📎 \(attachment.filename)")
-                .font(.caption2)
-                .lineLimit(3)
-                .multilineTextAlignment(.center)
-                .padding(4)
-                .frame(width: size, height: size)
-                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-    }
-}
-
-// MARK: - Editor sheet
-
-/// Edit sheet: text field + attachment strip (photo picker → guard →
-/// downscale → upload spinner tile, remove) + Delete for existing entries +
-/// Save.
-private struct ScratchlistEditorSheet: View {
-    let model: ScratchlistScreenModel
-    let attachments: ScratchlistAttachmentLoader
-    let onOpenAttachment: (ScratchlistAttachment) -> Void
-
-    @State private var pickedItem: PhotosPickerItem?
-
-    var body: some View {
-        let editor = model.editor ?? ScratchlistEditorState()
-        VStack(alignment: .leading, spacing: 12) {
-            Text(editor.entryId == nil ? String(localized: "New note") : String(localized: "Edit note"))
-                .font(.headline)
-            TextField(
-                "Note, draft, parking-lot idea…",
-                text: Binding(
-                    get: { model.editor?.text ?? "" },
-                    set: { model.setEditorText($0) }
-                ),
-                axis: .vertical
-            )
-            .lineLimit(3...8)
-            .textFieldStyle(.roundedBorder)
-            attachmentRow(editor)
-            HStack {
-                if let entryId = editor.entryId {
-                    Button("Delete", role: .destructive) {
-                        model.deleteEntry(entryId)
-                    }
-                }
-                Spacer()
-                Button("Cancel") {
-                    model.dismissEditor()
-                }
-                Button("Save") {
-                    model.saveEditor()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(editor.isUploading)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(16)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .onChange(of: pickedItem) {
-            guard let item = pickedItem else { return }
-            pickedItem = nil
-            model.addAttachment(item)
-        }
-    }
-
-    private func attachmentRow(_ editor: ScratchlistEditorState) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(editor.attachments) { attachment in
-                    ScratchlistAttachmentThumb(
-                        attachment: attachment,
-                        loader: attachments,
-                        size: 72,
-                        onOpen: { onOpenAttachment(attachment) },
-                        onRemove: { model.removeAttachment(attachment) }
-                    )
-                }
-                if editor.isUploading {
-                    ProgressView()
-                        .frame(width: 72, height: 72)
-                        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Group {
+                if showsFilename {
+                    Text(verbatim: "📎 \(attachment.filename)")
+                        .font(.caption2).lineLimit(3).multilineTextAlignment(.center)
                 } else {
-                    PhotosPicker(selection: $pickedItem, matching: .images) {
-                        Image(systemName: "plus")
-                            .frame(width: 72, height: 72)
-                            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .accessibilityLabel("Add photo")
+                    Image(systemName: isImage ? "photo" : "doc")
+                        .font(.title2).foregroundStyle(.secondary)
                 }
             }
+            .padding(4)
+            .frame(width: size, height: size)
+            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
     }
 }
+
 
 // MARK: - Viewer
 
 /// Full-screen attachment viewer (the generated-image viewer pattern): dark
 /// backdrop, fit-scaled image via the authed loader, tap or the close button
 /// dismisses. Non-image attachments show a filename placeholder.
-private struct ScratchlistAttachmentViewer: View {
+struct ScratchlistAttachmentViewer: View {
     let attachment: ScratchlistAttachment
     let loader: ScratchlistAttachmentLoader
 

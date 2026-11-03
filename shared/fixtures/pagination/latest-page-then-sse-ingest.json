@@ -40,6 +40,7 @@
             "at": 1000,
             "seq": 1
         },
+        "readThroughRevision": 0,
         "viewMode": "tail"
     },
     "fixtureVersion": 1,
@@ -48,7 +49,7 @@
         {
             "expectedRequests": [
                 {
-                    "limit": 200
+                    "limit": 20
                 }
             ],
             "op": "sync-tail",

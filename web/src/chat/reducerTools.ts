@@ -179,21 +179,6 @@ export function ensureToolBlock(
     return block
 }
 
-export function collectToolIdsFromMessages(messages: NormalizedMessage[]): Set<string> {
-    const ids = new Set<string>()
-    for (const msg of messages) {
-        if (msg.role !== 'agent') continue
-        for (const content of msg.content) {
-            if (content.type === 'tool-call') {
-                ids.add(content.id)
-            } else if (content.type === 'tool-result') {
-                ids.add(content.tool_use_id)
-            }
-        }
-    }
-    return ids
-}
-
 export function isChangeTitleToolName(name: string): boolean {
     return name === 'mcp__hapi__change_title' || name === 'hapi__change_title'
 }

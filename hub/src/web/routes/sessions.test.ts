@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -70,6 +72,7 @@ function createApp(session: Session, opts?: {
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
+    renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
@@ -118,6 +121,17 @@ function createApp(session: Session, opts?: {
         options: [{ value: 'low', name: 'Low' }],
         currentValue: 'low'
     })
+    const listKimiModelsForSession = async () => ({
+        success: true,
+        availableModels: [
+            {
+                modelId: 'GLM-5.3-flash',
+                name: 'thehive / GLM-5.3-flash',
+                provider: 'thehive'
+            }
+        ],
+        currentModelId: 'GLM-5.3-flash'
+    })
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const reopenSession = opts?.reopenSession ?? (async (sessionId: string) => ({
         type: 'success' as const,
@@ -140,6 +154,7 @@ function createApp(session: Session, opts?: {
         listOpencodeReasoningEffortOptionsForSession,
         listGrokModelsForSession,
         listGrokReasoningEffortOptionsForSession,
+        listKimiModelsForSession,
         resumeSession,
         reopenSession,
         getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
@@ -168,6 +183,7 @@ function createApp(session: Session, opts?: {
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
+        renameSession: opts?.renameSession ?? (async () => {}),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
     } as Partial<SyncEngine>
 
@@ -260,6 +276,47 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ error: 'No Runner online', code: 'no_machine_online' })
         expect(clears).toBe(0)
     })
+    it('accepts a lock-only save without converting a generated title to a manual name', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), { renameSession: async (...args) => { calls.push(args) } })
+        const response = await app.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titleLocked: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', undefined, true]])
+    })
+
+    it.each([true, false])('passes explicit title lock %s atomically through both user title routes', async (titleLocked) => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            renameSession: async (...args) => { calls.push(args) },
+            updateSessionSummary: async (...args) => { calls.push(args) }
+        })
+        for (const [suffix, field] of [['', 'name'], ['/summary', 'text']]) {
+            const response = await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [field]: 'Chosen', titleLocked })
+            })
+            expect(response.status).toBe(200)
+        }
+        expect(calls).toEqual([['session-1', 'Chosen', titleLocked], ['session-1', 'Chosen', titleLocked]])
+    })
+
+    it('rejects invalid lock values and missing-session title saves', async () => {
+        const { app } = createApp(createSession())
+        for (const suffix of ['', '/summary']) {
+            expect((await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Title', text: 'Title', titleLocked: 'true' })
+            })).status).toBe(400)
+        }
+        const other = createApp(createSession(), { sessionExists: false }).app
+        expect((await other.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Title', titleLocked: false })
+        })).status).toBe(404)
+    })
+
     it('generates a title suggestion without changing session metadata', async () => {
         const suggest = async (sessionId: string) => {
             expect(sessionId).toBe('session-1')
@@ -357,6 +414,24 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({
             success: true,
             models: [{ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }]
+        })
+    })
+
+    it('returns a stable code when the Codex session model RPC target is absent', async () => {
+        const session = createSession()
+        const { app } = createApp(session, {
+            listCodexModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listCodexModels',
+            code: 'rpc_target_missing'
         })
     })
 
@@ -737,6 +812,70 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('applies a Claude model and the effort it keeps in one session config change', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it.each(['high', null])('applies an Antigravity model and effort %s atomically', async (effort) => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gemini-4-argon', effort })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'gemini-4-argon', effort }]
+        ])
+    })
+
+    it('rejects an effort sent with a model change for Pi, which applies the two separately', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.6-sol', effort: null })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects an effort sent with a model change for a flavor without effort', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort: 'high' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects model changes for local Codex sessions', async () => {
         const session = createSession({
             agentState: {
@@ -906,6 +1045,22 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('applies effort changes for Antigravity sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { effort: 'high' }]
+        ])
+    })
+
     it('applies effort changes for Claude sessions', async () => {
         const session = createSession({
             metadata: {
@@ -996,6 +1151,40 @@ describe('sessions routes', () => {
             success: true,
             options: [{ value: 'low', name: 'Low' }],
             currentValue: 'low'
+        })
+    })
+
+    it('returns the Kimi catalog for an active Kimi session over its own connection', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'kimi' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/kimi-models')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [
+                {
+                    modelId: 'GLM-5.3-flash',
+                    name: 'thehive / GLM-5.3-flash',
+                    provider: 'thehive'
+                }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        })
+    })
+
+    it('rejects kimi-models for non-Kimi sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/kimi-models')
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'Kimi models are only available for Kimi sessions'
         })
     })
 
@@ -1102,6 +1291,24 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { permissionMode: 'plan' }]
         ])
+    })
+
+    it('rejects Safe Yolo for Codex', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'safe-yolo' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Invalid permission mode for session flavor' })
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('applies permission mode changes for inactive sessions', async () => {
@@ -1380,6 +1587,27 @@ describe('sessions routes', () => {
     // rows and for split-brain rows whose CLI is gone but the in-memory `active`
     // flag has not been reconciled to false yet.
     describe('POST /sessions/:id/archive (tiann/hapi#916)', () => {
+        it.each(['timeout', 'unavailable', 'unconfirmed'] as const)('returns a structured cleanup %s without claiming archive success', async (reason) => {
+            const error = new ArchiveCleanupError(reason)
+            const { app } = createApp(createSession({ active: true }), {
+                archiveSession: async () => { throw error },
+            })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(error.status)
+            expect(await response.json()).toEqual({ error: error.message, code: error.code })
+        })
+
+        it('rechecks Runner cleanup for an already inactive archived row on retry', async () => {
+            let calls = 0
+            const session = createSession({ active: false, metadata: {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', machineId: 'machine-1',
+                lifecycleState: 'archived', startedBy: 'runner',
+            } })
+            const { app } = createApp(session, { archiveSession: async () => { calls++ } })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(200)
+            expect(calls).toBe(1)
+        })
         it('returns 2xx and calls archiveSession for an active session', async () => {
             const calls: string[] = []
             const session = createSession({ active: true })
@@ -1414,6 +1642,32 @@ describe('sessions routes', () => {
             expect(response.status).toBe(200)
             expect(calls).toEqual(['session-1'])
             expect(await response.json()).toEqual({ ok: true })
+        })
+
+        // tiann/hapi#1820: 'idle' is a live lifecycle. Once a keepalive-only
+        // session finally loses its socket it must stay archivable, exactly
+        // like a stale 'running' row — comparing against the 'running'
+        // literal here would strand it behind a 409.
+        it('archives an inactive session left in the keepalive-idle lifecycle', async () => {
+            const calls: string[] = []
+            const session = createSession({
+                active: false,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    lifecycleState: 'idle'
+                }
+            })
+            const { app } = createApp(session, {
+                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual(['session-1'])
         })
 
         it('returns 2xx and skips archiveSession when the row is already archived (idempotent)', async () => {
@@ -1518,6 +1772,22 @@ describe('sessions routes', () => {
         })
     })
 
+    it('dispatches an archived source fork to the engine without requiring an active CLI', async () => {
+        const source = createSession({ active: false, metadata: { path: '/work', host: 'test', flavor: 'codex', lifecycleState: 'archived' } })
+        const calls: unknown[][] = []
+        const { app } = createApp(source, { forkConversation: async (...args) => {
+            calls.push(args)
+            return { type: 'success', sessionId: 'new-child' }
+        } })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messageLocalId: 'boundary' })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'new-child' })
+        expect(calls[0]?.[0]).toBe('session-1')
+        expect(calls[0]?.[2]).toBe('boundary')
+    })
+
     it('forks via POST /sessions/:id/fork and returns the child session id', async () => {
         const calls: Array<{ sessionId: string; namespace: string; messageLocalId?: string }> = []
         const session = createSession({
@@ -1617,9 +1887,9 @@ describe('sessions routes', () => {
 
     it('honors optional limit on GET /sessions after sort', async () => {
         const sessions = [
-            createSession({ id: 'older-active', active: true, updatedAt: 10 }),
-            createSession({ id: 'newer-active', active: true, updatedAt: 20 }),
-            createSession({ id: 'inactive', active: false, updatedAt: 30 })
+            createSession({ id: 'older-active', active: true, updatedAt: 99, lastUserMessageAt: 10 }),
+            createSession({ id: 'newer-active', active: true, updatedAt: 20, lastUserMessageAt: 20 }),
+            createSession({ id: 'inactive', active: false, updatedAt: 30, lastUserMessageAt: 30 })
         ]
         const scheduledIds: string[][] = []
         const engine = {
@@ -1642,13 +1912,245 @@ describe('sessions routes', () => {
         const limited = await app.request('/api/sessions?limit=2')
         expect(limited.status).toBe(200)
         const limitedBody = await limited.json() as { sessions: Array<{ id: string }> }
-        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['newer-active', 'older-active'])
-        expect(scheduledIds.at(-1)).toEqual(['newer-active', 'older-active'])
+        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['inactive', 'newer-active'])
+        expect(scheduledIds.at(-1)).toEqual(['inactive', 'newer-active'])
 
         const unlimited = await app.request('/api/sessions')
         expect(unlimited.status).toBe(200)
         const unlimitedBody = await unlimited.json() as { sessions: Array<{ id: string }> }
         expect(unlimitedBody.sessions).toHaveLength(3)
+    })
+
+    it('searches message content only through the explicit content endpoint', async () => {
+        const session = createSession({ id: 'content-session' })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            hasPotentiallyIncompleteSessionContent: (namespace: string, query: string, sessionIds?: readonly string[]) => {
+                expect(namespace).toBe('default')
+                expect(query).toBe('needle')
+                expect(sessionIds).toEqual([session.id])
+                return true
+            },
+            searchSessionContent: (query: string, namespace: string, limit: number, sessionIds?: readonly string[]) => {
+                expect(query).toBe('needle')
+                expect(namespace).toBe('default')
+                expect(limit).toBe(7)
+                expect(sessionIds).toEqual([session.id])
+                return [{
+                    sessionId: session.id,
+                    messageId: 'message-1',
+                    role: 'assistant' as const,
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'context needle',
+                    truncated: true
+                }]
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'needle',
+                limit: 7,
+                sessionIds: [session.id, 'unknown-session', session.id]
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            hasPotentiallyIncompleteResults: true,
+            results: [{
+                session: expect.objectContaining({ id: session.id }),
+                match: {
+                    messageId: 'message-1',
+                    role: 'assistant',
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'context needle',
+                    truncated: true
+                }
+            }]
+        })
+    })
+
+    it('allows scoped content-search requests with more than 500 session IDs', async () => {
+        const sessions = Array.from({ length: 501 }, (_, index) => createSession({ id: `session-${index}` }))
+        let receivedSessionIds: readonly string[] | undefined
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            hasPotentiallyIncompleteSessionContent: () => false,
+            searchSessionContent: (_query: string, _namespace: string, _limit: number, sessionIds?: readonly string[]) => {
+                receivedSessionIds = sessionIds
+                return []
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'needle',
+                sessionIds: Array.from({ length: 501 }, (_, index) => `session-${index}`)
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ results: [], hasPotentiallyIncompleteResults: false })
+        expect(receivedSessionIds).toEqual(sessions.map((session) => session.id))
+    })
+
+    it('rejects an oversized content-search body before JSON parsing', async () => {
+        const engine = {
+            getSessionsByNamespace: () => [],
+            getFutureScheduledMessageCounts: () => new Map(),
+            getNextScheduledAtBySessionIds: () => new Map(),
+            searchSessionContent: () => []
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: 'x'.repeat(300 * 1024)
+        })
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: 'Content search request too large' })
+    })
+
+    it('rejects overlong content-search queries consistently across endpoints', async () => {
+        const session = createSession({ id: 'overlong-content-query-session' })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
+            searchSessionContent: () => {
+                throw new Error('must reject before searching')
+            },
+            searchSessionContentMatches: () => {
+                throw new Error('must reject before searching')
+            },
+            getFutureScheduledMessageCounts: () => new Map(),
+            getNextScheduledAtBySessionIds: () => new Map()
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const query = 'x'.repeat(201)
+        const expected = { error: 'Content search query too long' }
+        const postResponse = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query })
+        })
+        const getResponse = await app.request(`/api/sessions/content-search?query=${query}`)
+        const sessionResponse = await app.request(
+            `/api/sessions/${session.id}/content-search?query=${query}`
+        )
+
+        expect(postResponse.status).toBe(400)
+        expect(await postResponse.json()).toEqual(expected)
+        expect(getResponse.status).toBe(400)
+        expect(await getResponse.json()).toEqual(expected)
+        expect(sessionResponse.status).toBe(400)
+        expect(await sessionResponse.json()).toEqual(expected)
+    })
+
+    it('lists all content matches for an opened session without exposing its session id', async () => {
+        const session = createSession({ id: 'content-session-matches' })
+        const engine = {
+            resolveSessionAccess: (sessionId: string, namespace: string) => {
+                expect(sessionId).toBe(session.id)
+                expect(namespace).toBe('default')
+                return { ok: true as const, sessionId, session }
+            },
+            searchSessionContentMatches: (query: string, namespace: string, sessionId: string, limit: number) => {
+                expect(query).toBe('needle')
+                expect(namespace).toBe('default')
+                expect(sessionId).toBe(session.id)
+                expect(limit).toBe(12)
+                return {
+                    total: 2,
+                    matches: [
+                        {
+                            sessionId,
+                            messageId: 'message-new',
+                            role: 'assistant' as const,
+                            seq: 8,
+                            createdAt: 456,
+                            snippet: 'new needle',
+                            truncated: false
+                        },
+                        {
+                            sessionId,
+                            messageId: 'message-old',
+                            role: 'user' as const,
+                            seq: 3,
+                            createdAt: 123,
+                            snippet: 'old needle',
+                            truncated: false
+                        }
+                    ],
+                    hasPotentiallyIncompleteResults: false
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request(`/api/sessions/${session.id}/content-search?query=needle&limit=12`)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            matches: [
+                {
+                    messageId: 'message-new',
+                    role: 'assistant',
+                    seq: 8,
+                    createdAt: 456,
+                    snippet: 'new needle',
+                    truncated: false
+                },
+                {
+                    messageId: 'message-old',
+                    role: 'user',
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'old needle',
+                    truncated: false
+                }
+            ],
+            total: 2,
+            hasPotentiallyIncompleteResults: false
+        })
     })
 
     it('order=updatedAt truncates newest-first including inactive peers', async () => {

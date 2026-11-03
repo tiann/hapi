@@ -1,6 +1,7 @@
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
+import { z } from 'zod'
 
 import { ApiClient } from '@/api/api'
 import type { ApiSessionClient } from '@/api/apiSession'
@@ -11,6 +12,7 @@ import { configuration } from '@/configuration'
 import { logger } from '@/ui/logger'
 import { runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
+import { getProcessStartMarker } from '@/utils/process'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
@@ -20,6 +22,9 @@ export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from 
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
+/** Matches shared CreateOrLoadSessionRequestSchema `id`. */
+const HubReservedSessionIdSchema = z.string().uuid()
+
 export type SessionBootstrapOptions = {
     reportStarted?: boolean
     /** Multi-session workers inject session identity into each child, never process.env. */
@@ -28,11 +33,34 @@ export type SessionBootstrapOptions = {
     startedBy?: SessionStartedBy
     workingDirectory?: string
     tag?: string
+    /**
+     * Hub-preallocated / runner-stamped id for a *fresh* create bootstrap.
+     * Passed as `getOrCreateSession({ id })` so create-time metadata still runs
+     * while binding the reserved row. Distinct from reopen via
+     * `bootstrapExistingSession` / `--existing-session-id`.
+     *
+     * Must be a UUID (hub create schema). Non-UUID stamps (legacy HTTP spawn
+     * hints) stay reap-only: argv retains the id, create mints a new hub row.
+     */
+    reservedSessionId?: string
     agentState?: AgentState | null
     model?: string
     modelReasoningEffort?: string
     effort?: string
     metadataOverrides?: Partial<Metadata>
+}
+
+/** Hub create/load accepts optional `id` only as UUID — match that gate. */
+export function resolveReservedHubSessionId(reservedSessionId: string | undefined): string | undefined {
+    if (!reservedSessionId) return undefined
+    const parsed = HubReservedSessionIdSchema.safeParse(reservedSessionId)
+    if (!parsed.success) {
+        logger.debug(
+            `[START] Ignoring non-UUID reservedSessionId for create bind (reap stamp only): ${reservedSessionId}`
+        )
+        return undefined
+    }
+    return parsed.data
 }
 
 export type SessionBootstrapResult = {
@@ -104,6 +132,13 @@ export function buildSessionMetadata(options: {
         happyToolsDir: resolve(happyLibDir, 'tools', 'unpacked'),
         startedFromRunner: options.startedBy === 'runner',
         hostPid: process.pid,
+        // Proves which process generation owns hostPid: the runner adopts an
+        // untracked runner-started webhook only when this matches the live
+        // PID. It never reads the marker of a terminal session, so skip the
+        // probe there (on Windows it is a synchronous PowerShell spawn).
+        ...(options.startedBy === 'runner'
+            ? { hostStartMarker: getProcessStartMarker(process.pid) ?? undefined }
+            : {}),
         startedBy: options.startedBy,
         lifecycleState: 'running',
         lifecycleStateSince: now,
@@ -135,6 +170,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId
     if (metadata.copilotSessionId !== undefined) preserved.copilotSessionId = metadata.copilotSessionId
     if (metadata.piSessionId !== undefined) preserved.piSessionId = metadata.piSessionId
+    if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.piResumeAttempt !== undefined) preserved.piResumeAttempt = metadata.piResumeAttempt
     if (metadata.ptyResumeAttempt !== undefined) preserved.ptyResumeAttempt = metadata.ptyResumeAttempt
     if (metadata.preferredPermissionMode !== undefined) preserved.preferredPermissionMode = metadata.preferredPermissionMode
@@ -204,6 +240,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
+    const reservedHubId = resolveReservedHubSessionId(options.reservedSessionId)
 
     const api = await ApiClient.create()
 
@@ -222,6 +259,9 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     })
 
     const sessionInfo = await api.getOrCreateSession({
+        ...(reservedHubId
+            ? { id: reservedHubId, adopt: true as const }
+            : {}),
         tag: sessionTag,
         metadata,
         state: agentState,
@@ -229,6 +269,12 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         modelReasoningEffort: options.modelReasoningEffort,
         effort: options.effort
     })
+
+    if (reservedHubId && sessionInfo.id !== reservedHubId) {
+        throw new Error(
+            `Hub returned unexpected session id ${sessionInfo.id} (reserved ${reservedHubId})`
+        )
+    }
 
     const session = api.sessionSyncClient(sessionInfo)
 
@@ -341,6 +387,7 @@ export async function bootstrapExistingSession(options: {
     startedBy?: SessionStartedBy
     workingDirectory: string
     metadataOverrides?: Partial<Metadata>
+    requireMetadataFlush?: (metadata: Metadata | null | undefined) => boolean
 }): Promise<SessionBootstrapResult> {
     const startedBy = options.startedBy ?? 'terminal'
     const api = await ApiClient.create()
@@ -352,6 +399,23 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
+    // Shared Codex cold-resume calls bootstrap while holding native ownership.
+    // The source reservation outlives the native fork through child startup.
+    if (options.flavor === 'codex' && sessionInfo.metadata?.codexArchivedFork) {
+        throw new Error(`HAPI session ${options.sessionId} has a pending archived fork; retry that fork before resuming the source`)
+    }
+    // #1911 M1 belt: match hub merge-preserve scope — only hub-authored archive.
+    // CLI self-archive (archivedBy=cli) must still reopen; hub clears before spawn
+    // for intentional revive. CAS closed hub-side (success+preserve + ack EXIT).
+    if (
+        sessionInfo.metadata?.lifecycleState === 'archived'
+        && sessionInfo.metadata?.archivedBy === 'hub'
+    ) {
+        throw new Error(
+            `HAPI session ${options.sessionId} is hub-archived; refuse --existing-session-id reopen `
+            + '(use hub reopen to clear archive metadata first)'
+        )
+    }
     const baseMetadata = buildSessionMetadata({
         flavor: options.flavor,
         startedBy,
@@ -375,6 +439,9 @@ export async function bootstrapExistingSession(options: {
 
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
+    if (options.requireMetadataFlush?.(sessionInfo.metadata) && !await session.flushMetadata()) {
+        throw new Error('Unable to persist existing-session metadata')
+    }
 
     if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 

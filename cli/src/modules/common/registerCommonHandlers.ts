@@ -1,6 +1,7 @@
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { registerAgyModelHandlers } from './handlers/agyModels'
 import { registerBashHandlers } from './handlers/bash'
+import { registerClaudeModelHandlers } from './handlers/claudeModels'
 import { registerCodexModelHandlers } from './handlers/codexModels'
 import { registerCursorModelHandlers } from './handlers/cursorModels'
 import { registerOpencodeModelHandlers } from './handlers/opencodeModels'
@@ -8,6 +9,7 @@ import { registerOpencodeModelVariantsHandlers } from './handlers/opencodeModelV
 import { registerPiModelHandlers } from './handlers/piModels'
 import { registerGrokModelHandlers } from './handlers/grokModels'
 import { registerCopilotModelHandlers } from './handlers/copilotModels'
+import { registerKimiModelHandlers } from './handlers/kimiModels'
 import { registerDirectoryHandlers } from './handlers/directories'
 import { registerDifftasticHandlers } from './handlers/difftastic'
 import { registerFileHandlers } from './handlers/files'
@@ -20,6 +22,7 @@ import { registerUploadHandlers } from './handlers/uploads'
 export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string): void {
     registerAgyModelHandlers(rpcHandlerManager)
     registerBashHandlers(rpcHandlerManager, workingDirectory)
+    registerClaudeModelHandlers(rpcHandlerManager)
     registerCodexModelHandlers(rpcHandlerManager)
     registerCursorModelHandlers(rpcHandlerManager)
     registerOpencodeModelHandlers(rpcHandlerManager)
@@ -27,6 +30,7 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
     registerPiModelHandlers(rpcHandlerManager)
     registerGrokModelHandlers(rpcHandlerManager)
     registerCopilotModelHandlers(rpcHandlerManager)
+    registerKimiModelHandlers(rpcHandlerManager)
     registerFileHandlers(rpcHandlerManager, workingDirectory)
     registerDirectoryHandlers(rpcHandlerManager, workingDirectory)
     registerRipgrepHandlers(rpcHandlerManager, workingDirectory)

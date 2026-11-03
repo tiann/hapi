@@ -46,12 +46,15 @@ public enum PatchField<Value: Codable & Equatable & Sendable>: Equatable, Sendab
 /// back to the strict patch, so a malformed full session must not silently
 /// half-decode as a lenient patch.
 public struct SessionPatch: Equatable, Sendable {
+    public var contentRevision: Int?
+    public var readState: SessionReadState?
     public var active: Bool?
     public var thinking: Bool?
     /// Carried on the wire but NOT applied by `applySessionDetailPatch`
     /// (mirroring `web/src/lib/sessionPatch.ts`).
     public var activeTurnStartedAt: PatchField<Int>?
     public var activeAt: Int?
+    public var lastUserMessageAt: Int?
     public var updatedAt: Int?
     public var metadata: VersionedValue<SessionMetadata>?
     public var agentState: VersionedValue<AgentState>?
@@ -70,11 +73,14 @@ public struct SessionPatch: Equatable, Sendable {
     public var scratchlistUpdatedAt: Int?
 
     public init(
+        contentRevision: Int? = nil,
+        readState: SessionReadState? = nil,
         active: Bool? = nil,
         thinking: Bool? = nil,
         activeTurnStartedAt: PatchField<Int>? = nil,
         activeAt: Int? = nil,
         updatedAt: Int? = nil,
+        lastUserMessageAt: Int? = nil,
         metadata: VersionedValue<SessionMetadata>? = nil,
         agentState: VersionedValue<AgentState>? = nil,
         todos: VersionedValue<[TodoItem]>? = nil,
@@ -89,11 +95,14 @@ public struct SessionPatch: Equatable, Sendable {
         backgroundTaskCount: Int? = nil,
         scratchlistUpdatedAt: Int? = nil
     ) {
+        self.contentRevision = contentRevision
+        self.readState = readState
         self.active = active
         self.thinking = thinking
         self.activeTurnStartedAt = activeTurnStartedAt
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
         self.metadata = metadata
         self.agentState = agentState
         self.todos = todos
@@ -112,11 +121,13 @@ public struct SessionPatch: Equatable, Sendable {
 
 extension SessionPatch: Codable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
+        case contentRevision, readState
         case active
         case thinking
         case activeTurnStartedAt
         case activeAt
         case updatedAt
+        case lastUserMessageAt
         case metadata
         case agentState
         case todos
@@ -130,6 +141,8 @@ extension SessionPatch: Codable {
         case copilotAgentMode
         case backgroundTaskCount
         case scratchlistUpdatedAt
+        // Web-only status-panel list; accepted so the patch is not refetched.
+        case backgroundTasks
     }
 
     public init(from decoder: Decoder) throws {
@@ -140,11 +153,14 @@ extension SessionPatch: Codable {
             payloadName: "SessionPatch"
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        contentRevision = try container.decodeIfPresent(Int.self, forKey: .contentRevision)
+        readState = try container.decodeIfPresent(SessionReadState.self, forKey: .readState)
         active = try container.decodeIfPresent(Bool.self, forKey: .active)
         thinking = try container.decodeIfPresent(Bool.self, forKey: .thinking)
         activeTurnStartedAt = try Self.decodePatchField(Int.self, in: container, forKey: .activeTurnStartedAt)
         activeAt = try container.decodeIfPresent(Int.self, forKey: .activeAt)
         updatedAt = try container.decodeIfPresent(Int.self, forKey: .updatedAt)
+        lastUserMessageAt = try container.decodeIfPresent(Int.self, forKey: .lastUserMessageAt)
         metadata = try container.decodeIfPresent(VersionedValue<SessionMetadata>.self, forKey: .metadata)
         agentState = try container.decodeIfPresent(VersionedValue<AgentState>.self, forKey: .agentState)
         todos = try container.decodeIfPresent(VersionedValue<[TodoItem]>.self, forKey: .todos)
@@ -162,11 +178,14 @@ extension SessionPatch: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(contentRevision, forKey: .contentRevision)
+        try container.encodeIfPresent(readState, forKey: .readState)
         try container.encodeIfPresent(active, forKey: .active)
         try container.encodeIfPresent(thinking, forKey: .thinking)
         try Self.encodePatchField(activeTurnStartedAt, in: &container, forKey: .activeTurnStartedAt)
         try container.encodeIfPresent(activeAt, forKey: .activeAt)
         try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(lastUserMessageAt, forKey: .lastUserMessageAt)
         try container.encodeIfPresent(metadata, forKey: .metadata)
         try container.encodeIfPresent(agentState, forKey: .agentState)
         try container.encodeIfPresent(todos, forKey: .todos)

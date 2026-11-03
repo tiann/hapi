@@ -156,6 +156,7 @@ function areUserTextBlocksEqual(left: UserTextBlock, right: UserTextBlock): bool
 
 function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): boolean {
     return left.text === right.text
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
@@ -164,6 +165,7 @@ function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): b
 
 function areAgentReasoningBlocksEqual(left: AgentReasoningBlock, right: AgentReasoningBlock): boolean {
     return left.text === right.text
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
@@ -217,6 +219,8 @@ function areToolCallsEqual(left: ToolCallBlock, right: ToolCallBlock, childrenSa
         && left.tool.description === right.tool.description
         && left.tool.createdAt === right.tool.createdAt
         && left.tool.startedAt === right.tool.startedAt
+        && left.tool.startUnavailable === right.tool.startUnavailable
+        && left.tool.executionDurationMs === right.tool.executionDurationMs
         && left.tool.completedAt === right.tool.completedAt
         && left.tool.execStartedAt === right.tool.execStartedAt
         && left.tool.execCompletedAt === right.tool.execCompletedAt

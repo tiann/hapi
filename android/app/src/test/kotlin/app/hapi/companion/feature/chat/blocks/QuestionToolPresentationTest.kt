@@ -12,6 +12,35 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class QuestionToolPresentationTest {
+    @Test fun otherAndNotesShowFromRecordedAnswersWithoutChangingRawInput() {
+        for (flag in listOf(""", "isOther":true""", "")) {
+            val input = """{"questions":[{"id":"choice"$flag,"options":[{"label":"A"}]}]}"""
+            for (note in listOf("", """, "user_note: 自定义\n说明"""")) {
+                val source = """{"answers":{"choice":{"answers":["None of the above"$note]}}}"""
+                for (result in listOf(json(source), JsonPrimitive(source))) {
+                    val call = tool("request_user_input", input, result = result)
+                    val details = questionToolDetails(call)
+                    assertTrue(details.hasAnswers)
+                    assertFalse(details.showResult)
+                    if (flag.isEmpty()) assertEquals(listOf("None of the above"), details.questions[0].otherAnswers)
+                    else {
+                        assertEquals(listOf(false, true), details.questions[0].options.map { it.selected })
+                        assertTrue(details.questions[0].options[1].isOther)
+                        assertEquals(emptyList(), details.questions[0].otherAnswers)
+                    }
+                    assertEquals(if (note.isEmpty()) null else "自定义\n说明", details.questions[0].note)
+                    assertEquals(json(input), call.input)
+                }
+            }
+        }
+        val input = """{"questions":[{"id":"choice","isOther":true,"options":[{"label":"A"}]}]}"""
+        val call = tool("request_user_input", input, """{"choice":{"answers":["None of the above","user_note: live"]}}""",
+            json("""{"answers":{"choice":{"answers":["A","user_note: stale"]}}}"""))
+        assertEquals(listOf(false, true), questionToolDetails(call).questions[0].options.map { it.selected })
+        assertEquals("live", questionToolDetails(call).questions[0].note)
+        assertFalse(questionToolDetails(tool("request_user_input", input, result = json("""{"status":"resolved"}"""))).hasAnswers)
+    }
+
     private val askInput = """{"questions":[{"header":"Storage","question":"Choose **storage**","multiSelect":true,"options":[{"label":"SQLite","description":"Local file"},{"label":"Postgres"}]},{"question":"Anything else?","options":[]}]}"""
     private val requestInput = """{"questions":[{"id":"target","question":"Deploy where?","multiple":true,"options":[{"label":"staging","description":"Safe"},{"label":"production"}]},{"id":"comment","question":"Comment","prefill":"Not an answer"}]}"""
     private fun json(source: String) = HapiJson.parseToJsonElement(source)

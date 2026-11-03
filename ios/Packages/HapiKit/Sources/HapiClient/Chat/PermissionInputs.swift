@@ -122,6 +122,9 @@ public func parseAskUserQuestions(_ input: JSONValue?, cursorDialect: Bool) -> [
     return questions
 }
 
+/// Codex wire value. Presentation may localize it; answer serialization must not.
+public let requestUserInputOtherAnswer = "None of the above"
+
 public struct RequestUserInputQuestion: Equatable, Sendable {
     public let id: String
     public let header: String?
@@ -132,6 +135,16 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
     public let placeholder: String?
     public let prefill: String?
     public let inputType: String?
+    public let isOther: Bool
+
+    public var answerOptions: [AskOption] {
+        guard isOther, !options.isEmpty else { return options }
+        return options + [AskOption(id: nil, label: requestUserInputOtherAnswer, description: nil)]
+    }
+
+    public func isOtherOption(at index: Int) -> Bool {
+        isOther && !options.isEmpty && index == options.count
+    }
 
     public init(
         id: String,
@@ -142,7 +155,8 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
         placeholder: String?,
         prefill: String?,
         inputType: String? = nil,
-        header: String? = nil
+        header: String? = nil,
+        isOther: Bool = false
     ) {
         self.id = id
         self.header = header
@@ -153,6 +167,7 @@ public struct RequestUserInputQuestion: Equatable, Sendable {
         self.placeholder = placeholder
         self.prefill = prefill
         self.inputType = inputType
+        self.isOther = isOther
     }
 }
 
@@ -190,7 +205,8 @@ public func parseRequestUserInputQuestions(_ input: JSONValue?) -> [RequestUserI
             placeholder: object["placeholder"]?.stringValue,
             prefill: object["prefill"]?.stringValue,
             inputType: object["inputType"]?.stringValue == "editor" ? "editor" : nil,
-            header: trimmedString(object["header"]).flatMap { $0.isEmpty ? nil : $0 }
+            header: trimmedString(object["header"]).flatMap { $0.isEmpty ? nil : $0 },
+            isOther: object["isOther"]?.boolValue == true
         ))
     }
     return questions

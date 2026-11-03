@@ -5,7 +5,7 @@ export default defineConfig({
     test: {
         globals: false,
         environment: 'node',
-        include: ['src/**/*.test.ts'],
+        include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
         exclude: [
             // Runner integration tests spawn real detached runner/session
             // process trees and must run serially through the dedicated
@@ -13,6 +13,7 @@ export default defineConfig({
             // vitest.integration.config.ts), not inside the parallel
             // unit-test suite.
             '**/runner.integration.test.ts',
+            '**/lateRunnerWebhook.integration.test.ts',
         ],
         globalSetup: './src/test/globalSetup.ts',
         setupFiles: './src/test/setup.ts',

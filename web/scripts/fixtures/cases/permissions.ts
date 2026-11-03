@@ -45,6 +45,23 @@ const sharedQuestionResult = (status: 'resolved' | 'canceled') => wireMessage({
     }
 })
 
+const otherQuestionInput = {
+    isBlocking: true,
+    questions: [{ id: 'choice', header: 'Choice', question: 'Which option?', isOther: true, options: [
+        { label: 'A', description: 'First choice' }, { label: 'B', description: 'Second choice' }
+    ] }]
+}
+const otherQuestionMessage = wireMessage({
+    id: 'other-question', seq: 2, createdAt: T0 + 1_000, content: {
+        role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call', name: 'request_user_input', callId: 'other-call', input: otherQuestionInput
+        } }
+    }
+})
+const otherQuestionRequest = {
+    tool: 'request_user_input', toolCallId: 'other-call', arguments: otherQuestionInput, createdAt: T0 + 1_100
+}
+
 /**
  * Permission requests are NOT messages: they live in session.agentState
  * (requests → completedRequests). A pending request whose tool_use message is
@@ -54,6 +71,29 @@ const sharedQuestionResult = (status: 'resolved' | 'canceled') => wireMessage({
  * the oldest loaded message (web/src/chat/reducer.ts).
  */
 export const permissionCases: FixtureCase[] = [
+    {
+        name: 'permission-request-user-input-other-pending',
+        description: 'Codex isOther survives the pipeline without modifying the original options or inventing an answer.',
+        messages: [sharedQuestionMessages[0]!, otherQuestionMessage],
+        agentState: { requests: { 'other-request': otherQuestionRequest } }
+    },
+    ...[false, true].map((withNote): FixtureCase => {
+        const answers = { choice: { answers: ['None of the above', ...(withNote ? ['user_note: 自定义\n说明'] : [])] } }
+        return {
+            name: `permission-request-user-input-other-${withNote ? 'with-note' : 'without-note'}`,
+            description: 'Authoritatively recorded other answer, with an optional note; both result history and permission answers preserve canonical wire values. Not a locally inferred shared-session winner.',
+            messages: [sharedQuestionMessages[0]!, otherQuestionMessage, wireMessage({
+                id: 'other-result', seq: 3, createdAt: T0 + 5_000, content: {
+                    role: 'agent', content: { type: 'codex', data: {
+                        type: 'tool-call-result', callId: 'other-call', output: { answers }, is_error: false
+                    } }
+                }
+            })],
+            agentState: { requests: {}, completedRequests: { 'other-request': {
+                ...otherQuestionRequest, completedAt: T0 + 5_000, status: 'approved', answers
+            } } }
+        }
+    }),
     {
         name: 'permission-shared-pending',
         description: 'requestUserInput without a native transcript item: CLI persists one question, permission state attaches without duplicating it.',

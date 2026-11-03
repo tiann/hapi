@@ -2013,6 +2013,18 @@ function importSingleCodexSession(options: {
 
     try {
         const candidates = collectImportCandidates(options.store, options.namespace, options.getSyncEngine)
+        const activeCandidate = candidates.find((candidate) => (
+            candidate.active
+            && getCodexImportIds(candidate.metadata).includes(options.codexSessionId)
+            && (
+                !options.machineId
+                || typeof candidate.metadata?.machineId !== 'string'
+                || candidate.metadata.machineId === options.machineId
+            )
+        ))
+        if (activeCandidate) {
+            throw new Error('Cannot sync Codex transcript while the matching HAPI session is active')
+        }
         const target = selectImportTargetSession(
             options.store,
             candidates,
@@ -2073,7 +2085,9 @@ function importSingleCodexSession(options: {
         if (targetIsActive && messagesToAppend.length > 0) {
             throw new Error('当前会话正在运行且 Codex transcript 有新消息，停止或归档后再同步，避免消息顺序错乱')
         }
-        const appendedMessages = messagesToAppend.map((message) => options.store.messages.addMessage(sessionId!, message))
+        const appendedMessages = messagesToAppend.map((message, index) => options.store.messages.addImportedMessage(
+            sessionId!, message, `codex-desktop:${options.codexSessionId}:${comparablePrefixCount + index}`, Date.now()
+        ).message)
 
         // 中文注释：更新 Hapi 会话的 updatedAt，并在已有会话追加时广播新增消息，让当前打开的聊天页立刻显示客户端新增内容。
         const latestMessageCreatedAt = appendedMessages[appendedMessages.length - 1]?.createdAt ?? Date.now()

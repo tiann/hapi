@@ -6,6 +6,7 @@ import { createElement, useEffect, useState } from 'react'
 vi.mock('@/lib/composer-drafts', () => ({
     getDraft: vi.fn(() => ''),
     saveDraft: vi.fn(),
+    markDraftEdited: vi.fn(),
 }))
 vi.mock('@/lib/composer-attachment-drafts', () => ({
     getDraftAttachments: vi.fn(async () => []),
@@ -15,7 +16,7 @@ vi.mock('@/lib/composer-attachment-drafts', () => ({
 
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
 import { getDraftAttachments, getRestoredUploadMetadata, saveDraftAttachments } from '@/lib/composer-attachment-drafts'
-import { useComposerDraft } from './useComposerDraft'
+import { getLiveComposerDraft, useComposerDraft } from './useComposerDraft'
 
 const mockGetDraft = vi.mocked(getDraft)
 const mockSaveDraft = vi.mocked(saveDraft)
@@ -60,6 +61,7 @@ describe('useComposerDraft', () => {
         // Before rAF fires, setText should not have been called and hydration
         // must prevent failed-send recovery from racing ahead of persistence.
         expect(setText).not.toHaveBeenCalled()
+        expect(getLiveComposerDraft('session-1')?.getText()).toBe('saved text')
         expect(result.current).toEqual({ sessionId: 'session-1', complete: false, restoredAny: false , hasStoredAttachments: false })
 
         // Flush rAF + attachment hydration.
@@ -67,6 +69,19 @@ describe('useComposerDraft', () => {
         expect(mockGetDraft).toHaveBeenCalledWith('session-1')
         expect(setText).toHaveBeenCalledWith('saved text')
         expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true , hasStoredAttachments: false })
+    })
+
+    it('keeps an intentionally cleared live draft authoritative after hydration', async () => {
+        mockGetDraft.mockReturnValue('saved text')
+        const { result } = renderHook(() => {
+            const [text, setText] = useState('')
+            useComposerDraft('hydration-clear', text, [], false, setText, vi.fn())
+            return setText
+        })
+        await act(async () => flushRAF())
+        expect(getLiveComposerDraft('hydration-clear')?.getText()).toBe('saved text')
+        act(() => result.current(''))
+        expect(getLiveComposerDraft('hydration-clear')?.getText()).toBe('')
     })
 
     it('restores only missing stored attachments when a visible pick already exists', async () => {
@@ -149,6 +164,44 @@ describe('useComposerDraft', () => {
 
         expect(mockSaveDraft).toHaveBeenCalledWith('session-1', 'my draft')
         expect(mockSaveDraftAttachments).toHaveBeenCalledWith('session-1', [])
+    })
+
+    it('saves draft when the page becomes hidden, without unmounting (hapi#1882)', async () => {
+        mockGetDraft.mockReturnValue('')
+        const setText = vi.fn()
+
+        const { rerender } = renderHook(
+            ({ text }) => useComposerDraft('session-1', text, [], true, setText, vi.fn()),
+            { initialProps: { text: '' } },
+        )
+
+        await act(async () => flushRAF())
+        rerender({ text: 'my draft' })
+
+        // A real top-level page navigation (e.g. an installed PWA's own
+        // out-of-scope-link overlay) doesn't reliably run React's unmount
+        // cleanup before the state is gone — this is the fallback save.
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+        document.dispatchEvent(new Event('visibilitychange'))
+
+        expect(mockSaveDraft).toHaveBeenCalledWith('session-1', 'my draft')
+        expect(mockSaveDraftAttachments).toHaveBeenCalledWith('session-1', [])
+
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    })
+
+    it('does not save on visibilitychange while the page is becoming visible again', async () => {
+        mockGetDraft.mockReturnValue('')
+        const setText = vi.fn()
+
+        renderHook(() => useComposerDraft('session-1', 'my draft', [], true, setText, vi.fn()))
+        await act(async () => flushRAF())
+        mockSaveDraft.mockClear()
+
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+        document.dispatchEvent(new Event('visibilitychange'))
+
+        expect(mockSaveDraft).not.toHaveBeenCalled()
     })
 
     it('does not save draft on unmount before rAF has fired', () => {

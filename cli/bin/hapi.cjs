@@ -2,6 +2,7 @@
 
 const { execFileSync } = require('child_process');
 const path = require('path');
+const { version: PACKAGE_VERSION } = require('../package.json');
 
 const platform = process.platform;
 const arch = process.arch;
@@ -40,15 +41,28 @@ function isSupportedPlatform(platformName = platform, archName = arch) {
 
 function getBinaryPath(platformName = platform, archName = arch) {
     const pkgName = `@twsxtd/hapi-${platformName}-${archName}`;
+    let pkgPath;
 
     try {
         // Try to find the platform-specific package
-        const pkgPath = require.resolve(`${pkgName}/package.json`);
-        const binName = platformName === 'win32' ? 'hapi.exe' : 'hapi';
-        return path.join(path.dirname(pkgPath), 'bin', binName);
+        pkgPath = require.resolve(`${pkgName}/package.json`);
     } catch (e) {
         return null;
     }
+
+    // A failed optional dependency upgrade can leave an older package on disk.
+    // Node resolves that package even though it does not satisfy our pinned version.
+    const installedVersion = require(pkgPath).version;
+    if (installedVersion !== PACKAGE_VERSION) {
+        throw new Error(
+            `Platform package version mismatch: ${pkgName}\n` +
+            `Expected ${PACKAGE_VERSION}, but found ${installedVersion ?? 'unknown'}.\n` +
+            'Refusing to run a platform binary from a different HAPI release.'
+        );
+    }
+
+    const binName = platformName === 'win32' ? 'hapi.exe' : 'hapi';
+    return path.join(path.dirname(pkgPath), 'bin', binName);
 }
 
 function formatCommand(binPath, args) {
@@ -95,6 +109,17 @@ function reportUnsupportedPlatform(platformName = platform, archName = arch, log
     log(`  ${RELEASE_URL}`);
 }
 
+function reportReinstall(log = console.error) {
+    log('Try reinstalling with the official npm registry:');
+    log('Use the same package manager as your current installation:');
+    log(`  npm install -g @twsxtd/hapi@${PACKAGE_VERSION} --registry=${OFFICIAL_NPM_REGISTRY}`);
+    log('For Bun, remove the launcher first to retry skipped optional dependencies:');
+    log(`  bun remove -g @twsxtd/hapi && bun add -g @twsxtd/hapi@${PACKAGE_VERSION} --registry=${OFFICIAL_NPM_REGISTRY}`);
+    log('');
+    log('Or download the binary manually from:');
+    log(`  ${RELEASE_URL}`);
+}
+
 function reportMissingPlatformPackage(platformName = platform, archName = arch, log = console.error) {
     const platformPackage = `@twsxtd/hapi-${platformName}-${archName}`;
     log(`Missing platform package: ${platformPackage}`);
@@ -102,11 +127,7 @@ function reportMissingPlatformPackage(platformName = platform, archName = arch, 
     log(`Detected platform ${platformName}-${archName} is supported, but the platform binary package was not installed.`);
     log('This may happen when using a registry mirror that has not synced all optionalDependencies.');
     log('');
-    log('Try reinstalling with the official npm registry:');
-    log(`  npm install -g @twsxtd/hapi --registry=${OFFICIAL_NPM_REGISTRY}`);
-    log('');
-    log('Or download the binary manually from:');
-    log(`  ${RELEASE_URL}`);
+    reportReinstall(log);
 }
 
 function main() {
@@ -115,7 +136,16 @@ function main() {
         process.exit(1);
     }
 
-    const binPath = getBinaryPath();
+    let binPath;
+    try {
+        binPath = getBinaryPath();
+    } catch (error) {
+        console.error(error.message);
+        console.error('');
+        reportReinstall();
+        process.exit(1);
+    }
+
     if (!binPath) {
         reportMissingPlatformPackage();
         process.exit(1);

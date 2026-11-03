@@ -25,7 +25,7 @@ export type AgyPermissionMode = typeof AGY_PERMISSION_MODES[number]
 export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'] as const
 export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
 
-export const CODEX_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+export const CODEX_PERMISSION_MODES = ['default', 'read-only', 'autoReview', 'yolo'] as const
 export type CodexPermissionMode = typeof CODEX_PERMISSION_MODES[number]
 
 export const CODEX_COLLABORATION_MODES = ['default', 'plan'] as const
@@ -74,7 +74,7 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     plan: 'Plan Mode',
     ask: 'Ask Mode',
     debug: 'Debug Mode',
-    autoReview: 'Auto-review',
+    autoReview: 'Auto',
     bypassPermissions: 'Yolo',
     'read-only': 'Read Only',
     'safe-yolo': 'Safe Yolo',
@@ -177,11 +177,6 @@ export function isPermissionModeAllowedForFlavor(mode: PermissionMode, flavor?: 
     return getPermissionModesForFlavor(flavor).includes(mode)
 }
 
-/** New Codex sessions use the native shared runtime, without HAPI Safe Yolo. */
-export function getLaunchPermissionModesForFlavor(flavor?: string | null): readonly PermissionMode[] {
-    return getPermissionModesForFlavor(flavor).filter(mode => flavor !== 'codex' || mode !== 'safe-yolo')
-}
-
 export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption[] {
     return CODEX_COLLABORATION_MODES.map((mode) => ({
         mode,
@@ -199,10 +194,12 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
  *   stream-json Cursor sessions are NOT steerable — gate with
  *   {@link isSteeringSupportedForSession}.
+ * - Claude: stream-json stdin write during the turn (TUI Ctrl+X Ctrl+S);
+ *   Claude folds it in at the next tool boundary. Remote mode only.
  *
- * Claude / others: not supported (no reachable soft-steer path) — UI hides Steer.
+ * Others: not supported — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['codex', 'cursor', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'pi'] as const
 
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
     return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
@@ -221,7 +218,7 @@ export function isSteeringSupportedForSession(metadata?: {
     cursorSessionId?: string | null
     cursorSessionProtocol?: 'acp' | 'stream-json' | null
 } | null): boolean {
-    if (metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
+    if (metadata?.flavor === 'claude' || metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
         return true
     }
     if (metadata?.flavor !== 'cursor') {

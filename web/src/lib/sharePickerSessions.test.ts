@@ -81,8 +81,26 @@ describe('filterSharePickerSessions', () => {
         )
         expect(result.map((s) => s.id)).toEqual(['remote'])
     })
-})
 
+    it('requires every multi-word token (AND) via shared sessionMatchesQuery', () => {
+        const sessions = [
+            makeSession({
+                id: 'full-and',
+                active: false,
+                updatedAt: 50,
+                metadata: { path: '/proj/home', name: 'Assistant draft' },
+            }),
+            makeSession({
+                id: 'home-only',
+                active: true,
+                updatedAt: 200,
+                metadata: { path: '/proj/home', name: 'other' },
+            }),
+        ]
+        const result = filterSharePickerSessions(sessions, 'home assistant', machineLabel)
+        expect(result.map((s) => s.id)).toEqual(['full-and'])
+    })
+})
 describe('countHiddenActiveSharePickerSessions', () => {
     it('returns zero when active count is within cap', () => {
         const sessions = [

@@ -39,7 +39,8 @@ internal fun QuestionDetailsView(questions: List<QuestionDetail>) {
                 }
                 question.options.forEachIndexed { optionIndex, option ->
                     QuestionAnswerCard(
-                        text = option.label, description = option.description, markdown = true,
+                        text = if (option.isOther) stringResource(R.string.chat_perm_none_of_the_above) else option.label,
+                        description = option.description, markdown = true,
                         isSelected = option.selected, multiple = question.multiple, showControl = question.hasAnswers,
                         modifier = Modifier.testTag("question-$index-option-$optionIndex"),
                     )
@@ -100,6 +101,6 @@ private fun QuestionAnswerCard(
 }
 
 @Composable
-private fun QuestionMarkdown(text: String) {
+internal fun QuestionMarkdown(text: String) {
     if (text.length > TOOL_TEXT_PAGE_SIZE) ToolTextContent(code = text, language = "markdown") else Markdown(text)
 }

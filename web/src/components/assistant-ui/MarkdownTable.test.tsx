@@ -871,7 +871,7 @@ describe('MarkdownTable', () => {
     })
 
     it('round-trips literal Markdown metacharacters in plain table text', () => {
-        const source = '| Value |\n| --- |\n| \\*literal\\* \\_literal\\_ \\[brackets\\] \\`ticks\\` \\~\\~tilde\\~\\~ \\<angle\\> &amp;copy; |'
+        const source = '| Value |\n| --- |\n| \\*literal\\* \\_literal\\_ &#91;brackets&#93; \\`ticks\\` \\~\\~tilde\\~\\~ \\<angle\\> &amp;copy; |'
         const firstRender = render(
             <I18nProvider>
                 <MarkdownRenderer standalone content={source} />

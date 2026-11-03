@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
@@ -8,6 +9,7 @@ import { clearMessageWindow } from '@/lib/message-window-store'
 import { isKnownFlavor } from '@hapi/protocol'
 
 export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
+export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
 
 export function useSessionActions(
     api: ApiClient | null,
@@ -22,13 +24,13 @@ export function useSessionActions(
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setCopilotAgentMode: (mode: CopilotAgentMode) => Promise<void>
-    setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
+    setModel: (model: { provider: string; modelId: string } | string | null, options?: { effort: string | null }) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
     setServiceTier: (serviceTier: string | null) => Promise<void>
-    renameSession: (name: string) => Promise<void>
+    renameSession: (name: string | undefined, titleLocked?: boolean) => Promise<void>
     suggestSessionTitle: () => Promise<string>
-    updateSessionSummary: (text: string) => Promise<void>
+    updateSessionSummary: (text: string, titleLocked?: boolean) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
@@ -88,6 +90,7 @@ export function useSessionActions(
     })
 
     const archiveMutation = useMutation({
+        mutationKey: sessionArchiveMutationKey(sessionId),
         mutationFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
@@ -173,17 +176,26 @@ export function useSessionActions(
 
     const modelMutation = useMutation({
         mutationKey: sessionModelMutationKey(sessionId ?? ''),
-        mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
+        mutationFn: async (args: {
+            model: { provider: string; modelId: string } | string | null
+            options?: { effort: string | null }
+        }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.setModel(sessionId, model)
+            await api.setModel(sessionId, args.model, args.options)
         },
         onSuccess: async () => {
             await invalidateSession()
             await invalidateCursorModels()
         },
     })
+
+    const setModel = useCallback(
+        (model: { provider: string; modelId: string } | string | null, options?: { effort: string | null }) =>
+            modelMutation.mutateAsync({ model, options }),
+        [modelMutation.mutateAsync]
+    )
 
     const modelReasoningEffortMutation = useMutation({
         mutationFn: async (modelReasoningEffort: string | null) => {
@@ -228,11 +240,11 @@ export function useSessionActions(
     })
 
     const renameMutation = useMutation({
-        mutationFn: async (name: string) => {
+        mutationFn: async ({ name, titleLocked }: { name: string | undefined; titleLocked?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.renameSession(sessionId, name)
+            await api.renameSession(sessionId, name, titleLocked)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -248,11 +260,11 @@ export function useSessionActions(
     })
 
     const summaryMutation = useMutation({
-        mutationFn: async (text: string) => {
+        mutationFn: async ({ text, titleLocked }: { text: string; titleLocked?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.updateSessionSummary(sessionId, text)
+            await api.updateSessionSummary(sessionId, text, titleLocked)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -288,13 +300,13 @@ export function useSessionActions(
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
         setCopilotAgentMode: copilotAgentModeMutation.mutateAsync,
-        setModel: modelMutation.mutateAsync,
+        setModel,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
         setServiceTier: serviceTierMutation.mutateAsync,
-        renameSession: renameMutation.mutateAsync,
+        renameSession: (name: string | undefined, titleLocked?: boolean) => renameMutation.mutateAsync({ name, titleLocked }),
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
-        updateSessionSummary: summaryMutation.mutateAsync,
+        updateSessionSummary: (text: string, titleLocked?: boolean) => summaryMutation.mutateAsync({ text, titleLocked }),
         setPinMode: pinMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending

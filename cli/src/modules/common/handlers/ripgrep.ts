@@ -2,7 +2,7 @@ import { logger } from '@/ui/logger'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { run as runRipgrep, runFileSearch, type FileSearchOptions } from '@/modules/ripgrep/index'
-import { validatePath } from '../pathSecurity'
+import { resolveRealPathWithinWorkingDirectory } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface RipgrepRequest {
@@ -23,17 +23,27 @@ export function registerRipgrepHandlers(rpcHandlerManager: RpcHandlerManager, wo
     rpcHandlerManager.registerHandler<RipgrepRequest, RipgrepResponse>(RPC_METHODS.Ripgrep, async (data) => {
         logger.debug('Ripgrep request with args:', data.args, 'cwd:', data.cwd)
 
-        if (data.cwd) {
-            const validation = validatePath(data.cwd, workingDirectory)
-            if (!validation.valid) {
-                return rpcError(validation.error ?? 'Invalid working directory')
+        const requestedCwd = data.cwd ?? workingDirectory
+        const safeCwd = await resolveRealPathWithinWorkingDirectory(requestedCwd, workingDirectory)
+        if (!safeCwd) {
+            return rpcError('Invalid working directory')
+        }
+
+        if (data.fileSearch) {
+            const separatorIndex = data.args.indexOf('--')
+            if (separatorIndex >= 0) {
+                for (const searchPath of data.args.slice(separatorIndex + 1)) {
+                    if (!await resolveRealPathWithinWorkingDirectory(searchPath, safeCwd)) {
+                        return rpcError('Invalid file search path')
+                    }
+                }
             }
         }
 
         try {
             const result = data.fileSearch
-                ? await runFileSearch(data.args, { ...data.fileSearch, cwd: data.cwd })
-                : await runRipgrep(data.args, { cwd: data.cwd })
+                ? await runFileSearch(data.args, { ...data.fileSearch, cwd: safeCwd })
+                : await runRipgrep(data.args, { cwd: safeCwd })
             return {
                 success: true,
                 exitCode: result.exitCode,
