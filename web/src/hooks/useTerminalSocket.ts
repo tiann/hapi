@@ -135,7 +135,13 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
         socketRef.current = socket
         setState({ status: 'connecting' })
 
+        // Remember the most recent connect_error so a rejected handshake (for
+        // example a 403 from the hub's origin allowlist) is not masked by the
+        // generic "transport error" reason that immediately follows it.
+        let lastConnectError: string | null = null
+
         socket.on('connect', () => {
+            lastConnectError = null
             const size = lastSizeRef.current ?? { cols, rows }
             setState({ status: 'connecting' })
             emitCreate(socket, size)
@@ -172,6 +178,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
 
         socket.on('connect_error', (error) => {
             const message = error instanceof Error ? error.message : 'Connection error'
+            lastConnectError = message
             setErrorState(message)
         })
 
@@ -180,7 +187,7 @@ export function useTerminalSocket(options: UseTerminalSocketOptions): {
                 setState({ status: 'idle' })
                 return
             }
-            setErrorState(`Disconnected: ${reason}`)
+            setErrorState(lastConnectError ?? `Disconnected: ${reason}`)
         })
 
         socket.connect()

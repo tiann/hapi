@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { isProcessAlive, getHapiRunnerProcessIdentity, killProcess } from '@/utils/process';
 import { configuration } from '@/configuration';
+import { initializeApiUrl } from '@/ui/apiUrlInit';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders, isRunnerStateCompatibleWithIdentity } from './runnerIdentity';
 
 export function getInstalledCliMtimeMs(): number | undefined {
@@ -186,10 +187,11 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
   }
 
   const settings = await readSettings();
-  const currentApiUrl = process.env.HAPI_API_URL
-    || settings.apiUrl
-    || settings.serverUrl
-    || configuration.apiUrl;
+  // Resolve the hub URL through the same path the runner itself used, so a
+  // repaired value (e.g. a scheme-less HAPI_API_URL) does not look like an
+  // identity change and trigger a spurious runner restart.
+  await initializeApiUrl();
+  const currentApiUrl = configuration.apiUrl;
   const currentCliApiToken = process.env.CLI_API_TOKEN
     || settings.cliApiToken
     || configuration.cliApiToken;

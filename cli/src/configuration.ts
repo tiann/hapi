@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { normalizeHubUrl } from '@hapi/protocol'
 import packageJson from '../package.json'
 import { getCliArgs } from '@/utils/cliArgs'
 
@@ -81,7 +82,11 @@ class Configuration {
 
     constructor() {
         // Server configuration
-        this._apiUrl = process.env.HAPI_API_URL || 'http://localhost:3006'
+        // Repair a scheme-less override here too so reads that happen before
+        // initializeApiUrl() (and child processes) see the same value.
+        const envApiUrl = process.env.HAPI_API_URL
+        const normalizedEnvApiUrl = envApiUrl ? normalizeHubUrl(envApiUrl) : null
+        this._apiUrl = normalizedEnvApiUrl ?? (envApiUrl || 'http://localhost:3006')
         this._cliApiToken = process.env.CLI_API_TOKEN || ''
         this._extraHeaders = parseExtraHeaders(process.env.HAPI_EXTRA_HEADERS_JSON)
 

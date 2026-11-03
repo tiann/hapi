@@ -107,7 +107,13 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
         socketRef.current = socket
         setState({ status: 'connecting' })
 
+        // Remember the most recent connect_error so a rejected handshake (for
+        // example a 403 from the hub's origin allowlist) is not masked by the
+        // generic "transport error" reason that immediately follows it.
+        let lastConnectError: string | null = null
+
         socket.on('connect', () => {
+            lastConnectError = null
             // Re-subscribe across reconnects only if the viewer still wants it.
             if (subscribedRef.current) {
                 socket.emit('agent-terminal:subscribe', { sessionId })
@@ -124,6 +130,7 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
 
         socket.on('connect_error', (error) => {
             const message = error instanceof Error ? error.message : 'Connection error'
+            lastConnectError = message
             setState({ status: 'error', error: message })
         })
 
@@ -132,7 +139,7 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
                 setState({ status: 'idle' })
                 return
             }
-            setState({ status: 'error', error: `Disconnected: ${reason}` })
+            setState({ status: 'error', error: lastConnectError ?? `Disconnected: ${reason}` })
         })
 
         socket.connect()
