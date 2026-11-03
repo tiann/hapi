@@ -358,13 +358,17 @@ export function BoardItemDetail(props: {
     }
 
     const handleSaveBody = async () => {
-        const body = bodyDraft.trim()
-        if (body === (item.body ?? '').trim()) {
+        // Unlike the title, don't trim the body before comparing or saving —
+        // it's markdown, where leading/trailing whitespace can be meaningful
+        // (e.g. an initial indented code block). Trimming both sides here
+        // used to both mask whitespace-only edits (no save would fire) and
+        // strip real formatting from edits that did save.
+        if (bodyDraft === (item.body ?? '')) {
             setBodyEditing(false)
             return
         }
         try {
-            await props.onEditItem({ body })
+            await props.onEditItem({ body: bodyDraft })
             setBodyEditing(false)
         } catch {
             // Same reasoning as handleSaveTitle above.

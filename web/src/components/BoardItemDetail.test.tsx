@@ -667,4 +667,15 @@ describe('BoardItemDetail affordance treatment', () => {
         expect(screen.queryByRole('textbox', { name: 'Edit description' })).not.toBeInTheDocument()
         expect(screen.getByText('Original body')).toBeInTheDocument()
     })
+
+    it('saves a whitespace-only description edit, preserving leading indentation verbatim', async () => {
+        const onEditItem = vi.fn().mockResolvedValue(undefined)
+        renderDetail({ item: makeItem({ body: 'example' }), onEditItem })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit description' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Edit description' }), { target: { value: '    example' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+        await waitFor(() => expect(onEditItem).toHaveBeenCalledWith({ body: '    example' }))
+    })
 })
