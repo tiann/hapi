@@ -100,7 +100,7 @@ it.each(['codex', 'cursor'] as const)('preserves the separate %s runtime deliver
         // createEngine's returned session object can lag the DB: handleSessionAlive
         // may bump metadata (e.g. titleSuggestionTurn) and refresh the cache to a
         // new object while this local binding still holds the pre-alive version.
-        const current = store.sessions.getSession(session.id)!
+        const current = engine.getSession(session.id)!
         const metadata = { ...current.metadata!, hostPid: 101, hostStartMarker: 'worker-B' }
         const update = store.sessions.updateSessionMetadata(session.id, metadata, current.metadataVersion, 'default')
         if (update.result !== 'success') throw new Error('metadata update failed')
