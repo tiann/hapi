@@ -103,23 +103,39 @@ function matchFooterOnLine(line: string, lineStartInText: number): LineFooterMat
     return null
 }
 
+type FenceOpen = { char: '`' | '~'; len: number }
+
+/** Opening/closing fence marker: ``` / ~~~ with length (≥3). */
+function matchFenceMarker(line: string): FenceOpen | null {
+    const trimmed = line.trim()
+    const match = /^(```+|~~~+)/.exec(trimmed)
+    if (!match) return null
+    const token = match[1]!
+    return { char: token[0] as '`' | '~', len: token.length }
+}
+
 /**
  * Last done footer outside fenced code blocks, even when trailing harness prose
- * (or same-line glue) follows. Fenced examples of the footer format are ignored
- * so documentation turns are not treated as a real close (#2268 Minor).
+ * (or same-line glue) follows. Backtick and tilde fences (matching opener
+ * length) are ignored so documentation turns are not treated as a real close
+ * (#2268 Minor).
  */
 function findLastUnfencedDoneFooterEnd(text: string): number | null {
     const lines = text.split('\n')
-    let inFence = false
+    let openFence: FenceOpen | null = null
     let offset = 0
     let lastDoneEnd: number | null = null
 
     for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i]!
-        const trimmed = line.trim()
-        if (trimmed.startsWith('```')) {
-            inFence = !inFence
-        } else if (!inFence) {
+        const fence = matchFenceMarker(line)
+        if (fence) {
+            if (!openFence) {
+                openFence = fence
+            } else if (openFence.char === fence.char && fence.len >= openFence.len) {
+                openFence = null
+            }
+        } else if (!openFence) {
             const match = matchFooterOnLine(line, offset)
             if (match?.status === 'done') {
                 lastDoneEnd = match.endExclusive

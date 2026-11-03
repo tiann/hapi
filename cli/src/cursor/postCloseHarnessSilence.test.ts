@@ -184,6 +184,17 @@ describe('postCloseHarnessSilence (#2267)', () => {
         expect(truncateCoalescedHarnessAfterDoneFooter(docs)).toBeNull()
     })
 
+    it('preserves tilde-fenced done-footer examples', () => {
+        const docs = [
+            'Example:',
+            '~~~json',
+            DONE_FOOTER,
+            '~~~',
+            'Then the hub will notify you.'
+        ].join('\n')
+        expect(truncateCoalescedHarnessAfterDoneFooter(docs)).toBeNull()
+    })
+
     it('skips truncation while a soft-steer is outstanding', () => {
         const coalesced = `Answer.\n\n${DONE_FOOTER}\nSteered follow-up the user asked for.`
         expect(truncateCoalescedHarnessAfterDoneFooter(coalesced, {
