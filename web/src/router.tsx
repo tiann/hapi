@@ -34,6 +34,7 @@ import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
+import { useMentionActiveSessionsOnly } from '@/hooks/useMentionActiveSessionsOnly'
 import { useSession } from '@/hooks/queries/useSession'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -773,6 +774,7 @@ function SessionPage() {
     } = useSkills(api, sessionId)
     // Mention pool is stricter than sidebar (#1506): titled sessions only; match via sessionMatchesQuery.
     const { sessions: allSessions } = useSessions(api)
+    const { mentionActiveSessionsOnly } = useMentionActiveSessionsOnly()
     const { machines: mentionMachines } = useMachines(api, true)
     const mentionMachineLabelsById = useMachineLabels(mentionMachines)
     // Same fallbacks as share picker / SessionList search.
@@ -797,6 +799,7 @@ function SessionPage() {
             const sessionHits = matchSessionsForMention(allSessions, search, {
                 excludeId: sessionId,
                 limit: 20,
+                activeOnly: mentionActiveSessionsOnly,
                 resolveMachineLabel: resolveMentionMachineLabel,
             }).map((s) => {
                 const title = getSessionTitle(s)
@@ -853,6 +856,7 @@ function SessionPage() {
         api,
         sessionId,
         allSessions,
+        mentionActiveSessionsOnly,
         resolveMentionMachineLabel,
         getSkillSuggestions,
         getSlashSuggestions,

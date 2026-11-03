@@ -902,6 +902,8 @@ export default {
   'settings.display.sessionPreviewLimit.increase': 'Показывать больше сессий до сворачивания',
   'settings.display.activeSessionsOnly': 'Только активные сессии',
   'settings.display.activeSessionsOnly.desc': 'Скрыть неактивные сессии в боковой панели. Открытая сессия остаётся видимой.',
+  'settings.display.mentionActiveSessionsOnly': 'Только активные сессии в @упоминаниях',
+  'settings.display.mentionActiveSessionsOnly.desc': 'Скрывать неактивные сессии при упоминании в поле ввода.',
   'settings.display.pinInProgressSessions': 'Закреплять сессии в работе',
   'settings.display.pinInProgressSessions.desc': 'Перемещать незакреплённые подключённые сессии в разделы над папками проекта: сначала выполняющиеся и ожидающие, затем спокойные активные сессии (выполнение завершено, подключение есть). Глобальные закрепления остаются выше них. Выключено — всё остаётся в группах по каталогам.',
   'settings.display.appBadge': 'Значок непрочитанного на панели задач',

@@ -317,6 +317,15 @@ describe('responsive settings pages', () => {
         expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
     })
 
+    it('persists the active-only session mention setting', () => {
+        renderPage(<SettingsDisplayPage />)
+        const toggle = screen.getByRole('checkbox', { name: 'Only active sessions in @ mentions' })
+        expect(toggle).not.toBeChecked()
+        fireEvent.click(toggle)
+        expect(toggle).toBeChecked()
+        expect(localStorage.getItem('hapi-mention-active-sessions-only')).toBe('true')
+    })
+
     it('keeps the session status description visible with its choice group', () => {
         renderPage(<SettingsDisplayPage />)
 

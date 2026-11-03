@@ -964,6 +964,8 @@ export default {
   'settings.display.sessionPreviewLimit.increase': 'Show more sessions before folding',
   'settings.display.activeSessionsOnly': 'Active sessions only',
   'settings.display.activeSessionsOnly.desc': 'Hide inactive sessions in the sidebar. The session you have open stays visible.',
+  'settings.display.mentionActiveSessionsOnly': 'Only active sessions in @ mentions',
+  'settings.display.mentionActiveSessionsOnly.desc': 'Hide inactive sessions when mentioning another session in the composer.',
   'settings.display.pinInProgressSessions': 'Pin in-progress sessions',
   'settings.display.pinInProgressSessions.desc': 'Move unpinned connected sessions into sections above project folders: running and pending work first, then quiet active sessions (finished executing, still connected). Global pins remain above them. Off keeps everything in directory groups.',
   'settings.display.appBadge': 'Taskbar unread badge',

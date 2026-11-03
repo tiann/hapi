@@ -169,6 +169,16 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toContain('ccc-old')
     })
 
+    it('optionally limits both typed searches and the initial shortlist to active sessions', () => {
+        expect(matchSessionsForMention(sessions, 'scratch', { activeOnly: true }).map(s => s.id))
+            .toEqual(['aaa-active'])
+        expect(matchSessionsForMention(sessions, 'bbb-rec', { activeOnly: true })).toEqual([])
+        expect(matchSessionsForMention(sessions, '', { activeOnly: true }).map(s => s.id))
+            .toEqual(['eee-parity', 'ddd-meta', 'aaa-active'])
+        expect(matchSessionsForMention(sessions, 'scratch', { activeOnly: false }).map(s => s.id))
+            .toContain('ccc-old')
+    })
+
     it('matches id prefixes via sessionMatchesQuery', () => {
         const hits = matchSessionsForMention(sessions, 'bbb-rec')
         expect(hits.map((s) => s.id)).toEqual(['bbb-recent'])

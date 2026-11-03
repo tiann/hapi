@@ -27,6 +27,7 @@ export function buildSessionReferenceText(sessionTitle: string, sessionId: strin
 export type MatchSessionsForMentionOptions = {
     excludeId?: string
     limit?: number
+    activeOnly?: boolean
     /** Same resolver share/sidebar pass into `sessionMatchesQuery`. */
     resolveMachineLabel?: (machineId: string | null) => string
 }
@@ -80,6 +81,7 @@ export function matchSessionsForMention(
     for (const session of candidates) {
         if (excludeId && session.id === excludeId) continue
         if (!isMentionableSession(session)) continue
+        if (options.activeOnly && !session.active) continue
 
         if (!normalized) {
             // Empty / whitespace query: shortlist only — active first, then recent.
