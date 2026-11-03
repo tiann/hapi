@@ -84,6 +84,43 @@ describe('verified automatic catalog provenance', () => {
         expect(discover.mock.calls.filter(call => call[4])).toHaveLength(2);
         expect(discover.mock.calls[1][2].CODEX_HOME).not.toBe(directory);
     });
+    it.each([false, true])('never consumes a refresh token in a temporary home (discovery fails=%s)', async fails => {
+        const file = join(directory, 'auth.json');
+        const original = JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+            access_token: 'valid-access', id_token: 'id', account_id: 'account-a', refresh_token: 'single-use-refresh'
+        } });
+        writeFileSync(file, original);
+        let consumed = false;
+        let temporaryProbes = 0;
+        const discover = probe();
+        discover.mockImplementation(async (_command, args, env, _cwd, listModels) => {
+            if (env.CODEX_HOME !== directory) {
+                temporaryProbes++;
+                const auth = JSON.parse(readFileSync(join(env.CODEX_HOME!, 'auth.json'), 'utf8'));
+                // Synthetic token endpoint: a successful refresh invalidates the old token.
+                if (auth.tokens.refresh_token === 'single-use-refresh') {
+                    consumed = true;
+                    auth.tokens.refresh_token = 'replacement';
+                    writeFileSync(join(env.CODEX_HOME!, 'auth.json'), JSON.stringify(auth));
+                }
+                expect(auth.tokens.refresh_token).toBe('');
+                expect(auth.tokens.access_token).toBe('valid-access');
+                if (fails) throw new Error('access expired; refresh unavailable');
+            }
+            if (listModels && !args.some(arg => arg.startsWith('model_catalog_json='))) {
+                writeFileSync(join(env.CODEX_HOME!, 'models_cache.json'), JSON.stringify({ models: [model] }));
+            }
+            return { config: {}, version: 'test-version' };
+        });
+        const warn = vi.fn();
+        const result = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover, warn);
+        expect(temporaryProbes).toBe(fails ? 1 : 2);
+        expect(consumed).toBe(false);
+        expect(readFileSync(file, 'utf8')).toBe(original);
+        expect(result.length).toBe(fails ? 0 : 2);
+        // Subsequent native authentication still has the unconsumed original token.
+        expect(JSON.parse(readFileSync(file, 'utf8')).tokens.refresh_token).toBe('single-use-refresh');
+    });
     it('coordinates concurrent bootstrap requests', async () => {
         const discover = probe();
         const results = await Promise.all(Array.from({ length: 4 }, () => prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover)));

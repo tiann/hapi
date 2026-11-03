@@ -145,6 +145,23 @@ function eligible(config: Record<string, unknown>, env: NodeJS.ProcessEnv, auth:
     } catch { return false; }
 }
 
+/** Temporary homes must never consume the original store's rotating refresh token.
+ * An expired access token makes discovery fail safely; the real engine can refresh
+ * through its original credential store. Keep the required field, but no capability. */
+function discoveryAuth(auth: string): string {
+    const value = JSON.parse(auth);
+    return JSON.stringify({
+        auth_mode: 'chatgpt',
+        last_refresh: value.last_refresh,
+        tokens: {
+            access_token: value.tokens.access_token,
+            id_token: value.tokens.id_token,
+            account_id: value.tokens.account_id,
+            refresh_token: ''
+        }
+    });
+}
+
 export async function prepareModelCatalogArgs(
     command: CodexCommand,
     args: string[] = [],
@@ -192,7 +209,7 @@ export async function prepareModelCatalogArgs(
             // A separate home prevents another Codex/provider from replacing the cache between
             // discovery and snapshotting. Never promote an unscoped pre-existing native cache.
             temporary = await mkdtemp(path.join(home, '.hapi-model-discovery-'));
-            await writeFile(path.join(temporary, 'auth.json'), auth, { mode: 0o600 });
+            await writeFile(path.join(temporary, 'auth.json'), discoveryAuth(auth), { mode: 0o600 });
             await writeFile(path.join(temporary, 'config.toml'), configFile, { mode: 0o600 });
             const isolatedEnv = { ...env, CODEX_HOME: temporary };
             const discovered = await discover(command, args, isolatedEnv, cwd, true);

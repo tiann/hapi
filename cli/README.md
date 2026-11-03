@@ -207,7 +207,10 @@ Windows npm shims launch through Node without shell-interpreting JSON arguments.
 Snapshots are scoped to effective config, the executable's initialization response,
 launch arguments, working directory, auth-file contents and environment. Only
 hashes of this provenance are persisted. On a miss, a temporary isolated Codex
-home fetches a fresh catalog, and the selected Codex executable validates the
+home receives access/identity tokens only, with an empty refresh token, and fetches
+a fresh catalog. Refresh credentials never leave the original store; expired access
+falls back to the real engine, which can refresh and persist there. The selected
+Codex executable validates the
 complete catalog schema before HAPI saves it. The temporary home is removed
 when preparation finishes. An ordinary `models_cache.json` is never promoted
 without validation. Concurrent identical starts coordinate with a file lock.
