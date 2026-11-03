@@ -11,6 +11,8 @@ const harness = vi.hoisted(() => ({
     prompts: [] as unknown[][],
     transportClosedHandler: null as ((error: Error) => void) | null,
     promptFailure: null as Error | null,
+    resumeError: null as Error | null,
+    resumeSupported: true,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
     modelsMetadata: null as {
         availableModels: Array<{ modelId: string; name?: string }>
@@ -27,12 +29,17 @@ vi.mock('./utils/dshBackend', () => ({
     createDshBackend: vi.fn(() => {
         const backend = {
             initialize: vi.fn(async () => {}),
+            supportsSessionResume: vi.fn(() => harness.resumeSupported),
             newSession: vi.fn(async (config: unknown) => {
                 harness.newSessionConfig = config
                 if (harness.newSessionBlocker) {
                     await harness.newSessionBlocker
                 }
                 return 'dsh-session-1'
+            }),
+            resumeSession: vi.fn(async (config: { sessionId: string }) => {
+                if (harness.resumeError) throw harness.resumeError
+                return config.sessionId
             }),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
                 harness.prompts.push(content)
@@ -73,7 +80,11 @@ vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 
-function createSessionWithBatches(batches: Array<[string, DshMode]>, closeQueue = true) {
+function createSessionWithBatches(
+    batches: Array<[string, DshMode]>,
+    closeQueue = true,
+    sessionId: string | null = null
+) {
     const queue = new MessageQueue2<DshMode>((m) => JSON.stringify(m))
     for (const [message, mode] of batches) {
         queue.push(message, mode)
@@ -85,19 +96,20 @@ function createSessionWithBatches(batches: Array<[string, DshMode]>, closeQueue 
         logPath: '/tmp/dsh-test/hapi.log',
         client: { rpcHandlerManager: { registerHandler: vi.fn() } },
         queue,
-        sessionId: null as string | null,
+        sessionId,
         getPermissionMode: () => 'default' as const,
         onThinkingChange: vi.fn(),
+        onSessionFound: vi.fn(),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
 }
 
-function createSession(arg: boolean | DshMode = true) {
+function createSession(arg?: boolean | DshMode, sessionId: string | null = null) {
     if (typeof arg === 'boolean') {
-        return createSessionWithBatches(arg ? [['first', {}]] : [], arg)
+        return createSessionWithBatches(arg ? [['first', {}]] : [], arg, sessionId)
     }
-    return createSessionWithBatches([['first', arg]])
+    return createSessionWithBatches([['first', arg ?? {}]], true, sessionId)
 }
 
 describe('DshRemoteLauncher', () => {
@@ -107,6 +119,8 @@ describe('DshRemoteLauncher', () => {
         harness.prompts = []
         harness.transportClosedHandler = null
         harness.promptFailure = null
+        harness.resumeError = null
+        harness.resumeSupported = true
         harness.modelOption = null
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
@@ -124,6 +138,7 @@ describe('DshRemoteLauncher', () => {
             cwd: '/tmp/dsh-test',
             mcpServers: []
         })
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-session-1')
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
         expect(session.sendAgentMessage).toHaveBeenCalledWith({
             type: 'message',
@@ -168,6 +183,51 @@ describe('DshRemoteLauncher', () => {
         await expect(launcher.launch()).rejects.toThrow('ACP transport closed')
         expect(harness.backend?.disconnect).toHaveBeenCalled()
         expect(session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
+    })
+
+    it('resumes an existing DSH ACP session instead of creating a new one', async () => {
+        const session = createSession(undefined, 'dsh-existing-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backend?.resumeSession).toHaveBeenCalledWith({
+            sessionId: 'dsh-existing-1',
+            cwd: '/tmp/dsh-test',
+            mcpServers: []
+        })
+        expect(harness.backend?.newSession).not.toHaveBeenCalled()
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-existing-1')
+    })
+
+    it('falls back to a fresh DSH session when native resume fails', async () => {
+        const session = createSession(undefined, 'dsh-existing-1')
+        const launcher = new DshRemoteLauncher(session as never)
+        harness.resumeError = new Error('method not found')
+
+        await launcher.launch()
+
+        expect(harness.backend?.resumeSession).toHaveBeenCalled()
+        expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/dsh-test', mcpServers: [] })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH resume failed; starting a new session.'
+        })
+    })
+
+    it('falls back without probing session/resume when the server does not advertise it', async () => {
+        const session = createSession(undefined, 'dsh-existing-1')
+        const launcher = new DshRemoteLauncher(session as never)
+        harness.resumeSupported = false
+
+        await launcher.launch()
+
+        expect(harness.backend?.resumeSession).not.toHaveBeenCalled()
+        expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/dsh-test', mcpServers: [] })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH resume failed; starting a new session.'
+        })
     })
 
     it('discovers the current model from the model config option', async () => {

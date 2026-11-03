@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
     CommandResponse,
     DirectoryEntry,
+    FileMetadataEntry,
     FileReadResponse,
     ListDirectoryResponse,
     StatFilesResponse,
@@ -27,6 +28,7 @@ export type WorkspaceFilePathPolicy = {
 type WorkspaceReadFileRequest = {
     cwd?: unknown
     path?: unknown
+    maxBytes?: unknown
 }
 
 type WorkspaceListDirectoryRequest = {
@@ -180,7 +182,11 @@ export function registerWorkspaceFileHandlers(
                 if (!stats.isFile()) {
                     throw new Error('Path is not a regular file')
                 }
-                const buffer = await readBoundedRegularFile(resolved.path, MAX_WORKSPACE_FILE_BYTES)
+                const requestedMaxBytes = typeof data.maxBytes === 'number' && Number.isFinite(data.maxBytes) && data.maxBytes > 0
+                    ? Math.floor(data.maxBytes)
+                    : MAX_WORKSPACE_FILE_BYTES
+                const maxBytes = Math.min(requestedMaxBytes, MAX_WORKSPACE_FILE_BYTES)
+                const buffer = await readBoundedRegularFile(resolved.path, maxBytes)
                 return {
                     success: true,
                     content: buffer.toString('base64'),
@@ -239,8 +245,14 @@ export function registerWorkspaceFileHandlers(
             const entries = await Promise.all(resolvedPaths.map(async ({ requested, path }) => {
                 try {
                     const stats = await stat(path)
+                    const type: FileMetadataEntry['type'] = stats.isFile()
+                        ? 'file'
+                        : stats.isDirectory()
+                            ? 'directory'
+                            : 'other'
                     return {
                         path: requested,
+                        type,
                         size: stats.size,
                         modified: stats.mtime.getTime(),
                     }

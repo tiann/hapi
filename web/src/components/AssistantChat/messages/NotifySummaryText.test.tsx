@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import type { ComponentType } from 'react'
+import type { TextMessagePartProps } from '@assistant-ui/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { NotifySummaryText } from './NotifySummaryText'
 
@@ -25,8 +27,29 @@ vi.mock('@/components/MarkdownRenderer', () => ({
     )
 }))
 
-function renderText(text: string, statusType: 'complete' | 'running' = 'complete') {
+const RenderNotifySummaryText = NotifySummaryText as unknown as ComponentType<
+    TextMessagePartProps & { sourceMessageId?: string }
+>
+
+function renderText(
+    text: string,
+    statusType: 'complete' | 'running' = 'complete',
+    sourceMessageId?: string
+) {
     return render(
+        <I18nProvider>
+            <RenderNotifySummaryText
+                type="text"
+                text={text}
+                status={{ type: statusType }}
+                sourceMessageId={sourceMessageId}
+            />
+        </I18nProvider>
+    )
+}
+
+function rerenderText(view: ReturnType<typeof renderText>, text: string, statusType: 'complete' | 'running') {
+    view.rerender(
         <I18nProvider>
             <NotifySummaryText type="text" text={text} status={{ type: statusType }} />
         </I18nProvider>
@@ -94,6 +117,15 @@ describe('NotifySummaryText', () => {
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
     })
 
+    it('marks the individual rendered part for content-search navigation', () => {
+        renderText('Plain assistant prose.', 'complete', 'message-42')
+
+        expect(screen.getByTestId('raw-markdown').parentElement).toHaveAttribute(
+            'data-hapi-source-message-id',
+            'message-42'
+        )
+    })
+
     it('hides a recognized footer with no displayable fields instead of raw JSON', () => {
         renderText('Did the work.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"agent":"codex"}')
 
@@ -108,6 +140,70 @@ describe('NotifySummaryText', () => {
 
         expect(screen.getByTestId('raw-markdown')).toBeInTheDocument()
         expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+    })
+
+    it('preserves a completed summary through repeated running-state transitions', () => {
+        const text = 'Finished.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done","action":"Review it"}'
+        const view = renderText(text)
+        const footer = screen.getByTestId('notify-summary-footer')
+
+        for (const status of ['running', 'running', 'complete', 'running'] as const) {
+            rerenderText(view, text, status)
+            expect(screen.getByTestId('notify-summary-footer')).toBe(footer)
+            expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Finished.')
+            expect(screen.queryByTestId('raw-markdown')).toBeNull()
+        }
+    })
+
+    it('preserves a streamed summary after completion when its status becomes running again', () => {
+        const text = 'Finished.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+        const view = renderText(text, 'running')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+
+        rerenderText(view, text, 'complete')
+        const footer = screen.getByTestId('notify-summary-footer')
+        rerenderText(view, text, 'running')
+        expect(screen.getByTestId('notify-summary-footer')).toBe(footer)
+    })
+
+    it('does not expose an empty completed footer during a status-only running transition', () => {
+        const text = 'Finished.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"agent":"codex"}'
+        const view = renderText(text)
+        rerenderText(view, text, 'running')
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Finished.')
+        expect(screen.queryByTestId('raw-markdown')).toBeNull()
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+    })
+
+    it('invalidates completion when new text arrives, even if the old text later returns', () => {
+        const text = 'Finished.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+        const view = renderText(text)
+        rerenderText(view, text, 'running')
+        expect(screen.getByTestId('notify-summary-footer')).toBeInTheDocument()
+
+        rerenderText(view, `${text}\nMore output.`, 'running')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.getByTestId('raw-markdown')).toHaveAttribute('data-smooth', 'true')
+        rerenderText(view, text, 'running')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.getByTestId('raw-markdown')).toBeInTheDocument()
+
+        rerenderText(view, text, 'complete')
+        expect(screen.getByTestId('notify-summary-footer')).toBeInTheDocument()
+    })
+
+    it('honors the display toggle while preserving an unchanged completed summary', () => {
+        const text = 'Finished.\n\nAGENT_NOTIFY_SUMMARY {"summary":"Done","status":"done"}'
+        const view = renderText(text)
+        mockUseSessionSummaryInChat.mockReturnValue(false)
+        rerenderText(view, text, 'running')
+        expect(screen.queryByTestId('notify-summary-footer')).toBeNull()
+        expect(screen.getByTestId('visible-markdown')).toHaveTextContent('Finished.')
+
+        mockUseSessionSummaryInChat.mockReturnValue(true)
+        rerenderText(view, text, 'running')
+        expect(screen.getByTestId('notify-summary-footer')).toBeInTheDocument()
+        expect(screen.queryByTestId('raw-markdown')).toBeNull()
     })
 
     it('strips a well-formed footer while streaming when display is off', () => {

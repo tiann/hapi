@@ -100,14 +100,50 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         try {
             await backend.initialize()
             this.throwIfTransportFailed()
-            acpSessionId = await backend.newSession({
-                cwd: this.session.path,
-                // The official DSH ACP composition rejects non-empty MCP servers;
-                // its tools are configured by the DSH server itself.
-                mcpServers: []
-            })
-            this.throwIfTransportFailed()
-            this.session.sessionId = acpSessionId
+
+            const resumeSessionId = this.session.sessionId
+            if (resumeSessionId) {
+                try {
+                    // DSH's current ACP profile exposes the non-standard
+                    // `session/resume` method rather than ACP's `session/load`.
+                    // It restores model context but intentionally emits no history;
+                    // HAPI's Hub remains the transcript source for the UI.
+                    if (!backend.supportsSessionResume()) {
+                        throw new Error('DSH ACP server does not advertise session/resume')
+                    }
+                    acpSessionId = await backend.resumeSession({
+                        sessionId: resumeSessionId,
+                        cwd: this.session.path,
+                        mcpServers: []
+                    })
+                    this.throwIfTransportFailed()
+                } catch (error) {
+                    // A transport failure is terminal. Do not mask it by creating
+                    // a fresh ACP session after the process has already exited.
+                    this.throwIfTransportFailed()
+                    logger.warn('[dsh-acp] resume failed, starting a new session', error)
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'DSH resume failed; starting a new session.'
+                    })
+                    acpSessionId = await backend.newSession({
+                        cwd: this.session.path,
+                        // The official DSH ACP composition rejects non-empty MCP
+                        // servers; its tools are configured by the DSH server.
+                        mcpServers: []
+                    })
+                    this.throwIfTransportFailed()
+                }
+            } else {
+                acpSessionId = await backend.newSession({
+                    cwd: this.session.path,
+                    // The official DSH ACP composition rejects non-empty MCP
+                    // servers; its tools are configured by the DSH server.
+                    mcpServers: []
+                })
+                this.throwIfTransportFailed()
+            }
+            this.session.onSessionFound(acpSessionId)
         } catch (error) {
             markFailed(error)
             throw error

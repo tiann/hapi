@@ -221,7 +221,11 @@ private final class ChatInteractionHarness {
 
     let sessionID: String
 
-    init(detail: Session = chatDetail(), activate: Bool = true) async throws {
+    init(
+        detail: Session = chatDetail(),
+        activate: Bool = true,
+        directSendGrace: Duration = .seconds(5)
+    ) async throws {
         sessionID = detail.id
         let performer = ChatRoutingPerformer()
         self.performer = performer
@@ -291,6 +295,7 @@ private final class ChatInteractionHarness {
             windows: windows,
             drafts: drafts,
             draftSaveDebounce: .milliseconds(10),
+            directSendGrace: directSendGrace,
             now: { 1_000 },
             makeLocalId: {
                 localIdCounter += 1
@@ -482,6 +487,134 @@ struct ChatInteractorTests {
             + "\"deliveryMode\":\"queue\",\"localId\":\"local-1\",\"text\":\"\(text)\"}"
     }
 
+    @Test func inactiveAttachmentResumesAndRetriesEvenWithStaleActiveState() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(permissionMode: .acceptEdits))
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"error":"Session is inactive","code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/resume") == [#"{"permissionMode":"acceptEdits"}"#])
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 2)
+        #expect(harness.events.isEmpty)
+    }
+
+    @Test func concurrentInactiveAttachmentsShareOneResume() async throws {
+        let harness = try await ChatInteractionHarness()
+        for _ in 0..<2 {
+            await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+                json: #"{"code":"session_inactive"}"#)
+        }
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        await harness.performer.gate("POST", pathSuffix: "/resume")
+        harness.interactor.attachments.add(preparedShot())
+        harness.interactor.attachments.add(preparedShot(id: "att-2", filename: "second.jpg"))
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/upload") == 2 })
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/resume") == 1 })
+        await harness.performer.openGates()
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        #expect(await harness.performer.count("POST", pathSuffix: "/resume") == 1)
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 4)
+    }
+
+    @Test func supersedingUploadHandsOffDraftAndTrayAndReuploadsReadyPaths() async throws {
+        let harness = try await ChatInteractionHarness()
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-2"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-2/upload",
+            json: #"{"success":true,"path":"/new-session/upload"}"#)
+        await harness.performer.gate("POST", pathSuffix: "/resume")
+        var replacement: ChatInteractor?
+        harness.interactor.onAttachmentSessionSuperseded = { target, source in
+            let (tray, text) = source.prepareComposerHandoff()
+            #expect(target == "sess-2")
+            #expect(text == "latest typing")
+            let next = ChatInteractor(sessionId: target, api: harness.api, sessionStore: harness.store,
+                windows: harness.windows, drafts: harness.drafts, attachments: tray)
+            replacement = next
+            harness.interactor.deactivate()
+            next.activate()
+        }
+        harness.interactor.setComposerText("before resume")
+        harness.interactor.attachments.add(preparedShot(id: "att-2", filename: "second.jpg"))
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/resume") == 1 })
+        harness.interactor.setComposerText("latest typing")
+        await harness.performer.openGates()
+        #expect(await eventually { replacement?.attachments.allReady == true && replacement?.composerText == "latest typing" })
+        let next = try #require(replacement)
+        #expect(next.attachments === harness.interactor.attachments)
+        #expect(next.attachments.items.map(\.id) == ["att-1", "att-2"])
+        #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-2/upload") == 2)
+        #expect(harness.drafts.storage["sess-1"] == nil)
+        #expect(harness.drafts.storage["sess-2"] == "latest typing")
+        #expect(harness.events.contains(.sessionSuperseded(sessionId: "sess-2")))
+        next.sendMessage()
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-2/messages") == 1 })
+        let body = try #require(await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-2/messages").first)
+        let request = try HapiJSON.decoder.decode(SendMessageRequest.self, from: Data(body.utf8))
+        #expect(request.attachments?.map(\.path) == ["/new-session/upload", "/new-session/upload"])
+        #expect(request.text == "latest typing")
+        #expect(harness.drafts.storage["sess-2"] == nil)
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/upload/delete") == 1 })
+        #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-2/upload/delete") == 0)
+        next.deactivate()
+    }
+
+    @Test func removingAttachmentDuringResumeDoesNotUploadItAgain() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        await harness.performer.gate("POST", pathSuffix: "/resume")
+        var recovering = false
+        harness.interactor.onAttachmentSessionRecovery = { recovering = $0 }
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { recovering })
+        harness.interactor.attachments.remove("att-1")
+        await harness.performer.openGates()
+        #expect(await eventually { !recovering })
+        #expect(harness.interactor.attachments.items.isEmpty)
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 1)
+    }
+
+    @Test func failedResumeRetainsPayloadAndAllowsManualRetry() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", status: 503,
+            json: #"{"error":"Machine is offline"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.items.first?.status == .failed })
+        #expect(harness.interactor.attachments.items.first?.errorMessage == "HTTP 503 (Machine is offline)")
+        harness.interactor.attachments.retry("att-1")
+        #expect(await eventually { harness.interactor.attachments.allReady })
+        #expect(harness.interactor.attachments.items.first?.errorMessage == nil)
+    }
+
+    @Test func stillInactiveAfterResumeFailsWithoutRecoveryLoop() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.serve("POST", "/api/sessions/sess-1/upload", status: 409,
+            json: #"{"code":"session_inactive"}"#)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/resume", json: #"{"sessionId":"sess-1"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.items.first?.status == .failed })
+        #expect(await harness.performer.count("POST", pathSuffix: "/resume") == 1)
+        #expect(await harness.performer.count("POST", pathSuffix: "/upload") == 2)
+        #expect(harness.interactor.attachments.items.first?.errorMessage == "HTTP 409 (session_inactive)")
+    }
+
+    @Test func ordinaryUploadFailureDoesNotResumeSession() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.performer.script("POST", "/api/sessions/sess-1/upload", status: 413,
+            json: #"{"error":"File too large"}"#)
+        harness.interactor.attachments.add(preparedShot())
+        #expect(await eventually { harness.interactor.attachments.items.first?.status == .failed })
+        #expect(await harness.performer.count("POST", pathSuffix: "/resume") == 0)
+    }
+
     @Test func sendRidesReadyAttachmentsAsWireMetadataAndTheOptimisticRowCarriesThem() async throws {
         let harness = try await ChatInteractionHarness()
 
@@ -611,6 +744,36 @@ struct ChatInteractorTests {
     }
 
     // MARK: Queued bar
+
+    @Test func idleSendSkipsTheQueuedBarUntilTheGraceExpires() async throws {
+        let harness = try await ChatInteractionHarness(directSendGrace: .milliseconds(500))
+
+        harness.interactor.setComposerText("go now")
+        harness.interactor.sendMessage()
+
+        #expect(await eventually {
+            await harness.row(localId: "local-1")?.status == .sent
+        })
+        #expect(harness.interactor.directSendLocalIds == ["local-1"])
+        #expect(harness.interactor.queuedRows.isEmpty)
+        // Still uninvoked after the grace: genuinely waiting, so it queues.
+        #expect(await eventually {
+            harness.interactor.queuedRows.contains { $0.id == "local-1" }
+        })
+        #expect(harness.interactor.directSendLocalIds.isEmpty)
+    }
+
+    @Test func sendWhileThinkingGoesStraightToTheQueuedBar() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
+
+        harness.interactor.setComposerText("later")
+        harness.interactor.sendMessage()
+
+        #expect(await eventually {
+            harness.interactor.queuedRows.contains { $0.id == "local-1" }
+        })
+        #expect(harness.interactor.directSendLocalIds.isEmpty)
+    }
 
     @Test func queuedCancelInvokedRaceIngestsTheAuthoritativeRowAsSent() async throws {
         let harness = try await ChatInteractionHarness()
@@ -1100,6 +1263,325 @@ struct ChatInteractorTests {
 
         #expect(await eventually {
             await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/abort") == 1
+        })
+    }
+
+    // MARK: Conversation history
+
+    private func historyDetail(thinking: Bool = false, flavor: String = "claude") -> Session {
+        var detail = chatDetail(flavor: flavor, thinking: thinking)
+        detail.metadata?.capabilities = SessionCapabilities(
+            conversationHistory: ConversationHistoryCapabilities(forkCurrent: true, forkAtMessage: true, rewindToMessage: true)
+        )
+        detail.metadata?.conversationHistoryPoints = ["l1": true]
+        return detail
+    }
+
+    @Test func forkCurrentAndAtMessagePostAndOpenTheNewSession() async throws {
+        let harness = try await ChatInteractionHarness(detail: historyDetail())
+        #expect(harness.interactor.canForkCurrentConversation)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/fork", json: #"{"sessionId":"fork-1"}"#)
+
+        harness.interactor.forkConversation()
+        #expect(await eventually { harness.events.contains(.sessionSuperseded(sessionId: "fork-1")) })
+        #expect(await eventually { !harness.interactor.historyActionPending })
+        harness.interactor.forkConversation(fromMessageLocalId: "l1")
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/fork") == ["{}", #"{"messageLocalId":"l1"}"#]
+        })
+    }
+
+    @Test func messageActionsNeedANativePointAndAnIdleTurn() async throws {
+        let idle = try await ChatInteractionHarness(detail: historyDetail())
+        #expect(idle.interactor.historyActions(forMessageLocalId: "l1") == (true, true))
+        #expect(idle.interactor.historyActions(forMessageLocalId: "l2") == (false, false))
+        #expect(idle.interactor.historyActions(forMessageLocalId: nil) == (false, false))
+
+        let running = try await ChatInteractionHarness(detail: historyDetail(thinking: true))
+        #expect(running.interactor.historyActions(forMessageLocalId: "l1") == (false, false))
+        let runningCodex = try await ChatInteractionHarness(detail: historyDetail(thinking: true, flavor: "codex"))
+        #expect(runningCodex.interactor.historyActions(forMessageLocalId: "l1") == (true, false))
+        #expect(!runningCodex.interactor.canForkCurrentConversation)
+    }
+
+    @Test func ambiguousRewindOffersAForkInstead() async throws {
+        let harness = try await ChatInteractionHarness(detail: historyDetail())
+        await harness.performer.script(
+            "POST", "/api/sessions/sess-1/rewind",
+            status: 409, json: #"{"error":"ambiguous","code":"ambiguous_native_boundary_fork_safe","hydrateFailed":false}"#
+        )
+        harness.interactor.rewindConversation(toMessageLocalId: "l1")
+        #expect(await eventually { harness.interactor.rewindForkFallbackLocalId == "l1" })
+
+        harness.interactor.dismissRewindForkFallback()
+        await harness.performer.script("POST", "/api/sessions/sess-1/rewind", status: 409, json: #"{"error":"Session busy"}"#)
+        harness.interactor.rewindConversation(toMessageLocalId: "l1")
+        #expect(await eventually { harness.events.contains(.notice("Session busy")) })
+        #expect(harness.interactor.rewindForkFallbackLocalId == nil)
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/rewind").first == #"{"messageLocalId":"l1"}"#)
+    }
+
+    // MARK: Scheduled send
+
+    @Test func presetScheduleResolvesAtSendAndQueuesWithoutSteer() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
+        harness.interactor.setPendingSchedule(.delay(minutes: 30))
+        harness.interactor.setComposerText("ship it")
+
+        harness.interactor.sendMessage(steer: true)
+
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages") == [
+                #"{"deliveryMode":"queue","localId":"local-1","scheduledAt":1801000,"text":"ship it"}"#,
+            ]
+        })
+        #expect(harness.interactor.pendingSchedule == nil, "the schedule is consumed by the send")
+        #expect(harness.interactor.composerText.isEmpty)
+        #expect(await eventually { await harness.row(localId: "local-1")?.scheduledAt == 1_801_000 })
+    }
+
+    @Test func invalidSchedulesAndAttachmentsKeepTheDraft() async throws {
+        let harness = try await ChatInteractionHarness()
+        harness.interactor.setComposerText("later")
+
+        harness.interactor.setPendingSchedule(.at(1_000 - 31_000))
+        harness.interactor.sendMessage()
+        #expect(harness.events.contains(.notice("Scheduled time must be in the future")))
+
+        harness.interactor.setPendingSchedule(.at(1_000 + 8 * 24 * 60 * 60_000))
+        harness.interactor.sendMessage()
+        #expect(harness.events.contains(.notice("Scheduled sends can be at most 7 days ahead")))
+
+        // Within the 30 s grace a minute-resolution pick still goes out.
+        #expect(PendingSchedule.validate(1_000 - 29_000, now: 1_000) == nil)
+        #expect(harness.interactor.composerText == "later")
+        #expect(harness.interactor.pendingSchedule != nil)
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/messages") == 0)
+    }
+
+    @Test func mentionsPersistAndSendFullReferencesWithoutChangingSurroundingDraft() async throws {
+        let harness = try await ChatInteractionHarness()
+        var peer = chatDetail(id: "peer-id")
+        peer.hasConversationContent = true
+        peer.metadata?.name = "Peer [context]"
+        harness.store.applySessionEvent(.sessionUpdated(namespace: nil, sessionId: peer.id, data: .session(peer)))
+        harness.interactor.setComposerText("Check @Peer, thanks")
+        let selection = NSRange(location: "Check @Pe".utf16.count, length: 0)
+        let hit = try #require(harness.interactor.mentionSuggestions(selection: selection).first)
+        let caret = try #require(harness.interactor.selectMention(hit, selection: selection))
+        let expected = "Check [Peer \\[context\\]](/sessions/peer-id) , thanks"
+        #expect(harness.interactor.composerText == expected)
+        #expect(caret.location == "Check [Peer \\[context\\]](/sessions/peer-id) ".utf16.count)
+        #expect(await eventually { harness.drafts.storage[chatSessionID] == expected })
+        harness.interactor.sendMessage()
+        #expect(await eventually { !harness.interactor.isSending })
+        let body = try #require(await harness.performer.bodies("POST", pathSuffix: "/messages").last)
+        let request = try HapiJSON.decoder.decode(SendMessageRequest.self, from: Data(body.utf8))
+        #expect(request.text == expected)
+        #expect(harness.interactor.composerText.isEmpty)
+    }
+
+    @Test func mentionFilesUseTheCurrentSessionAPIAndSupplementLiveSessionMatches() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "codex"))
+        await harness.performer.serve("GET", "/api/sessions/sess-1/files",
+            json: #"{"success":true,"files":[{"fileName":"file.swift","filePath":"src","fullPath":"src/file.swift","fileType":"file"}]}"#)
+        var peer = chatDetail(id: "file-peer")
+        peer.hasConversationContent = true
+        peer.metadata?.name = "file session"
+        harness.store.applySessionEvent(.sessionUpdated(namespace: nil, sessionId: peer.id, data: .session(peer)))
+        harness.interactor.setComposerText("Review @file")
+        let caret = NSRange(location: "Review @file".utf16.count, length: 0)
+        #expect(harness.interactor.mentionSuggestions(selection: caret).map(\.id) == ["session:file-peer"])
+        await harness.interactor.mentionFiles.load(.init(query: "file", flavor: "codex"))
+        let hits = harness.interactor.mentionSuggestions(selection: caret)
+        #expect(hits.map(\.id) == ["session:file-peer", "file:src/file.swift"])
+        #expect(hits.last?.text == "@\"src/file.swift\"")
+        harness.interactor.setComposerText("@different")
+        #expect(harness.interactor.mentionSuggestions(selection: .init(location: 10, length: 0)).isEmpty)
+        harness.interactor.setComposerText("@file")
+        harness.interactor.setComposerDestination(.scratchlist)
+        #expect(harness.interactor.mentionSuggestions(selection: .init(location: 5, length: 0)).isEmpty)
+    }
+
+    // MARK: Slash commands
+
+    @Test func slashSuggestionsLoadOnceWhenEnteringSlashMode() async throws {
+        var detail = chatDetail()
+        detail.metadata?.slashCommands = ["deploy"]
+        let harness = try await ChatInteractionHarness(detail: detail)
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/slash-commands",
+            json: #"{"success":true,"commands":[{"name":"compact","description":"Summarize","source":"builtin"}]}"#
+        )
+
+        harness.interactor.setComposerText("/")
+        #expect(harness.interactor.slashSuggestions.map(\.name).first == "deploy")
+        #expect(await eventually { harness.interactor.slashSuggestions.map(\.name) == ["deploy", "compact"] })
+        harness.interactor.setComposerText("/co")
+        harness.interactor.setComposerText("/com")
+        #expect(harness.interactor.slashSuggestions.map(\.name) == ["compact"])
+
+        harness.interactor.selectSlashCommand(SlashCommand(name: "compact", source: "builtin"))
+        #expect(harness.interactor.composerText == "/compact ")
+        #expect(harness.interactor.slashSuggestions.isEmpty, "arguments close the menu")
+        harness.interactor.setComposerText("")
+        harness.interactor.setComposerText("/")
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await harness.performer.count("GET", pathSuffix: "/slash-commands") == 1)
+    }
+
+    // MARK: Discovered agent catalogs
+
+    @Test func grokLoadsModelsAndEffortsAndReloadsEffortsAfterAModelSwitch() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "grok", model: "grok-4"))
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/grok-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"grok-4","name":"Grok 4"},{"modelId":"grok-mini"}]}"#
+        )
+        await harness.performer.serve(
+            "GET", "/api/sessions/sess-1/grok-reasoning-effort-options",
+            json: #"{"success":true,"options":[{"value":"high","name":"High"}]}"#
+        )
+
+        harness.interactor.loadModelOptions()
+
+        #expect(await eventually { harness.interactor.config.modelOptions?.count == 3 })
+        #expect(harness.interactor.config.modelOptions?.first == CatalogOption(value: nil, label: "Default"))
+        #expect(await eventually { harness.interactor.config.effortOptions?.map(\.value) == [nil, "high"] })
+
+        harness.interactor.setModel("grok-mini")
+        #expect(await eventually {
+            await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/model") == [#"{"model":"grok-mini"}"#]
+        })
+        #expect(await eventually {
+            await harness.performer.count("GET", pathSuffix: "/grok-reasoning-effort-options") == 2
+        })
+    }
+
+    @Test func discoveredCatalogsSkipInactiveAndTerminalControlledSessions() async throws {
+        let inactive = try await ChatInteractionHarness(detail: chatDetail(flavor: "kimi", active: false))
+        inactive.interactor.loadModelOptions()
+        var controlled = chatDetail(flavor: "copilot", agentState: AgentState(controlledByUser: true))
+        controlled.metadata?.capabilities = nil
+        let terminal = try await ChatInteractionHarness(detail: controlled)
+        terminal.interactor.loadModelOptions()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await inactive.performer.count("GET", pathSuffix: "/kimi-models") == 0)
+        #expect(await terminal.performer.count("GET", pathSuffix: "/copilot-models") == 0)
+        #expect(inactive.interactor.config.modelOptions == nil)
+    }
+
+    @Test func agyReadsTheMachineCatalogAndPiSwitchesWithAProviderReference() async throws {
+        var agyDetail = chatDetail(flavor: "agy")
+        agyDetail.metadata?.machineId = "mach-1"
+        let agy = try await ChatInteractionHarness(detail: agyDetail)
+        await agy.performer.serve(
+            "GET", "/api/machines/mach-1/agy-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"gemini-3.7-flash-high"}]}"#
+        )
+        agy.interactor.loadModelOptions()
+        #expect(await eventually { agy.interactor.config.modelOptions?.map(\.value) == ["gemini-3.7-flash-high"] })
+
+        let pi = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", model: "m"))
+        await pi.performer.serve(
+            "GET", "/api/sessions/sess-1/pi-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"m","provider":"a"},{"modelId":"n","provider":"b"}]}"#
+        )
+        pi.interactor.loadModelOptions()
+        #expect(await eventually { pi.interactor.config.model == "a/m" })
+        pi.interactor.setModel("b/n")
+        #expect(await eventually {
+            await pi.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/model")
+                == [#"{"model":{"modelId":"n","provider":"b"}}"#]
+        })
+        #expect(pi.store.detail(for: chatSessionID)?.metadata?.piSelectedModel == PiModelReference(provider: "b", modelId: "n"))
+    }
+
+    // MARK: Session lifecycle
+
+    @Test func renameTrimsAndPatchesTheNameAndAFailureEmitsANotice() async throws {
+        let harness = try await ChatInteractionHarness()
+
+        harness.interactor.renameSession("  ")
+        harness.interactor.renameSession("  Release prep  ")
+
+        #expect(await eventually {
+            await harness.performer.bodies("PATCH", pathSuffix: "/api/sessions/sess-1") == [#"{"name":"Release prep"}"#]
+        })
+        #expect(harness.store.detail(for: chatSessionID)?.metadata?.name == "Release prep")
+
+        await harness.performer.script("PATCH", "/api/sessions/sess-1", status: 500, json: #"{"error":"boom"}"#)
+        harness.interactor.renameSession("Other")
+        #expect(await eventually { harness.events.contains(.notice("Failed to rename session")) })
+    }
+
+    @Test func deleteConflictReportsArchiveFirstAndSuccessFiresTheRemoval() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        var removals: [String] = []
+        harness.store.onSessionRemoved = { removals.append($0) }
+
+        await harness.performer.script(
+            "DELETE", "/api/sessions/sess-1",
+            status: 409, json: #"{"error":"Cannot delete active session. Archive it first."}"#
+        )
+        harness.interactor.deleteSession()
+        #expect(await eventually {
+            harness.events.contains(.notice("Active sessions can't be deleted — archive first"))
+        })
+        #expect(await eventually { !harness.interactor.sessionOpPending })
+        #expect(removals.isEmpty)
+        #expect(harness.store.detail(for: chatSessionID) != nil, "a failed delete restores the detail")
+
+        await harness.performer.script("DELETE", "/api/sessions/sess-1", json: #"{"ok":true}"#)
+        harness.interactor.deleteSession()
+        #expect(await eventually { removals == [chatSessionID] })
+    }
+
+    @Test func reopenWithASupersedingIdMovesTheDraftAndRenavigates() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        await harness.performer.serve(
+            "POST", "/api/sessions/sess-1/reopen",
+            json: #"{"ok":true,"sessionId":"sess-2","resumed":true}"#
+        )
+        harness.interactor.setComposerText("unsent words")
+
+        harness.interactor.reopenSession()
+
+        #expect(await eventually { harness.events.contains(.sessionSuperseded(sessionId: "sess-2")) })
+        #expect(harness.drafts.storage["sess-2"] == "unsent words")
+        #expect(harness.drafts.storage[chatSessionID] == nil)
+        #expect(!harness.interactor.sessionOpPending)
+    }
+
+    @Test func reopenInPlaceMarksTheSessionActiveWithoutRenavigating() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        await harness.performer.serve(
+            "POST", "/api/sessions/sess-1/reopen",
+            json: #"{"ok":true,"sessionId":"sess-1","resumed":true}"#
+        )
+
+        harness.interactor.reopenSession()
+
+        #expect(await eventually { harness.store.detail(for: chatSessionID)?.active == true })
+        #expect(await eventually { !harness.interactor.sessionOpPending })
+        #expect(!harness.events.contains { event in
+            if case .sessionSuperseded = event { return true }
+            return false
+        })
+    }
+
+    @Test func reopenMissingMetadataSurfacesTheHubMessage() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
+        await harness.performer.serve(
+            "POST", "/api/sessions/sess-1/reopen",
+            status: 422, json: #"{"error":"Session metadata is incomplete","missing":["path","machineId"]}"#
+        )
+
+        harness.interactor.reopenSession()
+
+        #expect(await eventually {
+            harness.events.contains(.notice("Session metadata is incomplete (missing: path, machineId)"))
         })
     }
 }

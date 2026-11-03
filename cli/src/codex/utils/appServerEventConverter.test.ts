@@ -215,6 +215,16 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('preserves command identity when completion arrives without a start', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/completed', {
+            item: { id: 'late-command', type: 'commandExecution', command: 'node server.js', cwd: '/repo',
+                status: 'failed', exitCode: -1, durationMs: 16_636_720 }
+        });
+        expect(events).toEqual([expect.objectContaining({ type: 'exec_command_end', call_id: 'late-command',
+            command: 'node server.js', cwd: '/repo', status: 'failed', exit_code: -1, duration_ms: 16_636_720 })]);
+    });
+
     it('maps MCP tool call items', () => {
         const converter = new AppServerEventConverter();
 
@@ -1199,6 +1209,20 @@ describe('AppServerEventConverter', () => {
             mime_type: 'image/png'
         }]);
         expect(JSON.stringify(events)).not.toContain(largeImageResult);
+    });
+
+    it('converts completed image views into viewed_image events keyed by the tool call', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('item/started', {
+            item: { id: 'exec-view-1', type: 'imageView', path: '/tmp/shot.png' }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'exec-view-1', type: 'imageView', path: '/tmp/shot.png' }
+        })).toEqual([{ type: 'viewed_image', call_id: 'exec-view-1', path: '/tmp/shot.png' }]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'call-view-2', type: 'imageView', path: 'file:///tmp/a%20b.png' }
+        })).toEqual([{ type: 'viewed_image', call_id: 'call-view-2', path: '/tmp/a b.png' }]);
     });
 
     it('truncates large unhandled notification payloads before logging', () => {

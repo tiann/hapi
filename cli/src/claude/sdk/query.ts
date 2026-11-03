@@ -15,6 +15,7 @@ import {
     type SDKControlRequest,
     type ControlRequest,
     type SetPermissionModeRequest,
+    type ApplyFlagSettingsRequest,
     type SDKControlResponse,
     type CanCallToolCallback,
     type CanUseToolControlRequest,
@@ -181,6 +182,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
+     * Ask Claude for the active model's effective context window (what /context shows:
+     * honors CLAUDE_CODE_DISABLE_1M_CONTEXT and settings autoCompactWindow).
+     */
+    async getContextUsage(): Promise<{ model?: string, maxTokens?: number }> {
+        if (!this.childStdin) {
+            throw new Error('getContextUsage requires --input-format stream-json')
+        }
+
+        const response = await this.request({
+            subtype: 'get_context_usage'
+        }, this.childStdin) as { response?: { model?: string, maxTokens?: number } }
+        return response.response ?? {}
+    }
+
+    /**
      * Change Claude's native permission mode without restarting the process
      */
     async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
@@ -192,6 +208,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             subtype: 'set_permission_mode',
             mode
         } as SetPermissionModeRequest, this.childStdin)
+    }
+
+    /**
+     * Change the session effort without restarting the process; null restores
+     * the model default. Older Claude Code builds reject the request.
+     */
+    async setEffort(effort: string | null): Promise<void> {
+        if (!this.childStdin) {
+            throw new Error('setEffort requires --input-format stream-json')
+        }
+
+        await this.request({
+            subtype: 'apply_flag_settings',
+            settings: { effortLevel: effort }
+        } as ApplyFlagSettingsRequest, this.childStdin)
     }
 
     /**
@@ -207,6 +238,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
 
         return new Promise((resolve, reject) => {
             this.pendingControlResponses.set(requestId, (response) => {
+                this.pendingControlResponses.delete(requestId)
                 if (response.subtype === 'success') {
                     resolve(response)
                 } else {
@@ -332,6 +364,7 @@ export function query(config: {
             fallbackModel,
             settingsPath,
             strictMcpConfig,
+            replayUserMessages,
             canCallTool,
             promptFailureCleanupTimeoutMs = DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS
         } = {}
@@ -380,6 +413,7 @@ export function query(config: {
         args.push('--print', stripNewlinesForWindowsShellArg(prompt.trim()))
     } else {
         args.push('--input-format', 'stream-json')
+        if (replayUserMessages) args.push('--replay-user-messages')
     }
 
     // Determine how to spawn Claude Code

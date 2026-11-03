@@ -6,7 +6,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import app.hapi.companion.ui.theme.ColorThemePreset
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.SqliteStorageUsageResponse
 import app.hapi.protocol.wire.UsageSummaryBucket
 import app.hapi.protocol.wire.UsageSummaryRange
@@ -17,7 +19,11 @@ import java.time.LocalDate
 /**
  * Compile-checked previews doubling as visual regressions for the B-M4e
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
- * storage donut — light, dark, and OLED.
+ * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
+ * non-owner gating), the General subpage it drills into (stock and under a
+ * color theme preset), and the expressive choice dialogs that subpage opens
+ * (theme swatches in light and dark, color-theme cards with accent strips,
+ * language cards without swatches).
  */
 
 private fun bucket(
@@ -139,5 +145,166 @@ private fun StorageCardPreview() {
 private fun StorageCardOledPreview() {
     HapiTheme(oled = true) {
         Surface { StorageUsageCard(usage = SAMPLE_STORAGE_USAGE) }
+    }
+}
+
+@Preview(name = "Settings hub · owner", showBackground = true)
+@Composable
+private fun SettingsHubOwnerPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsHubContent(
+                entries = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = true)),
+                onOpenCategory = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings hub · non-owner", showBackground = true)
+@Composable
+private fun SettingsHubNonOwnerPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsHubContent(
+                entries = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = false)),
+                onOpenCategory = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings general", showBackground = true, heightDp = 1200)
+@Composable
+private fun SettingsGeneralPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsGeneralContent(
+                theme = ThemeSettings(mode = ThemeMode.DARK, dynamicColor = false),
+                language = AppLanguage.ENGLISH,
+                hubUrl = "https://hub.example",
+                hubInfo = HubInfoState.Loaded(
+                    HubHealthResponse(status = "ok", protocolVersion = 1),
+                ),
+                onSetThemeMode = {},
+                onSetDynamicColor = {},
+                onSetPreset = {},
+                onSetLanguage = {},
+                onRetryHubInfo = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings general · color theme", showBackground = true, heightDp = 1200)
+@Composable
+private fun SettingsGeneralPresetPreview() {
+    HapiTheme(darkTheme = true, dynamicColor = false, preset = ColorThemePreset.NORD) {
+        Surface {
+            SettingsGeneralContent(
+                theme = ThemeSettings(
+                    mode = ThemeMode.DARK,
+                    dynamicColor = false,
+                    preset = ColorThemePreset.NORD,
+                ),
+                language = AppLanguage.ENGLISH,
+                hubUrl = "https://hub.example",
+                hubInfo = HubInfoState.Loaded(
+                    HubHealthResponse(status = "ok", protocolVersion = 1),
+                ),
+                onSetThemeMode = {},
+                onSetDynamicColor = {},
+                onSetPreset = {},
+                onSetLanguage = {},
+                onRetryHubInfo = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Color theme choice dialog", showBackground = true)
+@Composable
+private fun ColorThemeChoiceDialogPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        ChoiceDialog(
+            title = "Color theme",
+            options = ColorThemePreset.entries.map { preset ->
+                ChoiceOption(
+                    value = preset,
+                    label = preset.name.lowercase().replaceFirstChar { it.uppercase() },
+                    swatch = colorThemePresetSwatch(preset),
+                )
+            },
+            selected = ColorThemePreset.NORD,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
+    }
+}
+
+@Preview(name = "Theme choice dialog", showBackground = true)
+@Composable
+private fun ThemeChoiceDialogPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        ChoiceDialog(
+            title = "Theme",
+            options = ThemeMode.entries.map { mode ->
+                ChoiceOption(
+                    value = mode,
+                    label = mode.name.lowercase().replaceFirstChar { it.uppercase() },
+                    swatch = themeModeSwatch(mode),
+                )
+            },
+            selected = ThemeMode.DARK,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
+    }
+}
+
+@Preview(name = "Theme choice dialog · dark", showBackground = true, backgroundColor = 0xFF1B1B1F)
+@Composable
+private fun ThemeChoiceDialogDarkPreview() {
+    HapiTheme(darkTheme = true, dynamicColor = false) {
+        ChoiceDialog(
+            title = "Theme",
+            options = ThemeMode.entries.map { mode ->
+                ChoiceOption(
+                    value = mode,
+                    label = mode.name.lowercase().replaceFirstChar { it.uppercase() },
+                    swatch = themeModeSwatch(mode),
+                )
+            },
+            selected = ThemeMode.OLED,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
+    }
+}
+
+@Preview(name = "Language choice dialog", showBackground = true)
+@Composable
+private fun LanguageChoiceDialogPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        ChoiceDialog(
+            title = "App language",
+            options = listOf(
+                ChoiceOption(value = AppLanguage.SYSTEM, label = "Follow system"),
+                ChoiceOption(value = AppLanguage.ENGLISH, label = "English"),
+                ChoiceOption(value = AppLanguage.SIMPLIFIED_CHINESE, label = "简体中文"),
+                ChoiceOption(value = AppLanguage.RUSSIAN, label = "Русский"),
+            ),
+            selected = AppLanguage.ENGLISH,
+            onSelect = {},
+            onDismiss = {},
+            dismissLabel = "Cancel",
+        )
     }
 }

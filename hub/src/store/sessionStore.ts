@@ -1,4 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import type { SessionReadStateRequest } from '@hapi/protocol'
+import { updateSessionReadState } from './sessionReadState'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
 import {
@@ -30,6 +32,10 @@ export class SessionStore {
 
     constructor(db: Database) {
         this.db = db
+    }
+
+    updateReadState(id: string, namespace: string, request: SessionReadStateRequest) {
+        return updateSessionReadState(this.db, id, namespace, request)
     }
 
     getOrCreateSession(

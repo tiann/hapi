@@ -65,8 +65,8 @@ enum SessionRowStatus: Equatable {
         }
     }
 
-    /// Unfilled attention symbols; running uses the native loading indicator.
-    /// Status wording/count remain available to VoiceOver in either case.
+    /// Unfilled attention symbols; running is a pulsing badge on the agent
+    /// icon. Status wording/count remain available to VoiceOver in either case.
     var symbolName: String? {
         switch self {
         case .needsReply: return "bubble.left"
@@ -87,14 +87,17 @@ struct MachineFilterUI: Identifiable, Equatable {
 /// Transient, per-home filters. Add future dimensions here, not to navigation.
 struct SessionListFilters: Equatable, Hashable {
     var machineId: String?
+    /// Web "unread only" lens: hide sessions already read in this namespace.
+    var unreadOnly = false
 
-    var isActive: Bool { machineId != nil }
+    var isActive: Bool { machineId != nil || unreadOnly }
 }
 
 /// Session-list presentation state over the `HubSession` stores — the iOS
 /// counterpart of the Android reference's `SessionListViewModel`: row/filter
 /// derivation, refresh + offline/loaded flags, last-seen stamping, and
-/// pin/archive forwarding (optimism lives in the store). The SSE
+/// pin/archive/rename/delete/reopen forwarding (optimism lives in the
+/// store). The SSE
 /// subscription itself is owned by `HubSession`, not this model.
 @MainActor @Observable
 final class SessionListModel {
@@ -102,21 +105,31 @@ final class SessionListModel {
     private let machineStore: any MachineListStoring
     private let lastSeenStore: LastSeenStore
     private let hubUrl: String
+    /// Reopen follows a superseding id with the composer draft (web
+    /// `transferComposerDraftThenNavigate`).
+    private let drafts: (any ChatDrafts)?
 
     /// Not persisted: a new home / hub starts with all sessions.
     private(set) var filters = SessionListFilters()
+    /// Text search (`.searchable`); ranks by relevance while non-blank.
+    var searchQuery = ""
+    /// The split detail's session stays listed under the unread lens.
+    var selectedSessionId: String?
     private(set) var isRefreshing = false
     /// Last refresh failed — show the offline state over snapshot data.
     private(set) var isOffline = false
+    /// Last successful list fetch, for the offline notice's "updated …".
+    private(set) var lastRefreshedAt: Date?
     private(set) var hasRefreshedOnce = false
     @ObservationIgnored private var hasAttemptedRefresh = false
-    /// Transient pin/archive failure for an alert.
+    /// Transient row-action failure for an alert.
     var actionError: String?
 
     convenience init(session: HubSession) {
         self.init(
             sessionStore: session.sessionStore, machineStore: session.machineStore,
-            lastSeenStore: session.lastSeenStore, hubUrl: session.hubUrl
+            lastSeenStore: session.lastSeenStore, hubUrl: session.hubUrl,
+            drafts: UserDefaultsChatDrafts(scope: session.hubUrl)
         )
     }
 
@@ -124,12 +137,14 @@ final class SessionListModel {
         sessionStore: any SessionListStoring,
         machineStore: any MachineListStoring,
         lastSeenStore: LastSeenStore,
-        hubUrl: String
+        hubUrl: String,
+        drafts: (any ChatDrafts)? = nil
     ) {
         self.sessionStore = sessionStore
         self.machineStore = machineStore
         self.lastSeenStore = lastSeenStore
         self.hubUrl = hubUrl
+        self.drafts = drafts
     }
 
     // MARK: - Derived state
@@ -185,8 +200,21 @@ final class SessionListModel {
             }
     }
 
+    /// The menu also holds the unread lens and Mark All as Read.
     var showsFilterMenu: Bool {
+        !sessionStore.sessions.isEmpty || filters.unreadOnly
+    }
+
+    var showsMachineFilter: Bool {
         machineFilterIds.count >= 2
+    }
+
+    var hasActiveFilters: Bool {
+        activeMachineFilter != nil || filters.unreadOnly
+    }
+
+    var isSearching: Bool {
+        !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Never render an invalid filter, even before the view reconciles it.
@@ -200,9 +228,50 @@ final class SessionListModel {
     }
 
     var filterSummary: String? {
-        guard let id = activeMachineFilter,
-              let machine = machineFilters.first(where: { $0.id == id }) else { return nil }
-        return String(format: String(localized: "Machine: %@"), machine.label)
+        var parts: [String] = []
+        if filters.unreadOnly {
+            parts.append(String(localized: "Unread only"))
+        }
+        if let id = activeMachineFilter,
+           let machine = machineFilters.first(where: { $0.id == id }) {
+            parts.append(String(format: String(localized: "Machine: %@"), machine.label))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    func setUnreadOnly(_ enabled: Bool) {
+        filters.unreadOnly = enabled
+    }
+
+    /// Content not yet read by a client in this namespace.
+    var unreadCount: Int {
+        let readState = lastSeenStore.state
+        let followedTails = lastSeenStore.followedTails
+        return sessionStore.sessions.filter {
+            LastSeenStore.isUnread($0, state: readState, followedTails: followedTails)
+        }.count
+    }
+
+    /// Capture the observed heads; concurrent output must remain unread.
+    func markAllRead() {
+        let observed = sessionStore.sessions
+        Task {
+            for summary in observed {
+                await lastSeenStore.markSeen(sessionId: summary.id,
+                    revision: summary.contentRevision ?? 0, serverState: summary.readState)
+            }
+            if let error = lastSeenStore.persistenceError { actionError = error }
+        }
+    }
+
+    /// Swipe action: mark the observed head of one session as read.
+    func markRead(sessionId: String) {
+        guard let summary = sessionStore.sessions.first(where: { $0.id == sessionId }) else { return }
+        Task {
+            await lastSeenStore.markSeen(sessionId: summary.id,
+                revision: summary.contentRevision ?? 0, serverState: summary.readState)
+            if let error = lastSeenStore.persistenceError { actionError = error }
+        }
     }
 
     func selectMachine(_ id: String?) {
@@ -221,12 +290,29 @@ final class SessionListModel {
         }
     }
 
+    /// Machine filter → unread lens → text search (relevance order, pin
+    /// sections kept so the Pinned header still applies).
     var rows: [SessionRowUI] {
-        let lastSeen = lastSeenStore.state.lastSeen
+        let readState = lastSeenStore.state
+        let followedTails = lastSeenStore.followedTails
         let activeFilter = activeMachineFilter
-        let visible = sessionStore.sessions.filter { summary in
+        var visible = sessionStore.sessions.filter { summary in
             guard let activeFilter else { return true }
             return (summary.metadata?.machineId ?? unknownMachineFilterId) == activeFilter
+        }
+        if filters.unreadOnly {
+            visible = visible.filter { summary in
+                summary.id == selectedSessionId
+                    || LastSeenStore.isUnread(summary, state: readState, followedTails: followedTails)
+            }
+        }
+        if isSearching {
+            let labels = Dictionary(uniqueKeysWithValues: machineFilters.map { ($0.id, $0.label) })
+            if let index = SessionListSearch.scoreIndex(sessions: visible, query: searchQuery, machineLabel: { id in
+                labels[id ?? unknownMachineFilterId] ?? ""
+            }) {
+                visible = SessionListSearch.rank(visible, by: index)
+            }
         }
         return visible.map { summary in
             SessionRowUI(
@@ -234,7 +320,7 @@ final class SessionListModel {
                 title: Self.sessionTitle(summary),
                 project: Self.projectLabel(summary),
                 flavor: summary.metadata?.flavor,
-                unread: LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
+                unread: LastSeenStore.isUnread(summary, state: readState, followedTails: followedTails)
             )
         }
     }
@@ -265,9 +351,7 @@ final class SessionListModel {
         await Task { await self.refresh() }.value
     }
 
-    /// Pull-to-refresh / initial load. Coalesces concurrent calls; the first
-    /// successful list seeds the unread baseline so historical sessions do
-    /// not all light up as unread.
+    /// Pull-to-refresh / initial load. Coalesces concurrent calls.
     func refresh() async {
         guard !isRefreshing else { return }
         hasAttemptedRefresh = true
@@ -276,24 +360,14 @@ final class SessionListModel {
         do {
             try await sessionStore.refresh()
             reconcileFilters()
-            try await machineStore.refresh()
             isOffline = false
+            lastRefreshedAt = Date()
             hasRefreshedOnce = true
-            lastSeenStore.initializeBaseline(
-                scopeKey: hubUrl,
-                sessions: sessionStore.sessions
-            )
+            do { try await machineStore.refresh() }
+            catch { actionError = error.localizedDescription }
         } catch {
             isOffline = true
         }
-    }
-
-    /// Call when navigating into a session: stamps the last-seen watermark.
-    func onSessionOpened(_ sessionId: String) {
-        guard let summary = sessionStore.sessions.first(where: { $0.id == sessionId }) else {
-            return
-        }
-        lastSeenStore.markSeen(sessionId: sessionId, seenAt: summary.updatedAt)
     }
 
     /// `PUT /sessions/:id/pin` with store-side optimistic re-sort; failures
@@ -328,22 +402,62 @@ final class SessionListModel {
         }
     }
 
+    /// `PATCH /sessions/:id` with a store-side optimistic name.
+    func renameSession(sessionId: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let store = sessionStore
+        Task {
+            do {
+                try await store.renameSession(sessionId: sessionId, name: trimmed)
+            } catch {
+                self.actionError = String(
+                    format: String(localized: "Rename failed: %@"),
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// `DELETE /sessions/:id` (inactive sessions only) with store-side
+    /// optimistic removal; a 409 means it became active again.
+    func deleteSession(sessionId: String) {
+        let store = sessionStore
+        Task {
+            do {
+                try await store.deleteSession(sessionId: sessionId)
+            } catch {
+                self.actionError = isActiveSessionConflict(error)
+                    ? String(localized: "Active sessions can't be deleted — archive first")
+                    : String(format: String(localized: "Delete failed: %@"), error.localizedDescription)
+            }
+        }
+    }
+
+    /// `POST /sessions/:id/reopen`, then open the (possibly superseding)
+    /// session, carrying its composer draft along.
+    func reopenSession(sessionId: String, onReopened: @escaping @MainActor (String) -> Void) {
+        let store = sessionStore
+        Task {
+            do {
+                let response = try await store.reopenSession(sessionId: sessionId)
+                if response.sessionId != sessionId {
+                    self.drafts?.move(fromSessionId: sessionId, toSessionId: response.sessionId)
+                }
+                onReopened(response.sessionId)
+            } catch {
+                self.actionError = formatReopenError(error)
+                    ?? String(localized: "Failed to reopen session")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// `getSessionTitle` (`web/src/lib/sessionTitle.ts`): name → summary
     /// text → path tail → id prefix.
     static func sessionTitle(_ summary: SessionSummary) -> String {
-        if let name = summary.metadata?.name, !name.isEmpty {
-            return name
-        }
-        if let text = summary.metadata?.summary?.text, !text.isEmpty {
-            return text
-        }
-        if let path = summary.metadata?.path,
-           let tail = path.split(separator: "/").last(where: { !$0.isEmpty }) {
-            return String(tail)
-        }
-        return String(summary.id.prefix(8))
+        SessionListSearch.sessionTitle(summary)
     }
 }
 

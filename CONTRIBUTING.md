@@ -54,7 +54,7 @@ Have an idea to improve HAPI? Open an issue with:
 ## Getting Started
 
 1. Fork and clone the repository
-2. Install Bun 1.4.0, then install dependencies from the repo root:
+2. Install Bun 1.4.4, then install dependencies from the repo root:
    ```bash
    bun install
    ```
