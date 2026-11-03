@@ -8,7 +8,7 @@ import {
     consumeComposerSendIntent,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
-import { safeStringify } from '@hapi/protocol'
+import { isObject, safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock, CliOutputBlock, CodexReview, RoundSummary, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
@@ -36,6 +36,7 @@ export type HappyChatMessageMetadata = {
     status?: HappyMessageStatus
     localId?: string | null
     sourceMessageId?: string
+    isTranscriptEcho?: boolean
     originalText?: string
     toolCallId?: string
     event?: AgentEvent
@@ -508,6 +509,7 @@ function toThreadMessageLike(
                     status: block.status,
                     localId: block.localId,
                     sourceMessageId: block.id,
+                    isTranscriptEcho: isObject(block.meta) && block.meta.isTranscriptEcho === true,
                     originalText: block.originalText,
                     attachments: block.attachments,
                     invokedAt: block.invokedAt,
