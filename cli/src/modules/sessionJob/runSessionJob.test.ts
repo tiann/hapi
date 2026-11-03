@@ -817,6 +817,73 @@ describe('runSessionJob', () => {
         expect(lastPatch.status).toBe('completed')
     })
 
+    it('treats structured HTTP 503 as hub-down for the long terminal retry window', async () => {
+        let patchCalls = 0
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'drain',
+                        label: 'drain',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async (_url: string, body: { status?: string }) => {
+                patchCalls += 1
+                if (body.status === 'completed' && patchCalls < 5) {
+                    // Hub returns JSON error text without "HTTP 503" in the message —
+                    // classification must use the numeric status, not the detail string.
+                    return { status: 503, data: { error: 'Not connected' } }
+                }
+                return {
+                    status: 200,
+                    data: {
+                        job: {
+                            key: 'drain',
+                            label: 'drain',
+                            status: body.status ?? 'running',
+                            heartbeatAt: 2,
+                            startedAt: 1,
+                            updatedAt: 2
+                        }
+                    }
+                }
+            })
+        }
+
+        let nowMs = 0
+        const exitCode = await runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'drain',
+            label: 'drain',
+            command: ['true'],
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            spawnImpl: (() => fakeChild(0)) as never,
+            setIntervalImpl: ((() => 1) as never),
+            clearIntervalImpl: (() => undefined) as never,
+            sleepImpl: async (ms) => { nowMs += ms },
+            nowImpl: () => nowMs,
+            terminalHubDownDeadlineMs: 60_000
+        })
+
+        expect(exitCode).toBe(0)
+        expect(patchCalls).toBe(5)
+        const lastPatch = http.patch.mock.calls.at(-1)?.[1] as { status?: string }
+        expect(lastPatch.status).toBe('completed')
+    })
+
     it('refuses wrapping hapi-restart-hub in job run before creating a meter', async () => {
         const http = {
             post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),

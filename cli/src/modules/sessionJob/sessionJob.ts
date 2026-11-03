@@ -19,11 +19,14 @@ export type SessionJobErrorCode =
 
 export class SessionJobError extends Error {
     readonly code: SessionJobErrorCode
+    /** Present when the failure came from an HTTP response (for outage classification). */
+    readonly httpStatus?: number
 
-    constructor(code: SessionJobErrorCode, message: string) {
+    constructor(code: SessionJobErrorCode, message: string, httpStatus?: number) {
         super(message)
         this.name = 'SessionJobError'
         this.code = code
+        if (httpStatus !== undefined) this.httpStatus = httpStatus
     }
 }
 
@@ -280,9 +283,9 @@ function httpStatusError(
         ? errorDetail
         : `HTTP ${response.status}`
     if (response.status === 401) {
-        return new SessionJobError('auth_failed', `${action} failed: ${detail}`)
+        return new SessionJobError('auth_failed', `${action} failed: ${detail}`, response.status)
     }
-    return new SessionJobError('request_failed', `${action} failed: ${detail}`)
+    return new SessionJobError('request_failed', `${action} failed: ${detail}`, response.status)
 }
 
 /**

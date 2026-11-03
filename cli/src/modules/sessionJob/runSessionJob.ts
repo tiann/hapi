@@ -77,6 +77,11 @@ export function commandLooksLikeHubStackControl(command: string[]): boolean {
 export function isHubUnreachableError(error: unknown): boolean {
     if (error instanceof SessionJobError) {
         if (error.code === 'run_mismatch' || error.code === 'not_found') return false
+        // Prefer numeric status: httpStatusError may replace "HTTP 503" with hub JSON text
+        // like "Not connected", which must still use the hub-down retry window.
+        if (error.httpStatus !== undefined && error.httpStatus >= 502 && error.httpStatus <= 504) {
+            return true
+        }
         if (/HTTP 502|HTTP 503|HTTP 504|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up|hub unreachable|Network Error/i.test(error.message)) {
             return true
         }
