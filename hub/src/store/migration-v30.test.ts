@@ -105,7 +105,7 @@ afterEach(() => {
     }
 })
 
-function createScratchlistLegacy(version: number, hasPositions = false) {
+function createScratchlistLegacy(version: number, hasPositions = false, dropReadState = false) {
     const directory = mkdtempSync(join(tmpdir(), 'hapi-scratchlist-v30-'))
     scratchlistDirs.push(directory)
     const path = join(directory, 'hapi.db')
@@ -116,6 +116,15 @@ function createScratchlistLegacy(version: number, hasPositions = false) {
     const legacy = new Database(path)
     legacy.exec('DROP INDEX idx_session_scratchlist_session_position')
     if (!hasPositions) legacy.exec('ALTER TABLE session_scratchlist DROP COLUMN position')
+    if (dropReadState) {
+        legacy.exec(`
+            ALTER TABLE messages DROP COLUMN content_revision;
+            ALTER TABLE sessions DROP COLUMN manual_unread;
+            ALTER TABLE sessions DROP COLUMN read_state_version;
+            ALTER TABLE sessions DROP COLUMN read_revision;
+            ALTER TABLE sessions DROP COLUMN content_revision;
+        `)
+    }
     legacy.prepare(`INSERT INTO session_scratchlist (session_id, entry_id, text, created_at, updated_at, attachments${hasPositions ? ', position' : ''})
         VALUES (?, 'older', 'keep old draft', 100, 500, '[]'${hasPositions ? ', 0' : ''}),
                (?, 'newer', 'keep new draft', 200, 300, '[]'${hasPositions ? ', 1' : ''})`).run(session.id, session.id)
@@ -140,6 +149,23 @@ describe('scratchlist order schema through v32', () => {
             } finally { store.close() }
         })
     }
+
+    it('repairs read-state columns in a v30 database created by the earlier scratchlist migration', () => {
+        const { path, sessionId } = createScratchlistLegacy(30, false, true)
+        const store = new Store(path)
+        try {
+            expect(store.sessions.getSession(sessionId)?.readState).toEqual({
+                readRevision: 0,
+                manualUnread: false,
+                version: 0,
+            })
+            expect(store.scratchlist.list(sessionId).map(entry => [entry.entryId, entry.position])).toEqual([
+                ['newer', 0], ['older', 1],
+            ])
+            const db = (store as unknown as { db: Database }).db
+            expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 32 })
+        } finally { store.close() }
+    })
 
     it('preserves already persisted positions and remains stable after reopening', () => {
         const { path, sessionId } = createScratchlistLegacy(29, true)

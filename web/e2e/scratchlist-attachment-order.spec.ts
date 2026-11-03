@@ -91,11 +91,11 @@ for (const mobile of [false, true]) {
                 await openDrawer(page)
                 if (scenario === 'inserted' || scenario === 'text-only') {
                     const originalIds = attachments.map(attachment => attachment.id)
-                    await page.getByTestId('scratchlist-entry').getByRole('button', { name: 'More actions' }).click()
-                    await expect(page.getByRole('menuitem', { name: 'Insert attachments', exact: true })).toBeEnabled()
-                    await page.screenshot({ path: testInfo.outputPath(`${scenario}-menu.png`) })
+                    const plus = page.getByTestId('scratchlist-insert-attachment-plus')
+                    await expect(plus).toBeEnabled()
+                    await page.screenshot({ path: testInfo.outputPath(`${scenario}-plus.png`) })
                     const chooser = page.waitForEvent('filechooser')
-                    await page.getByRole('menuitem', { name: 'Insert attachments', exact: true }).click()
+                    await plus.click()
                     await (await chooser).setFiles([
                         { name: `${run}-added-image.png`, mimeType: 'image/png', buffer: png },
                         { name: `${run}-added-file.txt`, mimeType: 'text/plain', buffer: Buffer.from('Inserted file') },

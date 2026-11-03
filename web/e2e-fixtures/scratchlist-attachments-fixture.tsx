@@ -34,6 +34,7 @@ function App() {
     const [entries, setEntries] = useState<ScratchlistEntry[]>(() => JSON.parse(localStorage.getItem(storageKey) ?? 'null') ?? [{ id: 'draft', text: 'Draft note', createdAt: 1, attachments: [] }])
     const [updates, setUpdates] = useState(0)
     const [failSave, setFailSave] = useState(false)
+    const [activeActions, setActiveActions] = useState(true)
     const [action, setAction] = useState('')
     const save = (next: ScratchlistEntry[]) => { localStorage.setItem(storageKey, JSON.stringify(next)); setEntries(next) }
     return <I18nProvider><main className="mx-auto max-w-2xl p-4">
@@ -42,12 +43,14 @@ function App() {
             <button onClick={() => save([{ ...entries[0]!, attachments: [file] }])}>Single file</button>
             <button onClick={() => save([{ ...entries[0]!, attachments: [image, file] }])}>Mixed attachments</button>
             <button onClick={() => save([{ ...entries[0]!, attachments: [image, { ...image, id: 'second', filename: 'second.png' }] }])}>Two images</button>
+            <button onClick={() => save([{ ...entries[0]!, attachments: Array.from({ length: 8 }, (_, index) => ({ ...image, id: `many-${index}`, filename: `many-${index}.png` })) }])}>Many images</button>
             <button onClick={() => save([{ ...entries[0]!, attachments: [file, { ...file, id: 'second-file', filename: 'second.txt' }] }])}>Two files</button>
             <button onClick={() => setFailSave((value) => !value)}>Toggle save failure</button>
+            <button onClick={() => setActiveActions((value) => !value)}>Toggle inactive session actions</button>
         </div>
         <ScratchlistDrawer entries={entries} sessionId="attachment-fixture" api={api}
-            onSend={async () => { setAction('send'); return false }}
-            onSchedule={async (_entry, pending) => { setAction(JSON.stringify(pending)); return false }}
+            onSend={activeActions ? async () => { setAction('send'); return false } : undefined}
+            onSchedule={activeActions ? async (_entry, pending) => { setAction(JSON.stringify(pending)); return false } : undefined}
             onUpdate={async (id, text, attachments) => {
                 if (failSave) throw new Error('Save failed')
                 setUpdates((value) => value + 1)

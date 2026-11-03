@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { ScratchlistAttachmentWithPreview } from '@/lib/scratchlistAttachmentPreview'
 import {
@@ -8,6 +8,7 @@ import {
 import { isImageMimeType } from '@/lib/fileAttachments'
 import { moveAttachmentId, orderItemsById } from '@/lib/attachmentOrder'
 import { ImagePreview } from '@/components/ImagePreview'
+import { PlusIcon } from '@/components/icons'
 
 function RemoveIcon() {
     return <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -28,6 +29,8 @@ type Props = {
     disabled?: boolean
     onRemove: (id: string) => void
     onReorder: (ids: string[]) => void | Promise<void>
+    onAdd?: () => void
+    addLabel?: string
 }
 
 type Drag = { id: string; pointerId: number; x: number; y: number; started: boolean; order: string[] }
@@ -94,6 +97,56 @@ export function ScratchlistAttachments(props: Props) {
     }, [attachmentKey, props.disabled])
 
     useEffect(() => {
+        const element = container.current
+        if (!element) return
+        let gesture: { x: number; y: number; scrollLeft: number; dragging: boolean } | null = null
+        const cancel = () => { gesture = null }
+        const start = (event: TouchEvent) => {
+            gesture = null
+            if (event.touches.length !== 1) return
+            const target = event.target
+            if (target instanceof Element && target.closest('[data-scratchlist-action="reorder-attachment"]')) return
+            const touch = event.touches[0]!
+            gesture = { x: touch.clientX, y: touch.clientY, scrollLeft: element.scrollLeft, dragging: false }
+        }
+        const move = (event: TouchEvent) => {
+            if (!gesture || event.touches.length !== 1) return
+            const touch = event.touches[0]!
+            const dx = touch.clientX - gesture.x
+            const dy = touch.clientY - gesture.y
+            if (!gesture.dragging) {
+                if (Math.max(Math.abs(dx), Math.abs(dy)) < 8) return
+                if (Math.abs(dy) >= Math.abs(dx) || element.scrollWidth <= element.clientWidth) {
+                    cancel()
+                    return
+                }
+                gesture.dragging = true
+            }
+            if (event.cancelable) {
+                event.preventDefault()
+                element.scrollLeft = gesture.scrollLeft - dx
+            }
+        }
+        const end = (event: TouchEvent) => {
+            if (gesture?.dragging && event.cancelable) event.preventDefault()
+            cancel()
+        }
+        element.addEventListener('touchstart', start, { passive: true })
+        // React delegates touchmove passively. This local listener prevents
+        // horizontal swipes from opening the thumbnail while vertical swipes
+        // continue to scroll the drawer.
+        element.addEventListener('touchmove', move, { passive: false })
+        element.addEventListener('touchend', end, { passive: false })
+        element.addEventListener('touchcancel', cancel)
+        return () => {
+            element.removeEventListener('touchstart', start)
+            element.removeEventListener('touchmove', move)
+            element.removeEventListener('touchend', end)
+            element.removeEventListener('touchcancel', cancel)
+        }
+    }, [])
+
+    useEffect(() => {
         const move = (event: PointerEvent) => {
             const active = drag.current
             if (!active || active.pointerId !== event.pointerId) return
@@ -139,6 +192,9 @@ export function ScratchlistAttachments(props: Props) {
 
     const start = (event: ReactPointerEvent<HTMLElement>, id: string, handle = false) => {
         if (!canReorder || savingRef.current || event.button !== 0) return
+        // Touch users scroll the strip with the thumbnail surface. Reordering
+        // remains available through the always-visible drag handle.
+        if (event.pointerType === 'touch' && !handle) return
         suppressClick.current = null
         event.stopPropagation()
         if (handle) event.preventDefault()
@@ -161,8 +217,22 @@ export function ScratchlistAttachments(props: Props) {
         void saveOrder(next)
     }
 
+    const scrollHorizontally = (event: ReactWheelEvent<HTMLDivElement>) => {
+        if (event.deltaX === 0 && !event.shiftKey) return
+        const element = event.currentTarget
+        if (element.scrollWidth <= element.clientWidth) return
+        event.preventDefault()
+        element.scrollLeft += event.deltaX !== 0 ? event.deltaX : event.deltaY
+    }
+
     return <div>
-        <div ref={container} className="mt-0.5 mb-1 flex min-w-0 flex-wrap items-start gap-2" data-testid="scratchlist-attachments">
+        <div
+            ref={container}
+            className="mt-0.5 mb-1 flex min-w-0 max-w-full items-start gap-2 overflow-x-auto overscroll-x-contain pb-1 pr-1 [scrollbar-width:thin]"
+            data-testid="scratchlist-attachments"
+            onWheel={scrollHorizontally}
+            style={{ touchAction: 'pan-x pan-y' }}
+        >
             {attachments.map((attachment) => {
                 const src = isImageMimeType(attachment.mimeType) ? getScratchlistAttachmentPreview(attachment) : undefined
                 const isImage = Boolean(src)
@@ -171,7 +241,7 @@ export function ScratchlistAttachments(props: Props) {
                     data-scratchlist-attachment-id={attachment.id}
                     data-scratchlist-action="attachment"
                     data-scratchlist-attachment-dragging={draggingId === attachment.id || undefined}
-                    className={`${isImage ? 'group relative h-16 w-24 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]' : `relative flex min-w-0 max-w-full items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] py-2 pr-2 text-base text-[var(--app-fg)] ${canReorder ? 'pl-2' : 'pl-3'}`} ${draggingId === attachment.id ? 'opacity-60' : ''}`}
+                    className={`${isImage ? 'group relative h-16 w-24 shrink-0 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]' : `relative flex min-w-0 max-w-[min(18rem,70vw)] shrink-0 items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] py-2 pr-2 text-base text-[var(--app-fg)] ${canReorder ? 'pl-2' : 'pl-3'}`} ${draggingId === attachment.id ? 'opacity-60' : ''}`}
                     onPointerDown={(event) => { if (!(event.target as Element).closest('button')) start(event, attachment.id) }}
                     onContextMenu={(event) => { if (drag.current?.id === attachment.id || suppressClick.current === attachment.id) { event.preventDefault(); event.stopPropagation() } }}>
                     {src ? <ImagePreview src={src} fileName={attachment.filename} label={attachment.filename} fileSize={attachment.size}
@@ -199,6 +269,24 @@ export function ScratchlistAttachments(props: Props) {
                     </button>
                 </div>
             })}
+            {props.onAdd ? (
+                <button
+                    type="button"
+                    data-testid="scratchlist-insert-attachment-plus"
+                    data-scratchlist-action="insert-attachments"
+                    aria-label={props.addLabel}
+                    title={props.addLabel}
+                    disabled={props.disabled || saving}
+                    onClick={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        props.onAdd?.()
+                    }}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors hover:border-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                    <PlusIcon className="h-4 w-4" />
+                </button>
+            ) : null}
         </div>
         {error ? <p role="alert" className="text-xs text-red-500">{error}</p> : null}
     </div>

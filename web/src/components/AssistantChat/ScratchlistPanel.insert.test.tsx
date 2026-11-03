@@ -21,14 +21,20 @@ function setup(onUpdate = vi.fn().mockResolvedValue(undefined)) {
     const rendered = render(view([entry]))
     const input = screen.getByTestId('scratchlist-insert-attachments')
     const select = (files: File[]) => {
-        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Insert attachments' }))
+        fireEvent.click(screen.getByTestId('scratchlist-insert-attachment-plus'))
         fireEvent.change(input, { target: { files } })
     }
     return { api, onUpdate, select, rerender: (entries: ScratchlistEntry[]) => rendered.rerender(view(entries)) }
 }
 
 describe('insert attachments into a saved scratchlist draft', () => {
+    it('uses the plus control instead of a duplicate menu item', () => {
+        setup()
+        expect(screen.getByTestId('scratchlist-insert-attachment-plus')).toHaveAccessibleName('Insert attachments')
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        expect(screen.queryByRole('menuitem', { name: 'Insert attachments' })).toBeNull()
+    })
+
     it('appends multiple selected files in selection order, preserving existing attachments and text', async () => {
         const { api, onUpdate, select } = setup()
         select([new File(['one'], 'first.txt', { type: 'text/plain' }), new File(['two'], 'second.txt', { type: 'text/plain' })])

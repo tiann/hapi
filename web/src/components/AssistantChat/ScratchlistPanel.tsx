@@ -285,14 +285,13 @@ type ScratchlistDeleteRequest =
         attachmentFilename: string
     }
 
-function ScratchlistActionIcon({ action }: { action: 'attachment' | 'send' | 'delete' }) {
+function ScratchlistActionIcon({ action }: { action: 'send' | 'delete' }) {
     const isSend = action === 'send'
     return (
         <span aria-hidden="true" className={`inline-flex h-5 w-5 shrink-0 items-center justify-center ${action === 'delete' ? '' : 'text-[var(--app-hint)]'}`}>
             <svg width={isSend ? 20 : 18} height={isSend ? 20 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 strokeWidth={isSend ? 2.25 : 2} strokeLinecap="round" strokeLinejoin="round"
                 className={`shrink-0 ${isSend ? 'translate-y-[0.5px]' : ''}`}>
-                {action === 'attachment' ? <path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l10-10a4 4 0 0 1 5.7 5.7l-10 10a2 2 0 0 1-2.8-2.8l9.2-9.2" /> : null}
                 {isSend ? <path d="M12 20V4m-8 8 8-8 8 8" /> : null}
                 {action === 'delete' ? <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" /> : null}
             </svg>
@@ -310,7 +309,6 @@ function ScratchlistActionMenu({
     onCopy,
     onDelete,
     onSend,
-    onInsertAttachments,
     onOpenSchedule,
     onSchedule,
     disabled,
@@ -325,7 +323,6 @@ function ScratchlistActionMenu({
     onCopy: () => void
     onDelete: () => void
     onSend?: () => void
-    onInsertAttachments?: () => void
     onOpenSchedule: () => void
     onSchedule?: (pending: PendingSchedule) => void
     disabled: boolean
@@ -375,19 +372,6 @@ function ScratchlistActionMenu({
                 <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><CopyIcon className="h-[18px] w-[18px]" /></span>
                 <span>{t('scratchlist.action.copy')}</span>
             </button>
-            {onInsertAttachments ? (
-                <button
-                    type="button"
-                    role="menuitem"
-                    data-scratchlist-action="insert-attachments"
-                    className={itemClassName}
-                    onClick={onInsertAttachments}
-                    disabled={disabled || actionPending}
-                >
-                    <ScratchlistActionIcon action="attachment" />
-                    <span>{t('scratchlist.action.insertAttachments')}</span>
-                </button>
-            ) : null}
             {onSend ? (
                 <button
                     type="button"
@@ -610,9 +594,13 @@ function ScratchlistInventory({
     }, [actionPendingEntryId, closeMenu, disabled])
 
     const handleContextMenu = useCallback((entry: ScratchlistEntry, event: ReactMouseEvent<HTMLLIElement>) => {
-        // Let the browser's native editing menu (copy/paste/select) work
-        // inside the inline editor instead of opening the row action menu.
-        if (event.target instanceof Element && event.target.closest('textarea')) {
+        // Editable controls and image surfaces keep the browser's native menu
+        // (Cut/Copy/Paste, Save image, Open image in new tab, etc.). React
+        // portals still bubble contextmenu events through the scratchlist row,
+        // so the fullscreen viewer needs its own marker here as well.
+        if (event.target instanceof Element && event.target.closest(
+            'textarea, input, select, a, [data-image-preview-trigger], [data-image-preview-viewer], [data-scratchlist-attachment-id]',
+        )) {
             return
         }
         const sourceCapabilities = (event.nativeEvent as MouseEvent & {
@@ -1070,20 +1058,20 @@ function ScratchlistInventory({
                                 className="min-w-0 flex-1"
                                 data-testid="scratchlist-entry-content"
                             >
-                                {entry.attachments && entry.attachments.length > 0 ? (
-                                    <ScratchlistAttachments
-                                        sessionId={sessionId}
-                                        api={api}
-                                        attachments={entry.attachments}
-                                        disabled={disabled || actionPendingEntryId === entry.id || attachmentUploadEntryId !== null}
-                                        onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
-                                        onReorder={async (ids) => {
-                                            const current = entriesRef.current.find((item) => item.id === entry.id)
-                                            if (!current || disabled) return
-                                            await onUpdate(current, current.text, orderItemsById(current.attachments ?? [], ids))
-                                        }}
-                                    />
-                                ) : null}
+                                <ScratchlistAttachments
+                                    sessionId={sessionId}
+                                    api={api}
+                                    attachments={entry.attachments ?? []}
+                                    disabled={disabled || actionPendingEntryId === entry.id || attachmentUploadEntryId !== null}
+                                    onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
+                                    onReorder={async (ids) => {
+                                        const current = entriesRef.current.find((item) => item.id === entry.id)
+                                        if (!current || disabled) return
+                                        await onUpdate(current, current.text, orderItemsById(current.attachments ?? [], ids))
+                                    }}
+                                    onAdd={api && sessionId ? () => selectAttachments(entry) : undefined}
+                                    addLabel={t('scratchlist.action.insertAttachments')}
+                                />
                                 {attachmentUploadEntryId === entry.id ? (
                                     <p role="status" className="text-xs text-[var(--app-hint)]">{t('scratchlist.uploadingAttachments')}</p>
                                 ) : null}
@@ -1171,7 +1159,6 @@ function ScratchlistInventory({
                                 scheduleOpen={scheduleEntryId === entry.id}
                                 onClose={closeMenu}
                                 onCopy={() => { void handleCopy(entry) }}
-                                onInsertAttachments={api && sessionId ? () => selectAttachments(entry) : undefined}
                                 onDelete={() => requestDeleteEntry(entry)}
                                 onSend={onSend ? () => handleSend(entry) : undefined}
                                 onOpenSchedule={() => setScheduleEntryId(entry.id)}

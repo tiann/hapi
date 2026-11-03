@@ -87,6 +87,19 @@ describe('scratchlist attachment controls', () => {
         expect(ids(container)).toEqual(['photo', 'file'])
     })
 
+    it('keeps the attachment strip horizontally scrollable and exposes the add control', () => {
+        const onAdd = vi.fn()
+        render(<ScratchlistAttachments attachments={[photo, file]} onRemove={vi.fn()} onReorder={vi.fn()}
+            onAdd={onAdd} addLabel="Insert attachments" />)
+        const strip = screen.getByTestId('scratchlist-attachments')
+        expect(strip.className).toContain('overflow-x-auto')
+        expect(strip.className).toContain('overscroll-x-contain')
+        const add = screen.getByTestId('scratchlist-insert-attachment-plus')
+        expect(add).toHaveAccessibleName('Insert attachments')
+        fireEvent.click(add)
+        expect(onAdd).toHaveBeenCalledTimes(1)
+    })
+
     it('ignores sorting when disabled', () => {
         render(<ScratchlistAttachments attachments={[photo, file]} disabled onRemove={vi.fn()} onReorder={vi.fn()} />)
         expect(screen.queryByTestId('scratchlist-attachment-drag-handle')).not.toBeInTheDocument()

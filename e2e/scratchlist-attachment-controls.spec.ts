@@ -47,6 +47,75 @@ for (const touch of [false, true]) {
             })
         }
 
+        test('image thumbnail and fullscreen preview preserve the native context menu', async ({ page }) => {
+            test.skip(touch, 'Desktop mouse context-menu behavior')
+            await page.getByRole('button', { name: 'Single image', exact: true }).click()
+            const watchContextMenu = async () => {
+                await page.evaluate(() => {
+                    const state = window as Window & { __contextMenuPrevented?: boolean }
+                    state.__contextMenuPrevented = undefined
+                    window.addEventListener('contextmenu', (event) => {
+                        state.__contextMenuPrevented = event.defaultPrevented
+                    }, { once: true })
+                })
+            }
+            const prevented = async () => page.evaluate(() => (
+                window as Window & { __contextMenuPrevented?: boolean }
+            ).__contextMenuPrevented)
+
+            await watchContextMenu()
+            await items(page).click({ button: 'right' })
+            await expect.poll(prevented).toBe(false)
+            await expect(page.getByTestId('scratchlist-action-menu')).toHaveCount(0)
+
+            await items(page).getByTitle('Click to zoom').click()
+            const dialog = page.getByRole('dialog', { name: 'photo.png' })
+            await watchContextMenu()
+            await dialog.getByRole('img', { name: 'photo.png' }).click({ button: 'right' })
+            await expect.poll(prevented).toBe(false)
+            await expect(page.getByTestId('scratchlist-action-menu')).toHaveCount(0)
+        })
+
+        test('narrow attachment strip scrolls horizontally to keep the add control reachable', async ({ page, browserName }, testInfo) => {
+            test.skip(touch && browserName !== 'chromium', 'Native touch injection requires Chromium CDP')
+            await page.getByRole('button', { name: 'Many images', exact: true }).click()
+            const strip = page.getByTestId('scratchlist-attachments')
+            const plus = page.getByTestId('scratchlist-insert-attachment-plus')
+            const before = await strip.evaluate((element) => ({
+                clientWidth: element.clientWidth,
+                scrollWidth: element.scrollWidth,
+                scrollLeft: element.scrollLeft,
+            }))
+            expect(before.scrollWidth).toBeGreaterThan(before.clientWidth)
+            await expect(plus).toHaveCSS('width', '32px')
+
+            if (touch) {
+                const bounds = await strip.boundingBox()
+                const cdp = await page.context().newCDPSession(page)
+                const startX = bounds!.x + bounds!.width - 24
+                const y = bounds!.y + 24
+                await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: startX, y, id: 1 }] })
+                await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: startX - 160, y, id: 1 }] })
+                await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: startX - 260, y, id: 1 }] })
+                await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+                await cdp.detach()
+            } else {
+                const bounds = await strip.boundingBox()
+                await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2)
+                await page.keyboard.down('Shift')
+                await page.mouse.wheel(0, 240)
+                await page.keyboard.up('Shift')
+            }
+
+            await expect.poll(() => strip.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+            await plus.scrollIntoViewIfNeeded()
+            await expect(plus).toBeVisible()
+            await expect(plus).toBeEnabled()
+            await page.getByTestId('scratchlist-drawer').screenshot({
+                path: testInfo.outputPath(`narrow-${touch ? 'touch' : 'desktop'}-strip-scrolled.png`),
+            })
+        })
+
         test('mixed attachment order persists after keyboard sorting and reload, then hides at 2 → 1', async ({ page }, testInfo) => {
             await page.getByRole('button', { name: 'Mixed attachments', exact: true }).click()
             await expect(handles(page)).toHaveCount(2)

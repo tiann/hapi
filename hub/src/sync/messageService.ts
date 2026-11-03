@@ -246,6 +246,8 @@ export class MessageService {
     private readonly matureReleaseInFlightSessions = new Set<string>()
     /** A clear-handoff drain failed after staging; retry the full deliverable sequence. */
     private readonly pendingOrderedDeliverableReleaseSessions = new Set<string>()
+    /** Suppress restart reconstruction while the current process already drained this exact queue. */
+    private readonly completedOrderedDeliverableSignatures = new Map<string, string>()
 
     private beginScheduledMessageCancellation(key: string): void {
         this.cancellingScheduledMessageKeys.set(key, (this.cancellingScheduledMessageKeys.get(key) ?? 0) + 1)
@@ -1565,9 +1567,24 @@ export class MessageService {
             this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
             released += 1
         }
-        if (completed) this.pendingOrderedDeliverableReleaseSessions.delete(sessionId)
-        else this.pendingOrderedDeliverableReleaseSessions.add(sessionId)
+        if (completed) {
+            this.pendingOrderedDeliverableReleaseSessions.delete(sessionId)
+            this.completedOrderedDeliverableSignatures.set(
+                sessionId,
+                this.deliverableQueueSignature(sessionId),
+            )
+        } else {
+            this.pendingOrderedDeliverableReleaseSessions.add(sessionId)
+            this.completedOrderedDeliverableSignatures.delete(sessionId)
+        }
         return released
+    }
+
+    private deliverableQueueSignature(sessionId: string): string {
+        return this.store.messages
+            .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+            .map((message) => `${message.id}:${message.seq}`)
+            .join('\u001f')
     }
 
     private hasCliSessionConnection(sessionId: string): boolean {
@@ -1631,7 +1648,25 @@ export class MessageService {
                 return
             }
             if (this.matureReleaseInFlightSessions.has(sessionId)) return
-            if (this.pendingOrderedDeliverableReleaseSessions.has(sessionId)) {
+            const deliverable = this.store.messages
+                .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+            const hasImmediateDeliverable = deliverable.some((message) => message.scheduledAt === null)
+            const deliverableSignature = deliverable
+                .map((message) => `${message.id}:${message.seq}`)
+                .join('\u001f')
+            // The retry marker is process-local, so reconstruct the ordered
+            // drain from durable rows after a Hub restart. A mature scheduled
+            // row followed by an immediate row must not take the scheduled-only
+            // path, or the immediate row arrives after later scheduled rows.
+            // The signature prevents re-emitting an already drained queue on
+            // each tick while the CLI ACK is still pending.
+            const hasPendingOrderedDrain = this.pendingOrderedDeliverableReleaseSessions.has(sessionId)
+            const needsOrderedDrain = hasPendingOrderedDrain
+                || (messages.length > 0
+                    && hasImmediateDeliverable
+                    && this.completedOrderedDeliverableSignatures.get(sessionId) !== deliverableSignature)
+            if (needsOrderedDrain) {
+                if (!hasPendingOrderedDrain && !this.hasCliSessionConnection(sessionId)) return
                 this.matureReleaseInFlightSessions.add(sessionId)
                 try {
                     await this.releaseDeliverableQueuedMessages(sessionId, now)

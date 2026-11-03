@@ -1120,6 +1120,11 @@ export class Store {
 
     /** v30→v31: create and backfill the message-content search index. */
     private migrateFromV30ToV31(): void {
+        // Earlier iterations of this feature used v30 for scratchlist ordering
+        // before current main claimed v30 for read-state revisions. Those local
+        // databases already report v30, so replay the idempotent read-state
+        // column repair before advancing to v31.
+        this.migrateFromV29ToV30()
         createMessageContentSearchTable(this.db)
         if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
     }

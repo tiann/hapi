@@ -437,6 +437,14 @@ export function shouldStageScratchlistAttachmentsForComposeSend(
         && (attachments ?? []).some((attachment) => isHubScratchlistAttachmentPath(attachment.path))
 }
 
+export function getScratchlistDrawerSettlementEffect(
+    pendingAttemptId: string | null,
+    settlement: SendMessageSettlement | null,
+): 'wait' | 'close' | 'release' {
+    if (!pendingAttemptId || settlement?.attemptId !== pendingAttemptId) return 'wait'
+    return settlement.status === 'success' ? 'close' : 'release'
+}
+
 export function mergeStagedAttachmentsInOrder(
     attachments: readonly AttachmentMetadata[],
     staged: readonly AttachmentMetadata[],
@@ -943,6 +951,7 @@ function SessionChatInner(props: SessionChatProps) {
     }, [allSessions, t])
     const [scratchlistMode, setScratchlistMode] = useState(false)
     const [isScratchlistParking, setIsScratchlistParking] = useState(false)
+    const [pendingImmediateScratchlistAttemptId, setPendingImmediateScratchlistAttemptId] = useState<string | null>(null)
     // Mode resets across sessions implicitly: SessionChat is keyed by
     // session.id at the public-export boundary, so a session switch
     // remounts SessionChatInner from scratch and `scratchlistMode`
@@ -1202,14 +1211,23 @@ function SessionChatInner(props: SessionChatProps) {
             entry.updatedAt ?? entry.createdAt,
         )
         if (scheduledAt == null) {
-            // A successful explicit Send now action leaves scratchlist mode;
-            // otherwise the next ordinary composer message would be parked
-            // instead of sent to the agent. Failed sends keep the mode on so
-            // the draft remains available for retry.
-            setScratchlistMode(false)
+            // `onSend` only starts the mutation. Keep the drawer mounted until
+            // this exact attempt settles so a deferred POST failure leaves the
+            // scratchlist mode and retry surface visible.
+            setPendingImmediateScratchlistAttemptId(accepted.attemptId)
         }
         return true
     }, [props.api, props.onSend, props.onScratchlistSendAccepted, props.session.id])
+
+    useEffect(() => {
+        const effect = getScratchlistDrawerSettlementEffect(
+            pendingImmediateScratchlistAttemptId,
+            props.sendSettlement,
+        )
+        if (effect === 'wait') return
+        setPendingImmediateScratchlistAttemptId(null)
+        if (effect === 'close') setScratchlistMode(false)
+    }, [pendingImmediateScratchlistAttemptId, props.sendSettlement])
 
     const handleSendScratchlistEntry = useCallback(
         (entry: ScratchlistEntry) => sendScratchlistEntry(entry, null),

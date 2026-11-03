@@ -26,7 +26,7 @@ for (const touch of [false, true]) {
                 await more.click()
                 const menu = page.getByTestId('scratchlist-action-menu')
                 await expect(menu).toBeVisible()
-                await expect(menu.getByRole('menuitem')).toHaveCount(5)
+                await expect(menu.getByRole('menuitem')).toHaveCount(4)
                 await expectInsideViewport(page, menu)
                 const geometry = await menu.evaluate(el => {
                     const rect = el.getBoundingClientRect()
@@ -72,13 +72,16 @@ for (const touch of [false, true]) {
                 await page.keyboard.press('Escape')
                 await expect(menu).toHaveCount(0)
 
-                // Keyboard activation and the native picker still work after styling.
-                await more.focus()
-                await more.press('Enter')
+                // The attachment plus has a dedicated keyboard path and the
+                // action menu no longer duplicates that operation.
+                await more.click()
+                await expect(menu.locator('[data-scratchlist-action="insert-attachments"]')).toHaveCount(0)
+                await page.keyboard.press('Escape')
+                const plus = page.getByTestId('scratchlist-insert-attachment-plus')
+                await plus.focus()
                 const chooserPromise = page.waitForEvent('filechooser')
-                await menu.locator('[data-scratchlist-action="insert-attachments"]').click()
+                await plus.press('Enter')
                 await (await chooserPromise).setFiles([])
-                await expect(menu).toHaveCount(0)
                 await expect(page.getByTestId('order')).toHaveText('["photo","file"]')
 
                 await more.click()

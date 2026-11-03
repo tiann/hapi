@@ -3045,6 +3045,84 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('reconstructs a pending ordered handoff after the Hub restarts', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-handoff-restart')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        let firstServiceCalls = 0
+        const firstService = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async () => {
+                    firstServiceCalls += 1
+                    throw new Error('upload failed before restart')
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'ordered-handoff-restart')],
+                },
+            },
+            'restart-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'restart-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'restart-handoff-c',
+            scheduledAt,
+        )
+
+        await expect(firstService.releaseDeliverableQueuedMessages(session.id, Date.now())).resolves.toBe(0)
+        expect(firstServiceCalls).toBe(1)
+        expect(cliEmitted).toHaveLength(0)
+
+        const restartedService = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => (
+                    attachments.map((attachment) => ({ ...attachment, path: '/tmp/restarted-handoff.png' }))
+                ),
+            },
+        )
+        await restartedService.releaseMatureScheduledMessages(Date.now())
+
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'restart-handoff-a',
+            'restart-handoff-b',
+            'restart-handoff-c',
+        ])
+    })
+
     it('retries a pending handoff after the last scheduled row is discarded', async () => {
         const store = makeStore()
         const session = makeSession(store, 'ordered-handoff-discard-retry')

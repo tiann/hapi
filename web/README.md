@@ -90,7 +90,7 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
   - Add, edit, delete, and reorder entries; copy into the composer, send immediately, or schedule delivery.
   - Entries, attachment order, and manual entry order are saved on the hub and restored across reloads and devices.
   - Single attachments expose removal without a drag handle; multiple attachments support keyboard, pointer, and touch reordering.
-  - The action menu can insert additional attachments into an existing draft and keeps upload failures recoverable.
+  - The plus control beside a draft's attachments inserts more files. The attachment strip scrolls horizontally on narrow screens, keeps the plus reachable, and leaves image context menus to the browser.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)

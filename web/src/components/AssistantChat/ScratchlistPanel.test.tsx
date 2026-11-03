@@ -414,6 +414,48 @@ describe('ScratchlistPanel', () => {
         expect(screen.getByTestId('scratchlist-entry-text')).toHaveTextContent('keep me')
     })
 
+    it('preserves the native context menu on image thumbnails and fullscreen previews', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const entry = makeEntry({
+            id: 'image-context-entry',
+            text: '',
+            attachments: [{
+                id: 'context-photo',
+                filename: 'photo.png',
+                mimeType: 'image/png',
+                size: 12,
+                path: 'hapi-hub:scratchlist/default/session-test/context-photo.png',
+                previewUrl: 'data:image/png;base64,cGhvdG8=',
+            }],
+        })
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[entry]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                />
+            </I18nProvider>,
+        )
+
+        const thumb = screen.getByTestId('scratchlist-attachment-thumb')
+        const thumbContext = createEvent.contextMenu(thumb)
+        fireEvent(thumb, thumbContext)
+        expect(thumbContext.defaultPrevented).toBe(false)
+        expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull()
+
+        fireEvent.click(within(thumb).getByTitle('Click to zoom'))
+        const dialog = screen.getByRole('dialog', { name: 'photo.png' })
+        const previewImage = within(dialog).getByRole('img', { name: 'photo.png' })
+        const previewContext = createEvent.contextMenu(previewImage)
+        fireEvent(previewImage, previewContext)
+        expect(previewContext.defaultPrevented).toBe(false)
+        expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull()
+    })
+
     it('preserves the native context menu while inline editing', () => {
         persistScratchlist(SID, [makeEntry({ id: 'native-menu', text: 'edit me' })])
         renderPanel()
@@ -532,6 +574,28 @@ describe('ScratchlistPanel', () => {
             entry,
             { type: 'preset', preset: '+5m' },
         ))
+    })
+
+    it('omits resume-dependent send actions when no active-session sender is available', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const entry = makeEntry({ id: 'inactive-entry', text: 'archived note' })
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[entry]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                />
+            </I18nProvider>,
+        )
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        expect(screen.getByRole('menuitem', { name: 'Copy text' })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: 'Delete entry' })).toBeInTheDocument()
+        expect(screen.queryByRole('menuitem', { name: 'Send now' })).toBeNull()
+        expect(screen.queryByRole('menuitem', { name: 'Schedule send' })).toBeNull()
     })
 
     it('allows scheduling entries that contain attachments', async () => {

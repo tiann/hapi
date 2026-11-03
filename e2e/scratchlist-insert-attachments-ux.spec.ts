@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 test.use({ viewport: { width: 320, height: 568 }, hasTouch: true })
 
-test('inserts a file from the draft menu and restores it after reload', async ({ page }, testInfo) => {
+test('inserts a file from the attachment plus and restores it after reload', async ({ page }, testInfo) => {
     await page.addInitScript(() => {
         localStorage.setItem('hapi-lang', 'zh-CN')
     })
@@ -13,10 +13,16 @@ test('inserts a file from the draft menu and restores it after reload', async ({
     await more.click()
     const menu = page.getByTestId('scratchlist-action-menu')
     await expect(menu).toBeVisible()
-    await page.screenshot({ path: testInfo.outputPath('01-open-menu.png'), fullPage: true })
+    await expect(menu.locator('[data-scratchlist-action="insert-attachments"]')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await expect(menu).toHaveCount(0)
 
+    const plus = page.getByTestId('scratchlist-insert-attachment-plus')
+    await expect(plus).toBeVisible()
+    await expect(plus).toHaveAccessibleName('插入附件')
+    await page.screenshot({ path: testInfo.outputPath('01-plus-control.png'), fullPage: true })
     const chooserPromise = page.waitForEvent('filechooser')
-    await menu.locator('[data-scratchlist-action="insert-attachments"]').click()
+    await plus.click()
     const chooser = await chooserPromise
     await chooser.setFiles({
         name: 'inserted-ux.txt',
@@ -35,4 +41,16 @@ test('inserts a file from the draft menu and restores it after reload', async ({
     await expect(page.locator('[data-scratchlist-attachment-id="uploaded-1"]')).toContainText('inserted-ux.txt')
     await expect(page.getByTestId('order')).toHaveText('["file","uploaded-1"]')
     await page.screenshot({ path: testInfo.outputPath('03-after-reload.png'), fullPage: true })
+})
+
+test('inactive session keeps copy and delete while omitting resume-dependent sends', async ({ page }, testInfo) => {
+    await page.goto('/e2e-fixtures/scratchlist-attachments-fixture.html')
+    await page.getByRole('button', { name: 'Toggle inactive session actions' }).click()
+    await page.getByRole('button', { name: 'More actions' }).click()
+    const menu = page.getByTestId('scratchlist-action-menu')
+    await expect(menu.getByRole('menuitem', { name: 'Copy text' })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Delete entry' })).toBeVisible()
+    await expect(menu.getByRole('menuitem', { name: 'Send now' })).toHaveCount(0)
+    await expect(menu.getByRole('menuitem', { name: 'Schedule send' })).toHaveCount(0)
+    await page.screenshot({ path: testInfo.outputPath('inactive-session-menu.png'), fullPage: true })
 })

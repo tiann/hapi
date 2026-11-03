@@ -9,6 +9,7 @@ import {
     isScratchlistToggleHotkey,
     isSelectAllTargetBlocked,
     mergeStagedAttachmentsInOrder,
+    getScratchlistDrawerSettlementEffect,
     opencodeEffortOptionsInvalidationKey,
     resolvePiContextWindow,
     resolveEffortForModelChange,
@@ -523,6 +524,25 @@ describe('mergeStagedAttachmentsInOrder', () => {
             [hubAttachment, normalAttachment],
             [stagedAttachment],
         )).toEqual([stagedAttachment, normalAttachment])
+    })
+})
+
+describe('getScratchlistDrawerSettlementEffect', () => {
+    it('closes only after the matching immediate-send attempt succeeds', () => {
+        expect(getScratchlistDrawerSettlementEffect(null, null)).toBe('wait')
+        expect(getScratchlistDrawerSettlementEffect('attempt-1', null)).toBe('wait')
+        expect(getScratchlistDrawerSettlementEffect('attempt-1', {
+            attemptId: 'attempt-2',
+            status: 'success',
+        })).toBe('wait')
+        expect(getScratchlistDrawerSettlementEffect('attempt-1', {
+            attemptId: 'attempt-1',
+            status: 'error',
+        })).toBe('release')
+        expect(getScratchlistDrawerSettlementEffect('attempt-1', {
+            attemptId: 'attempt-1',
+            status: 'success',
+        })).toBe('close')
     })
 })
 
