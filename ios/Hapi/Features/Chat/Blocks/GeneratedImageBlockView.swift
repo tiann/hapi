@@ -136,10 +136,20 @@ private struct GeneratedMediaCard: View {
 
     @ViewBuilder
     private func fileActions(_ file: GeneratedMediaFile) -> some View {
-        if content.kind == .file, QLPreviewController.canPreview(file.url as NSURL) {
+        if content.kind == .file, Self.canPreview(file.url) {
             Button("Preview", systemImage: "doc.text.magnifyingglass") { previewOpen = true }
         }
         Button("Save or share", systemImage: "square.and.arrow.up") { shareOpen = true }
+    }
+
+    private static func canPreview(_ url: URL) -> Bool {
+        #if targetEnvironment(macCatalyst)
+        // `canPreview` is unavailable in Mac Catalyst; Quick Look on macOS
+        // shows a generic file preview for anything it cannot render.
+        true
+        #else
+        QLPreviewController.canPreview(url as NSURL)
+        #endif
     }
 }
 
