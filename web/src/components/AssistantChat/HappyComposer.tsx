@@ -2541,6 +2541,10 @@ export function HappyComposer(props: {
                                 modelValueDisabled={modelEffortControlsDisabled}
                                 modelValueOpen={showSettings && settingsSection !== 'effort'}
                                 onModelValueToggle={handleModelValueToggle}
+                                fastModeEnabled={displayedServiceTier === 'fast'}
+                                onFastModeToggle={onServiceTierChange
+                                    ? () => handleServiceTierChange(displayedServiceTier === 'fast' ? 'standard' : 'fast')
+                                    : undefined}
                                 effortValueLabel={effortValueLabel}
                                 effortValueDisabled={modelEffortControlsDisabled}
                                 effortValueOpen={showSettings && settingsSection !== 'model'}

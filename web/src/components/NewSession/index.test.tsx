@@ -100,7 +100,7 @@ vi.mock('@/hooks/useActiveSuggestions', () => ({
 }))
 vi.mock('@/hooks/queries/useCodexModels', () => ({
     useCodexModels: () => ({
-        models: [
+        models: mocks.codexModelsLoading ? [] : [
             {
                 id: 'gpt-5.6-sol',
                 displayName: 'GPT-5.6 Sol',
@@ -583,7 +583,8 @@ describe('NewSession launch preferences', () => {
         const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
             initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
         const view = renderWithQuery(form)
-        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+        expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull()
         mocks.codexModelsLoading = false
         view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
             initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
