@@ -5,9 +5,10 @@ import type { AgentMessage } from '@/agent/types'
  * #2267 — after a turn closes with `AGENT_NOTIFY_SUMMARY` `status:"done"`,
  * Cursor's finished-shell / `notify_on_output` wake injects *"Briefly inform
  * the user…"* and forces another assistant turn. Exhortation loses to that
- * system prompt; HAPI must drop the harness-resume chrome instead.
+ * system prompt; HAPI must drop the harness-resume *speech* instead.
  *
  * Scope: Cursor ACP launcher only. Clear on each new HAPI-owned `prompt()`.
+ * Soft-steer still in flight counts as an active turn (Codex P2 on #307).
  */
 
 export type PostCloseHarnessGate = {
@@ -18,7 +19,7 @@ export function createPostCloseHarnessGate(): PostCloseHarnessGate {
     return { closedWithDone: false }
 }
 
-/** Reset when HAPI starts a new user-driven `session/prompt`. */
+/** Reset when HAPI starts a new queue-driven `session/prompt` (user or internal). */
 export function clearPostCloseGateForNewUserPrompt(gate: PostCloseHarnessGate): void {
     gate.closedWithDone = false
 }
@@ -38,31 +39,60 @@ export function noteAssistantTextForPostCloseGate(
     gate.closedWithDone = summary.status === 'done'
 }
 
+/** HAPI-owned prompt or outstanding soft-steer still owns the turn. */
+export function isPostCloseHarnessTurnActive(opts: {
+    promptInFlight: boolean
+    softSteerOutstanding: boolean
+}): boolean {
+    return opts.promptInFlight || opts.softSteerOutstanding
+}
+
+/**
+ * User-visible *speech* only. Tools/plan/images stay visible so a premature
+ * `done` + real follow-up work is not an invisible mutation (#2267 / cold review).
+ */
 const SUPPRESSED_MESSAGE_TYPES = new Set<AgentMessage['type']>([
     'text',
-    'reasoning',
-    'tool_call',
-    'tool_result',
-    'generated_image',
-    'plan'
+    'reasoning'
 ])
 
 /**
- * Drop user-visible harness-resume traffic after a done close, outside a
- * HAPI-owned prompt. Errors and usage still forward.
+ * Drop harness-resume speech after a done close, outside an active HAPI turn.
+ * Errors, usage, and tool chrome still forward.
  */
 export function shouldSuppressPostCloseHarnessMessage(
     gate: PostCloseHarnessGate,
-    opts: { promptInFlight: boolean; messageType: AgentMessage['type'] }
+    opts: {
+        promptInFlight: boolean
+        softSteerOutstanding?: boolean
+        messageType: AgentMessage['type']
+    }
 ): boolean {
-    if (opts.promptInFlight || !gate.closedWithDone) return false
+    if (isPostCloseHarnessTurnActive({
+        promptInFlight: opts.promptInFlight,
+        softSteerOutstanding: opts.softSteerOutstanding === true
+    })) {
+        return false
+    }
+    if (!gate.closedWithDone) return false
     return SUPPRESSED_MESSAGE_TYPES.has(opts.messageType)
 }
 
-/** Keep the hub list idle for suppressed post-close harness resumes. */
+/** Keep the hub list idle for suppressed post-close harness speech. */
 export function shouldSuppressPostCloseHarnessThinking(
     gate: PostCloseHarnessGate,
-    opts: { promptInFlight: boolean; thinking: boolean }
+    opts: {
+        promptInFlight: boolean
+        softSteerOutstanding?: boolean
+        thinking: boolean
+    }
 ): boolean {
-    return Boolean(opts.thinking && !opts.promptInFlight && gate.closedWithDone)
+    if (!opts.thinking) return false
+    if (isPostCloseHarnessTurnActive({
+        promptInFlight: opts.promptInFlight,
+        softSteerOutstanding: opts.softSteerOutstanding === true
+    })) {
+        return false
+    }
+    return gate.closedWithDone
 }

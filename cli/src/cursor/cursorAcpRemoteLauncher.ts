@@ -960,10 +960,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * #1470 / #1502: ACP foreground state → hub thinking via keepalive.
      * Background tool/content updates are ignored; running is debounced in the backend.
      */
+    private softSteerOutstanding(): boolean {
+        return this.softSteerWaiters.length > 0;
+    }
+
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
         backend.setAgentActivityListener((thinking) => {
             if (shouldSuppressPostCloseHarnessThinking(this.postCloseHarnessGate, {
                 promptInFlight: this.promptInFlight,
+                softSteerOutstanding: this.softSteerOutstanding(),
                 thinking
             })) {
                 return;
@@ -993,9 +998,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
         }
         // Gate must be evaluated *before* noting this segment's footer so a
-        // late-arriving done summary still reaches the hub (#2267).
+        // late-arriving done summary still reaches the hub (#2267). Soft-steer
+        // still outstanding counts as an active turn (Codex P2).
         if (shouldSuppressPostCloseHarnessMessage(this.postCloseHarnessGate, {
             promptInFlight: this.promptInFlight,
+            softSteerOutstanding: this.softSteerOutstanding(),
             messageType: message.type
         })) {
             return;
