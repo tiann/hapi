@@ -18,6 +18,14 @@ struct PairingFlowView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var showScanner = false
+
+    private static var introText: LocalizedStringKey {
+        #if targetEnvironment(macCatalyst)
+        "HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub, then enter its URL and access token, or paste the pairing link it prints."
+        #else
+        "HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub on your computer, then pair this app with the QR code it prints — or enter the hub URL and access token by hand."
+        #endif
+    }
     @State private var showManualEntry = false
 
     private static let docsURL = URL(string: "https://hapi.run/docs/guide/quick-start")
@@ -39,7 +47,7 @@ struct PairingFlowView: View {
                             ? String(localized: "Pair with your hub")
                             : String(localized: "Add another hub"))
                             .font(.title.bold())
-                        Text("HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub on your computer, then pair this app with the QR code it prints — or enter the hub URL and access token by hand.")
+                        Text(Self.introText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -51,6 +59,18 @@ struct PairingFlowView: View {
                     .padding(.horizontal, 24)
 
                     VStack(spacing: 12) {
+                        #if targetEnvironment(macCatalyst)
+                        // Macs have no live QR scanner; manual entry (which
+                        // also accepts a pasted pairing link) is the primary path.
+                        Button {
+                            showManualEntry = true
+                        } label: {
+                            Label("Enter Manually", systemImage: "keyboard")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        #else
                         Button {
                             showScanner = true
                         } label: {
@@ -68,6 +88,7 @@ struct PairingFlowView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+                        #endif
                     }
                     .padding(.horizontal, 24)
 
@@ -91,9 +112,11 @@ struct PairingFlowView: View {
             }
             .sheet(isPresented: $showScanner) {
                 QRScannerView()
+                    .macSheetSizing()
             }
             .sheet(isPresented: $showManualEntry) {
                 ManualEntryView()
+                    .macSheetSizing()
             }
         }
     }
