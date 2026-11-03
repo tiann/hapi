@@ -8,7 +8,6 @@ import { extractNotifySummary } from '@hapi/protocol/messages';
 import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
-import { truncateCoalescedHarnessAfterDoneFooter } from '@/cursor/postCloseHarnessSilence';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 
 function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'completed' | 'failed' {
@@ -629,20 +628,16 @@ export class AcpMessageHandler {
     }
 
     /**
-     * #2267 / #2268 — if the open text buffer already ends with a done footer
-     * (or a done footer plus coalesced harness prose outside fences), flush
-     * the completed close now so finished-shell speech cannot stay glued onto
-     * the same segment through the post-prompt quiet window.
+     * #2267 / #2268 — if the open text buffer already ends with a done footer,
+     * flush it now (before the post-prompt quiet window) so finished-shell
+     * harness prose cannot coalesce onto the same segment.
+     *
+     * End-anchored only: destructive truncation of buried harness/steer text
+     * belongs in the Cursor launcher, which knows soft-steer ownership.
      */
     sealDoneNotifySummaryIfPresent(): boolean {
         if (!this.bufferedText) return false;
-        if (extractNotifySummary(this.bufferedText)?.status === 'done') {
-            this.drainBuffers();
-            return true;
-        }
-        const truncated = truncateCoalescedHarnessAfterDoneFooter(this.bufferedText);
-        if (truncated === null) return false;
-        this.bufferedText = truncated;
+        if (extractNotifySummary(this.bufferedText)?.status !== 'done') return false;
         this.drainBuffers();
         return true;
     }

@@ -190,4 +190,16 @@ describe('postCloseHarnessSilence (#2267)', () => {
             softSteerOutstanding: true
         })).toBeNull()
     })
+
+    it('preserves inline-code footer examples', () => {
+        const docs = 'Use `' + DONE_FOOTER + '` to close a turn, then explain more.'
+        expect(truncateCoalescedHarnessAfterDoneFooter(docs)).toBeNull()
+    })
+
+    it('truncates after a done footer whose summary contains brace characters', () => {
+        const footer =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Fixed handling of the } character"}'
+        const coalesced = `Answer.\n\n${footer}Shell finished; redundant.`
+        expect(truncateCoalescedHarnessAfterDoneFooter(coalesced)).toBe(`Answer.\n\n${footer}`)
+    })
 })

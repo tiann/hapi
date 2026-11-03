@@ -34,8 +34,44 @@ type LineFooterMatch = {
 }
 
 /**
+ * Closing `}` of a JSON object starting at `braceAt`, ignoring braces inside
+ * quoted strings (and honoring `\` escapes).
+ */
+function findJsonObjectEnd(line: string, braceAt: number): number {
+    let depth = 0
+    let inString = false
+    let escape = false
+    for (let i = braceAt; i < line.length; i += 1) {
+        const ch = line[i]!
+        if (inString) {
+            if (escape) {
+                escape = false
+                continue
+            }
+            if (ch === '\\') {
+                escape = true
+                continue
+            }
+            if (ch === '"') inString = false
+            continue
+        }
+        if (ch === '"') {
+            inString = true
+            continue
+        }
+        if (ch === '{') depth += 1
+        else if (ch === '}') {
+            depth -= 1
+            if (depth === 0) return i
+        }
+    }
+    return -1
+}
+
+/**
  * Parse a footer on one line, allowing glued trailing prose after the JSON
- * object (`...}Shell finished`). Skips whitespace-delimited example mentions.
+ * object (`...}Shell finished`). Skips whitespace-delimited mentions and
+ * inline-code examples (`...`).
  */
 function matchFooterOnLine(line: string, lineStartInText: number): LineFooterMatch | null {
     for (
@@ -45,22 +81,14 @@ function matchFooterOnLine(line: string, lineStartInText: number): LineFooterMat
     ) {
         const prefix = line.slice(0, idx)
         if (prefix.trim().length > 0 && /\s/.test(line[idx - 1]!)) continue
+        // Inline code: `AGENT_NOTIFY_SUMMARY {...}`
+        if (idx > 0 && line[idx - 1] === '`') continue
         const braceAt = line.indexOf('{', idx + NOTIFY_SUMMARY_PREFIX.length)
         if (braceAt < 0) continue
-        let depth = 0
-        let end = -1
-        for (let i = braceAt; i < line.length; i += 1) {
-            const ch = line[i]
-            if (ch === '{') depth += 1
-            else if (ch === '}') {
-                depth -= 1
-                if (depth === 0) {
-                    end = i
-                    break
-                }
-            }
-        }
+        const end = findJsonObjectEnd(line, braceAt)
         if (end < 0) continue
+        // Closing inline-code backtick immediately after the object.
+        if (line[end + 1] === '`') continue
         try {
             const parsed: unknown = JSON.parse(line.slice(braceAt, end + 1))
             if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue

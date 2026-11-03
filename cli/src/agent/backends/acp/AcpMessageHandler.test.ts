@@ -1700,7 +1700,7 @@ describe('AcpMessageHandler', () => {
         ]);
     });
 
-    it('sealDoneNotifySummaryIfPresent strips coalesced harness already in the buffer', () => {
+    it('sealDoneNotifySummaryIfPresent does not truncate coalesced steer/harness text (launcher owns that)', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
         const doneFooter =
@@ -1710,13 +1710,17 @@ describe('AcpMessageHandler', () => {
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
             content: {
                 type: 'text',
-                text: `Finished.\n\n${doneFooter}\nShell finished; redundant.`
+                text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
             }
         });
 
-        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(true);
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(false);
+        handler.drainBuffers();
         expect(messages).toEqual([
-            { type: 'text', text: `Finished.\n\n${doneFooter}` }
+            {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+            }
         ]);
     });
 
