@@ -43,11 +43,13 @@ export function useBoardItemActions(api: ApiClient | null, boardId: string | nul
     closeItem: (item: Pick<BoardItem, 'url'>) => Promise<void>
     reopenItem: (item: Pick<BoardItem, 'url'>) => Promise<void>
     commentOnItem: (item: Pick<BoardItem, 'url'>, body: string) => Promise<void>
+    editItem: (item: Pick<BoardItem, 'url'>, fields: { title?: string; body?: string }) => Promise<void>
     setItemStatus: (item: Pick<BoardItem, 'url'>, status: string | null) => Promise<void>
     setItemAssignees: (item: Pick<BoardItem, 'url'>, addLogins: string[], removeLogins: string[]) => Promise<void>
     closingUrls: ReadonlySet<string>
     reopeningUrls: ReadonlySet<string>
     commentingUrls: ReadonlySet<string>
+    editingUrls: ReadonlySet<string>
     settingStatusUrls: ReadonlySet<string>
     settingAssigneesUrls: ReadonlySet<string>
 } {
@@ -55,6 +57,7 @@ export function useBoardItemActions(api: ApiClient | null, boardId: string | nul
     const [closingUrls, setClosingUrls] = useState<ReadonlySet<string>>(EMPTY_URLS)
     const [reopeningUrls, setReopeningUrls] = useState<ReadonlySet<string>>(EMPTY_URLS)
     const [commentingUrls, setCommentingUrls] = useState<ReadonlySet<string>>(EMPTY_URLS)
+    const [editingUrls, setEditingUrls] = useState<ReadonlySet<string>>(EMPTY_URLS)
     const [settingStatusUrls, setSettingStatusUrls] = useState<ReadonlySet<string>>(EMPTY_URLS)
     const [settingAssigneesUrls, setSettingAssigneesUrls] = useState<ReadonlySet<string>>(EMPTY_URLS)
 
@@ -108,6 +111,17 @@ export function useBoardItemActions(api: ApiClient | null, boardId: string | nul
         }
     }, [requireTarget, invalidate, queryClient])
 
+    const editItem = useCallback(async (item: Pick<BoardItem, 'url'>, fields: { title?: string; body?: string }) => {
+        const { api: client, boardId: id, url } = requireTarget(item.url)
+        setEditingUrls(current => addUrl(current, url))
+        try {
+            await client.editBoardItem(id, url, fields)
+            await invalidate()
+        } finally {
+            setEditingUrls(current => removeUrl(current, url))
+        }
+    }, [requireTarget, invalidate])
+
     const setItemStatus = useCallback(async (item: Pick<BoardItem, 'url'>, status: string | null) => {
         const { api: client, boardId: id, url } = requireTarget(item.url)
         setSettingStatusUrls(current => addUrl(current, url))
@@ -131,7 +145,7 @@ export function useBoardItemActions(api: ApiClient | null, boardId: string | nul
     }, [requireTarget, invalidate])
 
     return {
-        closeItem, reopenItem, commentOnItem, setItemStatus, setItemAssignees,
-        closingUrls, reopeningUrls, commentingUrls, settingStatusUrls, settingAssigneesUrls
+        closeItem, reopenItem, commentOnItem, editItem, setItemStatus, setItemAssignees,
+        closingUrls, reopeningUrls, commentingUrls, editingUrls, settingStatusUrls, settingAssigneesUrls
     }
 }

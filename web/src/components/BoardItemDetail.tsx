@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { SessionLinkedBadge } from '@/components/SessionLinkedBadge'
 import { Spinner } from '@/components/Spinner'
-import { CheckIcon, CloseIcon, ExternalLinkIcon, PlusCircleIcon, PlusIcon, RefreshIcon } from '@/components/icons'
+import { CheckIcon, CloseIcon, EditIcon, ExternalLinkIcon, PlusCircleIcon, PlusIcon, RefreshIcon } from '@/components/icons'
 import { chipBaseClass, chipIdleClass } from '@/components/filterChipStyles'
 import { getApiErrorMessage } from '@/lib/apiErrorMessage'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
@@ -279,6 +279,7 @@ export function BoardItemDetail(props: {
     onClose: () => Promise<void>
     onReopen: () => void
     onComment: (body: string) => Promise<void>
+    onEditItem: (fields: { title?: string; body?: string }) => Promise<void>
     comments: BoardItemComment[]
     isLoadingComments: boolean
     commentsError: string | null
@@ -292,6 +293,7 @@ export function BoardItemDetail(props: {
     isClosing: boolean
     isReopening: boolean
     isCommenting: boolean
+    isEditingItem: boolean
     isSettingStatus: boolean
     isSettingAssignees: boolean
 }) {
@@ -306,6 +308,17 @@ export function BoardItemDetail(props: {
     const bodyMarkdownComponents = useGithubRelativeMarkdownComponents(item.url)
     const isClosed = item.state === 'CLOSED' || item.state === 'MERGED'
 
+    // Title/body edit (operator feedback: the detail pane had a comment box
+    // but no way to edit the issue/PR itself). Local draft state, not a
+    // controlled-from-props textarea — `item` is the server's last-known
+    // snapshot and re-renders mid-edit (e.g. another write's invalidation),
+    // which must not clobber unsaved keystrokes (same reasoning
+    // commentDraft above already follows).
+    const [titleEditing, setTitleEditing] = useState(false)
+    const [titleDraft, setTitleDraft] = useState(item.title)
+    const [bodyEditing, setBodyEditing] = useState(false)
+    const [bodyDraft, setBodyDraft] = useState(item.body ?? '')
+
     const handleSendComment = async () => {
         const body = commentDraft.trim()
         if (!body) return
@@ -315,6 +328,46 @@ export function BoardItemDetail(props: {
         } catch {
             // Failure is already surfaced as a toast by the caller — keep the
             // draft intact so the user's typed comment isn't lost.
+        }
+    }
+
+    const startTitleEdit = () => {
+        setTitleDraft(item.title)
+        setTitleEditing(true)
+    }
+
+    const handleSaveTitle = async () => {
+        const title = titleDraft.trim()
+        if (!title || title === item.title) {
+            setTitleEditing(false)
+            return
+        }
+        try {
+            await props.onEditItem({ title })
+            setTitleEditing(false)
+        } catch {
+            // Failure is already surfaced as a toast by the caller — stay in
+            // edit mode with the attempted title intact, same as the comment
+            // draft above, rather than silently reverting to the stale title.
+        }
+    }
+
+    const startBodyEdit = () => {
+        setBodyDraft(item.body ?? '')
+        setBodyEditing(true)
+    }
+
+    const handleSaveBody = async () => {
+        const body = bodyDraft.trim()
+        if (body === (item.body ?? '').trim()) {
+            setBodyEditing(false)
+            return
+        }
+        try {
+            await props.onEditItem({ body })
+            setBodyEditing(false)
+        } catch {
+            // Same reasoning as handleSaveTitle above.
         }
     }
 
@@ -336,7 +389,40 @@ export function BoardItemDetail(props: {
                         <span className={cn(chipClass, 'max-w-48 truncate')}>{repoLabel}</span>
                         {updatedLabel ? <span className="text-xs text-[var(--app-hint)]">{updatedLabel}</span> : null}
                     </div>
-                    <h2 className="mt-2 text-base font-semibold text-[var(--app-fg)]">{item.title}</h2>
+                    {titleEditing ? (
+                        <div className="mt-2 flex items-center gap-1.5">
+                            <input
+                                type="text"
+                                value={titleDraft}
+                                onChange={(event) => setTitleDraft(event.target.value)}
+                                disabled={props.isEditingItem}
+                                autoFocus
+                                aria-label={t('boards.detail.editTitle')}
+                                className="min-w-0 flex-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-base font-semibold text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                            />
+                            <Button type="button" size="sm" disabled={props.isEditingItem || !titleDraft.trim()} onClick={handleSaveTitle}>
+                                {props.isEditingItem ? <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" /> : t('button.save')}
+                            </Button>
+                            <Button type="button" size="sm" variant="secondary" disabled={props.isEditingItem} onClick={() => setTitleEditing(false)}>
+                                {t('button.cancel')}
+                            </Button>
+                        </div>
+                    ) : (
+                        <div className="mt-2 flex items-center gap-1.5">
+                            <h2 className="text-base font-semibold text-[var(--app-fg)]">{item.title}</h2>
+                            {canWrite ? (
+                                <button
+                                    type="button"
+                                    onClick={startTitleEdit}
+                                    aria-label={t('boards.detail.editTitle')}
+                                    title={t('boards.detail.editTitle')}
+                                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                                >
+                                    <EditIcon className="h-3 w-3" />
+                                </button>
+                            ) : null}
+                        </div>
+                    )}
                 </div>
                 <button
                     type="button"
@@ -468,7 +554,45 @@ export function BoardItemDetail(props: {
                 </div>
 
                 <div className="pt-4">
-                    {item.body ? (
+                    {canWrite ? (
+                        <div className="mb-2 flex items-center justify-between gap-1.5">
+                            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--app-hint)]">
+                                {t('boards.detail.description')}
+                            </h3>
+                            {!bodyEditing ? (
+                                <button
+                                    type="button"
+                                    onClick={startBodyEdit}
+                                    aria-label={t('boards.detail.editBody')}
+                                    title={t('boards.detail.editBody')}
+                                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                                >
+                                    <EditIcon className="h-3 w-3" />
+                                </button>
+                            ) : null}
+                        </div>
+                    ) : null}
+                    {bodyEditing ? (
+                        <div className="flex flex-col gap-1.5">
+                            <textarea
+                                value={bodyDraft}
+                                onChange={(event) => setBodyDraft(event.target.value)}
+                                disabled={props.isEditingItem}
+                                autoFocus
+                                rows={8}
+                                aria-label={t('boards.detail.editBody')}
+                                className="w-full resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 font-mono text-sm text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                            />
+                            <div className="flex justify-end gap-1.5">
+                                <Button type="button" size="sm" variant="secondary" disabled={props.isEditingItem} onClick={() => setBodyEditing(false)}>
+                                    {t('button.cancel')}
+                                </Button>
+                                <Button type="button" size="sm" disabled={props.isEditingItem} onClick={handleSaveBody}>
+                                    {props.isEditingItem ? <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" /> : t('button.save')}
+                                </Button>
+                            </div>
+                        </div>
+                    ) : item.body ? (
                         <MarkdownRenderer standalone content={item.body} components={bodyMarkdownComponents} />
                     ) : (
                         <p className="text-sm text-[var(--app-hint)]">{t('boards.detail.noBody')}</p>

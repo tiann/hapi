@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BoardItem } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -42,6 +42,7 @@ function renderDetail(overrides: Partial<Parameters<typeof BoardItemDetail>[0]> 
         onClose: vi.fn().mockResolvedValue(undefined),
         onReopen: vi.fn(),
         onComment: vi.fn(),
+        onEditItem: vi.fn().mockResolvedValue(undefined),
         comments: [],
         isLoadingComments: false,
         commentsError: null,
@@ -55,6 +56,7 @@ function renderDetail(overrides: Partial<Parameters<typeof BoardItemDetail>[0]> 
         isClosing: false,
         isReopening: false,
         isCommenting: false,
+        isEditingItem: false,
         isSettingStatus: false,
         isSettingAssignees: false,
         ...overrides
@@ -561,5 +563,108 @@ describe('BoardItemDetail affordance treatment', () => {
     it('does not render the comments section at all when the item has no linked issue/PR (draft, no write actions)', () => {
         renderDetail({ item: makeItem({ url: null }), comments: [] })
         expect(screen.queryByText('Comments')).not.toBeInTheDocument()
+    })
+
+    // Operator feedback: the detail pane had a comment box but no way to
+    // edit the issue/PR's own title or description (hapi#238/#257). The
+    // edit-trigger button and the editable input/textarea intentionally
+    // share the same accessible name ("Edit title"/"Edit description") —
+    // only one of the two is ever mounted at a time, so assertions below
+    // disambiguate via role (button vs textbox) rather than label text.
+    it('offers no edit affordance for a draft item with no url', () => {
+        renderDetail({ item: makeItem({ url: null }) })
+        expect(screen.queryByRole('button', { name: 'Edit title' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Edit description' })).not.toBeInTheDocument()
+    })
+
+    it('edits the title, trimming whitespace, and exits edit mode on success', async () => {
+        const onEditItem = vi.fn().mockResolvedValue(undefined)
+        renderDetail({ item: makeItem({ title: 'Old title' }), onEditItem })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+        const input = screen.getByRole('textbox', { name: 'Edit title' }) as HTMLInputElement
+        expect(input.value).toBe('Old title')
+        fireEvent.change(input, { target: { value: '  New title  ' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+        await waitFor(() => expect(onEditItem).toHaveBeenCalledWith({ title: 'New title' }))
+        await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Edit title' })).not.toBeInTheDocument())
+        expect(screen.getByText('Old title')).toBeInTheDocument()
+    })
+
+    it('does not save an unchanged or blank title', async () => {
+        const onEditItem = vi.fn().mockResolvedValue(undefined)
+        renderDetail({ item: makeItem({ title: 'Same title' }), onEditItem })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+        expect(onEditItem).not.toHaveBeenCalled()
+
+        // The no-op Save above already exited edit mode (unchanged title) —
+        // re-enter it to check the blank-title case separately.
+        fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+        const input = screen.getByRole('textbox', { name: 'Edit title' }) as HTMLInputElement
+        fireEvent.change(input, { target: { value: '   ' } })
+        expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    })
+
+    it('cancels a title edit without saving, restoring the original title', () => {
+        renderDetail({ item: makeItem({ title: 'Original' }) })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Edit title' }), { target: { value: 'Changed' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+        expect(screen.queryByRole('textbox', { name: 'Edit title' })).not.toBeInTheDocument()
+        expect(screen.getByText('Original')).toBeInTheDocument()
+    })
+
+    it('stays in edit mode with the attempted title intact when the save fails', async () => {
+        const onEditItem = vi.fn().mockRejectedValue(new Error('boom'))
+        renderDetail({ item: makeItem({ title: 'Old title' }), onEditItem })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit title' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Edit title' }), { target: { value: 'New title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+        await waitFor(() => expect(onEditItem).toHaveBeenCalled())
+        const input = screen.getByRole('textbox', { name: 'Edit title' }) as HTMLInputElement
+        expect(input.value).toBe('New title')
+    })
+
+    it('edits the description, replacing the rendered markdown with a textarea', async () => {
+        const onEditItem = vi.fn().mockResolvedValue(undefined)
+        renderDetail({ item: makeItem({ body: 'Old body' }), onEditItem })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit description' }))
+        const textarea = screen.getByRole('textbox', { name: 'Edit description' }) as HTMLTextAreaElement
+        expect(textarea.value).toBe('Old body')
+        fireEvent.change(textarea, { target: { value: 'New body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+        await waitFor(() => expect(onEditItem).toHaveBeenCalledWith({ body: 'New body' }))
+        await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Edit description' })).not.toBeInTheDocument())
+    })
+
+    it('allows clearing the description to an empty string', async () => {
+        const onEditItem = vi.fn().mockResolvedValue(undefined)
+        renderDetail({ item: makeItem({ body: 'Old body' }), onEditItem })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit description' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Edit description' }), { target: { value: '' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+        await waitFor(() => expect(onEditItem).toHaveBeenCalledWith({ body: '' }))
+    })
+
+    it('cancels a description edit without saving, restoring the rendered markdown', () => {
+        renderDetail({ item: makeItem({ body: 'Original body' }) })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit description' }))
+        fireEvent.change(screen.getByRole('textbox', { name: 'Edit description' }), { target: { value: 'Changed body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+        expect(screen.queryByRole('textbox', { name: 'Edit description' })).not.toBeInTheDocument()
+        expect(screen.getByText('Original body')).toBeInTheDocument()
     })
 })

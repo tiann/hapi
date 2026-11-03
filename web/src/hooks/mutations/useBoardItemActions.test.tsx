@@ -156,6 +156,19 @@ describe('useBoardItemActions', () => {
         expect(setBoardItemStatus).toHaveBeenCalledWith('board-1', 'https://github.com/a/b/issues/1', 'Done')
     })
 
+    it('edits an item\'s title and body via the API, resolving the board id and item url', async () => {
+        const queryClient = new QueryClient()
+        const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+        const editBoardItem = vi.fn().mockResolvedValue(undefined)
+        const api = { editBoardItem } as unknown as ApiClient
+
+        const { result } = renderHook(() => useBoardItemActions(api, 'board-1'), { wrapper: wrapper(queryClient) })
+        await result.current.editItem({ url: 'https://github.com/a/b/issues/1' }, { title: 'New title', body: 'New body' })
+
+        expect(editBoardItem).toHaveBeenCalledWith('board-1', 'https://github.com/a/b/issues/1', { title: 'New title', body: 'New body' })
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.boardItemsAll })
+    })
+
     it('sets assignees via the API and invalidates every board\'s items cache', async () => {
         const queryClient = new QueryClient()
         const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')

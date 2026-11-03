@@ -1297,6 +1297,18 @@ export const BoardItemCommentRequestSchema = z.object({
 })
 export type BoardItemCommentRequest = z.infer<typeof BoardItemCommentRequestSchema>
 
+// At least one of title/body must be present — enforced by the hub route,
+// not the schema, same "both absent" no-op discipline
+// BoardItemAssigneesRequestSchema's own comment documents below. `body` has
+// no `.min(1)`: an empty string is a deliberate "clear the description",
+// distinct from omitting the field entirely to leave it untouched.
+export const BoardItemEditRequestSchema = z.object({
+    url: z.string().min(1),
+    title: z.string().min(1).optional(),
+    body: z.string().optional()
+})
+export type BoardItemEditRequest = z.infer<typeof BoardItemEditRequestSchema>
+
 // `status: null` clears the field (`gh project item-edit --clear`) — a
 // project can legitimately move a card back to the unassigned/no-status
 // bucket, and the picker previously had no way to express that once an item

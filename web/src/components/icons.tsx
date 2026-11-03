@@ -262,3 +262,12 @@ export function BoardIcon(props: IconProps) {
         2
     )
 }
+
+/** Pencil — edit affordance for a board item's title/description (hapi#238/#257). */
+export function EditIcon(props: IconProps) {
+    return createIcon(
+        <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />,
+        props,
+        2
+    )
+}

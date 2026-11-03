@@ -55,6 +55,7 @@ const UNUSED_ACTIONS: Parameters<typeof createBoardRoutes>[4] = {
     close: async () => { throw new Error('close action not mocked for this test') },
     reopen: async () => { throw new Error('reopen action not mocked for this test') },
     comment: async () => { throw new Error('comment action not mocked for this test') },
+    edit: async () => { throw new Error('edit action not mocked for this test') },
     setStatus: async () => { throw new Error('setStatus action not mocked for this test') },
     setAssignees: async () => { throw new Error('setAssignees action not mocked for this test') },
     createIssue: async () => { throw new Error('createIssue action not mocked for this test') },
@@ -1227,6 +1228,123 @@ describe('POST /api/todo-boards/:id/items/comment', () => {
             body: JSON.stringify({ url: VALID_ITEM_URL, body: '' })
         })
         expect(response.status).toBe(400)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/edit', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('edits the title via the edit action', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async (target, fields) => { calls.push([target, fields]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            { title: 'New title', body: undefined }
+        ]])
+    })
+
+    it('edits the body via the edit action, including clearing it to an empty string', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async (target, fields) => { calls.push([target, fields]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, body: '' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            { title: undefined, body: '' }
+        ]])
+    })
+
+    it('edits both title and body in one call', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async (target, fields) => { calls.push([target, fields]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title', body: 'New body' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            { title: 'New title', body: 'New body' }
+        ]])
+    })
+
+    it('rejects a request with neither title nor body', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects an empty title (title is a label, not clearable)', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: '' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/items/edit', {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(403)
+    })
+
+    it('rejects an item URL that is not a member of this board\'s project — same gate as every write action', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, () => ({
+            data: { resource: { projectItems: { nodes: [] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('surfaces a failed gh invocation as a 502, not a silently-swallowed success', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async () => { throw new Error('gh issue edit failed') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(502)
     })
 })
 

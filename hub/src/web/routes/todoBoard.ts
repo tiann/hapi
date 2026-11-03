@@ -6,6 +6,7 @@ import {
     BoardItemAssigneesRequestSchema,
     BoardItemCloseRequestSchema,
     BoardItemCommentRequestSchema,
+    BoardItemEditRequestSchema,
     BoardItemReopenRequestSchema,
     BoardItemStatusRequestSchema,
     CreateBoardItemRequestSchema,
@@ -857,6 +858,7 @@ export type BoardItemActions = {
     close: (target: BoardItemActionTarget, comment?: string) => Promise<void>
     reopen: (target: BoardItemActionTarget, comment?: string) => Promise<void>
     comment: (target: BoardItemActionTarget, body: string) => Promise<void>
+    edit: (target: BoardItemActionTarget, fields: { title?: string; body?: string }) => Promise<void>
     setStatus: (target: BoardItemStatusTarget) => Promise<void>
     setAssignees: (target: BoardItemActionTarget, addLogins: string[], removeLogins: string[]) => Promise<void>
     /** Returns the created issue's canonical URL, parsed from `gh issue create`'s own stdout. */
@@ -877,6 +879,12 @@ export const defaultBoardItemActions: BoardItemActions = {
     },
     comment: async (target, body) => {
         const args = [target.isPullRequest ? 'pr' : 'issue', 'comment', target.url, '--body', body]
+        await execGh(args, target.host)
+    },
+    edit: async (target, fields) => {
+        const args = [target.isPullRequest ? 'pr' : 'issue', 'edit', target.url]
+        if (fields.title !== undefined) args.push('--title', fields.title)
+        if (fields.body !== undefined) args.push('--body', fields.body)
         await execGh(args, target.host)
     },
     // Name-based (project number + owner + item URL + field name + option
@@ -1652,6 +1660,38 @@ export function createBoardRoutes(
             return c.json(body)
         } catch (error) {
             return c.json({ error: error instanceof Error ? error.message : 'Failed to fetch assignable users' }, 502)
+        }
+    })
+
+    // Title/body edit (operator feedback: board item detail had no way to
+    // edit the issue/PR itself — comment-only). Routed through the same
+    // requireBoardAndValidUrl gate as every other write action; draft items
+    // (no url) never reach a client that could call this at all, same as
+    // close/reopen/comment.
+    app.post('/todo-boards/:id/items/edit', async (c) => {
+        if (c.get('namespace') !== 'default') {
+            return c.json({ error: OWNER_ONLY_ERROR }, 403)
+        }
+        const json = await c.req.json().catch(() => null)
+        const parsed = BoardItemEditRequestSchema.safeParse(json)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body — expected { url: string, title?: string, body?: string }' }, 400)
+        }
+        if (parsed.data.title === undefined && parsed.data.body === undefined) {
+            return c.json({ error: 'Must specify at least one of title or body' }, 400)
+        }
+        const resolved = await requireBoardAndValidUrl(c.req.param('id'), parsed.data.url)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+        try {
+            await actions.edit(
+                { host: resolved.board.host, url: resolved.url, isPullRequest: resolved.isPullRequest },
+                { title: parsed.data.title, body: parsed.data.body }
+            )
+            return c.json({ ok: true })
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to edit item' }, 502)
         }
     })
 

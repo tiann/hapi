@@ -983,6 +983,13 @@ export class ApiClient {
         })
     }
 
+    async editBoardItem(boardId: string, url: string, fields: { title?: string; body?: string }): Promise<void> {
+        await this.request(`/api/todo-boards/${encodeURIComponent(boardId)}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url, ...fields })
+        })
+    }
+
     async getBoardItemAssignableUsers(boardId: string, url: string, search?: string): Promise<AssignableUsersResponse> {
         const query = new URLSearchParams({ url })
         if (search) query.set('search', search)
