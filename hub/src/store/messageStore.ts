@@ -65,8 +65,8 @@ export class MessageStore {
         this.db = db
     }
 
-    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number): number {
-        return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq)
+    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): number {
+        return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
     }
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {

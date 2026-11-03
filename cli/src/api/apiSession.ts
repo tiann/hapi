@@ -875,7 +875,9 @@ export class ApiSessionClient extends EventEmitter {
         // metadata for the committed tombstone must not rewind later deliveries.
         if (operation.operationId !== this.reconciledRewindOperationId) {
             this.reconciledRewindOperationId = operation.operationId
-            this.incomingFilter.rewindCursor(operation.cutoffSeq - 1)
+            // Invocation order can remove rows below the boundary's insertion
+            // seq too. New inputs may reuse those slots, so rescan from zero.
+            this.incomingFilter.rewindCursor(0)
             // A newer rewind cannot retire an earlier, still-unscanned prefix.
             const previousFloor = this.pendingRewindBackfill?.afterSeq
             const cursor = this.incomingFilter.cursorSeq()
@@ -1054,6 +1056,9 @@ export class ApiSessionClient extends EventEmitter {
                     continue
                 }
 
+                // Revisited IDs stay deduplicated, but their scanned positions
+                // still count as progress after a rewind reset the cursor.
+                if (this.pendingRewindBackfill) this.incomingFilter.accept({ seq: maxSeq })
                 const observedSeq = this.incomingFilter.cursorSeq() ?? maxSeq
                 // Do not let a live high-seq delivery skip unread pages in the
                 // post-rewind prefix. The filter still retains that progress.

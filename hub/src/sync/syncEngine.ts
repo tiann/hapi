@@ -2233,10 +2233,11 @@ export class SyncEngine {
                 next.phase = 'rejected'
             } else {
                 const rows = this.store.messages.getAllMessages(sessionId)
+                const hubBoundary = rows.find(m => m.localId === op.requestedLocalId && m.seq === op.cutoffSeq && m.invokedAt != null)
                 if (this.store.messages.getMessageEpoch(sessionId) !== op.sourceEpoch
                     || createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== op.sourceTranscriptHash
                     || Math.max(0, ...rows.map(m => m.seq)) !== op.sourceMaxSeq
-                    || !rows.some(m => m.localId === op.requestedLocalId && m.seq === op.cutoffSeq && m.invokedAt != null)
+                    || !hubBoundary
                     || this.store.messages.getUninvokedLocalMessages(sessionId).length) throw new Error('OpenCode source transcript changed')
                 if (!report.sourceHash?.match(/^[a-f0-9]{64}$/) || !report.prefixHash?.match(/^[a-f0-9]{64}$/)) throw new Error('Missing native source/prefix proof')
                 if (report.phase === 'prepared') {
@@ -2260,7 +2261,7 @@ export class SyncEngine {
                         if (nextIndex >= 0) indexes[local] = nextIndex
                     }
                     if (JSON.stringify(Object.entries(indexes).sort()) !== JSON.stringify(Object.entries(report.indexes ?? {}).sort())) throw new Error('Retained locator mismatch')
-                    this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq)
+                    this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
                     next = { ...op, phase: 'committed' }
                     nextMetadata = { ...metadata, opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: indexes,
                         conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])) }

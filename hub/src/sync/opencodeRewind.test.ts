@@ -28,6 +28,147 @@ function fixture(searchable = false) {
 }
 
 describe('OpenCode durable Hub rewind commit', () => {
+    for (const requestedQueuedBoundary of [false, true]) {
+        it(`refuses uninvoked boundaries before reservation (${requestedQueuedBoundary ? 'requested boundary' : 'another future scheduled input'})`, async () => {
+            const f = fixture(true)
+            let nativeCalls = 0
+            try {
+                const queued = f.store.messages.addMessage(f.id, { role: 'user', content: { type: 'text', text: 'pending scheduled input' } },
+                    'pending', Date.now() + 60_000)
+                const before = { rows: f.store.messages.getAllMessages(f.id), session: f.store.sessions.getSession(f.id),
+                    epoch: f.store.messages.getMessageEpoch(f.id), search: f.store.messages.searchContent('removedsuffix', 'default') }
+                ;(f.engine as any).rpcGateway.rewindConversation = async () => { nativeCalls++; throw new Error('must not reach native') }
+                expect(await f.engine.rewindConversation(f.id, 'default', requestedQueuedBoundary ? 'pending' : 'two'))
+                    .toMatchObject({ type: 'error', message: 'Session has queued messages' })
+                expect(nativeCalls).toBe(0)
+                expect({ rows: f.store.messages.getAllMessages(f.id), session: f.store.sessions.getSession(f.id),
+                    epoch: f.store.messages.getMessageEpoch(f.id), search: f.store.messages.searchContent('removedsuffix', 'default') }).toEqual(before)
+                expect(f.store.messages.getMessageById(f.id, queued.id)?.invokedAt).toBeNull()
+                expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind).toBeUndefined()
+            } finally { f.engine.stop(); f.store.close() }
+        })
+    }
+
+    for (const phase of ['reserved', 'prepared'] as const) {
+        for (const invoked of [false, true]) {
+            it(`preserves post-reservation changes instead of truncating (${phase}, ${invoked ? 'newly invoked' : 'uninvoked scheduled'})`, async () => {
+                const f = fixture(true)
+                const db = (f.store as unknown as { db: Database }).db
+                const invalidations: unknown[] = []
+                const unsubscribe = f.engine.subscribe(event => { if (event.type === 'messages-invalidated') invalidations.push(event) })
+                const snapshot = () => ({ rows: f.store.messages.getAllMessages(f.id), session: f.store.sessions.getSession(f.id),
+                    epoch: f.store.messages.getMessageEpoch(f.id),
+                    read: db.query('SELECT content_revision, read_revision, read_state_version, manual_unread FROM sessions WHERE id = ?').get(f.id),
+                    lookup: db.query('SELECT * FROM message_content_search_lookup ORDER BY search_rowid').all(),
+                    fts: db.query('SELECT rowid, * FROM message_content_search ORDER BY rowid').all(),
+                    short: db.query('SELECT * FROM message_content_search_short ORDER BY gram, search_rowid').all() })
+                let checkedRejection = false
+                try {
+                    ;(f.engine as any).rpcGateway.rewindConversation = async (_id: string, request: { opencodeRewind: OpenCodeRewindOperation }) => {
+                        const operation = request.opencodeRewind
+                        const hashes = { sourceHash: 'a'.repeat(64), prefixHash: 'b'.repeat(64) }
+                        if (phase === 'prepared') f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'prepared', ...hashes }, f.version())
+                        const queued = f.store.messages.addMessage(f.id, { role: 'user', content: { type: 'text', text: 'post reservation input' } },
+                            'new-input', Date.now() + (invoked ? -1 : 60_000))
+                        if (invoked) f.store.messages.markMessagesInvoked(f.id, ['new-input'], Date.now())
+                        const before = snapshot()
+                        expect(() => f.engine.reportOpenCodeRewind(f.id, 'default', { operation,
+                            phase: phase === 'reserved' ? 'prepared' : 'applied', ...hashes,
+                            checkpoint: { sessionId: 'native', messageIds: ['u1', 'a1'], userMessageIds: ['u1'], localMessageIds: [] },
+                            indexes: { one: 0 } }, f.version())).toThrow('OpenCode source transcript changed')
+                        expect(snapshot()).toEqual(before)
+                        expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind.phase).toBe(phase)
+                        expect(f.store.messages.getMessageById(f.id, queued.id)).not.toBeNull()
+                        expect(invalidations).toEqual([])
+                        checkedRejection = true
+                        return { success: false, outcome: 'unknown', error: 'source changed' }
+                    }
+                    expect((await f.engine.rewindConversation(f.id, 'default', 'two')).type).toBe('error')
+                    expect(checkedRejection).toBe(true)
+                    const beforeAdmission = snapshot()
+                    expect(f.engine.getDeliverableMessagesAfter(f.id, { afterSeq: 0, limit: 100, now: Date.now() + 120_000 })).toEqual([])
+                    await expect(f.engine.sendMessage(f.id, { text: 'blocked input', localId: 'must-not-create' })).rejects.toThrow('in progress')
+                    expect(snapshot()).toEqual(beforeAdmission)
+                } finally { unsubscribe(); f.engine.stop(); f.store.close() }
+            })
+        }
+    }
+
+    it('preserves the native prefix when an earlier-inserted scheduled boundary is invoked after an ordinary turn', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const sourceCheckpoint = { sessionId: 'native', messageIds: ['u1', 'a1', 'u2', 'a2'],
+            userMessageIds: ['u1', 'u2'], localMessageIds: [] }
+        const checkpoint = { ...sourceCheckpoint, messageIds: ['u1', 'a1'], userMessageIds: ['u1'] }
+        const session = engine.getOrCreateSession('scheduled-rewind', { path: '/tmp/project', host: 'fixture', flavor: 'opencode',
+            opencodeSessionId: 'native', opencodeWorkerId: 'worker', conversationHistoryIndexes: { one: 0, two: 1 },
+            opencodeHistoryCheckpoint: sourceCheckpoint,
+            capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default')
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+        const db = (store as unknown as { db: Database }).db
+        const at = Date.now() - 10_000
+        const version = () => store.sessions.getSession(session.id)!.metadataVersion
+        const hashes = { sourceHash: 'a'.repeat(64), prefixHash: 'b'.repeat(64) }
+        const invalidations: unknown[] = []
+        let operation!: OpenCodeRewindOperation
+        const unsubscribe = engine.subscribe(event => {
+            if (event.type === 'messages-invalidated') invalidations.push({ inTransaction: db.inTransaction,
+                phase: (store.sessions.getSession(session.id)!.metadata as any).opencodeRewind.phase,
+                retained: store.messages.searchContentInSession('ordinaryprefix', 'default', session.id).total,
+                removed: store.messages.searchContentInSession('scheduledsuffix', 'default', session.id).total })
+        })
+        try {
+            const scheduled = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'scheduledsuffix' } },
+                'two', at + 3_000, at)
+            const ordinary = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'ordinaryprefix' } },
+                'one', undefined, at + 1_000)
+            store.messages.markMessagesInvoked(session.id, ['one'], at + 1_000)
+            const ordinaryReply = store.messages.addMessage(session.id,
+                { role: 'agent', content: { type: 'codex', data: { type: 'message', id: 'ordinary', message: 'ordinaryprefix' } } },
+                undefined, undefined, at + 2_000)
+            store.messages.markMessagesInvoked(session.id, ['two'], at + 3_000)
+            const scheduledReply = store.messages.addMessage(session.id,
+                { role: 'agent', content: { type: 'codex', data: { type: 'message', id: 'scheduled', message: 'scheduledsuffix' } } },
+                undefined, undefined, at + 4_000)
+            expect(scheduled.seq).toBeLessThan(ordinary.seq)
+            expect(store.messages.getMessageById(session.id, scheduled.id)!.invokedAt).toBeGreaterThan(ordinaryReply.invokedAt!)
+            const epoch = store.messages.getMessageEpoch(session.id)
+            const lookups = db.query('SELECT * FROM message_content_search_lookup WHERE target_message_id IN (?, ?) ORDER BY search_rowid')
+                .all(ordinary.id, ordinaryReply.id)
+            ;(engine as any).rpcGateway.rewindConversation = async (_id: string, request: { opencodeRewind: OpenCodeRewindOperation }) => {
+                operation = request.opencodeRewind
+                engine.reportOpenCodeRewind(session.id, 'default', { operation, phase: 'prepared', ...hashes }, version())
+                engine.reportOpenCodeRewind(session.id, 'default', { operation, phase: 'applied', ...hashes, checkpoint, indexes: { one: 0 } }, version())
+                return { success: true, truncateFromLocalId: 'two' }
+            }
+            expect(await engine.rewindConversation(session.id, 'default', 'two')).toEqual({ type: 'success' })
+            expect(operation.cutoffSeq).toBe(scheduled.seq)
+            expect(store.messages.getAllMessages(session.id).map(row => row.id)).toEqual([ordinary.id, ordinaryReply.id])
+            expect(store.messages.searchContentInSession('ordinaryprefix', 'default', session.id).total).toBe(2)
+            expect(store.messages.searchContent('scheduledsuffix', 'default')).toEqual([])
+            expect(store.messages.searchContentInSession('sc', 'default', session.id).matches).toEqual([])
+            expect(db.query('SELECT * FROM message_content_search_lookup ORDER BY search_rowid').all()).toEqual(lookups)
+            for (const row of [scheduled, scheduledReply]) {
+                expect(store.messages.getMessageById(session.id, row.id)).toBeNull()
+                expect(engine.getMessageContext(session.id, row.id)).toBeNull()
+            }
+            expect(engine.getMessageContext(session.id, ordinary.id)?.messages.map(row => row.id)).toEqual([ordinary.id, ordinaryReply.id])
+            expect(store.sessions.getSession(session.id)!.metadata).toMatchObject({ opencodeHistoryCheckpoint: checkpoint,
+                conversationHistoryIndexes: { one: 0 }, opencodeRewind: { phase: 'committed' } })
+            expect(store.messages.getMessageEpoch(session.id)).toBe(epoch + 1)
+            expect(invalidations).toEqual([{ inTransaction: false, phase: 'committed', retained: 2, removed: 0 }])
+            const later = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'afterrewind' } }, 'later')
+            store.messages.markMessagesInvoked(session.id, ['later'], Date.now())
+            const committedVersion = version()
+            expect(engine.reportOpenCodeRewind(session.id, 'default', { operation, phase: 'applied', ...hashes,
+                checkpoint, indexes: { one: 0 } }, 0).phase).toBe('committed')
+            expect(store.messages.getMessageById(session.id, later.id)).not.toBeNull()
+            expect(store.messages.getMessageEpoch(session.id)).toBe(epoch + 1)
+            expect(version()).toBe(committedVersion)
+            expect(invalidations).toHaveLength(1)
+        } finally { unsubscribe(); engine.stop(); store.close() }
+    })
+
     it('atomically removes only cutoff search rows before invalidation and preserves later rows on committed replay', async () => {
         const f = fixture(true)
         const rows = f.store.messages.getAllMessages(f.id)
@@ -167,17 +308,17 @@ describe('OpenCode durable Hub rewind commit', () => {
             try {
                 store.messages.addMessage(session.id, injected('retained-injected'))
                 store.messages.addMessage(session.id, sentinel('retained-injected'))
-                const cutoff = store.messages.addMessage(session.id, injected('removed-injected')).seq
+                const cutoff = store.messages.addMessage(session.id, injected('removed-injected'))
                 store.messages.addMessage(session.id, sentinel('removed-injected'))
                 expect(store.messages.searchContent('No response requested', 'default')).toEqual([])
                 if (rollback) {
                     expect(() => store.runInTransaction(() => {
-                        store.messages.truncateOpenCodeRewind(session.id, cutoff)
+                        store.messages.truncateOpenCodeRewind(session.id, cutoff.seq, cutoff.id)
                         throw new Error('rollback cache cleanup')
                     })).toThrow('rollback cache cleanup')
                     expect(store.messages.getAllMessages(session.id)).toHaveLength(4)
                     expect(store.messages.getMessageEpoch(session.id)).toBe(0)
-                } else store.messages.truncateOpenCodeRewind(session.id, cutoff)
+                } else store.messages.truncateOpenCodeRewind(session.id, cutoff.seq, cutoff.id)
                 store.messages.addMessage(session.id, sentinel('retained-injected'))
                 const removedParentReply = store.messages.addMessage(session.id, sentinel('removed-injected'))
                 const matches = store.messages.searchContentInSession('No response requested', 'default', session.id)

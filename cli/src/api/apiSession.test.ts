@@ -711,6 +711,73 @@ describe('ApiSessionClient agy transcript messages', () => {
 })
 
 describe('ApiSessionClient incoming user messages', () => {
+    it('catches up a new row below the boundary seq after invocation-ordered Hub rewind', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const hubModule = (path: string) => JSON.stringify(new URL(`../../../hub/src/${path}`, import.meta.url).href)
+        const source = `import { Store } from ${hubModule('store/index.ts')};
+            import { SyncEngine } from ${hubModule('sync/syncEngine.ts')};
+            import { RpcRegistry } from ${hubModule('socket/rpcRegistry.ts')};
+            const store = new Store(':memory:');
+            const engine = new SyncEngine(store, {}, new RpcRegistry(), { broadcast() {} });
+            const checkpoint = { sessionId: 'native', messageIds: ['u1', 'u2', 'u3'],
+                userMessageIds: ['u1', 'u2', 'u3'], localMessageIds: [] };
+            const session = engine.getOrCreateSession('ordered-catchup', { path: '/tmp', host: 'test', flavor: 'opencode',
+                opencodeSessionId: 'native', opencodeWorkerId: 'worker', opencodeHistoryCheckpoint: checkpoint,
+                conversationHistoryIndexes: { one: 0, two: 1, three: 2 },
+                capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default');
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' });
+            const at = Date.now() - 10000;
+            const user = text => ({ role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'webapp' } });
+            const first = store.messages.addMessage(session.id, user('retained'), 'one', undefined, at);
+            store.messages.markMessagesInvoked(session.id, ['one'], at);
+            store.messages.addMessage(session.id, user('later scheduled'), 'three', at + 3000, at + 1000);
+            const boundary = store.messages.addMessage(session.id, user('boundary scheduled'), 'two', at + 2000, at + 1500);
+            store.messages.markMessagesInvoked(session.id, ['two'], at + 2000);
+            store.messages.markMessagesInvoked(session.id, ['three'], at + 3000);
+            const oldTail = store.messages.addMessage(session.id, { role: 'agent', content: { type: 'text', text: 'old tail' } },
+                undefined, undefined, at + 4000);
+            engine.rpcGateway.rewindConversation = async (_id, { opencodeRewind: operation }) => {
+                const hashes = { sourceHash: 'a'.repeat(64), prefixHash: 'b'.repeat(64) };
+                engine.reportOpenCodeRewind(session.id, 'default', { operation, phase: 'prepared', ...hashes }, store.sessions.getSession(session.id).metadataVersion);
+                engine.reportOpenCodeRewind(session.id, 'default', { operation, phase: 'applied', ...hashes,
+                    checkpoint: { ...checkpoint, messageIds: ['u1'], userMessageIds: ['u1'] }, indexes: { one: 0 } }, store.sessions.getSession(session.id).metadataVersion);
+                return { success: true };
+            };
+            const result = await engine.rewindConversation(session.id, 'default', 'two');
+            const retained = store.messages.getAllMessages(session.id);
+            const pending = store.messages.addMessage(session.id, user('new disconnected input'), 'new-input');
+            const current = store.sessions.getSession(session.id);
+            const messages = engine.getDeliverableMessagesAfter(session.id, { afterSeq: 0, limit: 200, now: Date.now() });
+            console.log(JSON.stringify({ result, first, boundary, oldTail, retained, pending, metadata: current.metadata,
+                metadataVersion: current.metadataVersion, messages }));
+            engine.stop(); store.close();`
+        const result = spawnSync('bun', ['--eval', source], { encoding: 'utf8', timeout: 15_000 })
+        expect(result.status, result.stderr).toBe(0)
+        const hub = JSON.parse(result.stdout.trim().split('\n').at(-1)!)
+        expect(hub.result).toEqual({ type: 'success' })
+        expect(hub.retained.map((row: { id: string }) => row.id)).toEqual([hub.first.id])
+        expect(hub.pending.seq).toBeLessThan(hub.boundary.seq)
+        expect(hub.metadata.opencodeRewind.cutoffSeq).toBe(hub.boundary.seq)
+        axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) =>
+            url.endsWith('/messages') ? { data: { messages: hub.messages.filter((row: { seq: number }) => row.seq > config.params!.afterSeq) } }
+                : { data: { session: { metadataVersion: hub.metadataVersion, metadata: hub.metadata } } })
+        const client = new ApiSessionClient('token', createSession({ metadataVersion: 1,
+            metadata: { path: '/tmp', host: 'test', flavor: 'opencode' } }))
+        const socket = socketHarness.sockets[0]
+        const received = vi.fn()
+        client.onUserMessage(received)
+        triggerIncomingUserMessage(socket, { id: hub.oldTail.id, seq: hub.oldTail.seq, text: 'old tail', sentFrom: 'cli' })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+        try {
+            await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'), expect.anything()))
+            await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null }).backfillInFlight).toBeNull())
+            expect(received.mock.calls.map(([, id]) => id)).toEqual(['new-input'])
+        } finally { client.close() }
+    })
+
     it('does not reissue an evicted invoked postcommit row from durable Hub recovery backfill', async () => {
         socketHarness.sockets.length = 0
         axiosHarness.get.mockReset()
@@ -734,7 +801,7 @@ describe('ApiSessionClient incoming user messages', () => {
             for (let n = 0; n < 9; n++) store.messages.addMessage(session.id,
                 { role: 'agent', content: { type: 'text', text: 'old-' + n } });
             const oldTail = store.messages.getAllMessages(session.id).at(-1);
-            store.messages.truncateOpenCodeRewind(session.id, 3);
+            store.messages.truncateOpenCodeRewind(session.id, 3, store.messages.getAllMessages(session.id).find(row => row.seq === 3).id);
             const user = text => ({ role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'webapp' } });
             const invoked = store.messages.addMessage(session.id, user('invoked-X'), 'invoked-X');
             const missed = store.messages.addMessage(session.id, user('missed-Y'), 'missed-Y');
@@ -789,7 +856,7 @@ describe('ApiSessionClient incoming user messages', () => {
                 probeDb.close();
                 const engine = new SyncEngine(reopened, {}, new RpcRegistry(), { broadcast() {} });
                 const messages = [];
-                let cursor = 2;
+                let cursor = 0;
                 while (true) {
                     const page = engine.getDeliverableMessagesAfter(session.id, { afterSeq: cursor, limit: 200, now: Date.now() });
                     messages.push(...page);
@@ -813,7 +880,7 @@ describe('ApiSessionClient incoming user messages', () => {
             socket.trigger('disconnect', 'transport close')
             socket.triggerConnect()
             await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
-                expect.objectContaining({ params: { afterSeq: 2, limit: 200 } })))
+                expect.objectContaining({ params: { afterSeq: 0, limit: 200 } })))
             await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
                 .backfillInFlight).toBeNull())
             expect(queue.size()).toBeGreaterThan(0)
@@ -886,7 +953,7 @@ describe('ApiSessionClient incoming user messages', () => {
             socket.triggerConnect()
             try {
                 await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
-                    expect.objectContaining({ params: { afterSeq: 2, limit: 200 } })))
+                    expect.objectContaining({ params: { afterSeq: 0, limit: 200 } })))
                 await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
                     .backfillInFlight).toBeNull())
                 expect(received).not.toHaveBeenCalled()
@@ -995,7 +1062,7 @@ describe('ApiSessionClient incoming user messages', () => {
                 await settled(client)
                 expect(received).toHaveBeenCalledTimes(2)
                 expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
-                    expect.objectContaining({ params: { afterSeq: 2, limit: 200 } }))
+                    expect.objectContaining({ params: { afterSeq: 0, limit: 200 } }))
                 const reads = axiosHarness.get.mock.calls.length
                 socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: metadata() } } })
                 socket.trigger('update', { body: { t: 'new-message', message: rows[0] } })
@@ -1035,7 +1102,7 @@ describe('ApiSessionClient incoming user messages', () => {
                 await settled(client)
                 expect(received).toHaveBeenCalledTimes(2)
                 expect(axiosHarness.get.mock.calls.filter(([url]) => String(url).endsWith('/messages'))
-                    .map(([, config]) => config.params.afterSeq)).toEqual([9, 2])
+                    .map(([, config]) => config.params.afterSeq)).toEqual([9, 0])
             } finally { held.resolve({ data: { messages: [] } }); client.close() }
         })
 
@@ -1089,7 +1156,7 @@ describe('ApiSessionClient incoming user messages', () => {
                     await settled(client)
                     expect(received).toHaveBeenCalledTimes(2)
                     expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
-                        expect.objectContaining({ params: { afterSeq: 2, limit: 200 } }))
+                        expect.objectContaining({ params: { afterSeq: 0, limit: 200 } }))
                     axiosHarness.get.mockClear()
                     socket.connected = false
                     socket.trigger('disconnect', 'transport close')
@@ -1139,7 +1206,7 @@ describe('ApiSessionClient incoming user messages', () => {
                 await settled(client)
                 expect(received).toHaveBeenCalledTimes(2)
                 expect(axiosHarness.get.mock.calls.filter(([url]) => String(url).endsWith('/messages'))
-                    .map(([, config]) => config.params.afterSeq)).toEqual([2, 2])
+                    .map(([, config]) => config.params.afterSeq)).toEqual([0, 0])
             } finally { held.resolve({ data: { messages: [] } }); client.close() }
         })
     })
@@ -1296,7 +1363,7 @@ describe('ApiSessionClient incoming user messages', () => {
                 await vi.waitFor(() => expect(received).toHaveBeenCalledWith(
                     expect.objectContaining({ content: { type: 'text', text: 'queued during disconnect' } }), 'new-prompt'))
                 expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
-                    expect.objectContaining({ params: { afterSeq: 2, limit: 200 } }))
+                    expect.objectContaining({ params: { afterSeq: 0, limit: 200 } }))
                 // The same committed tombstone in later metadata must not
                 // repeatedly rewind the cursor or erase ID deduplication.
                 version = 3
