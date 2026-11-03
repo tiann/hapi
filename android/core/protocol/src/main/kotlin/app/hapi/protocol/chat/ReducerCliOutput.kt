@@ -70,6 +70,7 @@ fun mergeCliOutputBlocks(blocks: List<ChatBlock>): MutableList<ChatBlock> {
                 durationMs = prev.durationMs ?: block.durationMs,
                 usage = prev.usage ?: block.usage,
                 model = prev.model ?: block.model,
+                roundSummary = prev.roundSummary,
                 text = "${prev.text}$separator${block.text}",
                 source = prev.source,
                 meta = prev.meta,

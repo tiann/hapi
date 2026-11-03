@@ -80,10 +80,19 @@ export type PingPeerSessionSummary = {
 }
 
 export type PingPeerOptions = {
-    sessionIdPrefix: string
+    sessionIdPrefix?: string
+    /** When set, skip list+prefix resolve and load this session directly. */
+    sessionId?: string
     message: string
     deliveryMode?: PeerDeliveryMode
     waitActiveSecs?: number
+    /**
+     * Fresh spawn: poll until active instead of POST /resume on the first
+     * inactive snapshot. Machine spawn can return before the hub row is
+     * active; resume would launch a second child (no existingSessionId on
+     * the original spawn, so runner dedupe does not coalesce).
+     */
+    waitForInitialActive?: boolean
     apiUrl?: string
     accessToken?: string
     http?: AxiosInstance
@@ -552,7 +561,7 @@ function getSteeringUnavailableReason(session: PingPeerSessionSummary): string |
         return 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it'
     }
     if (!isSteeringSupportedForSession(session.metadata)) {
-        return 'Steering is only supported for Pi, Codex, and Cursor ACP sessions; no message sent'
+        return 'Steering is only supported for Claude, Pi, Codex, and Cursor ACP sessions; no message sent'
     }
     if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) {
         return 'Steering is only available for remote sessions; no message sent'
@@ -568,9 +577,10 @@ function getSteeringUnavailableReason(session: PingPeerSessionSummary): string |
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
     assertPeerToolsEnabled()
-    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
+    const knownSessionId = (options.sessionId ?? '').trim()
+    const prefix = knownSessionId ? '' : normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
     const message = options.message ?? ''
-    if (!prefix) {
+    if (!knownSessionId && !prefix) {
         throw new PingPeerError('bad_args', 'session id prefix is required')
     }
     if (!message) {
@@ -595,8 +605,9 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     const onProgress = options.onProgress
 
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    const sessions = await listSessions(apiUrl, jwt, http)
-    const matched = resolveSessionByPrefix(sessions, prefix)
+    const matched = knownSessionId
+        ? await getSession(apiUrl, jwt, knownSessionId, http)
+        : resolveSessionByPrefix(await listSessions(apiUrl, jwt, http), prefix)
     const name = resolvePeerSessionLabel(matched)
     onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
 
@@ -620,7 +631,13 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     // Prefer the list snapshot for the first resume decision, then re-check before
     // send so a flip to inactive between list and POST cannot 409 (#1195).
     if (!matched.active) {
-        await ensureActive('requesting resume...')
+        if (options.waitForInitialActive) {
+            onProgress?.('waiting for newly spawned session to become active...')
+            await waitUntilActive(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
+            onProgress?.('session active')
+        } else {
+            await ensureActive('requesting resume...')
+        }
     }
 
     let live = await ensureActive('session went inactive before send; requesting resume...')
