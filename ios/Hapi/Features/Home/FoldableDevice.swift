@@ -22,11 +22,13 @@ struct HingeProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.isUserInteractionEnabled = false
+        #if !targetEnvironment(macCatalyst)
         if #available(iOS 27.1, *) {
             view.addInteraction(UIHingeInteraction { _, update in
                 if update.hinge != nil { FoldableDevice.shared.recordHinge() }
             })
         }
+        #endif
         return view
     }
 
