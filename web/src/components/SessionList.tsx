@@ -1788,10 +1788,11 @@ export function SessionList(props: {
             const matched = !hasTextQuery
                 ? timeScopedSessions
                 : searchMatchMode === 'exclude'
-                    ? timeScopedSessions.filter(session => !sessionMatchesQuery(
+                    ? timeScopedSessions.filter(session => sessionMatchesSearchMode(
                         session,
                         normalizedQuery,
-                        resolveMachineLabel(session.metadata?.machineId ?? null)
+                        resolveMachineLabel(session.metadata?.machineId ?? null),
+                        'exclude'
                     ))
                     : searchScoreIndex
                         ? timeScopedSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
