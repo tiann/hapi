@@ -44,6 +44,16 @@ struct ChatView: View {
         FoldableDevice.shared.hasHinge && horizontalSizeClass == .compact
     }
 
+    /// Folded Duo and Mac use the system title: a Mac window's NSToolbar
+    /// drops the custom `.principal` header.
+    private var usesSystemTitle: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
+        isFoldedOuterScreen
+        #endif
+    }
+
     init(
         session: HubSession,
         sessionId: String,
@@ -106,7 +116,7 @@ struct ChatView: View {
         }
         .modifier(FoldedTitleMinimization(isActive: isFoldedOuterScreen))
         .modifier(FoldedSystemTitle(
-            isActive: isFoldedOuterScreen,
+            isActive: usesSystemTitle,
             title: model.header.title,
             subtitle: model.header.subtitle
         ))
@@ -114,7 +124,7 @@ struct ChatView: View {
             // Folded Duo: Back and the actions live in the side bar, so a
             // centered title would float right of an empty gap; the system
             // title (below) sits at the leading margin instead.
-            if !isFoldedOuterScreen {
+            if !usesSystemTitle {
                 ToolbarItem(placement: .principal) {
                     headerTitle
                 }
@@ -488,9 +498,10 @@ private struct FoldedTitleMinimization: ViewModifier {
     }
 }
 
-/// Folded iPhone Duo: the system inline title is leading-aligned, unlike the
-/// fixed centered `.principal` slot (a leading item becomes a glass button).
-/// The subtitle is plain text, so the agent icon is omitted here.
+/// Folded iPhone Duo and Mac: the system inline title is leading-aligned,
+/// unlike the fixed centered `.principal` slot (a leading item becomes a glass
+/// button). The subtitle is plain text, so the agent icon is omitted here;
+/// before iOS 26 (macOS 14/15) only the title is shown.
 private struct FoldedSystemTitle: ViewModifier {
     let isActive: Bool
     let title: String
@@ -501,6 +512,8 @@ private struct FoldedSystemTitle: ViewModifier {
             content
                 .navigationTitle(Text(verbatim: title))
                 .navigationSubtitle(Text(verbatim: subtitle ?? ""))
+        } else if isActive {
+            content.navigationTitle(Text(verbatim: title))
         } else {
             content
         }

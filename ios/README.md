@@ -462,15 +462,18 @@ Mac"), so windows render 1:1 with native Mac controls instead of the 77 %
 scaled iPad app. The Mac app keeps the `run.hapi.app` bundle ID (no derived
 `maccatalyst.` prefix): it is the same App Store purchase and replaces the
 iPad app on Apple silicon Macs. Both use the `~/Library/Containers/run.hapi.app`
-container and the same Keychain group, so existing pairings are expected to
-survive the switch — verify this on an upgraded Mac before release. Mac signing uses `Hapi-macOS.entitlements` /
+container and the same Keychain group, so existing pairings (and the
+notification permission) carry over; a locally signed Catalyst build opened
+directly into the iPad app's paired hub. Mac signing uses `Hapi-macOS.entitlements` /
 `HapiNotificationService-macOS.entitlements` (App Sandbox, outgoing network,
 microphone, user-selected files, Mac APNs environment).
 
 Mac-specific behavior, compiled with `targetEnvironment(macCatalyst)`:
 
-- The window always uses the split (sidebar list style, denser rows), hides
-  the titlebar's duplicate "HAPI" title and has a 480×480pt minimum size.
+- The window always uses the split (sidebar list style, denser rows) with a
+  unified toolbar and a 480×480pt minimum size. The NSToolbar drops the
+  custom `.principal` chat header, so the chat uses the system title (as on
+  the folded Duo); keep the titlebar title visible, it carries that title.
 - Reading typography steps down to a 14pt body (`HapiTypography` platform
   scale 0.875); system text styles already resolve to Mac sizes.
 - Pairing hides the live QR scanner (VisionKit `DataScannerViewController` is
