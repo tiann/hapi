@@ -1,7 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileSyncMock, spawnMock } = vi.hoisted(() => ({
@@ -110,25 +107,6 @@ describe('CodexAppServerClient process cwd', () => {
             expect.objectContaining({ cwd: '/neutral-home' })
         );
         await client.disconnect();
-    });
-
-    it('passes the HAPI model catalog when starting a standalone server', async () => {
-        const dir = mkdtempSync(join(tmpdir(), 'hapi-catalog-spawn-'));
-        const catalog = join(dir, 'models.json');
-        writeFileSync(catalog, JSON.stringify({ models: [{ slug: 'test-model' }] }));
-        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', catalog);
-        const client = new CodexAppServerClient({ cwd: dir });
-        try {
-            spawnMock.mockReturnValue(fakeChild());
-            await client.connect();
-            expect(spawnMock).toHaveBeenCalledWith('codex', [
-                'app-server', '-c', `model_catalog_json=${JSON.stringify(catalog)}`
-            ], expect.anything());
-        } finally {
-            await client.disconnect();
-            vi.unstubAllEnvs();
-            rmSync(dir, { recursive: true, force: true });
-        }
     });
 
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {

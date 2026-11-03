@@ -188,41 +188,45 @@ receive a new duration.
 
 ### Codex model catalog
 
-HAPI enables local model catalogs by default (`HAPI_CODEX_MODEL_CATALOG_MODE=auto`)
-for both standalone and shared Codex app-servers, including resumed sessions.
-It uses `models_cache.json` inside `CODEX_HOME`, or the current user's `.codex`
-directory when unset:
+HAPI enables verified local model catalogs by default
+(`HAPI_CODEX_MODEL_CATALOG_MODE=auto`) for standalone and shared Codex servers,
+including resumed sessions. This prevents each long-lived server from repeatedly
+downloading model metadata. Inference requests are unaffected.
 
-| Platform | Default location |
-| --- | --- |
-| macOS | `/Users/<user>/.codex/models_cache.json` |
-| Linux | `/home/<user>/.codex/models_cache.json` |
-| Windows | `<user profile>\.codex\models_cache.json` |
+At startup a bounded, short-lived Codex process reads the effective configuration,
+including profiles, project/system settings and launch overrides. An existing
+`model_catalog_json` is preserved. Automatic caching is eligible for the built-in
+OpenAI provider with file-backed ChatGPT credentials; custom providers, API keys,
+keyrings and unrecognized authentication retain native discovery.
 
-Home directories are resolved through the OS, not hardcoded. Windows npm shims
-are launched through Node so paths with spaces and JSON arguments remain intact.
+HAPI stores its own snapshots under `CODEX_HOME/hapi-model-catalogs` (or the OS
+user home plus `.codex/hapi-model-catalogs`). macOS, Linux and Windows paths are
+resolved through the OS; no username or platform-specific home is hardcoded.
+Windows npm shims launch through Node without shell-interpreting JSON arguments.
 
-A valid cache is passed as `-c model_catalog_json=...`, preventing each long-lived
-server from repeatedly downloading model metadata. When missing, invalid, older
-than 24 hours, or older than `auth.json`, HAPI first runs a bounded discovery
-process without creating a user turn. A cross-process lock coordinates simultaneous
-session starts. The discovery process exits before the session engine starts.
-If discovery fails (for example offline or with a provider that produces no
-catalog), HAPI logs a warning and falls back to native discovery.
+Snapshots are scoped to effective config, the executable's initialization response,
+launch arguments, working directory, auth-file contents and environment. Only
+hashes of this provenance are persisted. On a miss, a temporary isolated Codex
+home fetches a fresh catalog, and the selected Codex executable validates the
+complete catalog schema before HAPI saves it. The temporary home is removed
+when preparation finishes. An ordinary `models_cache.json` is never promoted
+without validation. Concurrent identical starts coordinate with a file lock.
+A content digest detects changed or damaged snapshots; snapshots expire after
+24 hours. Native config is still checked on each launch, even with a warm snapshot.
 
-Refresh is checked at startup; there is no per-session refresh timer. Active
-servers keep their catalog until restarted. HAPI does not edit global Codex
-configuration. Inference traffic is unaffected.
+Discovery or validation failure logs a warning and preserves native discovery.
+There is no per-session refresh timer. Existing sessions retain their catalog
+until restarted. HAPI does not edit global Codex configuration.
 
-To opt out, set `HAPI_CODEX_MODEL_CATALOG_MODE=native` on the CLI/runner machine.
-To pin a specific catalog, set `HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute
-path or `~/...`. This explicit path overrides the mode; an explicit launch
+Set `HAPI_CODEX_MODEL_CATALOG_MODE=native` to opt out. Set
+`HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute path or `~/...` to pin an explicit
+catalog, overriding the mode and configured catalog. An explicit launch
 `-c 'model_catalog_json="/path/to/catalog.json"'` takes precedence over both.
-Explicit files must contain the full Codex `models` array and metadata; invalid
-files fail startup. Pinned files are not refreshed automatically.
+Explicit files are checked by the selected Codex executable and fail startup
+when invalid; they are not refreshed automatically.
 
-Restart the runner after changing its environment. Already-running sessions must
-be safely stopped and resumed to pick up a changed catalog configuration.
+Restart the runner after changing its environment. Safely stop and resume existing
+sessions to pick up the changed launch configuration.
 
 ### Codex MCP servers
 

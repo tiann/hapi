@@ -1,5 +1,6 @@
-import { readFileSync, statSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -45,27 +46,14 @@ function validateCatalog(file: string): void {
 export function resolveModelCatalogArgs(args: string[] = [], env: NodeJS.ProcessEnv = process.env): string[] {
     if (explicitCatalog(args)) return [];
     const configured = env.HAPI_CODEX_MODEL_CATALOG_JSON;
-    if (!configured?.trim() && nativeMode(env)) return [];
-    const file = configured?.trim()
-        ? configured.startsWith('~/') || configured.startsWith('~\\')
-            ? path.join(homedir(), configured.slice(2)) : configured
-        : nativeModelCachePath(env);
+    // Automatic selection requires native config/schema validation and is asynchronous.
+    if (!configured?.trim()) { nativeMode(env); return []; }
+    const file = configured.startsWith('~/') || configured.startsWith('~\\')
+        ? path.join(homedir(), configured.slice(2)) : configured;
     if (!path.isAbsolute(file)) throw new Error('HAPI_CODEX_MODEL_CATALOG_JSON must be an absolute path (or start with ~/).');
     try {
         validateCatalog(file);
-        if (!configured?.trim()) {
-            const cachedAt = statSync(file).mtimeMs;
-            if (Date.now() - cachedAt > MAX_CACHE_AGE_MS) return [];
-            // A login/account change must not pin the previous account's catalog.
-            try {
-                if (statSync(path.join(path.dirname(file), 'auth.json')).mtimeMs > cachedAt) return [];
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-            }
-        }
     } catch (error) {
-        // Auto mode can bootstrap a missing/damaged cache. An explicit path is never silently ignored.
-        if (!configured?.trim()) return [];
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`Cannot load HAPI_CODEX_MODEL_CATALOG_JSON (${file}): ${detail}`);
     }
@@ -73,26 +61,41 @@ export function resolveModelCatalogArgs(args: string[] = [], env: NodeJS.Process
 }
 
 /** One bounded discovery process, before any user thread or turn exists. */
-async function discoverCatalog(command: CodexCommand, args: string[], env: NodeJS.ProcessEnv, cwd?: string): Promise<void> {
+export interface CatalogProbeResult {
+    config: Record<string, unknown>;
+    version: unknown;
+}
+
+async function discoverCatalog(command: CodexCommand, args: string[], env: NodeJS.ProcessEnv, cwd?: string, listModels = false): Promise<CatalogProbeResult> {
     const child = spawn(command.command, [...command.args, 'app-server', ...args], {
         cwd, env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true
     });
     const lines = createInterface({ input: child.stdout });
     try {
-        await new Promise<void>((resolve, reject) => {
+        return await new Promise<CatalogProbeResult>((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('model discovery timed out')), 8_000);
-            const finish = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
+            let config: Record<string, unknown> = {};
+            let version: unknown;
+            const finish = (error?: Error) => { clearTimeout(timer); error ? reject(error) : resolve({ config, version }); };
             child.once('error', finish);
             child.once('exit', () => finish(new Error('model discovery exited early')));
             child.stdin.on('error', finish);
             lines.on('line', line => {
                 try {
                     const response = JSON.parse(line);
-                    if (response.error) { finish(new Error('Codex rejected model discovery')); return; }
+                    if (response.error) { finish(new Error(`Codex rejected model discovery: ${response.error.message ?? 'unknown error'}`)); return; }
                     if (response.id === 1) {
+                        version = response.result;
                         child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
-                        child.stdin.write(JSON.stringify({ id: 2, method: 'model/list', params: { includeHidden: true } }) + '\n');
-                    } else if (response.id === 2) finish();
+                        child.stdin.write(JSON.stringify({ id: 2, method: 'config/read', params: { cwd, includeLayers: false } }) + '\n');
+                    } else if (response.id === 2) {
+                        if (!response.result?.config || typeof response.result.config !== 'object') {
+                            finish(new Error('Codex did not return effective configuration')); return;
+                        }
+                        config = response.result.config;
+                        if (listModels) child.stdin.write(JSON.stringify({ id: 3, method: 'model/list', params: { includeHidden: true } }) + '\n');
+                        else finish();
+                    } else if (response.id === 3) finish();
                 } catch { finish(new Error('Invalid model discovery response')); }
             });
             child.stdin.write(JSON.stringify({ id: 1, method: 'initialize', params: {
@@ -112,6 +115,36 @@ async function discoverCatalog(command: CodexCommand, args: string[], env: NodeJ
     }
 }
 
+function digest(value: unknown): string {
+    // Native config maps do not guarantee property order across processes.
+    const canonical = (item: unknown): unknown => {
+        if (Array.isArray(item)) return item.map(canonical);
+        if (item && typeof item === 'object') return Object.fromEntries(
+            Object.entries(item).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])
+        );
+        return item;
+    };
+    return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+}
+
+function catalogArgs(file: string): string[] {
+    return ['-c', `model_catalog_json=${JSON.stringify(file)}`];
+}
+
+/** Auto mode is deliberately limited to reproducible, file-backed first-party credentials.
+ * Other providers/keyrings/command auth retain Codex's native identity checks. */
+function eligible(config: Record<string, unknown>, env: NodeJS.ProcessEnv, auth: string): boolean {
+    if (config.model_provider && config.model_provider !== 'openai') return false;
+    if (config.model_providers && Object.keys(config.model_providers as object).length) return false;
+    if (config.cli_auth_credentials_store && config.cli_auth_credentials_store !== 'file') return false;
+    if (env.CODEX_API_KEY || env.OPENAI_API_KEY || env.CODEX_ACCESS_TOKEN) return false;
+    try {
+        const value = JSON.parse(auth);
+        return value.auth_mode === 'chatgpt' && typeof value.tokens?.access_token === 'string'
+            && typeof value.tokens?.account_id === 'string';
+    } catch { return false; }
+}
+
 export async function prepareModelCatalogArgs(
     command: CodexCommand,
     args: string[] = [],
@@ -120,30 +153,76 @@ export async function prepareModelCatalogArgs(
     discover: typeof discoverCatalog = discoverCatalog,
     warn: (message: string) => void = console.warn
 ): Promise<string[]> {
-    const ready = resolveModelCatalogArgs(args, env);
-    if (ready.length || explicitCatalog(args) || nativeMode(env)) return ready;
-    const file = nativeModelCachePath(env);
+    const explicit = resolveModelCatalogArgs(args, env);
+    if (explicitCatalog(args)) return [];
+    if (explicit.length) {
+        // Let the selected executable validate its complete schema, including nested fields.
+        await discover(command, [...args, ...explicit], env, cwd, true);
+        return explicit;
+    }
+    if (nativeMode(env)) return [];
+    const home = path.dirname(nativeModelCachePath(env));
+    let temporary: string | undefined;
     try {
-        await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-        // Cross-process lock: simultaneous sessions recheck the cache after the first writer finishes.
-        const refresh = () => withSettingsFileLock(file, async () => {
-            const cached = resolveModelCatalogArgs(args, env);
-            if (cached.length) return cached;
-            await discover(command, args, { ...env, CODEX_HOME: path.dirname(file) }, cwd);
-            const fresh = resolveModelCatalogArgs(args, env);
-            if (!fresh.length) throw new Error('Codex did not produce a usable model cache');
-            return fresh;
+        // Codex resolves profiles, project/system config and launch overrides for us.
+        const current = await discover(command, args, env, cwd);
+        if (current.config.model_catalog_json) return [];
+        const auth = await readFile(path.join(home, 'auth.json'), 'utf8').catch(() => '');
+        if (!eligible(current.config, env, auth)) return [];
+        const configFile = await readFile(path.join(home, 'config.toml'), 'utf8').catch(error => {
+            if (error.code === 'ENOENT') return '';
+            throw error;
         });
-        // The shared lock waits five seconds; a cold discovery may take up to eight.
-        // Retry lock contention rather than starting a competing native engine mid-refresh.
+        // Hash every environment entry: custom credential/header variables must invalidate too.
+        // No credentials or environment values are persisted in the provenance record.
+        const key = digest([command, current, args, cwd, configFile, auth,
+            Object.entries(env).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))]);
+        const directory = path.join(home, 'hapi-model-catalogs');
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        const file = path.join(directory, `${key}.json`);
+        const stamp = `${file}.validated`;
+        const refresh = () => withSettingsFileLock(file, async () => {
+            try {
+                const contents = await readFile(file, 'utf8');
+                const validation = JSON.parse(await readFile(stamp, 'utf8'));
+                if (validation.digest === digest(contents) && Date.now() - validation.at < MAX_CACHE_AGE_MS) {
+                    return catalogArgs(file);
+                }
+            } catch { /* Missing, damaged or unvalidated HAPI snapshots are cache misses. */ }
+            // A separate home prevents another Codex/provider from replacing the cache between
+            // discovery and snapshotting. Never promote an unscoped pre-existing native cache.
+            temporary = await mkdtemp(path.join(home, '.hapi-model-discovery-'));
+            await writeFile(path.join(temporary, 'auth.json'), auth, { mode: 0o600 });
+            await writeFile(path.join(temporary, 'config.toml'), configFile, { mode: 0o600 });
+            const isolatedEnv = { ...env, CODEX_HOME: temporary };
+            const discovered = await discover(command, args, isolatedEnv, cwd, true);
+            if (discovered.config.model_catalog_json || !eligible(discovered.config, isolatedEnv, auth)
+                || digest(discovered.config) !== digest(current.config)) {
+                throw new Error('Discovery configuration is not eligible for automatic catalogs');
+            }
+            const candidate = path.join(temporary, 'models_cache.json');
+            validateCatalog(candidate);
+            // Native schema check: a slug-only or otherwise invalid catalog cannot become authoritative.
+            await discover(command, [...args, ...catalogArgs(candidate)], isolatedEnv, cwd, true);
+            // An auth/config change during discovery must not bind the result to the old context.
+            if (await readFile(path.join(home, 'auth.json'), 'utf8') !== auth
+                || await readFile(path.join(home, 'config.toml'), 'utf8').catch(() => '') !== configFile) {
+                throw new Error('Codex credentials/configuration changed during discovery');
+            }
+            const contents = await readFile(candidate, 'utf8');
+            await writeFile(file, contents, { mode: 0o600 });
+            await writeFile(stamp, JSON.stringify({ digest: digest(contents), at: Date.now() }), { mode: 0o600 });
+            return catalogArgs(file);
+        });
         try { return await refresh(); }
         catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ELOCKED') throw error;
             return await refresh();
         }
     } catch (error) {
-        // Offline/API-key/custom-provider setups may not expose a catalog. Preserve native behavior visibly.
         warn(`[HAPI] Local Codex model catalog unavailable; using native discovery: ${error instanceof Error ? error.message : String(error)}`);
         return [];
+    } finally {
+        if (temporary) await rm(temporary, { recursive: true, force: true });
     }
 }
