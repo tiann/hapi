@@ -116,4 +116,41 @@ describe('session row hover archive progress', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull())
         expect(toasts.map(toast => toast.title)).toEqual(['Session archived'])
     })
+
+    it('keeps the spinner when the archived row moves out of the Active section', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        try {
+            let finishArchive: () => void = () => {}
+            const archiveSession = vi.fn(() => new Promise<void>((resolve) => { finishArchive = resolve }))
+            const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+            const list = (session: SessionSummary) => (
+                <QueryClientProvider client={client}>
+                    <ToastProvider>
+                        <I18nProvider>
+                            <ToastProbe />
+                            <SessionList sessions={[session]} selectedSessionId="idle" onSelect={vi.fn()}
+                                onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+                                api={{ archiveSession } as Partial<ApiClient> as ApiClient} />
+                        </I18nProvider>
+                    </ToastProvider>
+                </QueryClientProvider>
+            )
+            toasts = []
+            const { rerender } = render(list(makeSession({ id: 'idle' })))
+
+            fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+            await waitFor(() => expect(archiveSession).toHaveBeenCalled())
+            // Inactive moves the row from the pinned Active section into its
+            // project group (kept open because the session is selected), which
+            // mounts a fresh row component.
+            rerender(list(makeSession({ id: 'idle', active: false })))
+            expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
+
+            await act(async () => finishArchive())
+            await waitFor(() => expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull())
+            expect(toasts.map(toast => toast.title)).toEqual(['Session archived'])
+        } finally {
+            localStorage.removeItem('hapi-pin-in-progress-sessions')
+        }
+    })
 })

@@ -13,7 +13,8 @@ import {
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
-import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
@@ -1322,7 +1323,10 @@ const SessionItem = memo(function SessionItem(props: {
     // Hover archive: an idle session archives in one click with a Reopen toast;
     // one that is replying, waiting on approval or running background work
     // still goes through the confirmation, since archiving stops its agent.
-    const [quickArchivePending, setQuickArchivePending] = useState(false)
+    // Read from the shared mutation cache, not row state: the row remounts when
+    // an archived session moves between sections (e.g. out of Active), and the
+    // spinner must survive that until the request settles.
+    const quickArchivePending = useIsMutating({ mutationKey: sessionArchiveMutationKey(s.id), exact: true }) > 0
     const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
@@ -1332,7 +1336,6 @@ const SessionItem = memo(function SessionItem(props: {
             setArchiveOpen(true)
             return
         }
-        setQuickArchivePending(true)
         try {
             await archiveSession()
             addToast({
@@ -1357,8 +1360,6 @@ const SessionItem = memo(function SessionItem(props: {
                 sessionId: s.id,
                 url: `/sessions/${s.id}`
             })
-        } finally {
-            setQuickArchivePending(false)
         }
     }
 
