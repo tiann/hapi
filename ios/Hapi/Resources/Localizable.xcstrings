@@ -138,7 +138,7 @@
       }
     },
     "%@ attachments" : {
-
+      "extractionState" : "manual"
     },
     "%@ is over the 50 MB upload limit" : {
       "extractionState" : "manual",
