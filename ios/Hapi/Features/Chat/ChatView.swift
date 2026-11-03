@@ -199,6 +199,16 @@ struct ChatView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .focusedSceneValue(\.chatCommands, ChatCommandActions(
+            openSessionSettings: { configOpen = true },
+            openFiles: { filesOpen = true },
+            rename: {
+                renameText = model.header.title
+                renameOpen = true
+            },
+            export: model.isExporting ? nil : { model.exportConversation() },
+            stop: model.interactor.composer.canSteer ? { model.interactor.abortSession() } : nil
+        ))
         .navigationDestination(isPresented: $filesOpen) {
             FilesView(session: session, sessionId: sessionId)
         }
@@ -228,6 +238,7 @@ struct ChatView: View {
                 initialEntry: scratchlistEntry,
                 initiallyEditing: scratchlistStartsEditing
             )
+            .macSheetSizing()
         }
         .alert("Rename Session", isPresented: $renameOpen) {
             TextField("Session name", text: $renameText)
@@ -299,6 +310,7 @@ struct ChatView: View {
         }
         .sheet(isPresented: $historyOpen) {
             ConversationHistorySheet(model: model)
+                .macSheetSizing()
         }
         .toolPresentations(model: model, session: session, owner: "chat") { path in
             viewerRoute = FileViewerRoute(sessionId: sessionId, path: path, mode: .file)
