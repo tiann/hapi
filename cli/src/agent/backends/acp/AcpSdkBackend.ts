@@ -1007,6 +1007,17 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
+     * Drop buffered speech on the current message handler without emitting.
+     * Cursor post-done silence (#2267): call while the silence gate still
+     * applies, before opening the next HAPI prompt, so prompt()'s pre-swap
+     * drain cannot resurrect a suppressed harness-resume live snapshot.
+     */
+    async discardPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.discardBuffers();
+    }
+
+    /**
      * Wait for any in-progress response to complete.
      * Resolves immediately if no response is being processed.
      * Use this before performing operations that require the response to be complete,

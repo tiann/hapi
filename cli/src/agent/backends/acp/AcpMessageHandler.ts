@@ -613,6 +613,19 @@ export class AcpMessageHandler {
         this.flushText();
     }
 
+    /**
+     * Drop buffered speech/reasoning without emitting. Used when a post-done
+     * harness resume was suppressed as live snapshots (#2267): idle flush keeps
+     * the text in the buffer, and the next prompt()'s pre-swap drain would
+     * otherwise forward it once the silence gate reopens.
+     */
+    discardBuffers(): void {
+        this.bufferedText = '';
+        this.textStreamId = null;
+        this.clearTextIdleFlushTimer();
+        this.resetReasoningState();
+    }
+
     private clearTextIdleFlushTimer(): void {
         if (this.textIdleTimer !== null) {
             clearTimeout(this.textIdleTimer);

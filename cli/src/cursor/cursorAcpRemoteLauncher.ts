@@ -715,8 +715,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // Hold promptInFlight before mode apply so a concurrent Auto relaunch
             // cannot disconnect this backend mid-dispatch.
             session.onThinkingChange(true);
+            // #2267: discard suppressed harness-resume buffers *before* clearing
+            // the silence gate. Otherwise prompt()'s pre-swap drain resurrects
+            // live-snapshot text that idle flush left in the previous handler.
+            if (
+                this.postCloseHarnessGate.closedWithDone
+                && !this.softSteerOutstanding()
+                && liveBackend
+            ) {
+                await liveBackend.discardPendingMessageBuffers();
+            }
             this.promptInFlight = true;
-            // New user intent re-opens speech after a prior done close (#2267).
+            // New queue prompt re-opens speech after a prior done close (#2267).
             clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;

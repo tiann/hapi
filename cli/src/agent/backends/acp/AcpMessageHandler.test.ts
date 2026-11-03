@@ -1653,6 +1653,25 @@ describe('AcpMessageHandler', () => {
         ]);
     });
 
+    it('discardBuffers drops pending speech without emitting (#2267)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'harness briefly-inform prose' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'thought' }
+        });
+
+        handler.discardBuffers();
+        handler.drainBuffers();
+
+        expect(messages).toEqual([]);
+    });
+
     it('silently drops agent_thought_chunk with empty text', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
