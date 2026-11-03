@@ -1509,7 +1509,7 @@ export function MarkdownTable(props: TableProps) {
                 className="aui-md-table-shell aui-md-table-wrapper aui-md-table-frame relative my-3 max-w-full"
                 aria-hidden={viewerOpen || undefined}
             >
-                <div className="max-w-full overflow-x-auto rounded-xl bg-[var(--app-md-table-bg)]">
+                <div className="aui-md-table-scroll max-w-full overflow-x-auto rounded-xl bg-[var(--app-md-table-bg)]">
                     <table
                         {...rest}
                         ref={inlineTableRef}
