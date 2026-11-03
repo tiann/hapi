@@ -54,7 +54,9 @@ const harness = vi.hoisted(() => ({
     /** Spawn flags passed to createCursorAcpBackend (newest last). */
     spawnAutoReviewFlags: [] as boolean[],
     /** Last prompt() onUpdate — used to simulate post-prompt harness resume (#2267). */
-    lastPromptOnUpdate: null as ((message: AgentMessage) => void) | null
+    lastPromptOnUpdate: null as ((message: AgentMessage) => void) | null,
+    /** Mirrors AcpSdkBackend.promptGeneration for post-done gate reopen. */
+    promptGeneration: 0
 }));
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
@@ -183,6 +185,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.promptCalls++;
                 harness.prompts.push(content);
                 harness.lastPromptOnUpdate = onMessage ?? null;
+                // Real AcpSdkBackend bumps generation after the pre-swap drain and
+                // new handler install; mock skips drain and bumps before emitting.
+                harness.promptGeneration += 1;
                 const messages = harness.promptMessageBatches.shift() ?? harness.promptMessages.splice(0, 1);
                 for (const message of messages) onMessage?.(message);
                 const stderrError = harness.promptStderrErrors.shift();
@@ -192,7 +197,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (error) throw error;
             }),
             cancelPrompt: vi.fn(async () => {}),
-            getPromptGeneration: vi.fn(() => 1),
+            getPromptGeneration: vi.fn(() => harness.promptGeneration),
             beginSoftSteerPrompt: vi.fn(() => ({
                 dispatched: harness.softSteerDispatchError
                     ? Promise.reject(harness.softSteerDispatchError)
@@ -368,6 +373,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.deferNextInitialize = null;
         harness.spawnAutoReviewFlags = [];
         harness.lastPromptOnUpdate = null;
+        harness.promptGeneration = 0;
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;

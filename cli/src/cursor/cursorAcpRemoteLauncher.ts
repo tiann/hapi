@@ -715,19 +715,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // Hold promptInFlight before mode apply so a concurrent Auto relaunch
             // cannot disconnect this backend mid-dispatch.
             session.onThinkingChange(true);
-            // #2267: discard suppressed harness-resume buffers *before* clearing
-            // the silence gate. Otherwise prompt()'s pre-swap drain resurrects
-            // live-snapshot text that idle flush left in the previous handler.
+            // #2267: discard suppressed harness-resume buffers while the gate
+            // still applies. Keep the gate closed through applyCursorAcpMode and
+            // prompt()'s pre-swap drain; reopen only after the handler swap
+            // (promptGeneration bump) so old-handler chunks cannot resurrect.
             if (
                 this.postCloseHarnessGate.closedWithDone
                 && !this.softSteerOutstanding()
-                && liveBackend
             ) {
                 await liveBackend.discardPendingMessageBuffers();
             }
             this.promptInFlight = true;
-            // New queue prompt re-opens speech after a prior done close (#2267).
-            clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
             this.userAbortRequested = false;
@@ -760,7 +758,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         this.attemptProducedToolActivity = false;
                         let turnCompleted = false;
                         try {
+                            // Capture before prompt(): pre-swap drain still uses this
+                            // generation; after handler swap generation bumps and we
+                            // reopen speech once. Do not clear again on later harness
+                            // resumes that reuse this onUpdate (#2267 bot Minor).
+                            const generationAtPromptStart = liveBackend.getPromptGeneration();
+                            let reopenedSpeechForThisPrompt = false;
                             await liveBackend.prompt(liveSessionId, promptContent, (message) => {
+                                if (
+                                    !reopenedSpeechForThisPrompt
+                                    && liveBackend.getPromptGeneration() !== generationAtPromptStart
+                                ) {
+                                    clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
+                                    reopenedSpeechForThisPrompt = true;
+                                }
                                 if (message.type === 'turn_complete') turnCompleted = true;
                                 this.handleAgentMessage(message);
                             });

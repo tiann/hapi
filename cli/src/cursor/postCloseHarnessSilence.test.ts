@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
     clearPostCloseGateForNewUserPrompt,
     createPostCloseHarnessGate,
-    isPostCloseHarnessTurnActive,
     noteAssistantTextForPostCloseGate,
     shouldSuppressPostCloseHarnessMessage,
     shouldSuppressPostCloseHarnessThinking
@@ -15,24 +14,24 @@ const BLOCKED_FOOTER =
     'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"blocked","summary":"Need a decision"}'
 
 describe('postCloseHarnessSilence (#2267)', () => {
-    it('does not suppress while a HAPI-owned prompt is in flight, even after done footer', () => {
+    it('suppresses harness speech after done even while promptInFlight (drain window)', () => {
         const gate = createPostCloseHarnessGate()
         noteAssistantTextForPostCloseGate(gate, `Answer.\n\n${DONE_FOOTER}`)
 
         expect(shouldSuppressPostCloseHarnessMessage(gate, {
             promptInFlight: true,
             messageType: 'text'
-        })).toBe(false)
+        })).toBe(true)
+        expect(shouldSuppressPostCloseHarnessThinking(gate, {
+            promptInFlight: true,
+            thinking: true
+        })).toBe(true)
     })
 
-    it('does not suppress while a soft-steer is still outstanding after promptInFlight clears (Codex P2)', () => {
+    it('does not suppress while a soft-steer is still outstanding after done (Codex P2)', () => {
         const gate = createPostCloseHarnessGate()
         noteAssistantTextForPostCloseGate(gate, `Answer.\n\n${DONE_FOOTER}`)
 
-        expect(isPostCloseHarnessTurnActive({
-            promptInFlight: false,
-            softSteerOutstanding: true
-        })).toBe(true)
         expect(shouldSuppressPostCloseHarnessMessage(gate, {
             promptInFlight: false,
             softSteerOutstanding: true,
@@ -45,7 +44,7 @@ describe('postCloseHarnessSilence (#2267)', () => {
         })).toBe(false)
     })
 
-    it('suppresses harness-resume speech after done once the HAPI turn has ended', () => {
+    it('suppresses harness-resume speech after done once noted', () => {
         const gate = createPostCloseHarnessGate()
         noteAssistantTextForPostCloseGate(gate, `Answer.\n\n${DONE_FOOTER}`)
 
@@ -56,10 +55,6 @@ describe('postCloseHarnessSilence (#2267)', () => {
         expect(shouldSuppressPostCloseHarnessMessage(gate, {
             promptInFlight: false,
             messageType: 'reasoning'
-        })).toBe(true)
-        expect(shouldSuppressPostCloseHarnessThinking(gate, {
-            promptInFlight: false,
-            thinking: true
         })).toBe(true)
     })
 
@@ -101,13 +96,13 @@ describe('postCloseHarnessSilence (#2267)', () => {
         })).toBe(false)
     })
 
-    it('clears the done gate when a new HAPI queue prompt starts', () => {
+    it('clears the done gate when the next prompt handler swap reopens speech', () => {
         const gate = createPostCloseHarnessGate()
         noteAssistantTextForPostCloseGate(gate, `Answer.\n\n${DONE_FOOTER}`)
         clearPostCloseGateForNewUserPrompt(gate)
 
         expect(shouldSuppressPostCloseHarnessMessage(gate, {
-            promptInFlight: false,
+            promptInFlight: true,
             messageType: 'text'
         })).toBe(false)
     })
@@ -138,8 +133,6 @@ describe('postCloseHarnessSilence (#2267)', () => {
     })
 
     it('documents that the done-closing text itself is noted after the suppress check so it is not dropped', () => {
-        // Launcher contract: evaluate suppress on the *prior* gate state, then
-        // note. A settled done footer while the gate is still open must forward.
         const gate = createPostCloseHarnessGate()
         expect(shouldSuppressPostCloseHarnessMessage(gate, {
             promptInFlight: false,
