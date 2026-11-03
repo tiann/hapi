@@ -279,13 +279,19 @@ function TableActionMenu(props: {
 
                             hoverOpenedRef.current = false
                             suppressHoverClickRef.current = true
-                            window.setTimeout(() => {
-                                suppressHoverClickRef.current = false
-                            }, 0)
                             if (!open || event.button !== 0 || event.ctrlKey) return
 
                             event.currentTarget.focus()
                             event.preventDefault()
+                        }}
+                        onPointerUp={() => {
+                            if (!suppressHoverClickRef.current) return
+                            window.setTimeout(() => {
+                                suppressHoverClickRef.current = false
+                            }, 0)
+                        }}
+                        onPointerCancel={() => {
+                            suppressHoverClickRef.current = false
                         }}
                         onClick={(event) => {
                             if (!suppressHoverClickRef.current) return
@@ -378,7 +384,7 @@ function serializeMarkdownText(value: string, encodeBrackets = true): string {
     const escaped = value
         .replace(/\s+/g, ' ')
         .replace(/\\/g, '\\\\')
-        .replace(/([&`*_<>~])/g, '\\$1')
+        .replace(/([&`*_<>~!])/g, '\\$1')
     if (!encodeBrackets) return escaped.replace(/([\[\]])/g, '\\$1')
     // A literal `\[...\]` in copied Markdown would be parsed as TeX bracket
     // math. HTML entities preserve the visible brackets without colliding
