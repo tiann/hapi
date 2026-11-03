@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { getGeneratedImage } from '@/modules/common/generatedImages'
 import { describe, expect, it, vi } from 'vitest'
 import type { Session } from './types'
 
@@ -1046,3 +1050,37 @@ describe('ApiSessionClient durable status identity', () => {
         client.close();
     });
 });
+
+
+describe('ApiSessionClient attachment links', () => {
+    it('flushes link attachments from each assistant ingress without changing the original messages', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'hapi-session-attachment-'))
+        const client = new ApiSessionClient('token', createSession({ metadata: { path: workspace, host: 'test' } }))
+        const socket = socketHarness.sockets.at(-1)!
+        socket.emitted.length = 0
+        try {
+            const files: Record<string, string> = { 'normalized.txt': 'normalized', 'claude.csv': 'name,value', 'agy.md': '# document' }
+            for (const [name, text] of Object.entries(files)) await writeFile(join(workspace, name), text)
+            const normalized = { type: 'message', message: '[report](normalized.txt)' }
+            const claude = { type: 'assistant' as const, uuid: 'assistant-file-link', message: { role: 'assistant', content: [{ type: 'text', text: '[table](claude.csv)' }] } }
+            const agy = { type: 'agy_message', content: '[document](agy.md)' }
+            client.sendAgentMessage(normalized)
+            client.sendClaudeSessionMessage(claude)
+            client.sendAgentMessage(agy)
+            expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+
+            const payloads = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                message: { content: { data: Record<string, unknown> } }
+            })
+            expect(payloads.some(payload => payload.message.content.data === normalized)).toBe(true)
+            expect(payloads.some(payload => payload.message.content.data === claude)).toBe(true)
+            expect(payloads.some(payload => payload.message.content.data === agy)).toBe(true)
+            const media = payloads.map(payload => payload.message.content.data).filter(data => data.type === 'generated-image')
+            expect(media.map(data => data.fileName).sort()).toEqual(Object.keys(files).sort())
+            for (const item of media) expect(getGeneratedImage(item.imageId as string)?.content.toString()).toBe(files[item.fileName as string])
+        } finally {
+            client.close()
+            await rm(workspace, { recursive: true, force: true })
+        }
+    })
+})
