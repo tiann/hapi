@@ -384,7 +384,7 @@ export function mergeCopiedMessagesToSession(
     return db.transaction(() => {
         let nextSeq = getMaxSeq(db, sessionId) + 1
         const existing = db.prepare(
-            'SELECT id FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+            'SELECT id, seq, created_at, invoked_at FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         )
         const update = db.prepare(`
             UPDATE messages
@@ -405,20 +405,34 @@ export function mergeCopiedMessagesToSession(
             const localId = message.localId ?? null
             const encoded = encodeMessageContent(message.content)
             if (localId) {
-                const row = existing.get(sessionId, localId) as { id: string } | undefined
+                const row = existing.get(sessionId, localId) as {
+                    id: string
+                    seq: number
+                    created_at: number
+                    invoked_at: number | null
+                } | undefined
                 if (row) {
                     update.run(
                         encoded,
                         row.id
                     )
+                    indexMessageContent(db, {
+                        id: row.id,
+                        sessionId,
+                        content: message.content,
+                        seq: row.seq,
+                        createdAt: row.created_at,
+                        invokedAt: row.invoked_at
+                    })
                     changed += 1
                     continue
                 }
             }
 
             const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
+            const id = randomUUID()
             insert.run({
-                id: randomUUID(),
+                id,
                 session_id: sessionId,
                 content: encoded,
                 created_at: createdAt,
@@ -427,6 +441,14 @@ export function mergeCopiedMessagesToSession(
                 invoked_at: invokedAt ?? null,
                 scheduled_at: message.scheduledAt ?? null,
                 delivery_state: message.deliveryState ?? 'queued'
+            })
+            indexMessageContent(db, {
+                id,
+                sessionId,
+                content: message.content,
+                seq: nextSeq,
+                createdAt,
+                invokedAt: invokedAt ?? null
             })
             nextSeq += 1
             changed += 1
