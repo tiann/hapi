@@ -56,7 +56,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 31
+const SCHEMA_VERSION: number = 32
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -381,6 +381,7 @@ export class Store {
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
             30: () => this.migrateFromV30ToV31(),
+            31: () => this.migrateFromV31ToV32(),
         })
 
         if (currentVersion === 0) {
@@ -418,6 +419,7 @@ export class Store {
             this.migrateFromV26ToV30()
             this.migrateFromV29ToV30()
             this.migrateFromV30ToV31()
+            this.migrateFromV31ToV32()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -1222,8 +1224,14 @@ export class Store {
         }
     }
 
-    /** v30→v31: add structured-task source positions and the message-content search index. */
+    /** v30→v31: create and backfill the message-content search index. */
     private migrateFromV30ToV31(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
+    }
+
+    /** v31→v32: add structured-task source positions and durable backfill state. */
+    private migrateFromV31ToV32(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS migration_state (
                 migration_id TEXT PRIMARY KEY,
@@ -1240,9 +1248,6 @@ export class Store {
                 this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
             }
         }
-
-        createMessageContentSearchTable(this.db)
-        if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
     }
 
     private hasMessageContentSearchSourceSchema(): boolean {

@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v29 to v31', () => {
+describe('schema migration v29 to v32', () => {
     it('skips the task-source ALTER when a partial legacy database has no sessions table', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v30-partial-'))
         tempDirs.push(dir)
@@ -67,7 +67,7 @@ describe('schema migration v29 to v31', () => {
                 'todos_source_at',
                 'todos_source_seq'
             ]))
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
         } finally {
             migrated.close()
         }
@@ -108,7 +108,7 @@ describe('schema migration v29 to v31', () => {
             'todos_source_at',
             'todos_source_seq'
         ]))
-        expect(version.user_version).toBe(31)
+        expect(version.user_version).toBe(32)
         const markerStatement = internalDb.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_state'"
         )
@@ -147,7 +147,7 @@ describe('schema migration v29 to v31', () => {
         const version = versionStatement.get() as { user_version: number }
         versionStatement.finalize()
 
-        expect(version.user_version).toBe(31)
+        expect(version.user_version).toBe(32)
         expect(migrated.turns.open(session.id, 'default', 1_000, 'agent')).toBe(true)
         migrated.close()
     })
@@ -176,7 +176,7 @@ describe('schema migration v29 to v31', () => {
             const marker = internalDb.prepare(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_state'"
             ).get()
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
                 'todos_source_at',
                 'todos_source_seq'
@@ -215,6 +215,43 @@ it('upgrades timestamp-era history to a read baseline exactly once', () => {
         restarted.close()
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
 })
+it('adds the structured task source migration to an existing v31 database', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v31-task-source-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'hapi.db')
+
+    const initial = new Store(dbPath)
+    initial.sessions.getOrCreateSession('migration-v31-session', { path: '/tmp' }, null, 'default')
+    initial.close()
+
+    const legacy = new Database(dbPath)
+    legacy.exec(`
+        DROP TABLE migration_state;
+        ALTER TABLE sessions DROP COLUMN todos_source_seq;
+        ALTER TABLE sessions DROP COLUMN todos_source_at;
+        PRAGMA user_version = 31;
+    `)
+    legacy.close()
+
+    const migrated = new Store(dbPath)
+    try {
+        const internalDb = (migrated as unknown as { db: Database }).db
+        const columns = internalDb.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
+        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+        const marker = internalDb.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_state'"
+        ).get()
+
+        expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+            'todos_source_at',
+            'todos_source_seq'
+        ]))
+        expect(marker).not.toBeNull()
+        expect(version.user_version).toBe(32)
+    } finally {
+        migrated.close()
+    }
+})
 it('creates and backfills search tables when upgrading a base v30 database', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hapi-search-v30-migration-'))
     try {
@@ -235,7 +272,7 @@ it('creates and backfills search tables when upgrading a base v30 database', () 
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(migrated.messages.searchContent('searchable', 'default')[0]?.sessionId).toBe(session.id)
         } finally { migrated.close() }
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
@@ -267,7 +304,7 @@ it('upgrades a genuine v26 schema without read-state or search table shortcuts',
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(migrated.sessions.getSession(session.id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
             migrated.messages.addMessage(session.id, {
                 role: 'user', content: { type: 'text', text: 'genuine v26 searchable text' }
