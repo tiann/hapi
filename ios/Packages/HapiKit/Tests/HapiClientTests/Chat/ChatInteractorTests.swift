@@ -1440,6 +1440,50 @@ struct ChatInteractorTests {
         #expect(await harness.performer.count("POST", pathSuffix: "/api/sessions/sess-1/messages") == 0)
     }
 
+    @Test func mentionsPersistAndSendFullReferencesWithoutChangingSurroundingDraft() async throws {
+        let harness = try await ChatInteractionHarness()
+        var peer = chatDetail(id: "peer-id")
+        peer.hasConversationContent = true
+        peer.metadata?.name = "Peer [context]"
+        harness.store.applySessionEvent(.sessionUpdated(namespace: nil, sessionId: peer.id, data: .session(peer)))
+        harness.interactor.setComposerText("Check @Peer, thanks")
+        let selection = NSRange(location: "Check @Pe".utf16.count, length: 0)
+        let hit = try #require(harness.interactor.mentionSuggestions(selection: selection).first)
+        let caret = try #require(harness.interactor.selectMention(hit, selection: selection))
+        let expected = "Check [Peer \\[context\\]](/sessions/peer-id) , thanks"
+        #expect(harness.interactor.composerText == expected)
+        #expect(caret.location == "Check [Peer \\[context\\]](/sessions/peer-id) ".utf16.count)
+        #expect(await eventually { harness.drafts.storage[chatSessionID] == expected })
+        harness.interactor.sendMessage()
+        #expect(await eventually { !harness.interactor.isSending })
+        let body = try #require(await harness.performer.bodies("POST", pathSuffix: "/messages").last)
+        let request = try HapiJSON.decoder.decode(SendMessageRequest.self, from: Data(body.utf8))
+        #expect(request.text == expected)
+        #expect(harness.interactor.composerText.isEmpty)
+    }
+
+    @Test func mentionFilesUseTheCurrentSessionAPIAndSupplementLiveSessionMatches() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "codex"))
+        await harness.performer.serve("GET", "/api/sessions/sess-1/files",
+            json: #"{"success":true,"files":[{"fileName":"file.swift","filePath":"src","fullPath":"src/file.swift","fileType":"file"}]}"#)
+        var peer = chatDetail(id: "file-peer")
+        peer.hasConversationContent = true
+        peer.metadata?.name = "file session"
+        harness.store.applySessionEvent(.sessionUpdated(namespace: nil, sessionId: peer.id, data: .session(peer)))
+        harness.interactor.setComposerText("Review @file")
+        let caret = NSRange(location: "Review @file".utf16.count, length: 0)
+        #expect(harness.interactor.mentionSuggestions(selection: caret).map(\.id) == ["session:file-peer"])
+        await harness.interactor.mentionFiles.load(.init(query: "file", flavor: "codex"))
+        let hits = harness.interactor.mentionSuggestions(selection: caret)
+        #expect(hits.map(\.id) == ["session:file-peer", "file:src/file.swift"])
+        #expect(hits.last?.text == "@\"src/file.swift\"")
+        harness.interactor.setComposerText("@different")
+        #expect(harness.interactor.mentionSuggestions(selection: .init(location: 10, length: 0)).isEmpty)
+        harness.interactor.setComposerText("@file")
+        harness.interactor.setComposerDestination(.scratchlist)
+        #expect(harness.interactor.mentionSuggestions(selection: .init(location: 5, length: 0)).isEmpty)
+    }
+
     // MARK: Slash commands
 
     @Test func slashSuggestionsLoadOnceWhenEnteringSlashMode() async throws {

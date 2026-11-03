@@ -1844,3 +1844,79 @@ describe('claudeRemote rewind acceptance proof', () => {
         } finally { queryMock.mockReset(); querySpy.mockRestore(); }
     });
 });
+
+describe('claudeRemote live effort', () => {
+    async function run(
+        setEffort: (effort: string | null) => Promise<void>,
+        exercise: (apply: (effort: string | null) => Promise<boolean>) => Promise<void>
+    ) {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        let applier: ((effort: string | null) => Promise<boolean>) | null = null;
+        const setEffortApplier = vi.fn((next: typeof applier) => {
+            applier = next;
+        });
+        queryMock.mockReturnValueOnce({
+            setPermissionMode: async () => {},
+            setEffort,
+            async *[Symbol.asyncIterator]() {
+                await exercise((effort) => applier!(effort));
+                yield { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+            }
+        });
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                setEffortApplier,
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'A', mode: { permissionMode: 'default', effort: 'high' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+        expect(setEffortApplier).toHaveBeenLastCalledWith(null);
+    }
+
+    it('changes effort in the running process and skips unchanged levels', async () => {
+        const setEffort = vi.fn(async () => {});
+        const results: boolean[] = [];
+        await run(setEffort, async (apply) => {
+            results.push(await apply('high'));
+            results.push(await apply('low'));
+            results.push(await apply('low'));
+            results.push(await apply(null));
+        });
+        expect(setEffort.mock.calls).toEqual([['low'], [null]]);
+        expect(results).toEqual([true, true, true, true]);
+    });
+
+    it('asks for a restart when Claude rejects or never answers the change', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+            const results: boolean[] = [];
+            await run(async (effort) => {
+                if (effort === 'low') throw new Error('Unsupported control request subtype: apply_flag_settings');
+                await new Promise(() => {});
+            }, async (apply) => {
+                results.push(await apply('low'));
+                const pending = apply('max');
+                await vi.advanceTimersByTimeAsync(5_000);
+                results.push(await pending);
+            });
+            expect(results).toEqual([false, false]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});

@@ -46,6 +46,7 @@ data class SessionMetadata(
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
     val claudeRewind: ClaudeRewind? = null,
+    val dshSessionId: String? = null,
 )
 
 @Serializable

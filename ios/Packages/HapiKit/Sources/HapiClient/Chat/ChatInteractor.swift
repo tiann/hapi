@@ -57,6 +57,7 @@ public final class ChatInteractor {
     /// when upload recovery changes the session ID. See the tray's own docs
     /// for discard-on-deallocation semantics.
     public let attachments: ComposerAttachments
+    public let mentionFiles: ComposerMentionFiles
 
     // MARK: Observable storage
 
@@ -150,6 +151,7 @@ public final class ChatInteractor {
 
     private let api: APIClient
     private let sessionStore: SessionListStore
+    private let machineStore: MachineStore?
     private let windows: MessageWindowControllers
     private let drafts: (any ChatDrafts)?
     private let draftSaveDebounce: Duration
@@ -168,6 +170,7 @@ public final class ChatInteractor {
         sessionStore: SessionListStore,
         windows: MessageWindowControllers,
         drafts: (any ChatDrafts)? = nil,
+        machineStore: MachineStore? = nil,
         attachments: ComposerAttachments? = nil,
         draftSaveDebounce: Duration = .milliseconds(300),
         directSendGrace: Duration = .seconds(5),
@@ -177,6 +180,10 @@ public final class ChatInteractor {
         self.sessionId = sessionId
         self.api = api
         self.sessionStore = sessionStore
+        self.machineStore = machineStore
+        self.mentionFiles = ComposerMentionFiles { query in
+            try await api.searchSessionFiles(sessionId: sessionId, query: query, limit: 50)
+        }
         self.windows = windows
         self.drafts = drafts
         self.draftSaveDebounce = draftSaveDebounce
@@ -319,6 +326,33 @@ public final class ChatInteractor {
                 isRetry: false
             )
         }
+    }
+
+    public var mentionFlavor: String { currentFlavor() ?? "claude" }
+
+    /// Read the live, same-hub roster on every render; file results must match
+    /// the current query and flavor before they can supplement session hits.
+    public func mentionSuggestions(selection: NSRange) -> [ComposerMentionSuggestion] {
+        guard composerDestination == .chat,
+              let query = ComposerMentionSuggestions.query(in: composerText, selection: selection) else { return [] }
+        let sessions = ComposerMentionSuggestions.sessions(sessionStore.sessions, query: query.search, excluding: sessionId) { id in
+            guard let id else { return String(localized: "Unknown machine") }
+            let metadata = self.machineStore?.machines.first { $0.id == id }?.metadata
+            let name = metadata?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !name.isEmpty { return name }
+            return metadata?.host ?? String(id.prefix(8))
+        }
+        return sessions + mentionFiles.suggestions(for: .init(query: query.search, flavor: mentionFlavor))
+    }
+
+    /// Only replace the active @ range; retain surrounding text and return
+    /// the caret for UIKit. The serialized reference uses ordinary draft saves.
+    public func selectMention(_ suggestion: ComposerMentionSuggestion, selection: NSRange) -> NSRange? {
+        guard composerDestination == .chat,
+              mentionSuggestions(selection: selection).contains(suggestion),
+              let edit = ComposerMentionSuggestions.inserting(suggestion, into: composerText, selection: selection) else { return nil }
+        setComposerText(edit.text)
+        return edit.selection
     }
 
     /// Slash-command dropdown rows: non-empty only while the composer is a

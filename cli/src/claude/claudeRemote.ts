@@ -54,6 +54,8 @@ interface ActiveCompact {
 // acceptEdits/bypassPermissions are emulated in canCallTool so they can change
 // mid-session. Launching Claude natively in them skips canCallTool, so a later
 // downgrade (e.g. Yolo -> Default) would never take effect.
+const EFFORT_APPLY_TIMEOUT_MS = 5_000;
+
 function nativePermissionMode(mode: PermissionMode): PermissionMode {
     return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
 }
@@ -72,6 +74,8 @@ export async function claudeRemote(opts: {
     canCallTool: (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }) => Promise<PermissionResult>,
     /** Receives mid-turn permission mode changes so Claude's native mode can follow them. */
     setPermissionModeListener?: (listener: ((mode: PermissionMode) => void) | null) => void,
+    /** Receives a live effort applier; it resolves false when Claude must restart instead. */
+    setEffortApplier?: (applier: ((effort: string | null) => Promise<boolean>) | null) => void,
     /** Claude refused or fell back from a requested mode; `mode` is the one it actually runs. */
     onPermissionModeRejected?: (mode: PermissionMode, reason: string) => void,
     /** Session modes used to spawn Claude before the first fork child prompt. */
@@ -463,6 +467,35 @@ export async function claudeRemote(opts: {
         }).finally(() => {
             switchesInFlight -= 1;
         });
+    });
+
+    // Effort applies to the next request of the running process, so an
+    // effort-only change does not need the --resume restart other modes do.
+    let nativeEffort: string | null = sdkOptions.effort ?? null;
+    opts.setEffortApplier?.(async (effort) => {
+        if (effort === nativeEffort) {
+            return true;
+        }
+        // Control responses are not rejected when the process exits; never let
+        // a lost reply hold the next prompt. Timing out falls back to a restart.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([
+                response.setEffort(effort),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('timed out')), EFFORT_APPLY_TIMEOUT_MS);
+                })
+            ]);
+            nativeEffort = effort;
+            // A process that closed while we waited cannot take the prompt;
+            // report a restart so the launcher keeps the batch for the next one.
+            return !responseClosed && !inputEnded;
+        } catch (e) {
+            logger.debug(`[claudeRemote] apply_flag_settings effortLevel=${effort ?? 'default'} failed`, e);
+            return false;
+        } finally {
+            clearTimeout(timer);
+        }
     });
 
     let nextMessageFetchInFlight = false;
@@ -924,6 +957,7 @@ export async function claudeRemote(opts: {
         );
         opts.setPermissionModeListener?.(null);
         clearRewindTimers();
+        opts.setEffortApplier?.(null);
         updateThinking(false);
     }
 }
