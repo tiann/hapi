@@ -769,6 +769,62 @@ describe('AcpSdkBackend', () => {
         ]);
     });
 
+    it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 40;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 10;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 50;
+
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        const backend = new AcpSdkBackend({ command: 'agent', flavor: 'cursor' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+
+        const messages: AgentMessage[] = [];
+        backendInternal.transport = {
+            sendRequest: async () => {
+                backendInternal.handleSessionUpdate({
+                    sessionId: 'session-1',
+                    update: {
+                        sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                        content: { type: 'text', text: `Finished.\n\n${doneFooter}` }
+                    }
+                });
+                // Harness wake after native response resolves, during quiet window.
+                setTimeout(() => {
+                    backendInternal.handleSessionUpdate({
+                        sessionId: 'session-1',
+                        update: {
+                            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                            content: { type: 'text', text: 'Shell finished; here is a redundant summary.' }
+                        }
+                    });
+                }, 5);
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        await backend.prompt('session-1', [{ type: 'text', text: 'finish' }], (message) => {
+            messages.push(message);
+        });
+
+        const textMessages = messages.filter((message) => message.type === 'text');
+        expect(textMessages.map((message) => message.text)).toEqual([
+            `Finished.\n\n${doneFooter}`,
+            'Shell finished; here is a redundant summary.'
+        ]);
+    });
+
     it('combines OpenCode usage_update and prompt usage into a usage message', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;

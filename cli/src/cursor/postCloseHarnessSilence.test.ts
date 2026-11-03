@@ -4,7 +4,8 @@ import {
     createPostCloseHarnessGate,
     noteAssistantTextForPostCloseGate,
     shouldSuppressPostCloseHarnessMessage,
-    shouldSuppressPostCloseHarnessThinking
+    shouldSuppressPostCloseHarnessThinking,
+    truncateCoalescedHarnessAfterDoneFooter
 } from './postCloseHarnessSilence'
 
 const DONE_FOOTER =
@@ -143,5 +144,27 @@ describe('postCloseHarnessSilence (#2267)', () => {
             promptInFlight: false,
             messageType: 'text'
         })).toBe(true)
+    })
+
+    it('closes the gate when a done footer is buried under coalesced harness prose (#2268)', () => {
+        const gate = createPostCloseHarnessGate()
+        noteAssistantTextForPostCloseGate(
+            gate,
+            `Answer.\n\n${DONE_FOOTER}\nShell finished; here is a redundant summary.`
+        )
+
+        expect(shouldSuppressPostCloseHarnessMessage(gate, {
+            promptInFlight: true,
+            messageType: 'text'
+        })).toBe(true)
+    })
+
+    it('truncates coalesced harness prose after a done footer for the launcher forward path', () => {
+        const coalesced = `Answer.\n\n${DONE_FOOTER}\nShell finished; here is a redundant summary.`
+        expect(truncateCoalescedHarnessAfterDoneFooter(coalesced)).toBe(`Answer.\n\n${DONE_FOOTER}`)
+        expect(truncateCoalescedHarnessAfterDoneFooter(`Answer.\n\n${DONE_FOOTER}`)).toBeNull()
+        expect(truncateCoalescedHarnessAfterDoneFooter(
+            `Waiting.\n\n${BLOCKED_FOOTER}\nMore explanation.`
+        )).toBeNull()
     })
 })

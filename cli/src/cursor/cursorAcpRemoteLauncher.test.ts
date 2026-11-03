@@ -1060,6 +1060,32 @@ describe('cursorAcpRemoteLauncher', () => {
         await launched;
     });
 
+    it('forwards a coalesced done footer without the buried harness prose (#2268)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        harness.promptMessages = [
+            {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nShell finished; here is a redundant summary.`
+            },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, false);
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        session.queue.push('finish the topic', { permissionMode: 'default' } as EnhancedMode);
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const textBodies = client.sendAgentMessage.mock.calls
+            .map((call) => call[0] as { type?: string; message?: string })
+            .filter((msg) => msg.type === 'message' || typeof msg.message === 'string')
+            .map((msg) => msg.message ?? '');
+        expect(textBodies.some((body) => body.includes('Finished.') && body.includes(doneFooter))).toBe(true);
+        expect(textBodies.some((body) => body.includes('redundant summary'))).toBe(false);
+    });
+
     it('throws on initialize failure without invoking legacy launcher', async () => {
         harness.initializeError = new Error('agent acp not found');
         const session = makeSession(null);

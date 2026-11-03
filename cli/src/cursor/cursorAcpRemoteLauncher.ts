@@ -58,7 +58,8 @@ import {
     createPostCloseHarnessGate,
     noteAssistantTextForPostCloseGate,
     shouldSuppressPostCloseHarnessMessage,
-    shouldSuppressPostCloseHarnessThinking
+    shouldSuppressPostCloseHarnessThinking,
+    truncateCoalescedHarnessAfterDoneFooter
 } from './postCloseHarnessSilence';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
@@ -1016,6 +1017,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 this.pendingInlineRetryableError = true;
                 if (!visibleText) return;
                 message = { ...message, text: visibleText };
+            }
+        }
+        // Quiet-drain coalescing can append finished-shell prose onto the same
+        // buffer as the done footer. Truncate before the gate runs so the real
+        // close still reaches the hub and the harness tail is dropped (#2268).
+        if (message.type === 'text' && message.live !== true) {
+            const truncated = truncateCoalescedHarnessAfterDoneFooter(message.text);
+            if (truncated !== null) {
+                message = { ...message, text: truncated };
             }
         }
         // Gate must be evaluated *before* noting this segment's footer so a

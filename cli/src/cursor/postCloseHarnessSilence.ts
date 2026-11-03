@@ -26,8 +26,47 @@ export function clearPostCloseGateForNewUserPrompt(gate: PostCloseHarnessGate): 
 }
 
 /**
+ * Last well-formed `AGENT_NOTIFY_SUMMARY` in `text`, even when trailing harness
+ * prose follows. Shared `extractNotifySummary` is end-anchored; the quiet-drain
+ * coalescing window can bury the done footer under finished-shell speech.
+ */
+export function extractLastNotifySummaryAllowingTrailing(text: string): ReturnType<typeof extractNotifySummary> {
+    if (!text) return null
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        if (lines[i]!.trim() === '') continue
+        const candidate = lines.slice(0, i + 1).join('\n')
+        const summary = extractNotifySummary(candidate)
+        if (summary) return summary
+    }
+    return null
+}
+
+/**
+ * When a done footer is buried under coalesced harness prose, return text
+ * through that footer so the launcher can forward the real close without the
+ * redundant resume. `null` means no truncation needed.
+ */
+export function truncateCoalescedHarnessAfterDoneFooter(text: string): string | null {
+    if (!text) return null
+    const lines = text.split('\n')
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        if (lines[i]!.trim() === '') continue
+        const candidate = lines.slice(0, i + 1).join('\n')
+        const summary = extractNotifySummary(candidate)
+        if (!summary?.status) continue
+        if (summary.status !== 'done') return null
+        const trailing = lines.slice(i + 1).join('\n')
+        if (trailing.trim() === '') return null
+        return candidate
+    }
+    return null
+}
+
+/**
  * Note a settled assistant text segment. Interim `live` snapshots are ignored
  * so a partial stream that happens to end with a footer does not close early.
+ * Accepts a done footer buried under trailing harness prose (#2268 Minor).
  */
 export function noteAssistantTextForPostCloseGate(
     gate: PostCloseHarnessGate,
@@ -35,7 +74,7 @@ export function noteAssistantTextForPostCloseGate(
     opts?: { live?: boolean }
 ): void {
     if (opts?.live) return
-    const summary = extractNotifySummary(text)
+    const summary = extractLastNotifySummaryAllowingTrailing(text)
     if (!summary?.status) return
     gate.closedWithDone = summary.status === 'done'
 }

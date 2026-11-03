@@ -733,6 +733,11 @@ export class AcpSdkBackend implements AgentBackend {
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
         } finally {
+            // Cursor (#2267): seal a completed done footer before the quiet
+            // drain so finished-shell harness text cannot bury it in one flush.
+            if (this.options.flavor === 'cursor') {
+                this.messageHandler?.sealDoneNotifySummaryIfPresent();
+            }
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
