@@ -1700,6 +1700,26 @@ describe('AcpMessageHandler', () => {
         ]);
     });
 
+    it('sealDoneNotifySummaryIfPresent strips coalesced harness already in the buffer', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nShell finished; redundant.`
+            }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(true);
+        expect(messages).toEqual([
+            { type: 'text', text: `Finished.\n\n${doneFooter}` }
+        ]);
+    });
+
     it('sealDoneNotifySummaryIfPresent is a no-op without an end-anchored done footer', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

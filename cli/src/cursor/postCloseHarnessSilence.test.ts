@@ -146,7 +146,7 @@ describe('postCloseHarnessSilence (#2267)', () => {
         })).toBe(true)
     })
 
-    it('closes the gate when a done footer is buried under coalesced harness prose (#2268)', () => {
+    it('does not close the gate from a mid-body done footer (end-anchor only on note)', () => {
         const gate = createPostCloseHarnessGate()
         noteAssistantTextForPostCloseGate(
             gate,
@@ -156,15 +156,38 @@ describe('postCloseHarnessSilence (#2267)', () => {
         expect(shouldSuppressPostCloseHarnessMessage(gate, {
             promptInFlight: true,
             messageType: 'text'
-        })).toBe(true)
+        })).toBe(false)
     })
 
-    it('truncates coalesced harness prose after a done footer for the launcher forward path', () => {
+    it('truncates coalesced harness prose after an unfenced done footer', () => {
         const coalesced = `Answer.\n\n${DONE_FOOTER}\nShell finished; here is a redundant summary.`
         expect(truncateCoalescedHarnessAfterDoneFooter(coalesced)).toBe(`Answer.\n\n${DONE_FOOTER}`)
         expect(truncateCoalescedHarnessAfterDoneFooter(`Answer.\n\n${DONE_FOOTER}`)).toBeNull()
         expect(truncateCoalescedHarnessAfterDoneFooter(
             `Waiting.\n\n${BLOCKED_FOOTER}\nMore explanation.`
         )).toBeNull()
+    })
+
+    it('truncates same-line glued harness prose after the done JSON object', () => {
+        const glued = `Answer.\n\n${DONE_FOOTER}Shell finished; redundant.`
+        expect(truncateCoalescedHarnessAfterDoneFooter(glued)).toBe(`Answer.\n\n${DONE_FOOTER}`)
+    })
+
+    it('preserves fenced done-footer examples used as documentation', () => {
+        const docs = [
+            'Use this footer:',
+            '```',
+            DONE_FOOTER,
+            '```',
+            'Then the hub will notify you.'
+        ].join('\n')
+        expect(truncateCoalescedHarnessAfterDoneFooter(docs)).toBeNull()
+    })
+
+    it('skips truncation while a soft-steer is outstanding', () => {
+        const coalesced = `Answer.\n\n${DONE_FOOTER}\nSteered follow-up the user asked for.`
+        expect(truncateCoalescedHarnessAfterDoneFooter(coalesced, {
+            softSteerOutstanding: true
+        })).toBeNull()
     })
 })

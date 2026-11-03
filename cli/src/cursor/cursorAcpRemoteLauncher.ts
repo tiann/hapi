@@ -1021,9 +1021,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
         // Quiet-drain coalescing can append finished-shell prose onto the same
         // buffer as the done footer. Truncate before the gate runs so the real
-        // close still reaches the hub and the harness tail is dropped (#2268).
+        // close still reaches the hub and the harness tail is dropped — but never
+        // while a soft-steer still owns the turn (#2268 Minors).
         if (message.type === 'text' && message.live !== true) {
-            const truncated = truncateCoalescedHarnessAfterDoneFooter(message.text);
+            const truncated = truncateCoalescedHarnessAfterDoneFooter(message.text, {
+                softSteerOutstanding: this.softSteerOutstanding()
+            });
             if (truncated !== null) {
                 message = { ...message, text: truncated };
             }

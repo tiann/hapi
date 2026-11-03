@@ -25,48 +25,110 @@ export function clearPostCloseGateForNewUserPrompt(gate: PostCloseHarnessGate): 
     gate.closedWithDone = false
 }
 
+const NOTIFY_SUMMARY_PREFIX = 'AGENT_NOTIFY_SUMMARY '
+
+type LineFooterMatch = {
+    status: string | undefined
+    /** Absolute character index in the full text immediately after the footer's closing `}`. */
+    endExclusive: number
+}
+
 /**
- * Last well-formed `AGENT_NOTIFY_SUMMARY` in `text`, even when trailing harness
- * prose follows. Shared `extractNotifySummary` is end-anchored; the quiet-drain
- * coalescing window can bury the done footer under finished-shell speech.
+ * Parse a footer on one line, allowing glued trailing prose after the JSON
+ * object (`...}Shell finished`). Skips whitespace-delimited example mentions.
  */
-export function extractLastNotifySummaryAllowingTrailing(text: string): ReturnType<typeof extractNotifySummary> {
-    if (!text) return null
-    const lines = text.split('\n')
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-        if (lines[i]!.trim() === '') continue
-        const candidate = lines.slice(0, i + 1).join('\n')
-        const summary = extractNotifySummary(candidate)
-        if (summary) return summary
+function matchFooterOnLine(line: string, lineStartInText: number): LineFooterMatch | null {
+    for (
+        let idx = line.indexOf(NOTIFY_SUMMARY_PREFIX);
+        idx >= 0;
+        idx = line.indexOf(NOTIFY_SUMMARY_PREFIX, idx + NOTIFY_SUMMARY_PREFIX.length)
+    ) {
+        const prefix = line.slice(0, idx)
+        if (prefix.trim().length > 0 && /\s/.test(line[idx - 1]!)) continue
+        const braceAt = line.indexOf('{', idx + NOTIFY_SUMMARY_PREFIX.length)
+        if (braceAt < 0) continue
+        let depth = 0
+        let end = -1
+        for (let i = braceAt; i < line.length; i += 1) {
+            const ch = line[i]
+            if (ch === '{') depth += 1
+            else if (ch === '}') {
+                depth -= 1
+                if (depth === 0) {
+                    end = i
+                    break
+                }
+            }
+        }
+        if (end < 0) continue
+        try {
+            const parsed: unknown = JSON.parse(line.slice(braceAt, end + 1))
+            if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+            const status = typeof (parsed as { status?: unknown }).status === 'string'
+                ? (parsed as { status: string }).status
+                : undefined
+            return { status, endExclusive: lineStartInText + end + 1 }
+        } catch {
+            // try next occurrence on the line
+        }
     }
     return null
 }
 
 /**
- * When a done footer is buried under coalesced harness prose, return text
- * through that footer so the launcher can forward the real close without the
- * redundant resume. `null` means no truncation needed.
+ * Last done footer outside fenced code blocks, even when trailing harness prose
+ * (or same-line glue) follows. Fenced examples of the footer format are ignored
+ * so documentation turns are not treated as a real close (#2268 Minor).
  */
-export function truncateCoalescedHarnessAfterDoneFooter(text: string): string | null {
-    if (!text) return null
+function findLastUnfencedDoneFooterEnd(text: string): number | null {
     const lines = text.split('\n')
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-        if (lines[i]!.trim() === '') continue
-        const candidate = lines.slice(0, i + 1).join('\n')
-        const summary = extractNotifySummary(candidate)
-        if (!summary?.status) continue
-        if (summary.status !== 'done') return null
-        const trailing = lines.slice(i + 1).join('\n')
-        if (trailing.trim() === '') return null
-        return candidate
+    let inFence = false
+    let offset = 0
+    let lastDoneEnd: number | null = null
+
+    for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i]!
+        const trimmed = line.trim()
+        if (trimmed.startsWith('```')) {
+            inFence = !inFence
+        } else if (!inFence) {
+            const match = matchFooterOnLine(line, offset)
+            if (match?.status === 'done') {
+                lastDoneEnd = match.endExclusive
+            } else if (match?.status) {
+                // A later non-done footer supersedes a prior done close.
+                lastDoneEnd = null
+            }
+        }
+        offset += line.length
+        if (i < lines.length - 1) offset += 1 // newline
     }
-    return null
+    return lastDoneEnd
+}
+
+/**
+ * When a done footer (outside fences) is buried under coalesced harness prose,
+ * return text through that footer. Soft-steer turns skip truncation so
+ * user-owned steered speech is preserved (#2268 Minors).
+ */
+export function truncateCoalescedHarnessAfterDoneFooter(
+    text: string,
+    opts?: { softSteerOutstanding?: boolean }
+): string | null {
+    if (!text) return null
+    if (opts?.softSteerOutstanding === true) return null
+    const end = findLastUnfencedDoneFooterEnd(text)
+    if (end === null) return null
+    if (end >= text.length) return null
+    if (text.slice(end).trim() === '') return null
+    return text.slice(0, end)
 }
 
 /**
  * Note a settled assistant text segment. Interim `live` snapshots are ignored
  * so a partial stream that happens to end with a footer does not close early.
- * Accepts a done footer buried under trailing harness prose (#2268 Minor).
+ * End-anchored only — buried/example markers are handled at the Cursor seal
+ * boundary / truncate path, not by weakening the shared footer contract.
  */
 export function noteAssistantTextForPostCloseGate(
     gate: PostCloseHarnessGate,
@@ -74,7 +136,7 @@ export function noteAssistantTextForPostCloseGate(
     opts?: { live?: boolean }
 ): void {
     if (opts?.live) return
-    const summary = extractLastNotifySummaryAllowingTrailing(text)
+    const summary = extractNotifySummary(text)
     if (!summary?.status) return
     gate.closedWithDone = summary.status === 'done'
 }

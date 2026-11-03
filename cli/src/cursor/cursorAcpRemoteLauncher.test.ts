@@ -1086,6 +1086,55 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(textBodies.some((body) => body.includes('redundant summary'))).toBe(false);
     });
 
+    it('does not truncate coalesced speech while a soft-steer is outstanding (#2268)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releasePrompt = resolve;
+        });
+        harness.deferSoftSteer = new Promise<void>((resolve) => {
+            releaseSoftSteer = resolve;
+        });
+        harness.promptMessages = [
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, false);
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('finish the topic', mode, 'first');
+
+        const launched = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.lastPromptOnUpdate).not.toBeNull());
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('steer please', mode, 'steer');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+
+        harness.lastPromptOnUpdate?.({
+            type: 'text',
+            text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+        });
+
+        const textBodies = client.sendAgentMessage.mock.calls
+            .map((call) => call[0] as { type?: string; message?: string })
+            .filter((msg) => msg.type === 'message')
+            .map((msg) => msg.message ?? '');
+        expect(textBodies.some((body) => body.includes('Steered follow-up the user asked for.'))).toBe(true);
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        releaseSoftSteer();
+        session.queue.close();
+        await launched;
+    });
+
     it('throws on initialize failure without invoking legacy launcher', async () => {
         harness.initializeError = new Error('agent acp not found');
         const session = makeSession(null);

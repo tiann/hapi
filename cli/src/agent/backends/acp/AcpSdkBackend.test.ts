@@ -787,11 +787,16 @@ describe('AcpSdkBackend', () => {
                 close: () => Promise<void>;
             } | null;
             handleSessionUpdate: (params: unknown) => void;
+            sessionUpdateQueue: Promise<void>;
         };
 
         const messages: AgentMessage[] = [];
         backendInternal.transport = {
             sendRequest: async () => {
+                // Hold the sessionUpdateQueue so the final answer is still queued
+                // when session/prompt resolves — seal must await the queue first
+                // (#2268 Minor).
+                backendInternal.sessionUpdateQueue = backendInternal.sessionUpdateQueue.then(() => sleep(20));
                 backendInternal.handleSessionUpdate({
                     sessionId: 'session-1',
                     update: {
@@ -808,7 +813,7 @@ describe('AcpSdkBackend', () => {
                             content: { type: 'text', text: 'Shell finished; here is a redundant summary.' }
                         }
                     });
-                }, 5);
+                }, 35);
                 return { stopReason: 'end_turn' };
             },
             close: async () => {}
