@@ -224,6 +224,12 @@ export class SharedCodexProjection {
             } else if (event.type === 'generated_image' && typeof event.saved_path === 'string') {
                 const image = await registerGeneratedImageFromPath({ path: event.saved_path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex'), fileName: string(event.file_name) });
                 if (image) send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
+            } else if (event.type === 'viewed_image' && typeof event.path === 'string') {
+                const image = await registerGeneratedImageFromPath({ path: event.path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex') });
+                if (image) send({
+                    type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType,
+                    source: { ingress: 'tool_result', flavor: 'codex', toolName: 'view_image', ...(callId ? { toolCallId: callId } : {}) }
+                }, key);
             } else if (event.type === 'task_failed') {
                 send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
             }

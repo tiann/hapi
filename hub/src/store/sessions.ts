@@ -7,6 +7,11 @@ import { preserveSessionTitle } from './sessionTitleLock'
 import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
+import { removeMessageContentSearchForSession } from './messageContentSearch'
+
+function runInTransaction<T>(db: Database, operation: () => T): T {
+    return db.inTransaction ? operation() : db.transaction(operation)()
+}
 
 // Carry-forward fields that the hub preserves across any metadata
 // replacement when the incoming write omits them.
@@ -65,7 +70,8 @@ const SIMPLE_RESUME_TOKENS = [
     'cursorSessionId',
     'kimiSessionId',
     'copilotSessionId',
-    'piSessionId'
+    'piSessionId',
+    'dshSessionId'
 ] as const
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
@@ -133,6 +139,24 @@ function preserveCursorProtocolPair(
     return merged
 }
 
+function preserveForkSummary(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    // A fork's provisional title is Hub-generated. CLI bootstrap writes are
+    // sparse and historically drop it, leaving the child titled by its path.
+    // Explicit `summary: null` or a replacement summary still wins.
+    if (next.summary !== undefined) return merged
+    const summary = prior.summary
+    if (!isPlainObject(summary) || typeof summary.text !== 'string' || !summary.text.startsWith('Fork: ')) {
+        return merged
+    }
+    const result = merged ?? { ...next }
+    result.summary = summary
+    return result
+}
+
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
@@ -142,6 +166,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
+    merged = preserveForkSummary(prior, next, merged)
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }
@@ -219,7 +244,7 @@ export function getOrCreateSession(
     modelReasoningEffort?: string,
     requestedId?: string
 ): StoredSession {
-    const existing = prepareCached(db, 
+    const existing = prepareCached(db,
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
@@ -898,7 +923,7 @@ export function getSession(db: Database, id: string): StoredSession | null {
 }
 
 export function getSessionByNamespace(db: Database, id: string, namespace: string): StoredSession | null {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
     ).get(id, namespace) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null
@@ -910,21 +935,28 @@ export function getSessions(db: Database): StoredSession[] {
 }
 
 export function getSessionsByNamespace(db: Database, namespace: string): StoredSession[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
     ).all(namespace) as DbSessionRow[]
     return rows.map(toStoredSession)
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
-    const result = prepareCached(db,
-        'DELETE FROM sessions WHERE id = ? AND namespace = ?'
-    ).run(id, namespace)
-    if (result.changes > 0) {
-        // Per-socket access memos stamp the epoch they were filled under;
-        // bumping makes their next event re-resolve instead of serving a
-        // grant for a row that no longer exists.
-        bumpSessionDeletionEpoch()
-    }
-    return result.changes > 0
+    return runInTransaction(db, () => {
+        const existing = prepareCached(db,
+            'SELECT 1 FROM sessions WHERE id = ? AND namespace = ?'
+        ).get(id, namespace)
+        if (!existing) return false
+        removeMessageContentSearchForSession(db, id)
+        const result = prepareCached(db,
+            'DELETE FROM sessions WHERE id = ? AND namespace = ?'
+        ).run(id, namespace)
+        if (result.changes > 0) {
+            // Per-socket access memos stamp the epoch they were filled under;
+            // bumping makes their next event re-resolve instead of serving a
+            // grant for a row that no longer exists.
+            bumpSessionDeletionEpoch()
+        }
+        return result.changes > 0
+    })
 }
