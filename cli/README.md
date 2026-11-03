@@ -188,48 +188,24 @@ receive a new duration.
 
 ### Codex model catalog
 
-HAPI enables verified local model catalogs by default
-(`HAPI_CODEX_MODEL_CATALOG_MODE=auto`) for standalone and shared Codex servers,
-including resumed sessions. This prevents each long-lived server from repeatedly
-downloading model metadata. Inference requests are unaffected.
+To use an existing static Codex model catalog, set
+`HAPI_CODEX_MODEL_CATALOG_JSON` on the CLI/runner machine to an absolute path
+or `~/...`. HAPI passes it as `-c model_catalog_json=...` to standalone and
+shared app-servers, including resumed sessions. This explicit HAPI setting
+has precedence over Codex configuration files; an explicit launch
+`-c 'model_catalog_json="/path/to/catalog.json"'` takes precedence over HAPI.
 
-At startup a bounded, short-lived Codex process reads the effective configuration,
-including profiles, project/system settings and launch overrides. An existing
-`model_catalog_json` is preserved. Automatic caching is eligible for the built-in
-OpenAI provider with file-backed ChatGPT credentials; custom providers, API keys,
-keyrings and unrecognized authentication retain native discovery.
+When unset, HAPI adds no catalog override and Codex uses its normal configuration
+and discovery. You can also configure `model_catalog_json` directly in Codex's
+`config.toml`. HAPI does not inspect, generate, refresh or copy catalogs or
+credentials, and does not start extra processes to prepare them. Codex validates
+catalog contents during its normal startup and reports invalid files itself.
+Use a complete catalog appropriate for the current provider/account and update
+it when availability changes; a static catalog bypasses native discovery.
 
-HAPI stores its own snapshots under `CODEX_HOME/hapi-model-catalogs` (or the OS
-user home plus `.codex/hapi-model-catalogs`). macOS, Linux and Windows paths are
-resolved through the OS; no username or platform-specific home is hardcoded.
-Windows npm shims launch through Node without shell-interpreting JSON arguments.
-
-Snapshots are scoped to effective config, the executable's initialization response,
-launch arguments, working directory, auth-file contents and environment. Only
-hashes of this provenance are persisted. On a miss, a temporary isolated Codex
-home receives access/identity tokens only, with an empty refresh token, and fetches
-a fresh catalog. Refresh credentials never leave the original store; expired access
-falls back to the real engine, which can refresh and persist there. The selected
-Codex executable validates the
-complete catalog schema before HAPI saves it. The temporary home is removed
-when preparation finishes. An ordinary `models_cache.json` is never promoted
-without validation. Concurrent identical starts coordinate with a file lock.
-A content digest detects changed or damaged snapshots; snapshots expire after
-24 hours. Native config is still checked on each launch, even with a warm snapshot.
-
-Discovery or validation failure logs a warning and preserves native discovery.
-There is no per-session refresh timer. Existing sessions retain their catalog
-until restarted. HAPI does not edit global Codex configuration.
-
-Set `HAPI_CODEX_MODEL_CATALOG_MODE=native` to opt out. Set
-`HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute path or `~/...` to pin an explicit
-catalog, overriding the mode and configured catalog. An explicit launch
-`-c 'model_catalog_json="/path/to/catalog.json"'` takes precedence over both.
-Explicit files are checked by the selected Codex executable and fail startup
-when invalid; they are not refreshed automatically.
-
-Restart the runner after changing its environment. Safely stop and resume existing
-sessions to pick up the changed launch configuration.
+Paths support macOS, Linux and Windows, including spaces. Restart the runner
+after changing its environment; existing servers use the new setting after
+they are safely stopped and resumed. Inference traffic is unaffected.
 
 ### Codex MCP servers
 

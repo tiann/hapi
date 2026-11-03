@@ -1,11 +1,8 @@
 import { resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { sharedLaunchConfig, takeReservedSessionId } from './launch';
 import { parseCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
-
-beforeEach(() => vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_MODE', 'native'));
-afterEach(() => vi.unstubAllEnvs());
 
 describe('shared launch configuration', () => {
     it.each(['default', 'read-only', 'yolo'] as const)('keeps explicit %s authoritative over native permission flags', permissionMode => {

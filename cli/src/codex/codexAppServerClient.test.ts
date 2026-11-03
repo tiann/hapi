@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileSyncMock, spawnMock } = vi.hoisted(() => ({
     execFileSyncMock: vi.fn(() => 'codex-cli 1.0.0'),
@@ -30,9 +30,6 @@ vi.mock('@/ui/logger', () => ({
 
 import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
 import { killProcessByChildProcess } from '@/utils/process';
-
-beforeEach(() => vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_MODE', 'native'));
-afterEach(() => vi.unstubAllEnvs());
 
 function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } {
     return Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
@@ -107,6 +104,22 @@ describe('CodexAppServerClient process cwd', () => {
             expect.objectContaining({ cwd: '/neutral-home' })
         );
         await client.disconnect();
+    });
+
+    it('passes the explicit catalog to a single app-server without preparation processes', async () => {
+        const file = process.platform === 'win32' ? 'C:\\Models with spaces\\catalog.json' : '/Models with spaces/catalog.json';
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', file);
+        const client = new CodexAppServerClient();
+        try {
+            spawnMock.mockReturnValue(fakeChild());
+            await client.connect();
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect(spawnMock).toHaveBeenCalledWith('codex', ['app-server', '-c', `model_catalog_json=${JSON.stringify(file)}`],
+                expect.objectContaining({ shell: false }));
+        } finally {
+            await client.disconnect();
+            vi.unstubAllEnvs();
+        }
     });
 
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {

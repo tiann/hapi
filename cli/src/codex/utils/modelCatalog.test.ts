@@ -1,202 +1,52 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { nativeModelCachePath, prepareModelCatalogArgs, resolveModelCatalogArgs } from './modelCatalog';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveModelCatalogArgs } from './modelCatalog';
 import { sharedLaunchConfig } from '../shared/launch';
 
-let directory: string;
-let catalog: string;
-beforeEach(() => {
-    directory = mkdtempSync(join(tmpdir(), 'hapi-model-catalog-'));
-    catalog = join(directory, 'models with spaces.json');
-    writeFileSync(catalog, JSON.stringify({ models: [{ slug: 'test-model' }] }));
-    vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', catalog);
-    vi.stubEnv('CODEX_HOME', directory);
-});
-afterEach(() => {
-    vi.unstubAllEnvs();
-    rmSync(directory, { recursive: true, force: true });
-});
+afterEach(() => vi.unstubAllEnvs());
 
-describe('HAPI Codex model catalog', () => {
-    it('supports explicitly opting out of automatic catalog caching', () => {
-        expect(resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_MODE: 'native' })).toEqual([]);
+describe('explicit Codex model catalog configuration', () => {
+    it.each([undefined, '', '   '])('leaves native configuration intact when unset (%s)', value => {
+        expect(resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_JSON: value })).toEqual([]);
     });
-    it('passes a validated absolute catalog as one TOML argument', () => {
-        expect(resolveModelCatalogArgs()).toEqual(['-c', `model_catalog_json=${JSON.stringify(catalog)}`]);
+    it.each([
+        ['linux', '/home/alice', '/catalogs/models with spaces.json', '/catalogs/models with spaces.json'],
+        ['darwin', '/Users/alice', '~/Models/catalog.json', '/Users/alice/Models/catalog.json'],
+        ['win32', 'C:\\Users\\Alice', 'D:\\Model Data\\catalog.json', 'D:\\Model Data\\catalog.json'],
+        ['win32', 'C:\\Users\\Alice', '~\\Models\\catalog.json', 'C:\\Users\\Alice\\Models\\catalog.json'],
+        ['win32', 'C:\\Users\\Alice', '\\\\server\\share\\catalog.json', '\\\\server\\share\\catalog.json']
+    ] as const)('serializes a single TOML argument on %s', (platform, home, file, expected) => {
+        expect(resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_JSON: file }, home, platform))
+            .toEqual(['-c', `model_catalog_json=${JSON.stringify(expected)}`]);
     });
-    it.each(['-c', '--config'])('keeps explicit %s catalog overrides authoritative', flag => {
+    it('passes through the path without reading or validating a catalog', () => {
+        expect(resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_JSON: '/not-created/catalog.json' }, '/home/alice', 'linux'))
+            .toEqual(['-c', 'model_catalog_json="/not-created/catalog.json"']);
+    });
+    it('rejects relative paths so runner and session working directories cannot change their meaning', () => {
+        expect(() => resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_JSON: 'catalog.json' })).toThrow('absolute path');
+    });
+    it.each(['-c', '--config'])('preserves an explicit %s launch override', flag => {
         expect(resolveModelCatalogArgs([flag, 'model_catalog_json="explicit.json"'], {
-            HAPI_CODEX_MODEL_CATALOG_JSON: '/missing/catalog.json'
+            HAPI_CODEX_MODEL_CATALOG_JSON: 'ignored-relative-path'
         })).toEqual([]);
     });
-    it('does not mistake another setting value for a catalog override', () => {
-        expect(resolveModelCatalogArgs(['-c', 'model="model_catalog_json"'])).toHaveLength(2);
+    it('does not treat another setting value as a catalog override', () => {
+        expect(resolveModelCatalogArgs(['-c', 'model="model_catalog_json"'], {
+            HAPI_CODEX_MODEL_CATALOG_JSON: '/catalog.json'
+        }, '/home/alice', 'linux')).toHaveLength(2);
     });
-    it.each(['not json', '{}', '{"models":[]}', '{"models":[{}]}'])('rejects unusable catalogs instead of silently going online: %s', contents => {
-        writeFileSync(catalog, contents);
-        expect(() => resolveModelCatalogArgs()).toThrow('HAPI_CODEX_MODEL_CATALOG_JSON');
-    });
-    it('rejects missing and relative paths before spawning a server', () => {
-        expect(() => resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_JSON: '/missing/catalog.json' })).toThrow('HAPI_CODEX_MODEL_CATALOG_JSON');
-        expect(() => resolveModelCatalogArgs([], { HAPI_CODEX_MODEL_CATALOG_JSON: 'models.json' })).toThrow('absolute');
-    });
-    it('does not override explicit shared server configuration', () => {
-        const result = sharedLaunchConfig({ codexArgs: ['--config=model_catalog_json="explicit.json"'] }, directory);
-        expect(result.serverArgs).toEqual(['--config', 'model_catalog_json="explicit.json"']);
-    });
-    it.each([
-        ['linux', '/home/alice', {}, '/home/alice/.codex/models_cache.json'],
-        ['darwin', '/Users/alice', {}, '/Users/alice/.codex/models_cache.json'],
-        ['win32', 'C:\\Users\\Alice', {}, 'C:\\Users\\Alice\\.codex\\models_cache.json'],
-        ['win32', 'C:\\Users\\Alice', { CODEX_HOME: 'D:\\Agent Data\\Codex' }, 'D:\\Agent Data\\Codex\\models_cache.json'],
-        ['win32', 'C:\\Users\\Alice', { CODEX_HOME: '\\\\server\\share\\Codex' }, '\\\\server\\share\\Codex\\models_cache.json'],
-        ['darwin', '/Users/alice', { CODEX_HOME: '~/Agent Data' }, '/Users/alice/Agent Data/models_cache.json']
-    ] as const)('resolves the current machine catalog on %s', (platform, home, env, expected) => {
-        expect(nativeModelCachePath(env, home, platform)).toBe(expected);
-    });
-});
-
-const model = { slug: 'validated-model', display_name: 'Validated', supported_reasoning_levels: [] };
-const command = { command: 'codex', args: [] as string[] };
-function automaticEnv() { return { CODEX_HOME: directory }; }
-function authenticate() {
-    writeFileSync(join(directory, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fake', account_id: 'account-a' } }));
-}
-function probe(config: Record<string, unknown> = {}) {
-    return vi.fn(async (_command: typeof command, args: string[], env: NodeJS.ProcessEnv, _cwd?: string, listModels?: boolean) => {
-        if (listModels && !args.some(arg => arg.startsWith('model_catalog_json='))) {
-            writeFileSync(join(env.CODEX_HOME!, 'models_cache.json'), JSON.stringify({ models: [model] }));
+    it('applies the setting to new and resumed shared launch configurations', () => {
+        const file = process.platform === 'win32' ? 'C:\\Models\\catalog.json' : '/Models/catalog.json';
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', file);
+        for (const options of [{}, { resumeSessionId: 'existing-thread' }]) {
+            const launch = sharedLaunchConfig(options, process.cwd());
+            expect(launch.serverArgs).toContain(`model_catalog_json=${JSON.stringify(file)}`);
+            expect(launch.tuiArgs).not.toContain(`model_catalog_json=${JSON.stringify(file)}`);
         }
-        return { config, version: 'test-version' };
     });
-}
-
-describe('verified automatic catalog provenance', () => {
-    beforeEach(authenticate);
-    it('bootstraps in an isolated home and reuses a schema-validated snapshot', async () => {
-        const discover = probe();
-        const first = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        const second = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        expect(first).toEqual(second);
-        expect(first[1]).toContain('hapi-model-catalogs');
-        expect(discover.mock.calls.filter(call => call[4])).toHaveLength(2);
-        expect(discover.mock.calls[1][2].CODEX_HOME).not.toBe(directory);
-    });
-    it.each([false, true])('never consumes a refresh token in a temporary home (discovery fails=%s)', async fails => {
-        const file = join(directory, 'auth.json');
-        const original = JSON.stringify({ auth_mode: 'chatgpt', tokens: {
-            access_token: 'valid-access', id_token: 'id', account_id: 'account-a', refresh_token: 'single-use-refresh'
-        } });
-        writeFileSync(file, original);
-        let consumed = false;
-        let temporaryProbes = 0;
-        const discover = probe();
-        discover.mockImplementation(async (_command, args, env, _cwd, listModels) => {
-            if (env.CODEX_HOME !== directory) {
-                temporaryProbes++;
-                const auth = JSON.parse(readFileSync(join(env.CODEX_HOME!, 'auth.json'), 'utf8'));
-                // Synthetic token endpoint: a successful refresh invalidates the old token.
-                if (auth.tokens.refresh_token === 'single-use-refresh') {
-                    consumed = true;
-                    auth.tokens.refresh_token = 'replacement';
-                    writeFileSync(join(env.CODEX_HOME!, 'auth.json'), JSON.stringify(auth));
-                }
-                expect(auth.tokens.refresh_token).toBe('');
-                expect(auth.tokens.access_token).toBe('valid-access');
-                if (fails) throw new Error('access expired; refresh unavailable');
-            }
-            if (listModels && !args.some(arg => arg.startsWith('model_catalog_json='))) {
-                writeFileSync(join(env.CODEX_HOME!, 'models_cache.json'), JSON.stringify({ models: [model] }));
-            }
-            return { config: {}, version: 'test-version' };
-        });
-        const warn = vi.fn();
-        const result = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover, warn);
-        expect(temporaryProbes).toBe(fails ? 1 : 2);
-        expect(consumed).toBe(false);
-        expect(readFileSync(file, 'utf8')).toBe(original);
-        expect(result.length).toBe(fails ? 0 : 2);
-        // Subsequent native authentication still has the unconsumed original token.
-        expect(JSON.parse(readFileSync(file, 'utf8')).tokens.refresh_token).toBe('single-use-refresh');
-    });
-    it('coordinates concurrent bootstrap requests', async () => {
-        const discover = probe();
-        const results = await Promise.all(Array.from({ length: 4 }, () => prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover)));
-        expect(results.every(value => JSON.stringify(value) === JSON.stringify(results[0]))).toBe(true);
-        expect(discover.mock.calls.filter(call => call[4])).toHaveLength(2);
-    });
-    it.each([
-        { model_provider: 'custom' },
-        { model_providers: { openai: { env_key: 'CUSTOM_KEY' } } },
-        { cli_auth_credentials_store: 'keyring' },
-        { model_catalog_json: 'custom.json' }
-    ])('preserves effective native configuration: %j', async config => {
-        writeFileSync(join(directory, 'models_cache.json'), JSON.stringify({ models: [model] }));
-        writeFileSync(join(directory, 'config.toml'), 'model_catalog_json = "custom.json"');
-        const discover = probe(config);
-        expect(await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover)).toEqual([]);
-        expect(discover).toHaveBeenCalledTimes(1);
-    });
-    it.each(['OPENAI_API_KEY', 'CODEX_API_KEY'])('retains native behavior for changed %s without touching auth.json', async key => {
-        const discover = probe();
-        await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        expect(await prepareModelCatalogArgs(command, [], { ...automaticEnv(), [key]: 'changed' }, directory, discover)).toEqual([]);
-        expect(discover.mock.calls.filter(call => call[4])).toHaveLength(2);
-    });
-    it('invalidates after endpoint or arbitrary credential environment changes', async () => {
-        const discover = probe();
-        const first = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        const second = await prepareModelCatalogArgs(command, [], { ...automaticEnv(), CUSTOM_AUTH_TOKEN: 'changed' }, directory, discover);
-        const third = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, probe({ chatgpt_base_url: 'https://other.example' }));
-        expect(new Set([first[1], second[1], third[1]]).size).toBe(3);
-    });
-    it('does not adopt a slug-only native cache and falls back on native schema rejection', async () => {
-        writeFileSync(join(directory, 'models_cache.json'), '{"models":[{"slug":"bad"}]}');
-        const discover = probe();
-        discover.mockImplementation(async (_command, args, env, _cwd, listModels) => {
-            if (args.some(arg => arg.startsWith('model_catalog_json='))) throw new Error('missing display_name');
-            if (listModels) writeFileSync(join(env.CODEX_HOME!, 'models_cache.json'), '{"models":[{"slug":"bad"}]}');
-            return { config: {}, version: 'test-version' };
-        });
-        const warn = vi.fn();
-        expect(await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover, warn)).toEqual([]);
-        expect(warn).toHaveBeenCalledWith(expect.stringContaining('missing display_name'));
-    });
-    it('revalidates modified HAPI snapshots instead of trusting old stamps', async () => {
-        const discover = probe();
-        const args = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        const file = JSON.parse(args[1].slice('model_catalog_json='.length));
-        writeFileSync(file, '{"models":[{"slug":"bad"}]}');
-        await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        expect(discover.mock.calls.filter(call => call[4])).toHaveLength(4);
-    });
-    it('invalidates after credentials change without relying on file timestamps', async () => {
-        const discover = probe();
-        const first = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        writeFileSync(join(directory, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'new', account_id: 'account-b' } }));
-        const second = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        expect(second[1]).not.toBe(first[1]);
-    });
-    it('refreshes an expired validation stamp', async () => {
-        const discover = probe();
-        const args = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        const file = JSON.parse(args[1].slice('model_catalog_json='.length)) + '.validated';
-        const stamp = JSON.parse(readFileSync(file, 'utf8'));
-        writeFileSync(file, JSON.stringify({ ...stamp, at: Date.now() - 25 * 60 * 60 * 1000 }));
-        await prepareModelCatalogArgs(command, [], automaticEnv(), directory, discover);
-        expect(discover.mock.calls.filter(call => call[4])).toHaveLength(4);
-    });
-    it('does not treat reordered effective configuration fields as a change', async () => {
-        const first = await prepareModelCatalogArgs(command, [], automaticEnv(), directory, probe({ model: 'a', features: {} }));
-        const next = probe({ features: {}, model: 'a' });
-        expect(await prepareModelCatalogArgs(command, [], automaticEnv(), directory, next)).toEqual(first);
-        expect(next).toHaveBeenCalledTimes(1);
-    });
-    it('never probes in explicit native mode', async () => {
-        const discover = probe();
-        expect(await prepareModelCatalogArgs(command, [], { ...automaticEnv(), HAPI_CODEX_MODEL_CATALOG_MODE: 'native' }, directory, discover)).toEqual([]);
-        expect(discover).not.toHaveBeenCalled();
+    it('normalizes and preserves an inline shared launch override', () => {
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', '/ignored.json');
+        const launch = sharedLaunchConfig({ codexArgs: ['--config=model_catalog_json="explicit.json"'] }, process.cwd());
+        expect(launch.serverArgs).toEqual(['--config', 'model_catalog_json="explicit.json"']);
     });
 });

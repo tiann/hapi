@@ -5,7 +5,7 @@ import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
-import { prepareModelCatalogArgs } from './utils/modelCatalog';
+import { resolveModelCatalogArgs } from './utils/modelCatalog';
 import { resolveSelectedCodexCommand } from './utils/codexExecutable';
 import type {
     CollaborationModeListResponse,
@@ -259,7 +259,7 @@ export class CodexAppServerClient extends JsonLineParser {
 
         const codexCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
         logger.debug(`[CodexAppServer] Starting ${codexCommand.command} app-server`);
-        const catalogArgs = await prepareModelCatalogArgs(codexCommand, [], process.env, this.options.cwd);
+        const catalogArgs = resolveModelCatalogArgs();
         const child = spawn(codexCommand.command, [...codexCommand.args, 'app-server', ...catalogArgs], {
             cwd: this.options.cwd,
             env: Object.keys(process.env).reduce((acc, key) => {
