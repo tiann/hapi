@@ -203,6 +203,7 @@ export function QueuedMessagesBar({
     onEdit,
     canAbandon = false,
     canSteer,
+    deliveryActive = canSteer,
     compactionPendingMessageIds,
 }: {
     sessionId: string
@@ -220,12 +221,13 @@ export function QueuedMessagesBar({
     onEdit?: (params: { text: string; pendingSchedule: PendingSchedule | null }) => void
     /**
      * When true, each queued row gets a Steer button that delivers that
-     * message into the active turn (Pi native steer). The parent computes it
-     * as: pi flavor && session thinking && remote-controlled.
+     * message into a supported active remote turn.
      */
     canSteer?: boolean
     /** Keep unresolved shared input visible and offer explicit abandonment. */
     canAbandon?: boolean
+    /** An existing dispatch may still be confirming after new Steer admission closes. */
+    deliveryActive?: boolean
 }) {
     const queued = useQueuedMessages(sessionId, canAbandon)
     const assistantApi = useAui()
@@ -370,7 +372,12 @@ export function QueuedMessagesBar({
                         const localId = msg.localId ?? msg.id
                         const waitingForCompaction = msg.deliveryState === 'indeterminate'
                             && compactionPendingMessageIds?.includes(localId) === true
-                        const isPending = cancelMutation.isPending || abandonMutation.isPending || queuedOperationPending
+                        const deliveryPending = msg.deliveryPending === true && deliveryActive === true
+                        const needsResolution = msg.deliveryState === 'indeterminate' && !deliveryPending
+                        const isPending = cancelMutation.isPending
+                            || abandonMutation.isPending
+                            || queuedOperationPending
+                            || deliveryPending
                         const canCancel = computeCanCancel({ id: msg.id, localId: msg.localId, isPending })
 
                         const handleCancel = () => {
@@ -423,7 +430,7 @@ export function QueuedMessagesBar({
                         const retryPending = retryMutation.isPending
                             && retryMutation.variables?.messageId === msg.id
                         const handleRetry = () => {
-                            if (msg.deliveryState !== 'indeterminate' || !canCancel) return
+                            if (!needsResolution || !canCancel) return
                             const token = beginQueuedOperation(sessionId)
                             if (!token) return
                             void retryMutation.mutateAsync({
@@ -544,7 +551,7 @@ export function QueuedMessagesBar({
                                     ) : null}
                                     {msg.deliveryState === 'indeterminate' ? (
                                         <div className={`mt-1 text-xs ${waitingForCompaction ? 'text-[var(--app-hint)]' : 'text-[var(--app-warning-text)]'}`}>
-                                            {t(waitingForCompaction ? 'queuedMessages.compactionPending' : 'queuedMessages.steerOutcomeUnknown')}
+                                            {t(waitingForCompaction ? 'queuedMessages.compactionPending' : deliveryPending ? 'queuedMessages.deliveryPending' : 'queuedMessages.steerOutcomeUnknown')}
                                         </div>
                                     ) : null}
                                     {hasAttachments ? (
@@ -571,7 +578,7 @@ export function QueuedMessagesBar({
                                     )}
                                 </div>
                                 <div className="flex shrink-0 items-center gap-1">
-                                    {msg.deliveryState === 'indeterminate' && !waitingForCompaction ? (
+                                    {needsResolution && !waitingForCompaction ? (
                                         <button
                                             type="button"
                                             aria-label={t('queuedMessages.retryOutcome')}

@@ -49,6 +49,17 @@ vi.mock('@/lib/message-window-store', () => ({
     subscribeMessageWindow: () => () => {},
     markMessagesConsumed: mocks.markMessagesConsumed,
     removeOptimisticMessage: mocks.removeOptimisticMessage,
+    markMessagesDispatching: (_sessionId: string, ids: string[]) => {
+        mocks.messageWindowState = { messages: mocks.messageWindowState.messages.map(item => {
+            const message = item as DecryptedMessage
+            return message.localId && ids.includes(message.localId)
+                ? { ...message, deliveryState: 'indeterminate', deliveryPending: true }
+                : message
+        }) }
+    },
+    markMessagesIndeterminate: vi.fn(),
+    markMessagesRequeued: vi.fn(),
+    reconcileQueuedLocalIds: vi.fn(),
 }))
 
 vi.mock('@/hooks/mutations/useCancelQueuedMessage', () => ({
@@ -98,12 +109,20 @@ function renderQueuedMessage(
     pendingScheduleRevision = 0,
     canSteer = false,
     api: ApiClient | null = null,
-    canAbandon = false,
-    overrides: Partial<DecryptedMessage> = {},
+    canAbandonOrDelivery: boolean | Partial<DecryptedMessage> = false,
+    overridesOrDeliveryActive: Partial<DecryptedMessage> | boolean = {},
 ) {
+    const canAbandon = typeof canAbandonOrDelivery === 'boolean' ? canAbandonOrDelivery : false
+    const delivery = typeof canAbandonOrDelivery === 'boolean'
+        ? overridesOrDeliveryActive as Partial<DecryptedMessage>
+        : canAbandonOrDelivery
+    const deliveryActive = typeof overridesOrDeliveryActive === 'boolean'
+        ? overridesOrDeliveryActive
+        : canSteer
     const onEdit = vi.fn()
     let currentPendingScheduleRevision = pendingScheduleRevision
-    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt, 'server-message-id', overrides)] }
+    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt, 'server-message-id', delivery)] }
+
     // The real useSteerQueuedMessage hook runs inside the bar, so every render
     // needs a QueryClient (its mutations use the tanstack defaults).
     const queryClient = new QueryClient({
@@ -119,6 +138,7 @@ function renderQueuedMessage(
                 onEdit={onEdit}
                 canSteer={canSteer}
                 canAbandon={canAbandon}
+                deliveryActive={deliveryActive}
             />
         </QueryClientProvider>
     )
@@ -136,7 +156,8 @@ function renderQueuedMessage(
                         pendingScheduleRevision={currentPendingScheduleRevision}
                         onEdit={onEdit}
                         canSteer={canSteer}
-                canAbandon={canAbandon}
+                        canAbandon={canAbandon}
+                        deliveryActive={deliveryActive}
                     />
                 </QueryClientProvider>
             )
@@ -923,6 +944,7 @@ describe('QueuedMessagesBar steer action', () => {
     })
 })
 
+
 describe('QueuedMessagesBar explicit abandonment', () => {
     it('shows hidden unknown input again and requires explicit confirmation before resolving it', async () => {
         const abandon = vi.fn().mockResolvedValue({ status: 'abandoned', localId: 'local-server-message-id' })
@@ -1009,4 +1031,45 @@ describe('QueuedMessagesBar explicit abandonment', () => {
         expect(screen.queryByRole('dialog')).toBeNull()
         expect(abandon).not.toHaveBeenCalled()
     })
+})
+
+describe('unconfirmed delivery actions', () => {
+    it('shows confirmation pending without Steer or Retry while the turn owns the delivery', () => {
+        renderQueuedMessage(null, null, 0, true, null, { deliveryState: 'indeterminate', deliveryPending: true })
+        expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Steer queued message' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeDisabled()
+    })
+
+    it.each([false, true])('keeps explicit resolution for real uncertainty when steer capability is %s', (canSteer) => {
+        renderQueuedMessage(null, null, 0, canSteer, null, { deliveryState: 'indeterminate' })
+        expect(screen.getByText('queuedMessages.steerOutcomeUnknown')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeEnabled()
+    })
+
+    it('offers explicit resolution when the pending owner is no longer steerable', () => {
+        renderQueuedMessage(null, null, 0, false, null, { deliveryState: 'indeterminate', deliveryPending: true })
+        expect(screen.getByText('queuedMessages.steerOutcomeUnknown')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeEnabled()
+        expect(screen.queryByText('queuedMessages.deliveryPending')).toBeNull()
+    })
+})
+
+
+it('keeps a live confirmation pending during normal drain after new Steer admission closes', () => {
+    renderQueuedMessage(null, null, 0, false, null, { deliveryState: 'indeterminate', deliveryPending: true }, true)
+    expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeNull()
+})
+
+
+it('does not expose a second Steer when REST success beats the pending SSE', async () => {
+    const api = { steerMessage: vi.fn().mockResolvedValue({ status: 'steered', localId: 'local-server-message-id' }), getQueuedState: vi.fn().mockResolvedValue({ queuedLocalIds: [], indeterminateLocalIds: ['local-server-message-id'], dispatchingLocalIds: ['local-server-message-id'], invokedLocalMessages: [] }) } as unknown as ApiClient
+    renderQueuedMessage(null, null, 0, true, api)
+    fireEvent.click(screen.getByRole('button', { name: 'Steer queued message' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Steer queued message' })).toBeNull())
+    expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
+    expect(mocks.addToast).not.toHaveBeenCalled()
 })

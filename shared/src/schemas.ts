@@ -352,6 +352,8 @@ export const DecryptedMessageSchema = z.object({
     // Unknown delivery stays uninvoked. Explicit abandonment is a durable
     // non-delivery state; it is not evidence that the agent consumed the input.
     deliveryState: z.enum(['indeterminate', 'abandoned']).optional(),
+    // A live dispatch is still unconfirmed, but is not an invitation to resend.
+    deliveryPending: z.literal(true).optional(),
     // Live signal via messages-consumed (steered:true); not persisted by the hub.
     steered: z.boolean().optional()
 })
@@ -667,7 +669,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-indeterminate'),
-        localIds: z.array(z.string())
+        localIds: z.array(z.string()),
+        // Older clients conservatively retain the unresolved row.
+        dispatching: z.literal(true).optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-requeued'),
