@@ -28,6 +28,57 @@ function fixture(searchable = false) {
 }
 
 describe('OpenCode durable Hub rewind commit', () => {
+    it('keeps an unprepared unknown report reserved and admission blocked until rejection', async () => {
+        const f = fixture(true)
+        let operation!: OpenCodeRewindOperation
+        const reports: OpenCodeRewindOperation[] = []
+        const before = f.store.messages.getAllMessages(f.id)
+        const epoch = f.store.messages.getMessageEpoch(f.id)
+        try {
+            ;(f.engine as any).rpcGateway.rewindConversation = async (_id: string, request: { opencodeRewind: OpenCodeRewindOperation }) => {
+                operation = request.opencodeRewind
+                reports.push(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase:'unknown' }, f.version()))
+                reports.push(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase:'unknown' }, f.version()))
+                return { success:false, outcome:'unknown', error:'prepared report failed before persistence' }
+            }
+            expect((await f.engine.rewindConversation(f.id, 'default', 'two')).type).toBe('error')
+            expect(reports.map(report => report.phase)).toEqual(['reserved', 'reserved'])
+            expect(reports.every(report => report.sourceHash === undefined && report.prefixHash === undefined)).toBe(true)
+            await expect(f.engine.sendMessage(f.id, { text:'must remain blocked' })).rejects.toThrow('in progress')
+            expect(f.store.messages.getAllMessages(f.id)).toEqual(before)
+            expect(f.store.messages.getMessageEpoch(f.id)).toBe(epoch)
+            expect(f.store.messages.searchContentInSession('removedsuffix', 'default', f.id).total).toBe(2)
+            expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase:'rejected', unchanged:true,
+                sourceHash:'a'.repeat(64), prefixHash:'b'.repeat(64) }, f.version()).phase).toBe('rejected')
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
+    it('keeps prepared unknown proofs and refuses rejection without matching unchanged-source evidence', async () => {
+        const f = fixture(true)
+        let operation!: OpenCodeRewindOperation
+        const hashes = { sourceHash:'a'.repeat(64), prefixHash:'b'.repeat(64) }
+        try {
+            ;(f.engine as any).rpcGateway.rewindConversation = async (_id: string, request: { opencodeRewind: OpenCodeRewindOperation }) => {
+                operation = request.opencodeRewind
+                f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase:'prepared', ...hashes }, f.version())
+                return { success:false, outcome:'unknown', error:'prepared ACK lost' }
+            }
+            await f.engine.rewindConversation(f.id, 'default', 'two')
+            expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase:'unknown' }, f.version()))
+                .toMatchObject({ phase:'unknown', ...hashes })
+            const before = { rows:f.store.messages.getAllMessages(f.id), session:f.store.sessions.getSession(f.id),
+                epoch:f.store.messages.getMessageEpoch(f.id) }
+            for (const report of [{ operation, phase:'rejected' as const },
+                { operation, phase:'rejected' as const, unchanged:true as const, sourceHash:'c'.repeat(64), prefixHash:hashes.prefixHash }]) {
+                expect(() => f.engine.reportOpenCodeRewind(f.id, 'default', report, f.version())).toThrow('without recovery evidence')
+                expect({ rows:f.store.messages.getAllMessages(f.id), session:f.store.sessions.getSession(f.id),
+                    epoch:f.store.messages.getMessageEpoch(f.id) }).toEqual(before)
+            }
+            expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase:'rejected', unchanged:true, ...hashes }, f.version()).phase)
+                .toBe('rejected')
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
     for (const requestedQueuedBoundary of [false, true]) {
         it(`refuses uninvoked boundaries before reservation (${requestedQueuedBoundary ? 'requested boundary' : 'another future scheduled input'})`, async () => {
             const f = fixture(true)

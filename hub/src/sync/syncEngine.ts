@@ -2225,7 +2225,9 @@ export class SyncEngine {
             if (current.metadataVersion !== expectedVersion) throw new Error('OpenCode rewind metadata version changed')
             let next: OpenCodeRewindOperation = { ...op }
             let nextMetadata = metadata
-            if (report.phase === 'unknown') next.phase = 'unknown'
+            // A reserved operation has not durably authorized native mutation.
+            // Keep it rejectable when preparation failed before persistence.
+            if (report.phase === 'unknown') next.phase = op.phase === 'reserved' ? 'reserved' : 'unknown'
             else if (report.phase === 'rejected') {
                 if (op.phase !== 'reserved' && !(report.unchanged && op.sourceHash === report.sourceHash && op.prefixHash === report.prefixHash)) {
                     throw new Error('Native mutation cannot be rejected without recovery evidence')

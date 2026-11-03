@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Session } from './types'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -711,6 +711,131 @@ describe('ApiSessionClient agy transcript messages', () => {
 })
 
 describe('ApiSessionClient incoming user messages', () => {
+    for (const fault of ['version-race', 'persisted-ack-loss'] as const) {
+        it.each([false, true])(`recovers a prepared report ${fault} through the real Hub (${fault}, reconstructed=%s)`, async reconstructed => {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockReset()
+            axiosHarness.post.mockReset()
+            const directory = mkdtempSync(join(tmpdir(), 'api-rewind-preparation-'))
+            const database = join(directory, 'hub.db')
+            const hubModule = (path: string) => JSON.stringify(new URL(`../../../hub/src/${path}`, import.meta.url).href)
+            const runHub = (body: string) => {
+                const source = `import { Store } from ${hubModule('store/index.ts')};
+                    import { Database } from 'bun:sqlite';
+                    import { SyncEngine } from ${hubModule('sync/syncEngine.ts')};
+                    import { RpcRegistry } from ${hubModule('socket/rpcRegistry.ts')};
+                    const store = new Store(${JSON.stringify(database)});
+                    const db = new Database(${JSON.stringify(database)});
+                    const engine = new SyncEngine(store, {}, new RpcRegistry(), { broadcast() {} });
+                    const invalidations = [];
+                    engine.subscribe(event => { if (event.type === 'messages-invalidated') invalidations.push(event); });
+                    const state = id => {
+                        const session = store.sessions.getSession(id);
+                        return { session, history: { rows: store.messages.getAllMessages(id),
+                            checkpoint: session.metadata.opencodeHistoryCheckpoint, indexes: session.metadata.conversationHistoryIndexes,
+                            epoch: store.messages.getMessageEpoch(id),
+                            read: db.query('SELECT content_revision, read_revision, read_state_version, manual_unread FROM sessions WHERE id = ?').get(id),
+                            fts: db.query('SELECT rowid, * FROM message_content_search ORDER BY rowid').all(),
+                            lookup: db.query('SELECT * FROM message_content_search_lookup ORDER BY search_rowid').all(),
+                            short: db.query('SELECT * FROM message_content_search_short ORDER BY gram, search_rowid').all() }, invalidations };
+                    };
+                    try { ${body} } finally { engine.stop(); db.close(); store.close(); }`
+                const result = spawnSync('bun', ['--eval', source], { encoding: 'utf8', timeout: 15_000 })
+                expect(result.status, result.stderr).toBe(0)
+                return JSON.parse(result.stdout.trim().split('\n').at(-1)!)
+            }
+            const initial = runHub(`
+                const session = engine.getOrCreateSession('preparation-recovery', { path: '/tmp', host: 'test', flavor: 'opencode',
+                    opencodeSessionId: 'native', opencodeWorkerId: 'worker', conversationHistoryIndexes: { local1: 0, local2: 1 },
+                    opencodeHistoryCheckpoint: { sessionId: 'native', messageIds: ['u1', 'a1', 'u2', 'a2'],
+                        userMessageIds: ['u1', 'u2'], localMessageIds: [] },
+                    capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default');
+                engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' });
+                for (const [role, localId, text] of [['user','local1','retainedprefix'], ['agent',null,'retainedprefix answer'],
+                    ['user','local2','removedsuffix'], ['agent',null,'removedsuffix answer']]) {
+                    store.messages.addMessage(session.id, { role, content: role === 'user' ? { type:'text', text }
+                        : { type:'codex', data: { type:'message', id:text, message:text } } }, localId ?? undefined);
+                    if (localId) store.messages.markMessagesInvoked(session.id, [localId], Date.now());
+                }
+                let operation;
+                engine.rpcGateway.rewindConversation = async (_id, request) => {
+                    operation = request.opencodeRewind;
+                    return { success:false, outcome:'unknown', error:'dispatch deferred to controller' };
+                };
+                await engine.rewindConversation(session.id, 'default', 'local2');
+                console.log(JSON.stringify({ operation, state: state(session.id) }));`)
+            const id = initial.state.session.id as string
+            const inspect = () => runHub(`console.log(JSON.stringify(state(${JSON.stringify(id)})));`)
+            let inject = true
+            const persistedReports: Array<{ phase: string; result: any }> = []
+            axiosHarness.get.mockImplementation(async (url: string) => url.endsWith('/messages') ? { data: { messages: [] } }
+                : { data: { session: inspect().session } })
+            axiosHarness.post.mockImplementation(async (_url: string, input: { report: OpenCodeRewindReport; expectedVersion: number }) => {
+                const preparedFault = inject && input.report.phase === 'prepared'
+                if (preparedFault) inject = false
+                const result = runHub(`
+                    const input = ${JSON.stringify(input)};
+                    if (${preparedFault && fault === 'version-race'}) {
+                        const current = store.sessions.getSession(${JSON.stringify(id)});
+                        const changed = store.sessions.updateSessionMetadata(current.id,
+                            { ...current.metadata, name:'concurrent metadata update' }, current.metadataVersion, 'default');
+                        if (changed.result !== 'success') throw new Error('metadata race setup failed');
+                    }
+                    try {
+                        const operation = engine.reportOpenCodeRewind(${JSON.stringify(id)}, 'default', input.report, input.expectedVersion);
+                        console.log(JSON.stringify({ operation, state:state(${JSON.stringify(id)}) }));
+                    } catch (error) { console.log(JSON.stringify({ error:String(error.message), state:state(${JSON.stringify(id)}) })); }`)
+                persistedReports.push({ phase: input.report.phase, result })
+                if (result.error) throw new Error(result.error)
+                if (preparedFault && fault === 'persisted-ack-loss') throw new Error('prepared ACK lost after persistence')
+                return { data: { operation: result.operation } }
+            })
+            const client = new ApiSessionClient('token', createSession({ id, metadata: initial.state.session.metadata,
+                metadataVersion: initial.state.session.metadataVersion }))
+            const nativeRows = [{ id:'u1', type:'user' }, { id:'a1', type:'assistant' }, { id:'u2', type:'user' }, { id:'a2', type:'assistant' }]
+            const nativeRequest = vi.fn(async (url: string, init?: RequestInit) => {
+                if (init?.method === 'POST') throw new Error('unexpected native mutation before preparation')
+                if (url.includes('/message?')) return Response.json({ data:nativeRows, cursor:{} })
+                if (url.endsWith('/active')) return Response.json({ data:{} })
+                if (url.endsWith('/inbox')) return Response.json({ data:[] })
+                return Response.json({ data:{ id:'native' } })
+            })
+            const gate = new OpenCodeRuntimeGate()
+            const options = { directory, hapiSessionId:id, workerId:'worker', gate, baseUrl:'http://synthetic-native',
+                nativeSessionId:'native', headers:{}, request:nativeRequest, report:(report:OpenCodeRewindReport) => client.reportOpenCodeRewind(report),
+                flush:async () => true, isIdle:() => true,
+                sourceCheckpoint:() => initial.state.session.metadata.opencodeHistoryCheckpoint,
+                sourceIndexes:() => ({ local1:0, local2:1 }), requestsFromPreviousWorkerCannotRun:() => false }
+            const rewind = new OpenCodeRewind(options)
+            try {
+                expect(await rewind.execute(initial.operation)).toMatchObject({ success:false, outcome:'unknown' })
+                const failed = inspect()
+                const intent = rewind.readIntent()!
+                const backup = readFileSync(intent.backupPath, 'utf8')
+                expect(gate.isBlocked()).toBe(true)
+                expect(intent.pendingRequest).toBe(false)
+                const recoveryGate = reconstructed ? new OpenCodeRuntimeGate() : gate
+                const recovery = reconstructed ? new OpenCodeRewind({ ...options, gate:recoveryGate,
+                    workerId:'replacement', previousWorkerCannotRun:() => true }) : rewind
+                const result = await recovery.recover(failed.session.metadata.opencodeRewind)
+                const after = inspect()
+                expect(result).toMatchObject({ success:false, outcome:'rejected', error:'Native source is unchanged' })
+                expect(failed.session.metadata.opencodeRewind.phase).toBe(fault === 'version-race' ? 'reserved' : 'unknown')
+                expect(persistedReports[0]?.result.error).toBe(fault === 'version-race' ? 'OpenCode rewind metadata version changed' : undefined)
+                expect(after.session.metadata.opencodeRewind.phase).toBe('rejected')
+                expect(after.history).toEqual(initial.state.history)
+                expect(failed.history).toEqual(initial.state.history)
+                expect(after.invalidations).toEqual([])
+                expect(nativeRequest.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([])
+                expect(recovery.readIntent()?.phase).toBe('finalized')
+                expect(readFileSync(intent.backupPath, 'utf8')).toBe(backup)
+                expect(recoveryGate.isBlocked()).toBe(false)
+                const release = recoveryGate.enterRuntime()
+                release()
+            } finally { client.close() }
+        }, 15_000)
+    }
+
     it('catches up a new row below the boundary seq after invocation-ordered Hub rewind', async () => {
         socketHarness.sockets.length = 0
         axiosHarness.get.mockReset()
