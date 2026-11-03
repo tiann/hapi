@@ -868,7 +868,14 @@ function SessionFileImage(props: ComponentPropsWithoutRef<'img'> & { sessionId: 
     const src = query.data?.success && query.data.content && mimeType
         ? `data:${mimeType};base64,${query.data.content}`
         : undefined
-    return <img {...imgProps} src={src} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
+    return (
+        <img
+            {...imgProps}
+            src={src}
+            data-hapi-markdown-src={typeof imgProps.src === 'string' ? imgProps.src : path}
+            className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)}
+        />
+    )
 }
 
 function Image(props: ComponentPropsWithoutRef<'img'>) {

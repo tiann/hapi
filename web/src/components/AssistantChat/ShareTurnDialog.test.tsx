@@ -65,7 +65,9 @@ describe('ShareTurnDialog preview cleanup', () => {
                                         <thead><tr><th>Configuration</th></tr></thead>
                                         <tbody><tr><td>apiUrl</td></tr></tbody>
                                     </table>
-
+                                    <div class="aui-md-table-actions">
+                                        <button type="button">Copy table</button>
+                                    </div>
                                 </div>
                             </div>
                         `,
@@ -76,6 +78,7 @@ describe('ShareTurnDialog preview cleanup', () => {
             </I18nProvider>,
         )
 
+        expect(screen.queryByRole('button', { name: 'Copy table' })).not.toBeInTheDocument()
         fireEvent.click(await screen.findByRole('button', { name: 'Open table full screen' }))
         expect(await screen.findByRole('dialog', { name: 'Share table' })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Close table full screen' })).toBeInTheDocument()

@@ -162,7 +162,11 @@ function setPreviewCodeWrap(control: HTMLElement, enabled: boolean): void {
 
 function ensurePreviewTableControls(root: HTMLElement, label: string): void {
     for (const frame of Array.from(root.querySelectorAll<HTMLElement>('.aui-md-table-frame'))) {
-        if (frame.querySelector('[data-hapi-table-open-fullscreen="true"]')) continue
+        // Cloned inline actions still look interactive but have no React
+        // handlers. Replace them with one working preview-only control.
+        for (const existing of Array.from(frame.querySelectorAll<HTMLElement>(':scope > .aui-md-table-actions'))) {
+            existing.remove()
+        }
 
         const actions = document.createElement('div')
         actions.className = 'aui-md-table-actions flex items-center gap-1'
