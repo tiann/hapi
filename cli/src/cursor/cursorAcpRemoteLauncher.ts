@@ -53,6 +53,13 @@ import {
     isRetryableCursorError,
     stripRetryableCursorError
 } from './cursorAutoRetry';
+import {
+    clearPostCloseGateForNewUserPrompt,
+    createPostCloseHarnessGate,
+    noteAssistantTextForPostCloseGate,
+    shouldSuppressPostCloseHarnessMessage,
+    shouldSuppressPostCloseHarnessThinking
+} from './postCloseHarnessSilence';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
 
@@ -93,6 +100,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private pendingInlineRetryableError = false;
     private attemptProducedToolActivity = false;
     private userAbortRequested = false;
+    /**
+     * #2267: after `AGENT_NOTIFY_SUMMARY` status:"done", drop Cursor harness
+     * resume ("Briefly inform…") user-visible traffic until the next HAPI prompt.
+     */
+    private readonly postCloseHarnessGate = createPostCloseHarnessGate();
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -704,6 +716,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // cannot disconnect this backend mid-dispatch.
             session.onThinkingChange(true);
             this.promptInFlight = true;
+            // New user intent re-opens speech after a prior done close (#2267).
+            clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
             this.userAbortRequested = false;
@@ -948,6 +962,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
         backend.setAgentActivityListener((thinking) => {
+            if (shouldSuppressPostCloseHarnessThinking(this.postCloseHarnessGate, {
+                promptInFlight: this.promptInFlight,
+                thinking
+            })) {
+                return;
+            }
             if (session.thinking !== thinking) {
                 session.onThinkingChange(thinking);
             }
@@ -971,6 +991,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (!visibleText) return;
                 message = { ...message, text: visibleText };
             }
+        }
+        // Gate must be evaluated *before* noting this segment's footer so a
+        // late-arriving done summary still reaches the hub (#2267).
+        if (shouldSuppressPostCloseHarnessMessage(this.postCloseHarnessGate, {
+            promptInFlight: this.promptInFlight,
+            messageType: message.type
+        })) {
+            return;
+        }
+        if (message.type === 'text') {
+            noteAssistantTextForPostCloseGate(this.postCloseHarnessGate, message.text, {
+                live: message.live === true
+            });
         }
         const converted = convertAgentMessage(message, this.currentBackendModel);
         if (converted) {
