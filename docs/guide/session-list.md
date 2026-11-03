@@ -19,7 +19,8 @@ reorder ordinary rows. Status and unread indicators still update live.
 The Web app groups sessions by machine and project directory. Within a project,
 pins come first, followed by the same user-input order. Project and machine
 groups use their pinned state and newest member's ordering key, not live
-activity. There is no fixed-order preference to configure.
+activity. **Settings → Display → Project order** keeps this user-input
+order by default, or can sort projects by their visible session count.
 
 The Hub persists the original user-message timestamp, including local CLI
 input. Historical imports and duplicate/echoed messages do not acquire a fresh

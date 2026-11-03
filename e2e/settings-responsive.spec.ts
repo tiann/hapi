@@ -32,7 +32,7 @@ test.describe('settings responsive layout', () => {
 
         const projectOrder = page.getByRole('radiogroup', { name: 'Project order' })
         await expect(projectOrder).toBeVisible()
-        await expect(projectOrder.getByRole('radio', { name: 'Recent activity' })).toHaveAttribute('aria-checked', 'true')
+        await expect(projectOrder.getByRole('radio', { name: 'Recent user input' })).toHaveAttribute('aria-checked', 'true')
         await expect(projectOrder.getByRole('radio', { name: 'Most sessions' })).toHaveAttribute('aria-checked', 'false')
         await page.screenshot({ path: testInfo.outputPath('settings-project-order.png'), fullPage: true })
         await projectOrder.getByRole('radio', { name: 'Most sessions' }).click()
