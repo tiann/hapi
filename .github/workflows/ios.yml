@@ -56,5 +56,17 @@ jobs:
                   -only-testing:HapiTests/SessionSplitPresentationTests
                   -only-testing:HapiTests/TranscriptTypographyTests
                   -only-testing:HapiTests/TranscriptGeometryTests
+            - name: Build Hapi app for Mac Catalyst
+              run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO
+            # Dynamic Type overrides do not scale Mac-idiom windows, so the
+            # typography suite stays on the iOS simulators above.
+            - name: Mac navigation and layout regression tests
+              run: >-
+                  xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi
+                  -destination 'platform=macOS,variant=Mac Catalyst'
+                  -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+                  -only-testing:HapiTests/SessionNavigationTests
+                  -only-testing:HapiTests/SessionSplitPresentationTests
+                  -only-testing:HapiTests/TranscriptGeometryTests
             - name: Verify localization catalog was not rewritten
               run: git diff --exit-code -- ios/Hapi/Resources/Localizable.xcstrings

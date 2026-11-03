@@ -17,6 +17,12 @@ import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
 import { MigrationStore } from './migrationStore'
+import {
+    backfillMessageContentSearchLookup,
+    backfillMessageContentSearchShortIndex,
+    createMessageContentSearchTable,
+    rebuildMessageContentSearch
+} from './messageContentSearch'
 
 export type {
     NativeDevicePlatform,
@@ -55,6 +61,9 @@ const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
+    'message_content_search',
+    'message_content_search_lookup',
+    'message_content_search_short',
     'message_epochs',
     'users',
     'push_subscriptions',
@@ -400,6 +409,18 @@ export class Store {
         }
 
         const stepMigrations = buildStepMigrations(false)
+        // A v26 database predates all three derived-index refinements. Create
+        // the final schema and rebuild once instead of running the v26→v27
+        // rebuild, v28→v29 short-index backfill, and v29→v30 rebuild in turn.
+        // Keep the individual steps below for databases that resume from an
+        // intermediate schema version after an interrupted upgrade.
+        if (currentVersion === 26) {
+            this.migrateFromV26ToV30()
+            this.migrateFromV29ToV30()
+            this.migrateFromV30ToV31()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
         if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
             for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
                 const step = stepMigrations[v]
@@ -661,6 +682,7 @@ export class Store {
                 completed_at INTEGER NOT NULL
             );
         `)
+        createMessageContentSearchTable(this.db)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -1031,75 +1053,6 @@ export class Store {
     }
 
     /**
-     * v26→v27: make the session-list future-scheduled lookups indexed.
-     * GET /api/sessions runs countFutureScheduledBySessionIds and
-     * minFutureScheduledAtBySessionIds over every session id in the namespace.
-     * Neither the (session_id, seq) indexes nor idx_messages_scheduled_pending
-     * match the full predicate set, so SQLite falls back to probing
-     * idx_messages_local_id — one pass over every local message per call
-     * (O(all local messages), twice per session-list refresh) even though the
-     * matching set is almost always empty. This partial index covers every
-     * constant predicate and exposes (session_id, scheduled_at), so both
-     * queries become a near-empty index range scan.
-     */
-    private migrateFromV26ToV27(): void {
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
-                ON messages(session_id, scheduled_at)
-                WHERE invoked_at IS NULL
-                  AND local_id IS NOT NULL
-                  AND scheduled_at IS NOT NULL
-                  AND delivery_state = 'queued';
-        `)
-    }
-
-    /** v28→v29: persist a stable, user-input-only list ordering clock. */
-    private migrateFromV28ToV29(): void {
-        const columns = this.getSessionColumnNames()
-        if (columns.size === 0 || columns.has('last_user_message_at')) return
-        this.db.transaction(() => {
-            this.db.exec('ALTER TABLE sessions ADD COLUMN last_user_message_at INTEGER')
-            if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get()) {
-                backfillLastUserMessageAt(this.db)
-            }
-        })()
-    }
-
-    /**
-     * v27→v28: persist when agents were working. `thinking` used to live only
-     * in the session cache, so a hub restart forgot it and nothing could say
-     * afterwards how long an agent worked. Each false→true→false stretch is
-     * now a row; at most one per session is open (ended_at IS NULL).
-     * recover_until marks a turn a restart interrupted, which the agent can
-     * still continue until then.
-     */
-    private migrateFromV27ToV28(): void {
-        // In the legacy branch sessions may not exist yet; createSchema adds
-        // the table once it does.
-        if (this.getSessionColumnNames().size === 0) return
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS session_turns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                namespace TEXT NOT NULL,
-                started_at INTEGER NOT NULL,
-                ended_at INTEGER,
-                end_reason TEXT,
-                started_by TEXT NOT NULL,
-                recover_until INTEGER,
-                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_session_turns_namespace_started
-                ON session_turns(namespace, started_at);
-            CREATE INDEX IF NOT EXISTS idx_session_turns_session_started
-                ON session_turns(session_id, started_at);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
-                ON session_turns(session_id)
-                WHERE ended_at IS NULL;
-        `)
-    }
-
-    /**
      * A2A Layer 1 / P1 (#1374) + P3 substrate: hub work-graph ledger tables.
      * Namespace + principal_json required on every events row.
      * Bumped as v22→v23 because upstream main already ships schema 22.
@@ -1185,16 +1138,81 @@ export class Store {
         `)
     }
 
-    /** v29→v30: add upstream read-state columns. */
+    /**
+     * v26→v27: keep the session-list future-scheduled lookup indexed and
+     * initialize the derived message-content search tables.
+     */
+    private migrateFromV26ToV27(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
+                  AND delivery_state = 'queued';
+        `)
+        createMessageContentSearchTable(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
+    }
+
+    private migrateFromV26ToV30(): void {
+        this.migrateFromV26ToV27()
+        this.migrateFromV27ToV28()
+        this.migrateFromV28ToV29()
+    }
+
+    /** Complete the derived message-content index lookup added after v27. */
+    private migrateFromV27ToV28(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) backfillMessageContentSearchLookup(this.db)
+        if (this.getSessionColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                end_reason TEXT,
+                started_by TEXT NOT NULL,
+                recover_until INTEGER,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_turns_namespace_started
+                ON session_turns(namespace, started_at);
+            CREATE INDEX IF NOT EXISTS idx_session_turns_session_started
+                ON session_turns(session_id, started_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
+                ON session_turns(session_id)
+                WHERE ended_at IS NULL;
+        `)
+    }
+
+    /** Add the indexed short-query n-gram table to the message-content index. */
+    private migrateFromV28ToV29(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) backfillMessageContentSearchShortIndex(this.db)
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0 || columns.has('last_user_message_at')) return
+        this.db.transaction(() => {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_user_message_at INTEGER')
+            if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get()) {
+                backfillLastUserMessageAt(this.db)
+            }
+        })()
+    }
+
+    /** v29→v30: add read-state revisions. */
     private migrateFromV29ToV30(): void {
         // Branch databases labeled v28 may predate upstream turn columns.
-        this.migrateFromV27ToV28()
+        const hasSessionTurns = this.db.prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_turns'"
+        ).get()
+        if (!hasSessionTurns) this.migrateFromV27ToV28()
         const columns = this.getSessionColumnNames()
-        if (columns.size > 0) {
-            for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
-                if (!columns.has(name)) {
-                    this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
-                }
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) {
+                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
             }
         }
 
@@ -1204,7 +1222,7 @@ export class Store {
         }
     }
 
-    /** v30→v31: add structured-task source positions and durable backfill state. */
+    /** v30→v31: add structured-task source positions and the message-content search index. */
     private migrateFromV30ToV31(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS migration_state (
@@ -1222,6 +1240,14 @@ export class Store {
                 this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
             }
         }
+
+        createMessageContentSearchTable(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
+    }
+
+    private hasMessageContentSearchSourceSchema(): boolean {
+        const columns = this.getMessageColumnNames()
+        return ['id', 'session_id', 'content', 'created_at', 'seq', 'invoked_at'].every((name) => columns.has(name))
     }
 
     private getSessionColumnNames(): Set<string> {

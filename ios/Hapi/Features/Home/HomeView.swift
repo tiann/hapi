@@ -19,9 +19,14 @@ struct HomeView: View {
     @State private var showSettings = false
     @State private var path: [String] = []
     @State private var tabletNavigation = SessionNavigationState()
+    /// Transient connection states show only after `connectionRevealDelay`:
+    /// a foreground reconnect usually finishes first (Telegram-style).
+    @State private var connectionStatusRevealed = false
+    private let connectionRevealDelay: Duration = .seconds(2)
 
     private var usesSplitNavigation: Bool {
-        UIDevice.current.userInterfaceIdiom == .pad || FoldableDevice.shared.hasHinge
+        let idiom = UIDevice.current.userInterfaceIdiom
+        return idiom == .pad || idiom == .mac || FoldableDevice.shared.hasHinge
     }
 
     /// The sidebar is visible next to the chat (not collapsed into a stack).
@@ -85,6 +90,7 @@ struct HomeView: View {
         }
         .sheet(isPresented: $model.showAddHub) {
             PairingFlowView(context: .addHub)
+                .macSheetSizing()
         }
         .sheet(isPresented: $showNewSession) {
             NewSessionView(session: session) { sessionId in
@@ -92,10 +98,36 @@ struct HomeView: View {
                 showNewSession = false
                 openSession(sessionId)
             }
+            .macSheetSizing()
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(session: session)
+                .macSheetSizing()
         }
+        .focusedSceneValue(\.homeCommands, HomeCommandActions(
+            newSession: { showNewSession = true },
+            openSettings: { showSettings = true },
+            toggleSidebar: usesSplitNavigation ? toggleSidebar : nil,
+            selectAdjacentSession: usesSplitNavigation ? selectAdjacentSession : nil
+        ))
+    }
+
+    private func toggleSidebar() {
+        tabletNavigation.columnVisibility = tabletNavigation.columnVisibility == .detailOnly ? .all : .detailOnly
+    }
+
+    /// Steps through the list as shown (filters and search applied).
+    private func selectAdjacentSession(_ offset: Int) {
+        let ids = listModel.rows.map(\.id)
+        guard !ids.isEmpty else { return }
+        let target: Int
+        if let current = tabletNavigation.selectedSessionId, let index = ids.firstIndex(of: current) {
+            target = index + offset
+        } else {
+            target = offset > 0 ? 0 : ids.count - 1
+        }
+        guard ids.indices.contains(target) else { return }
+        openSession(ids[target])
     }
 
     private var sessionList: some View {
@@ -103,10 +135,7 @@ struct HomeView: View {
             if let failedHub = model.authFailureNotice {
                 authFailureBanner(failedHub: failedHub)
             }
-            SessionConnectionNotice(
-                state: session.connectionState,
-                showsCachedSessions: listModel.isOffline && listModel.hasLoaded
-            )
+            connectionNotice
             SessionListView(model: listModel, selection: usesSplitNavigation ? Binding(
                 get: { tabletNavigation.selectedSessionId },
                 // Native list deselection (e.g. a filter hides the row) is
@@ -114,11 +143,21 @@ struct HomeView: View {
                 set: { if let id = $0 { openSession(id) } }
             ) : nil, onOpenSession: openSession)
         }
+        .task(id: session.connectionState == .connected) {
+            connectionStatusRevealed = false
+            guard session.connectionState != .connected else { return }
+            try? await Task.sleep(for: connectionRevealDelay)
+            if !Task.isCancelled { connectionStatusRevealed = true }
+        }
+        .modifier(ConnectionSubtitle(message: subtitleCarriesConnectionStatus
+            ? connectionNotice.transientMessage(revealed: connectionStatusRevealed) : nil))
         .searchable(text: $listModel.searchQuery, prompt: Text("Search sessions"))
         .onChange(of: tabletNavigation.selectedSessionId, initial: true) { _, sessionId in
             listModel.selectedSessionId = sessionId
         }
         .navigationTitle("Sessions")
+        // Inline: it shares the toolbar row, so the list starts right below
+        // and Pinned/Recent headers carry the structure.
         .navigationBarTitleDisplayMode(.inline)
         .modifier(SidebarTitleRemoval(isSidebar: showsSideBySide || isFoldedOuterScreen))
         .toolbar {
@@ -137,6 +176,23 @@ struct HomeView: View {
         .modifier(NewSessionBesideSearch(isEnabled: showsNewSessionBesideSearch) { newSessionButton })
     }
 
+    private var connectionNotice: SessionConnectionNotice {
+        SessionConnectionNotice(
+            state: session.connectionState,
+            showsCachedSessions: listModel.isOffline && listModel.hasLoaded,
+            lastRefreshedAt: listModel.lastRefreshedAt,
+            showsTransientStatus: connectionStatusRevealed && !subtitleCarriesConnectionStatus,
+            onRetry: { Task { await listModel.refresh() } }
+        )
+    }
+
+    /// iOS 26 puts transient status under the inline title (Mail-style), so
+    /// the list never shifts. A sidebar or folded Duo has no title to carry it.
+    private var subtitleCarriesConnectionStatus: Bool {
+        guard #available(iOS 26.0, *) else { return false }
+        return !(showsSideBySide || isFoldedOuterScreen)
+    }
+
     /// iOS 26 bottom search bar, as in Messages: New Session sits beside the
     /// field. A side-by-side sidebar keeps search at its top, and older
     /// systems keep search under the title.
@@ -148,7 +204,7 @@ struct HomeView: View {
     private var newSessionButton: some View {
         Button { showNewSession = true } label: {
             Label("New Session", systemImage: "plus")
-                .frame(minWidth: 44, minHeight: 44)
+                .modifier(TouchTarget())
         }
         .accessibilityIdentifier("home.new-session")
     }
@@ -156,7 +212,7 @@ struct HomeView: View {
     private var settingsButton: some View {
         Button { showSettings = true } label: {
             Label("Settings", systemImage: "gearshape")
-                .frame(minWidth: 44, minHeight: 44)
+                .modifier(TouchTarget())
         }
         .accessibilityIdentifier("home.settings")
     }
@@ -240,10 +296,17 @@ private struct NewSessionBesideSearch<NewSessionButton: View>: ViewModifier {
     }
 }
 
-/// One status line; a failed list refresh takes precedence over SSE status.
+/// Home connection status. Transient SSE states are quiet: the iOS 26 nav
+/// subtitle, else a gray line with a spinner. Only a failed list refresh
+/// (cached data on screen) is amber, with when it last updated and Retry.
 struct SessionConnectionNotice: View {
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.locale) private var locale
     let state: SSEConnectionState
     let showsCachedSessions: Bool
+    var lastRefreshedAt: Date? = nil
+    var showsTransientStatus = true
+    var onRetry: (() -> Void)? = nil
 
     var message: String? {
         if showsCachedSessions { return String(localized: "Offline — showing cached sessions") }
@@ -256,17 +319,97 @@ struct SessionConnectionNotice: View {
         }
     }
 
+    func transientMessage(revealed: Bool) -> String? {
+        revealed && !showsCachedSessions ? message : nil
+    }
+
     var body: some View {
-        if let message {
-            Label(message, systemImage: "wifi.exclamationmark")
-                .font(.footnote)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(.orange.opacity(0.15))
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("home.connection-notice")
+        if showsCachedSessions {
+            offlineBanner
+        } else if showsTransientStatus, let message {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text(message)
+            }
+            .font(.footnote)
+            .foregroundStyle(theme.textSecondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("home.connection-notice")
         }
+    }
+
+    private var offlineBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "icloud.slash")
+                .foregroundStyle(attentionColor)
+            offlineText
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            if let onRetry {
+                Button("Retry", action: onRetry)
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(theme.textPrimary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(attentionColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home.connection-notice")
+    }
+
+    @ViewBuilder
+    private var offlineText: some View {
+        if let lastRefreshedAt {
+            // Minute ticks keep "updated … ago" honest while offline.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                Text("Offline · updated \(relativeAge(of: lastRefreshedAt, now: context.date))")
+            }
+        } else {
+            Text("Offline — showing cached sessions")
+        }
+    }
+
+    private func relativeAge(of date: Date, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
+        formatter.dateTimeStyle = .named
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    private var attentionColor: Color {
+        theme.isDark ? theme.warning : Color(hex: 0x9A6700)
+    }
+}
+
+/// iOS 26 navigation subtitle. Always applied (empty when connected) so the
+/// session list keeps one identity as the connection state changes.
+private struct ConnectionSubtitle: ViewModifier {
+    let message: String?
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.navigationSubtitle(Text(verbatim: message ?? ""))
+        } else {
+            content
+        }
+    }
+}
+
+/// 44pt touch slots; Mac toolbar buttons use the system's pointer sizing.
+private struct TouchTarget: ViewModifier {
+    func body(content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        content
+        #else
+        content.frame(minWidth: 44, minHeight: 44)
+        #endif
     }
 }

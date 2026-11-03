@@ -115,7 +115,7 @@ public enum SummaryPatching {
             switch AgentFlavor(rawValue: flavor) {
             case .claude: flavorSessionId = metadata.claudeSessionId
             case .codex: flavorSessionId = metadata.codexSessionId
-            case .dsh: flavorSessionId = nil
+            case .dsh: flavorSessionId = metadata.dshSessionId
             case .gemini: flavorSessionId = metadata.geminiSessionId
             case .opencode: flavorSessionId = metadata.opencodeSessionId
             case .grok: flavorSessionId = metadata.grokSessionId
@@ -141,6 +141,7 @@ public enum SummaryPatching {
             metadata.cursorSessionId,
             metadata.kimiSessionId,
             metadata.copilotSessionId,
+            metadata.dshSessionId,
         ]
         return legacyFallbacks.compactMap { $0 }.first
     }
@@ -150,6 +151,7 @@ public enum SummaryPatching {
         guard let metadata else { return nil }
         return SessionSummaryMetadata(
             name: metadata.name,
+            promptTitle: metadata.promptTitle,
             path: metadata.path,
             machineId: metadata.machineId,
             summary: metadata.summary.map { SessionSummaryMetadata.Summary(text: $0.text) },
@@ -170,6 +172,7 @@ public enum SummaryPatching {
         SessionSummary(
             contentRevision: session.contentRevision,
             readState: session.readState,
+            hasConversationContent: session.hasConversationContent ?? false,
             id: session.id,
             active: session.active,
             thinking: session.thinking,
@@ -268,6 +271,7 @@ public enum SummaryPatching {
     ) -> Bool {
         guard let current, let next else { return current == nil && next == nil }
         if current.name != next.name { return false }
+        if current.promptTitle != next.promptTitle { return false }
         if current.path != next.path { return false }
         if current.machineId != next.machineId { return false }
         if current.summary?.text != next.summary?.text { return false }
@@ -297,6 +301,7 @@ public enum SummaryPatching {
     /// effect is suppressing a re-render that stores an equal-rendering value.
     public static func isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary) -> Bool {
         if current.contentRevision != next.contentRevision || current.readState != next.readState { return false }
+        if current.hasConversationContent != next.hasConversationContent { return false }
         if current.active != next.active { return false }
         if current.thinking != next.thinking { return false }
         if current.updatedAt != next.updatedAt { return false }
