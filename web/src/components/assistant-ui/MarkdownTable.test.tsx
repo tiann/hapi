@@ -872,6 +872,24 @@ describe('MarkdownTable', () => {
         expect(serializeTableToMarkdown(table)).toBe(`| Image |\n| --- |\n| ![${expectedAlt}](https://example.com/table.png) |\n`)
     })
 
+    it('preserves authored local image sources instead of rendered data URLs', () => {
+        const table = document.createElement('table')
+        table.innerHTML = '<thead><tr><th>Image</th></tr></thead><tbody><tr><td></td></tr></tbody>'
+        const image = document.createElement('img')
+        image.setAttribute('src', 'data:image/png;base64,ZmFrZQ==')
+        image.dataset.hapiMarkdownSrc = 'assets/photo.png'
+        image.setAttribute('alt', 'Photo')
+        const fallback = document.createElement('span')
+        fallback.dataset.hapiMarkdownSrc = 'assets/diagram.svg'
+        fallback.dataset.hapiMarkdownAlt = 'Diagram'
+        fallback.textContent = 'Image unavailable'
+        table.tBodies[0]!.rows[0]!.cells[0]!.append(image, ' ', fallback)
+
+        expect(serializeTableToMarkdown(table)).toBe(
+            '| Image |\n| --- |\n| ![Photo](assets/photo.png) ![Diagram](assets/diagram.svg) |\n',
+        )
+    })
+
     it('keeps sanitized custom-link destinations available for Markdown copying', () => {
         render(
             <I18nProvider>
