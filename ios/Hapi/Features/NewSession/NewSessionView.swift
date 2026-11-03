@@ -52,6 +52,7 @@ struct NewSessionView: View {
                 model: model.directoryBrowser,
                 onSelect: model.selectBrowsedDirectory
             )
+            .macSheetSizing()
         }
         .onDisappear {
             model.stopDirectoryWork()

@@ -596,6 +596,7 @@ type SessionChatProps = {
     messages: DecryptedMessage[]
     messagesWarning: string | null
     hasMoreMessages: boolean
+    hasMoreNewerMessages?: boolean
     isSyncingTail: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
@@ -606,6 +607,7 @@ type SessionChatProps = {
     onBack: () => void
     onRefresh: () => void | Promise<void>
     onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    onLoadNewer?: (resolvePreserveMessageId?: () => string | null) => Promise<boolean>
     onCancelLoadMore: () => void
     // Returns the accepted mutation's attempt id, or false when
     // pre-mutation guards (no-api / no-session / pending) rejected the call OR async
@@ -624,6 +626,7 @@ type SessionChatProps = {
     /** Navigate/seed after a voice direct-send resumed an inactive session. */
     onVoiceSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
+    onJumpToTail: () => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: SuggestionHandler
     availableSlashCommands?: readonly SlashCommand[]
@@ -636,6 +639,12 @@ type SessionChatProps = {
     onSuppressSendErrorRestore?: (id: number) => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
+    initialTargetMessageId?: string
+    initialTargetMessageQuery?: string
+    searchRequestId?: number
+    onLoadMessageContext?: (messageId: string) => Promise<boolean>
+    onInitialTargetConsumed?: () => void
+    onSearchTargetDismissed?: () => void
     // Called when an `abort-restore` event arrives and the composer is not empty,
     // so the caller can surface the aborted text via the existing sendError path.
     onAbortRestore?: (text: string) => void
@@ -2098,12 +2107,15 @@ function SessionChatInner(props: SessionChatProps) {
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
                         onViewModeChange={props.onViewModeChange}
+                        onJumpToTail={props.onJumpToTail}
                         readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
+                        hasMoreNewerMessages={props.hasMoreNewerMessages}
                         isLoadingMoreMessages={props.isLoadingMoreMessages}
                         onLoadMore={props.onLoadMore}
+                        onLoadNewer={props.onLoadNewer}
                         onCancelLoadMore={props.onCancelLoadMore}
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
@@ -2114,6 +2126,12 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineOpen={outlineOpen}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
+                        initialTargetMessageId={props.initialTargetMessageId}
+                        initialTargetMessageQuery={props.initialTargetMessageQuery}
+                        searchRequestId={props.searchRequestId}
+                        onLoadMessageContext={props.onLoadMessageContext}
+                        onInitialTargetConsumed={props.onInitialTargetConsumed}
+                        onSearchTargetDismissed={props.onSearchTargetDismissed}
                     />
                     </div>
 
@@ -2171,7 +2189,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                canSteer={isSteeringSupportedForSession(props.session.metadata)
+                                deliveryActive={props.session.active && props.session.thinking}
+                                canSteer={props.session.active && props.session.thinking
+                                    && isSteeringSupportedForSession(props.session.metadata)
                                     && (agentFlavor === 'pi'
                                         ? props.session.thinking
                                         : props.session.agentState?.steeringActive === true)

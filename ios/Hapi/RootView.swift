@@ -43,6 +43,7 @@ struct RootView: View {
                         }
                     }
             }
+            .macSheetSizing()
         }
         .alert(
             "Hub already paired",
@@ -61,6 +62,7 @@ struct RootView: View {
         } message: {
             Text(model.infoNotice ?? "")
         }
+        .background(MacWindowConfigurator())
         .hapiTypography()
         .hapiTheme(themePrefs.mode.hapiTheme(systemColorScheme: colorScheme))
         // Explicit modes force the presentation's chrome to match their
