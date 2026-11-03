@@ -52,17 +52,23 @@ const sessions: SessionSummary[] = [
         id: 'hapi-session',
         active: true,
         updatedAt: now - 2 * 60_000,
+        createdAt: now - 3 * 60 * 60_000,
+        lastUserMessageAt: now - 2 * 60_000,
         metadata: { path: '/projects/hapi', name: 'HAPI task', flavor: 'codex' },
     }),
     makeSession({
         id: 'mine-session',
         active: true,
         updatedAt: now - 30 * 60_000,
+        createdAt: now - 4 * 60 * 60_000,
+        lastUserMessageAt: now - 30 * 60_000,
         metadata: { path: '/projects/mine', name: 'Mine task', flavor: 'codex' },
     }),
     makeSession({
         id: 'mine-session-2',
         updatedAt: now - 45 * 60_000,
+        createdAt: now - 5 * 60 * 60_000,
+        lastUserMessageAt: now - 45 * 60_000,
         metadata: { path: '/projects/mine', name: 'Mine follow-up', flavor: 'codex' },
     }),
 ]
@@ -76,14 +82,14 @@ const queryClient = new QueryClient({
 
 declare global {
     interface Window {
-        updateProjectSession: (id: string, updatedAt: number) => void
+        updateProjectSession: (id: string, patch: Partial<SessionSummary>) => void
     }
 }
 
 function ProjectSortFixture() {
     const [currentSessions, setCurrentSessions] = useState(sessions)
-    window.updateProjectSession = (id, updatedAt) => {
-        setCurrentSessions((previous) => previous.map((session) => session.id === id ? { ...session, updatedAt } : session))
+    window.updateProjectSession = (id, patch) => {
+        setCurrentSessions((previous) => previous.map((session) => session.id === id ? { ...session, ...patch } : session))
     }
 
     return (

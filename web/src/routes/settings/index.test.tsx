@@ -378,10 +378,10 @@ describe('responsive settings pages', () => {
         renderPage(<SettingsDisplayPage />)
 
         const choices = screen.getByRole('radiogroup', { name: 'Project order' })
-        expect(screen.getByRole('radio', { name: 'Recent activity' })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.getByRole('radio', { name: 'Recent user input' })).toHaveAttribute('aria-checked', 'true')
         expect(screen.getByRole('radio', { name: 'Most sessions' })).toHaveAttribute('aria-checked', 'false')
-        expect(screen.getByText('Recent activity keeps the upstream order. Most sessions puts projects with the most sessions first.')).toBeInTheDocument()
-        expect(within(choices).getAllByRole('radio').map((radio) => radio.textContent?.trim())).toEqual(['Recent activity', 'Most sessions'])
+        expect(screen.getByText('Recent user input keeps projects in their usual order. Most sessions puts projects with the most sessions first.')).toBeInTheDocument()
+        expect(within(choices).getAllByRole('radio').map((radio) => radio.textContent?.trim())).toEqual(['Recent user input', 'Most sessions'])
 
         fireEvent.click(screen.getByRole('radio', { name: 'Most sessions' }))
         expect(setSessionProjectSortMode).toHaveBeenCalledWith('count')
