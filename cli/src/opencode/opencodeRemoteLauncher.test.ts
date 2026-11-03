@@ -5,8 +5,10 @@ import type { OpencodeMode, PermissionMode } from './types';
 import { OpenCodeRuntimeGate } from './rewind';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
+import { AcpSdkBackend } from '@/agent/backends/acp/AcpSdkBackend';
 
 const harness = vi.hoisted(() => ({
+    backendOverride: null as AcpSdkBackend | null,
     servePid: null as number | null,
     servePidCalls: [] as number[][],
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
@@ -94,6 +96,7 @@ vi.mock('./utils/opencodeBackend', () => ({
     allocateFreePort: vi.fn(async () => 48273),
     createOpencodeBackend: vi.fn((opts?: Record<string, unknown>) => {
         harness.createBackendArgs.push(opts ?? {});
+        if (harness.backendOverride) return harness.backendOverride;
         return {
         initialize: vi.fn(async () => {}),
         newSession: vi.fn(async () => {
@@ -365,6 +368,7 @@ vi.mock('@/ui/logger', () => ({
 import { opencodeRemoteLauncher, selectAbortStatusMessage } from './opencodeRemoteLauncher';
 
 afterEach(() => {
+    harness.backendOverride = null;
     harness.clientMetadata = undefined;
     harness.metadataUpdates.length = 0;
 });
@@ -658,6 +662,169 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             expect(harness.clientMetadata!.opencodeHistoryCheckpoint).toMatchObject({ userMessageIds: ['u1', 'local-turn', 'new-remote-turn'] });
         } finally {
             gate.release(); session.queue.close(); await pending; fetchSpy.mockRestore();
+        }
+    });
+
+    it.each(['during-load', 'after-load-response', 'queued-after-restore', 'load-failure', 'identity-mismatch'] as const)('suppresses real ACP history replay after a completed prompt and rewind (%s)', async (timing) => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const statics = AcpSdkBackend as unknown as Record<string, number>;
+        const retryOptions = (AcpSdkBackend as unknown as { INIT_RETRY_OPTIONS: { maxAttempts: number } }).INIT_RETRY_OPTIONS;
+        const originalMaxAttempts = retryOptions.maxAttempts;
+        if (timing === 'load-failure') retryOptions.maxAttempts = 1;
+        const originalTimings = Object.fromEntries([
+            'UPDATE_QUIET_PERIOD_MS', 'UPDATE_DRAIN_TIMEOUT_MS', 'PRE_PROMPT_UPDATE_QUIET_PERIOD_MS',
+            'PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS', 'LATE_FLUSH_INTERVAL_MS',
+            'LATE_FLUSH_QUIET_PERIOD_MS', 'LATE_FLUSH_WINDOW_MS'
+        ].map(key => [key, statics[key]]));
+        Object.assign(statics, { UPDATE_QUIET_PERIOD_MS: 5, UPDATE_DRAIN_TIMEOUT_MS: 100,
+            PRE_PROMPT_UPDATE_QUIET_PERIOD_MS: 30, PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS: 300,
+            LATE_FLUSH_INTERVAL_MS: 5, LATE_FLUSH_QUIET_PERIOD_MS: 5, LATE_FLUSH_WINDOW_MS: 30 });
+        const backend = new AcpSdkBackend({ command: 'opencode', flavor: 'opencode', textChunkMode: 'delta' });
+        harness.backendOverride = backend;
+        vi.spyOn(backend, 'initialize').mockResolvedValue();
+        const internal = backend as unknown as {
+            transport: unknown;
+            handleNotification(method: string, params: unknown): void;
+            sessionUpdateQueue: Promise<void>;
+            messageHandler: unknown;
+        };
+        let current = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'retained answer' }];
+        let staged: string | undefined;
+        let loadCount = 0;
+        let promptCount = 0;
+        let resolveReplay!: () => void;
+        const replayDelivered = new Promise<void>(resolve => { resolveReplay = resolve; });
+        let replayTimer: ReturnType<typeof setTimeout> | undefined;
+        let releaseNotificationQueue: (() => void) | undefined;
+        const replaySuppressed: boolean[] = [];
+        const emit = (update: unknown) => internal.handleNotification('session/update', { sessionId: 'acp-session-1', update });
+        const emitText = (text: string) => emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
+        const replay = () => {
+            replaySuppressed.push(internal.messageHandler === null);
+            emitText('replayed retained answer');
+            emit({ sessionUpdate: 'tool_call', toolCallId: 'replayed-tool', title: 'replayed retained tool',
+                kind: 'read', status: 'completed', rawInput: { path: 'replayed-file' } });
+            emitText('replayed buffered tail');
+            resolveReplay();
+        };
+        internal.transport = {
+            getProcessPid: () => process.pid,
+            close: async () => {},
+            sendNotification: () => {},
+            sendRequest: async (method: string) => {
+                if (method === 'session/load') {
+                    if (++loadCount > 1) {
+                        if (timing === 'queued-after-restore') {
+                            const blocked = new Promise<void>(resolve => { releaseNotificationQueue = resolve; });
+                            internal.sessionUpdateQueue = internal.sessionUpdateQueue.then(() => blocked);
+                        }
+                        if (timing === 'during-load') replay();
+                        else if (timing === 'after-load-response') replayTimer = setTimeout(replay, 15);
+                        else replay();
+                        if (timing === 'load-failure') throw new Error('fixture reload failure');
+                        if (timing === 'identity-mismatch') return { sessionId: 'unexpected-native-session' };
+                    }
+                    return { sessionId: 'acp-session-1' };
+                }
+                if (method === 'session/list') return { sessions: [] };
+                if (method === 'session/prompt') {
+                    const first = ++promptCount === 1;
+                    current.push({ id: first ? 'u2' : 'u3', type: 'user', text: first ? 'two' : 'after rewind' });
+                    current.push({ id: first ? 'a2' : 'a3', type: 'assistant', text: first ? 'completed-before-rewind' : 'fresh-after-rewind' });
+                    emitText(first ? 'completed-before-rewind' : 'fresh-after-rewind');
+                    return { stopReason: 'end_turn' };
+                }
+                throw new Error(`Unexpected ACP request: ${method}`);
+            }
+        };
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ['u1', 'a1'],
+                userMessageIds: ['u1'], localMessageIds: [] }, conversationHistoryIndexes: { one: 0 } };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage')) { staged = 'u2'; return Response.json({}); }
+            if (url.endsWith('/revert/commit')) { current = current.slice(0, 2); staged = undefined; return new Response(null, { status: 204 }); }
+            if (url.includes('/message?')) return Response.json({ data: current, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1', ...(staged ? { revert: { messageID: staged } } : {}) } });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        const { session, rpcHandlers, agentMessages } = createSessionStub([{ message: 'two', mode: createMode(), localId: 'two' }], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        Object.assign(session.client, { sessionId: `reload-replay-${timing}-${Date.now()}`, flushMetadata: async () => true,
+            flush: async () => true, refreshMetadata: async () => true, on: vi.fn(), off: vi.fn(),
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+                const previous = harness.clientMetadata?.opencodeRewind as OpenCodeRewindOperation | undefined;
+                const operation = previous?.phase === 'committed' ? previous
+                    : { ...report.operation, phase: report.phase === 'applied' ? 'committed' as const : report.phase };
+                harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: operation,
+                    ...(report.phase === 'applied' ? { opencodeHistoryCheckpoint: report.checkpoint, conversationHistoryIndexes: report.indexes } : {}) };
+                // The Hub already committed deletion before runtime consumption reloads ACP.
+                if (report.phase === 'applied') agentMessages.length = 0;
+                return operation;
+            } });
+        const pending = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => {
+                expect(harness.clientMetadata?.conversationHistoryIndexes).toMatchObject({ two: 1 });
+                expect(session.thinking).toBe(false);
+            });
+            expect(JSON.stringify(agentMessages)).toContain('completed-before-rewind');
+            expect(internal.messageHandler).not.toBeNull();
+            const previousHandler = internal.messageHandler;
+            expect(backend.isPromptRequestInFlight()).toBe(false);
+            const operation: OpenCodeRewindOperation = { operationId: `reload-replay-${timing}`,
+                nativeSessionId: 'acp-session-1', nativeMessageId: 'u2', workerId: harness.clientMetadata!.opencodeWorkerId as string,
+                requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 4,
+                reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+            harness.clientMetadata!.opencodeRewind = operation;
+            const result = await rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: operation });
+            await replayDelivered;
+            if (releaseNotificationQueue) {
+                expect(internal.messageHandler).toBe(previousHandler);
+                releaseNotificationQueue();
+            }
+            await internal.sessionUpdateQueue;
+            const afterReload = JSON.stringify(agentMessages);
+            if (timing === 'load-failure' || timing === 'identity-mismatch') {
+                expect(result).toMatchObject({ success: false, outcome: 'unknown',
+                    error: timing === 'load-failure' ? 'fixture reload failure' : 'Rewind native reload changed identity' });
+                expect(gate.isBlocked()).toBe(true);
+                expect(internal.messageHandler).toBe(previousHandler);
+                expect(promptCount).toBe(1);
+                expect(loadCount).toBe(2);
+                expect(harness.clientMetadata?.opencodeRewind).toMatchObject({ phase: 'committed' });
+                expect(harness.clientMetadata?.opencodeHistoryCheckpoint).toMatchObject({ messageIds: ['u1', 'a1'] });
+                expect(afterReload).not.toContain('replayed');
+                return;
+            }
+            expect(result).toMatchObject({ success: true });
+            session.queue.push('after rewind', createMode(), 'after');
+            await vi.waitFor(() => {
+                expect(harness.clientMetadata?.conversationHistoryIndexes).toMatchObject({ after: 1 });
+                expect(session.thinking).toBe(false);
+            });
+            expect(promptCount).toBe(2);
+            expect(loadCount).toBe(2);
+            expect.soft(afterReload).not.toContain('replayed');
+            expect.soft(JSON.stringify(agentMessages)).not.toContain('replayed');
+            expect(JSON.stringify(agentMessages)).toContain('fresh-after-rewind');
+            expect(replaySuppressed).toEqual([true]);
+            expect(gate.isBlocked()).toBe(false);
+        } finally {
+            if (replayTimer) clearTimeout(replayTimer);
+            releaseNotificationQueue?.();
+            session.queue.close();
+            gate.release();
+            try { await pending; } finally {
+                fetchSpy.mockRestore();
+                Object.assign(statics, originalTimings);
+                retryOptions.maxAttempts = originalMaxAttempts;
+            }
         }
     });
 

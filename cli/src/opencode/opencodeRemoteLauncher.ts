@@ -515,7 +515,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         this.conversationHistory.clearPromptIndexes();
                         this.conversationHistory.restoreCheckpoint(metadata?.opencodeHistoryCheckpoint);
                         this.conversationHistory.restorePromptIndexes(metadata?.conversationHistoryIndexes);
-                        const loaded = await backend.loadSession({ sessionId: acpSessionId, cwd: session.path, mcpServers: mcpServerList });
+                        const loaded = await backend.suppressUpdatesDuring(() => backend.loadSession({
+                            sessionId: acpSessionId, cwd: session.path, mcpServers: mcpServerList
+                        }));
                         if (loaded !== acpSessionId) throw new Error('Rewind native reload changed identity');
                         await this.conversationHistory.reconcileHistory();
                         this.instructionsSent = (this.conversationHistory.getCheckpoint()?.userMessageIds.length ?? 0) > 0;
