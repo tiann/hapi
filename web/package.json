@@ -16,6 +16,7 @@
         "@assistant-ui/react": "^0.15.21",
         "@assistant-ui/react-markdown": "^0.14.16",
         "@assistant-ui/tap": "^0.9.18",
+        "@elevenlabs/client": "0.13.0",
         "@elevenlabs/react": "^0.13.0",
         "@hapi/protocol": "workspace:*",
         "@lobehub/icons": "^5.14.0",

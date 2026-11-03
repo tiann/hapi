@@ -23,6 +23,8 @@ export type {
     CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
+    DshModelsResponse,
+    DshModelSummary,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
@@ -38,7 +40,10 @@ export type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     AuthResponse,
+    ClaudeModelSummary,
+    ClaudeModelsResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
@@ -50,8 +55,11 @@ export type {
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,
+    SessionContentMatch,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
     SessionsResponse,
+    SessionContentSearchResponse,
     SpawnResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -59,6 +67,7 @@ export type {
 export type {
     AgentState,
     AttachmentMetadata,
+    BackgroundTask,
     CodexCollaborationMode,
     CopilotAgentMode,
     Metadata,
@@ -151,6 +160,7 @@ export type FileSearchResponse = {
     success: boolean
     files?: FileSearchItem[]
     error?: string
+    pathSearch?: boolean
 }
 
 export type GitFileStatus = {
@@ -281,6 +291,42 @@ export type PiImportResult = {
 export type PiImportSessionsResponse = {
     success: boolean
     results: PiImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type OpencodeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    hapiSessionId?: string
+}
+
+export type OpencodeLocalSessionsResponse = {
+    success: true
+    sessions: OpencodeLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type OpencodeImportResult = {
+    opencodeSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type OpencodeImportSessionsResponse = {
+    success: boolean
+    results: OpencodeImportResult[]
     machineId?: string
     error?: string
 }

@@ -39,6 +39,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -78,6 +80,9 @@ import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildMessageMetadataLabels
+import app.hapi.protocol.chat.messageMetadataForBlock
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -112,11 +117,14 @@ internal fun ChatScreen(
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    val foreground = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
     val reconnecting by viewModel.reconnecting.collectAsState()
     val historyPaging by viewModel.historyPaging.collectAsState()
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
+    val pendingSchedule by viewModel.pendingSchedule.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -124,10 +132,17 @@ internal fun ChatScreen(
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    var messageInfoBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
         onDispose { viewModel.setTranscriptVisible(false) }
+    }
+
+    LaunchedEffect(foreground, state.readThroughRevision, state.isSyncingTail, state.warning) {
+        if (foreground && state.blocks.isEmpty() && !state.hasMore) {
+            viewModel.markDisplayed(state.readThroughRevision, state.renderedReadState)
+        }
     }
 
     val context = LocalContext.current
@@ -182,6 +197,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val mentionSuggestions by viewModel.mentionSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -330,9 +346,20 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
+                    // Context-remaining readout; rides the same strip as the
+                    // mode chip and hides until the thread reports usage.
+                    ContextUsageChip(indicator = state.contextUsage)
+                    // Web StatusBar parity: the current permission mode rides
+                    // directly above the composer; tapping opens the config
+                    // sheet that hosts the switcher (the web span itself is
+                    // not clickable).
+                    PermissionModeChip(
+                        config = configState,
+                        onClick = { configSheetOpen = true },
+                    )
                     ChatComposer(
                         state = composerState,
-                        onTextChange = viewModel::setComposerText,
+                        onTextChange = viewModel::onComposerChange,
                         onSend = { viewModel.sendMessage() },
                         onSendSteer = { viewModel.sendMessage(steer = true) },
                         onAbort = viewModel::abortSession,
@@ -342,6 +369,11 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        mentionSuggestions = mentionSuggestions,
+                        onMentionSelected = viewModel::selectMentionSuggestion,
+                        pendingSchedule = pendingSchedule,
+                        onScheduleSelected = viewModel::setPendingSchedule,
+                        onClearSchedule = { viewModel.setPendingSchedule(null) },
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
@@ -371,9 +403,12 @@ internal fun ChatScreen(
                             jumpingLatest = jumpingLatest,
                             onViewport = viewModel::readingViewportChanged,
                             onLayout = viewModel::historyLaidOut,
+                            foreground = foreground, onTailDisplayed = viewModel::markDisplayed,
                             onRetryHistory = viewModel::loadOlder,
                             onJumpToLatest = viewModel::jumpToLatest,
                             listState = transcriptList, readingState = readingState,
+                            messageAggregates = state.messageAggregates,
+                            onShowMessageInfo = { messageInfoBlock = it },
                         )
                     }
                     if (!state.loadFailed) state.warning?.let { warning ->
@@ -427,6 +462,19 @@ internal fun ChatScreen(
             },
             onDismiss = { deleteDialogOpen = false },
         )
+    }
+    messageInfoBlock?.let { infoBlock ->
+        val labels = remember(infoBlock, state.messageAggregates) {
+            messageMetadataForBlock(infoBlock, state.messageAggregates)
+                ?.let(::buildMessageMetadataLabels)
+                .orEmpty()
+        }
+        if (labels.isNotEmpty()) {
+            MessageMetadataDialog(
+                labels = labels,
+                onDismiss = { messageInfoBlock = null },
+            )
+        }
     }
 }
 
@@ -647,6 +695,8 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
+    ChatNotice.QueuedEditScheduleDropped -> context.getString(R.string.chat_notice_edit_schedule_dropped)
+    ChatNotice.ScheduleAttachmentConflict -> context.getString(R.string.chat_notice_schedule_attachment_conflict)
     ChatNotice.QueuedAlreadyDelivered -> context.getString(R.string.chat_notice_already_delivered)
     ChatNotice.PermissionAlreadyHandled -> context.getString(R.string.chat_notice_request_already_handled)
     ChatNotice.DeleteConflictActive -> context.getString(R.string.sessions_error_delete_active)
@@ -658,5 +708,6 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.SteerFailed -> notice.detail ?: context.getString(R.string.chat_notice_steer_failed)
     is ChatNotice.PermissionRequestFailed -> notice.detail ?: context.getString(R.string.chat_notice_request_failed)
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
+    is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
 }

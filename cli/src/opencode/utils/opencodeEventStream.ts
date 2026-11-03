@@ -37,6 +37,22 @@ export type OpencodeEventStreamOptions = {
      * web timeline folds), not as a failure — see its call site.
      */
     onRetry: (retry: OpencodeRetryStatus) => void;
+    /** Native transcript consumer; receives normalized, session-scoped events. */
+    onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
+    onConnected?: () => void;
+    /**
+     * Extra request headers merged into every (re)connect attempt. Required
+     * for opencode v2: the internal server is Basic-auth protected, and a
+     * headerless subscription is rejected with 401 before any event arrives.
+     */
+    headers?: Record<string, string>;
+    /**
+     * Wire dialect. v2 (measured 2026-10-16 against opencode 2.0.29): the
+     * stream lives at `/api/event` (the v1 `/event` path answers with the
+     * SPA HTML fallback) and every JSON payload wraps its v1-shaped body in
+     * a `data` envelope (`{ id, type, data: { … } }`). Default v1.
+     */
+    mode?: 'v1' | 'v2';
     fetchImpl?: FetchLike;
     sleep?: (ms: number) => Promise<void>;
 };
@@ -226,6 +242,8 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         directory,
         sessionId,
         onRetry,
+        headers = {},
+        mode = 'v1',
         fetchImpl = fetch as FetchLike,
         sleep = (ms: number) => new Promise<void>((resolve) => {
             const timer = setTimeout(resolve, ms);
@@ -233,7 +251,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         })
     } = options;
 
-    const url = `${baseUrl}/event?directory=${encodeURIComponent(directory)}`;
+    const url = `${baseUrl}${mode === 'v2' ? '/api/event' : '/event'}?directory=${encodeURIComponent(directory)}`;
     const controller = new AbortController();
     let closed = false;
     // Structurally typed to just what close() needs: the global and
@@ -271,8 +289,12 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
 
     const handleEvent = (event: unknown): void => {
         if (!isObject(event)) return;
-        if (event.type !== 'session.status') return;
         const properties = isObject(event.properties) ? event.properties : null;
+        if (properties && typeof event.type === 'string') {
+            const record = isObject(properties.info) ? properties.info : isObject(properties.part) ? properties.part : properties;
+            if (record.sessionID === sessionId) options.onEvent?.(event.type, properties, typeof event.id === 'string' ? event.id : undefined);
+        }
+        if (event.type !== 'session.status') return;
         if (!properties) return;
         // Status is per-session bookkeeping and drives the dedupe state
         // below, so an event that cannot be attributed must not touch it.
@@ -347,6 +369,18 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         } catch (error) {
             logger.debug('[opencode-events] ignoring unparsable event payload', error);
             return;
+        }
+        // v2 wraps the v1-shaped body in an envelope: { id, type, data },
+        // where `type` lives on the ENVELOPE and `data` carries only the
+        // body (measured: { id, type: 'session.status', data: { sessionID,
+        // status } }). Re-attach the envelope type so the downstream v1
+        // handling (event.type + properties) works unchanged on both
+        // dialects; unwrapping `data` alone would strip the discriminator
+        // and every retry event would be silently rejected. The v2 body also
+        // carries its fields directly (no v1 `properties` wrapper), so the
+        // body becomes `properties`.
+        if (mode === 'v2' && isObject(payload) && isObject(payload.data)) {
+            payload = { id: payload.id, type: payload.type, properties: payload.data };
         }
         // Dispatched outside the parse guard on purpose: everything
         // downstream of handleEvent is HAPI's own code (the launcher's
@@ -425,6 +459,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
                     signal: controller.signal,
                     headers: {
                         accept: 'text/event-stream',
+                        ...headers,
                         ...(lastEventId ? { 'last-event-id': lastEventId } : {})
                     }
                 });
@@ -461,6 +496,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
                 continue;
             }
 
+            options.onConnected?.();
             framesThisConnection = 0;
             try {
                 await consumeStream(response.body);

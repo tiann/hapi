@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
     Dialog,
     DialogContent,
@@ -18,6 +18,9 @@ type ConfirmDialogProps = {
     confirmingLabel: string
     onConfirm: () => Promise<void>
     isPending: boolean
+    isConfirmDisabled?: boolean
+    allowDismissWhilePending?: boolean
+    onBackgroundError?: (message: string) => void
     destructive?: boolean
     centerTitle?: boolean
 }
@@ -33,11 +36,20 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         confirmingLabel,
         onConfirm,
         isPending,
+        isConfirmDisabled = false,
+        allowDismissWhilePending = false,
+        onBackgroundError,
         destructive = false,
         centerTitle = false
     } = props
 
     const [error, setError] = useState<string | null>(null)
+    const openRef = useRef(isOpen)
+    openRef.current = isOpen
+    useEffect(() => {
+        openRef.current = isOpen
+        return () => { openRef.current = false }
+    }, [isOpen])
 
     // Clear error when dialog opens/closes
     useEffect(() => {
@@ -56,7 +68,11 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 err instanceof Error && err.message
                     ? err.message
                     : t('dialog.error.default')
-            setError(message)
+            if (openRef.current) {
+                setError(message)
+            } else {
+                onBackgroundError?.(message)
+            }
         }
     }
 
@@ -87,15 +103,15 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                         type="button"
                         variant="secondary"
                         onClick={onClose}
-                        disabled={isPending}
+                        disabled={isPending && !allowDismissWhilePending}
                     >
-                        {t('button.cancel')}
+                        {t(isPending && allowDismissWhilePending ? 'button.close' : 'button.cancel')}
                     </Button>
                     <Button
                         type="button"
                         variant={destructive ? 'destructive' : 'secondary'}
                         onClick={handleConfirm}
-                        disabled={isPending}
+                        disabled={isPending || isConfirmDisabled}
                     >
                         {isPending ? confirmingLabel : confirmLabel}
                     </Button>

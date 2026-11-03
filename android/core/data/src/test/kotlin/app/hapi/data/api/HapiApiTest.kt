@@ -197,6 +197,37 @@ class HapiApiTest {
     }
 
     @Test
+    fun `send message body carries scheduledAt as epoch millis`() {
+        server.enqueue(ok("""{"ok":true}"""))
+
+        runBlocking {
+            session.api.sendMessage(
+                "s1",
+                SendMessageRequest(
+                    text = "later",
+                    localId = "local-2",
+                    deliveryMode = "queue",
+                    scheduledAt = 1_761_400_200_000L,
+                ),
+            )
+        }
+
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/s1/messages", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals(
+            buildJsonObject {
+                put("text", "later")
+                put("localId", "local-2")
+                put("deliveryMode", "queue")
+                put("scheduledAt", 1_761_400_200_000L)
+            },
+            body,
+            "a scheduled send rides the wire as an epoch-millis number",
+        )
+    }
+
+    @Test
     fun `upload posts json base64 (not multipart) and yields the hub path`() {
         server.enqueue(ok("""{"success":true,"path":"/tmp/uploads/shot.jpg"}"""))
 
@@ -336,6 +367,31 @@ class HapiApiTest {
         }
         assertEquals(503, error.status)
         assertEquals("rpc_target_missing", error.code)
+    }
+
+    @Test
+    fun `machine grok models pass cwd and keep auto support nullable`() {
+        server.enqueue(
+            ok(
+                """{"success":true,"availableModels":[{"modelId":"grok-4","name":"Grok 4"}],"currentModelId":"grok-4","autoPermissionModeSupported":false}"""
+            )
+        )
+
+        val response = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/home/dev/proj") }
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/machines/m1/grok-models", request.path!!.substringBefore('?'))
+        assertEquals("/home/dev/proj", request.requestUrl!!.queryParameter("cwd"))
+        assertTrue(response.success)
+        assertEquals(false, response.autoPermissionModeSupported)
+        assertEquals("grok-4", response.availableModels!!.single().modelId)
+        assertEquals("Grok 4", response.availableModels!!.single().name)
+        assertEquals("grok-4", response.currentModelId)
+
+        // Field omitted (runner never reported it): null — must never read as false.
+        server.enqueue(ok("""{"success":true,"availableModels":[]}"""))
+        val omitted = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/cwd") }
+        assertNull(omitted.autoPermissionModeSupported)
     }
 
     @Test

@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
+import * as peerMessages from '@/modules/pingPeer/pingPeer'
+import * as peerSpawn from '@/modules/spawnPeer/spawnPeer'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 type ToolResult = {
@@ -44,6 +46,8 @@ describe('startHappyServer skill_lookup', () => {
     async function connect(enableSkillLookup = true): Promise<Client> {
         sendAgentMessage = vi.fn()
         const sessionClient = {
+            sessionId: 'parent-id',
+            getMetadata: () => ({ name: 'Parent', path: workingDirectory, flavor: 'codex' }),
             updateMetadata: vi.fn(),
             sendAgentMessage,
             sendClaudeSessionMessage: vi.fn()
@@ -113,6 +117,7 @@ describe('startHappyServer skill_lookup', () => {
             'display_video',
             'display_media',
             'ping_peer',
+            'spawn_peer',
             'inspect_peer',
             'list_peers'
         ])
@@ -126,6 +131,90 @@ describe('startHappyServer skill_lookup', () => {
         expect(displayImage?.description).toContain('human user')
         expect(displayImage?.description).toContain('does not provide image input to the model')
         expect(displayImage?.description).toContain('cannot be used to read, inspect, or analyze image contents')
+    })
+
+    it.each([
+        [undefined, 'accepted'],
+        [undefined, 'steered'],
+        ['auto', 'accepted'],
+        ['auto', 'steered'],
+        ['auto', 'invoked'],
+        ['queue', 'accepted'],
+        ['steer', 'steered'],
+        ['steer', 'invoked']
+    ] as const)('forwards ping_peer mode %s and reports %s through MCP', async (deliveryMode, delivery) => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
+            sessionId: 'peer-id', name: 'Peer', resumed: false,
+            localId: 'ping-peer-test', delivery
+        })
+        try {
+            const mcp = await connect(false)
+            const tools = await mcp.listTools()
+            const tool = tools.tools.find((entry) => entry.name === 'ping_peer')
+            expect(tool?.inputSchema.properties?.deliveryMode).toMatchObject({ enum: ['auto', 'queue', 'steer'] })
+            expect(tool?.description).toContain('auto (default)')
+            const result = await mcp.callTool({
+                name: 'ping_peer',
+                arguments: { sessionIdPrefix: 'peer-id', message: 'hello', ...(deliveryMode ? { deliveryMode } : {}) }
+            }) as ToolResult
+            expect(result.isError).toBe(false)
+            expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode })
+            expect(result.content?.[0]?.text).toBe(delivery === 'accepted'
+                ? 'Accepted for peer-id (Peer) localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it'
+                : `${delivery} to peer-id (Peer) localId=ping-peer-test`)
+        } finally {
+            ping.mockRestore()
+        }
+    })
+
+    it('rejects invalid ping_peer delivery modes at the MCP boundary', async () => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer')
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'ping_peer', arguments: { sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode: 'interrupt' }
+            }) as ToolResult
+            expect(result.isError).toBe(true)
+            expect(ping).not.toHaveBeenCalled()
+        } finally {
+            ping.mockRestore()
+        }
+    })
+
+    it('forwards cross-machine spawn settings with the calling session identity and cwd', async () => {
+        const spawn = vi.spyOn(peerSpawn, 'spawnPeer').mockResolvedValue({
+            sessionId: 'child-id', name: 'Worker'
+        })
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'spawn_peer',
+                arguments: {
+                    directory: '/srv/project',
+                    message: 'Run the tests',
+                    machine: 'remote-host',
+                    agent: 'codex',
+                    model: 'gpt-5.6-sol',
+                    effort: 'high',
+                    permissionMode: 'default',
+                },
+            }) as ToolResult
+            expect(result.isError).toBe(false)
+            expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+                directory: '/srv/project',
+                cwd: workingDirectory,
+                message: 'Run the tests',
+                machine: 'remote-host',
+                agent: 'codex',
+                model: 'gpt-5.6-sol',
+                effort: 'high',
+                permissionMode: 'default',
+                parent: { sessionId: 'parent-id', name: 'Parent', agentSessionId: null },
+                requireParent: true,
+            }))
+        } finally {
+            spawn.mockRestore()
+        }
     })
 
     it('displays audio through display_media and emits a generated media message', async () => {
@@ -182,12 +271,13 @@ describe('startHappyServer skill_lookup', () => {
         await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
         const tools = await mcp.listTools()
 
-        expect(server.toolNames).toEqual(['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'])
+        expect(server.toolNames).toEqual(['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'])
         expect(tools.tools.map((tool) => tool.name)).toEqual([
             'display_image',
             'display_video',
             'display_media',
             'ping_peer',
+            'spawn_peer',
             'inspect_peer',
             'list_peers'
         ])
@@ -222,6 +312,9 @@ describe('startHappyServer change_title', () => {
         const sendClaudeSessionMessage = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage
         } as unknown as ApiSessionClient
@@ -263,10 +356,54 @@ describe('startHappyServer change_title', () => {
         expect(sendClaudeSessionMessage).not.toHaveBeenCalled()
     })
 
+    it.each([false, true])('reports a user lock, including one acquired while the title write is pending (%s)', async (inFlight) => {
+        let locked = !inFlight
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', name: 'Pinned', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => { locked = true; return true }),
+            sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Agent' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('locked by the user')
+        expect(updateMetadata).toHaveBeenCalledTimes(inFlight ? 1 : 0)
+    })
+
+    it('refreshes a stale cached lock before allowing an explicit rename', async () => {
+        let locked = true
+        const sessionClient = {
+            updateMetadata: vi.fn(), refreshMetadata: vi.fn(async () => { locked = false; return true }),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => true), sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Unlocked' } }) as ToolResult
+        expect(result.isError).toBe(false)
+        expect(sessionClient.refreshMetadata).toHaveBeenCalled()
+    })
+
+    it('fails without mutating when the Hub lock cannot be read', async () => {
+        const updateMetadata = vi.fn()
+        const sessionClient = { updateMetadata, refreshMetadata: vi.fn(async () => false), sendAgentMessage: vi.fn() } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Unknown' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(updateMetadata).not.toHaveBeenCalled()
+    })
+
     it('returns an error for blank titles instead of claiming success', async () => {
         const updateMetadata = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
@@ -289,6 +426,9 @@ describe('startHappyServer change_title', () => {
         const sendClaudeSessionMessage = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage
         } as unknown as ApiSessionClient
@@ -317,6 +457,7 @@ describe('toClaudeAllowedHapiMcpTools', () => {
             'list_peers',
             'ping_peer',
             'inspect_peer',
+            'spawn_peer',
             'skill_lookup'
         ])).toEqual([
             'mcp__hapi__change_title',
@@ -326,5 +467,95 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         ])
         expect(toClaudeAllowedHapiMcpTools(['display_video'])).not.toContain('mcp__hapi__display_video')
         expect(toClaudeAllowedHapiMcpTools(['display_media'])).not.toContain('mcp__hapi__display_media')
+    })
+})
+
+describe('resolveMcpSpawnPeerCwd', () => {
+    it('prefers launcher workingDirectory over skillLookup and session path', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({
+            workingDirectory: '/launcher/cwd',
+            skillWorkingDirectory: '/skill/cwd',
+            sessionPath: '/session/path',
+        })).toBe('/launcher/cwd')
+    })
+
+    it('prefers skillLookup workingDirectory over session metadata path', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({
+            skillWorkingDirectory: '/skill/cwd',
+            sessionPath: '/session/path',
+        })).toBe('/skill/cwd')
+    })
+
+    it('falls back to session metadata.path when skillLookup is absent', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({
+            skillWorkingDirectory: undefined,
+            sessionPath: '/session/path',
+        })).toBe('/session/path')
+        expect(resolveMcpSpawnPeerCwd({
+            skillWorkingDirectory: '  ',
+            sessionPath: '  /session/path  ',
+        })).toBe('/session/path')
+    })
+
+    it('returns undefined when neither cwd source is available', async () => {
+        const { resolveMcpSpawnPeerCwd } = await import('./startHappyServer')
+        expect(resolveMcpSpawnPeerCwd({})).toBeUndefined()
+    })
+})
+
+describe('startHappyServer peer tools kill switch', () => {
+    const originalFlag = process.env.HAPI_DISABLE_PEER_TOOLS
+    let client: Client | null
+    let stopServer: (() => void) | null
+
+    afterEach(async () => {
+        await client?.close()
+        stopServer?.()
+        if (originalFlag === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = originalFlag
+        }
+    })
+
+    async function startServer(): Promise<{ url: string; toolNames: string[] }> {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, {})
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-peer-tools-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return { url: server.url, toolNames: server.toolNames }
+    }
+
+    it('registers peer tools by default', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
+    })
+
+    it('omits peer tools from registration and toolNames when HAPI_DISABLE_PEER_TOOLS is set', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media'])
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).not.toContain('list_peers')
+        expect(names).not.toContain('ping_peer')
+        expect(names).not.toContain('inspect_peer')
+        expect(names).not.toContain('spawn_peer')
+        expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
     })
 })

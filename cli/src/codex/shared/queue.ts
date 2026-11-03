@@ -80,8 +80,8 @@ export class SharedCodexQueue {
         } while (cursor);
         return items;
     }
-    reconcile(): Promise<void> { return this.serial(() => this.reconcileNow()); }
-    private async reconcileNow(): Promise<void> {
+    reconcile(): Promise<string[]> { return this.serial(() => this.reconcileNow()); }
+    private async reconcileNow(): Promise<string[]> {
         const present = new Set<string>();
         for (const item of await this.list()) {
             const id = item.clientUserMessageId; present.add(id);
@@ -94,13 +94,15 @@ export class SharedCodexQueue {
         }
         // Absence could mean consumed, removed, or lost during engine restart.
         // Only an item event/history or a successful delete can decide which.
+        const dequeued: string[] = [];
         for (const [id, entry] of Object.entries(this.entries)) {
-            if (entry.state === 'queued' && !present.has(id)) entry.state = 'unknown';
+            if (entry.state === 'queued' && !present.has(id)) { entry.state = 'unknown'; dequeued.push(id); }
         }
         await this.save();
         const unknown = Object.entries(this.entries).filter(([, entry]) => entry.state === 'unknown').map(([id]) => id);
         if (unknown.length) this.uncertain(unknown);
         await this.publishReleased();
+        return dequeued;
     }
 
     private async publishReleased(): Promise<void> {

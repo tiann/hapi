@@ -35,16 +35,13 @@ final class HomeFilterPresentationTests: XCTestCase {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button {} label: {
-                            Label("Hubs", systemImage: "server.rack").frame(minWidth: 44, minHeight: 44)
+                            Label("Settings", systemImage: "gearshape").frame(minWidth: 44, minHeight: 44)
                         }
                     }
+                    // New Session sits beside the bottom search field, which
+                    // this harness does not render.
                     if model.showsFilterMenu {
                         ToolbarItem(placement: .topBarTrailing) { SessionFilterMenu(model: model) }
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {} label: {
-                            Label("New Session", systemImage: "plus").frame(minWidth: 44, minHeight: 44)
-                        }
                     }
                 }
                 .navigationDestination(for: String.self) { id in Text(verbatim: id) }
@@ -113,11 +110,11 @@ final class HomeFilterPresentationTests: XCTestCase {
         sessions.sessions.removeAll { $0.id == "a" }
         try await settle()
         XCTAssertFalse(model.filters.isActive, "The view must reconcile session-store changes")
-        XCTAssertFalse(model.showsFilterMenu)
+        XCTAssertFalse(model.showsMachineFilter)
         sessions.sessions.append(mac)
         try await settle()
         XCTAssertNil(model.activeMachineFilter)
-        XCTAssertTrue(model.showsFilterMenu)
+        XCTAssertTrue(model.showsMachineFilter)
     }
 
     func testNativeListRowsKeepOnlyTitleAndProjectStatus() async throws {

@@ -4,24 +4,42 @@ Native SwiftUI/UIKit client for HAPI, independent of `web/` at the code level.
 It shares the [client protocol](../docs/api/client-contract/index.md) and
 web-generated golden fixtures in `shared/fixtures/`.
 
+End users: install HAPI from the [App Store](https://apps.apple.com/app/id6805699104).
+This README covers development builds.
+
 ## Current capabilities
 
 The app provides sessions/chat, approvals and questions, new sessions,
-attachments, files/Git, Scratchlist, standard dictation, usage/storage,
+attachments, scheduled sends, `/` command suggestions, `@` session/file references,
+files/Git, Scratchlist, standard dictation, usage/storage,
 settings and encrypted APNs notifications. It pairs with multiple hubs and
-keeps one active. Session lists support machine filtering, pinning and archive;
-sending to an inactive session can resume it and migrate the draft/navigation
-when the returned session ID changes.
+keeps one active. The chat's … menu also forks the conversation, rewinds or
+forks at a loaded user message with a native history point (a separate sheet,
+so transcript rows are untouched), and exports the session as JSON through the
+Files save panel (Markdown export stays web-only). Session lists support machine filtering, pinning, rename and
+archive (active) or reopen/delete (inactive), from the row's context menu or the
+chat's … menu; sending to an inactive session or reopening it can resume it and
+migrate the draft/navigation when the returned session ID changes.
+
+Agent-displayed media (`display_image`, `display_video`, `display_media`) uses
+MIME-based cards: images load automatically, while video, audio and other files
+load only on request. Video/audio use native playback controls without autoplay;
+leaving the row or backgrounding the app pauses playback. Loaded files can be
+saved/shared, and supported documents open in Quick Look. Media that iOS cannot
+decode (including unsupported WebM codecs) still offers save/share. Downloads use
+the authenticated hub API, then private temporary files with a bounded per-chat
+cache; the generated-media endpoint must still be available when first loading.
 
 Model, permission and Codex collaboration controls follow the session's agent/capabilities;
-usage/storage require the owner namespace. Rename, Delete and explicit Reopen
-have API wrappers but no current iOS UI. See the [native app guide](../docs/guide/native-apps.md)
+usage/storage require the owner namespace. See the [native app guide](../docs/guide/native-apps.md)
 for platform differences, web-only features and everyday use.
 
 ## Requirements
 
-- Xcode 16 or newer with Swift 6 support.
-- Deployment target: iOS 17.0.
+- Xcode 27.1 or newer (the app uses iOS 27.1 SDK APIs such as
+  `UIHingeInteraction`).
+- Deployment target: iOS 17.0; the Mac Catalyst build therefore requires
+  macOS 14.
 - Runtime dependencies (SPM, declared in `Packages/HapiKit/Package.swift`,
   used only by the `HapiUI` target): `swiftlang/swift-markdown` (GFM parsing
   for the custom renderer) and `raspu/Highlightr` (code highlighting, kept
@@ -41,13 +59,17 @@ the command line:
 xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 
+# App (Mac Catalyst, unsigned; launching it needs signing, see below)
+xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
+  -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO
+
 # Package tests (macOS; protocol/client plus UI package tests)
 swift test --package-path ios/Packages/HapiKit
 ```
 
 CI runs package tests, the simulator build, and app-hosted transcript tests
-on `macos-15` via `.github/workflows/ios.yml` (triggered by changes under
-`ios/**` and `shared/fixtures/**`).
+on the `xcode-27` runner image via `.github/workflows/ios.yml` (triggered by
+changes under `ios/**` and `shared/fixtures/**`).
 
 ### Linux verification (no Mac needed)
 
@@ -104,6 +126,16 @@ completion, and clearing the input while machine health updates arrive. A
 restored or selected offline machine stays selected until the user chooses an
 online machine; its old path is never silently moved to another host.
 
+New-session model pickers cover every creatable agent. Claude uses static
+presets and Codex the machine catalog; agy, cursor, dsh and pi load
+`/api/machines/:id/<flavor>-models`, while copilot, grok, kimi and opencode
+probe the same route with `cwd` once the directory exists. Grok efforts, Pi
+thinking levels and OpenCode variants follow the selected model; a restored
+selection the catalog no longer offers falls back to Default, and Create waits
+while a non-default selection is still being validated. Cursor lists ACP model
+ids flat (no web-style variant drill-down) and always sends `model`.
+`AgentModelCatalogTests` covers the option builders and reconciliation.
+
 ## Pairing
 
 The app supports multiple hubs with one active selection. See the
@@ -127,8 +159,9 @@ The app supports multiple hubs with one active selection. See the
   an already-paired hub can be selected directly.
 - **Simulator:** use manual entry because `DataScannerViewController` is
   unavailable. Camera pairing is optional on physical devices too.
-- **Sign out:** home → hub menu removes that hub's credentials and falls back
-  to another paired hub or pairing. A rejected access token, or a freshly
+- **Hubs:** Settings → Hubs switches between paired hubs and adds another.
+- **Sign out:** Settings → Hubs → Sign Out removes that hub's credentials and
+  falls back to another paired hub or pairing. A rejected access token, or a freshly
   issued JWT rejected again, triggers re-pairing. Temporary network/5xx refresh
   failures retain credentials.
 
@@ -197,8 +230,12 @@ provider credentials as described below.
   (active hub first, then the roster; 404 "Session not found" / 403 = try
   the next hub) — approve/deny post `{}`, reply posts `{text, localId}`.
   Failures surface as a local notice instead of vanishing. A tap deep-links
-  to the session chat; a push for the chat currently on screen is suppressed
-  (the in-app SSE stream is already showing it).
+  to the session chat. With several paired hubs and a session the active
+  list does not know, the tap first locates the owner with
+  `GET /api/sessions/:id` (same hub order and 404/403 rules) and switches
+  to it; a miss or unreachable owner opens against the active hub. A push
+  for the chat currently on screen is suppressed (the in-app SSE stream is
+  already showing it).
 
 **Layer map**: `HapiClient/Push/` (envelope + payload + key, Linux-tested),
 `Endpoints/DeviceEndpoints.swift` (register/unregister),
@@ -254,6 +291,30 @@ and superseding-session navigation when changing this wiring. The transcript
 uses `AnchoredTranscriptList` (`UICollectionView` with SwiftUI hosting) and
 prepares Markdown off the main thread; see
 [native transcript scrolling](../docs/native-chat-scrolling.md).
+
+## Composer references
+
+Type `@` at the start of a word to find another conversation on the active hub.
+The picker follows Web eligibility/search/ranking: conversations with content
+(including untitled ones), no empty stubs/current session/duplicate native-agent
+sessions, and archived conversations only once a search is typed. Codex and
+Copilot additionally search session files (50 results, best-effort); session
+suggestions stay available while file search is pending or fails.
+
+Selecting replaces only the token at the caret and preserves surrounding text.
+Session references are editable Markdown `[title](/sessions/id)` using the same
+wire format as Web rich mentions; native input does not render inline chips.
+Codex files insert `@"path"` with escaping; Copilot inserts `@path`. Drafts,
+queueing, scheduled sends and Scratchlist retain the serialized reference text.
+Suggestions close during text selection, IME composition, blur and Scratchlist
+input. The selection-aware native editor retains the one-to-six-line layout.
+
+Regression suites: package `ComposerMentionSuggestionsTests`,
+`ComposerMentionFilesTests`, `SessionMentionMetadataTests` and the mention cases
+in `ChatInteractorTests`; app-hosted `ComposerMentionPresentationTests` covers
+caret replacement, focus, marked text and layout. On a connected device, check
+Chinese input, VoiceOver selection, file lookup with an offline CLI, and send a
+reference from each supported file-mention agent.
 
 ## Scratchlist workflow
 
@@ -328,7 +389,22 @@ unconditionally: real translation edits must remain visible and committed.
 iPad uses a two-column `NavigationSplitView`: sessions in the sidebar and a
 separate detail navigation stack for chat → files/viewer/process pages. The
 sidebar requests 280–360pt (320pt ideal); the system collapses the same view
-hierarchy in compact windows. iPhone keeps its single `NavigationStack`.
+hierarchy in compact windows. Foldable iPhones (iPhone Duo) use the same split
+once `UIHingeInteraction` (iOS 27.1+) reports a hinge: unfolded shows both
+columns, folded collapses to the phone stack without recreating the chat. Other
+iPhones keep their single `NavigationStack`. The phone-width session list puts
+Settings on the leading edge and the filter on the trailing edge; on iOS 26+
+New Session sits beside the bottom search field (as in Messages), while iOS
+17/18 keeps it in the top bar. A side-by-side sidebar drops its inline
+"Sessions" title, keeps search at its top and moves the filter beside
+Settings, because the system sidebar toggle shares the trailing edge. On the
+folded Duo's 678pt outer screen the system moves Back and toolbar actions into
+a vertical side bar, so
+the session list drops its "Sessions" title (the empty top bar disappears) and
+the chat uses the leading-aligned system title/subtitle instead of the centered
+custom header (no agent icon). The chat title minimizes once the reader scrolls
+toward newer output (restoring only at the transcript top), and the composer
+sits 16pt closer to the home indicator while the text field is unfocused.
 Cold starts and hub switches show **Select a session** until the user chooses
 one; notifications and new sessions can open an ID before its list row arrives.
 Selection and nested navigation are in memory, not restored across launches.
@@ -337,23 +413,31 @@ Selection and nested navigation are in memory, not restored across launches.
 neither window geometry nor sidebar filters may clear them. Reopening the
 selected session preserves its file page. A different/superseding session resets
 the entire detail stack, but a late superseding callback cannot replace a chat
-the user has since selected. Only explicit removal events or successful archive
-operations clear the current selection, never optimistic list removal/rollback.
+the user has since selected. Only explicit removal events or successful
+archive/delete operations clear the current selection (on iPhone they pop that
+chat), never optimistic list removal/rollback.
 
 The detail's identity is hub/session-based, so resizing preserves the existing
 chat, draft, attachment tray and transcript anchor. Native menus/sheets remain
 native; the hub sign-out and attachment dialogs are anchored to their buttons.
 The explicit scene manifest disables additional HAPI windows, **not** Split
 View/Stage Manager with other apps. Do not enable scene-manifest generation
-(which generates multiple-scene support) or require full screen. Multiwindow,
-third-column inspectors, keyboard shortcuts and drag/drop are not implemented.
+(which generates multiple-scene support) or require full screen. Multiwindow
+and third-column inspectors are not implemented; the menu commands and
+composer drag/drop described under [macOS](#macos-mac-catalyst) also work with
+an iPad hardware keyboard and Files drags.
 
 `SessionNavigationTests` covers navigation/removal policy and the built scene
 manifest. `SessionSplitPresentationTests` runs on an actual iPad simulator and
 uses the production split shell/list plus a real, non-networked chat specimen:
 selection, compact programmatic opening, nested Back, filtering, resizing,
 reading anchors, draft/attachment retention and surface/subscription lifetime.
-CI keeps the iPhone suite and adds iPad Air 11-inch (M2). Run it locally with:
+CI keeps the iPhone suite and adds iPad Air 11-inch (M2). Locally, the same
+tests also run on `iPhone-Duo` (iOS 27.1 runtime); the script boots it folded
+(outer 466×678pt, compact), and wide cases use the unfolded 951×669pt inner
+screen. On both screens the system shows a vertical status bar on one side
+(84pt horizontal safe area) and moves toolbar items into a vertical bar there.
+Run it locally with:
 
 ```sh
 HAPI_TEST_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2 \
@@ -369,6 +453,65 @@ one-third/half-screen and Stage Manager resizing, keyboard docking/floating and
 hardware-keyboard transitions, light/dark, Chinese/English, Dynamic Type and
 VoiceOver. Check settings/new-session/Scratchlist/inspection sheets while
 resizing, notification navigation, and background/foreground reconnection.
+
+### macOS (Mac Catalyst)
+
+The same `Hapi` target and notification extension build for Mac Catalyst with
+the Mac idiom (`TARGETED_DEVICE_FAMILY = 1,2,6`, "Optimize Interface for
+Mac"), so windows render 1:1 with native Mac controls instead of the 77 %
+scaled iPad app. The Mac app keeps the `run.hapi.app` bundle ID (no derived
+`maccatalyst.` prefix): it is the same App Store purchase and replaces the
+iPad app on Apple silicon Macs. Both use the `~/Library/Containers/run.hapi.app`
+container and the same Keychain group, so existing pairings (and the
+notification permission) carry over; a locally signed Catalyst build opened
+directly into the iPad app's paired hub. Mac signing uses `Hapi-macOS.entitlements` /
+`HapiNotificationService-macOS.entitlements` (App Sandbox, outgoing network,
+microphone, user-selected files, Mac APNs environment).
+
+Mac-specific behavior, compiled with `targetEnvironment(macCatalyst)`:
+
+- The window always uses the split (sidebar list style, denser rows) with a
+  unified toolbar and a 480×480pt minimum size. The NSToolbar drops the
+  custom `.principal` chat header, so the chat uses the system title (as on
+  the folded Duo); keep the titlebar title visible, it carries that title.
+- Reading typography steps down to a 14pt body (`HapiTypography` platform
+  scale 0.875); system text styles already resolve to Mac sizes.
+- Pairing hides the live QR scanner (VisionKit `DataScannerViewController` is
+  unavailable); manual entry, pasted pairing links and `hapicompanion://`
+  links remain. Web links open in the default browser, not an in-app Safari
+  sheet. Sheets use page sizing so long forms are not clipped.
+- Return sends from the composer and picks the first `/` or `@` suggestion;
+  Shift/Option-Return insert a newline, IME composition is never intercepted,
+  and ⌘↩ still sends. Scratchlist drafts keep Return as a newline.
+
+Shared with iPad: the menu bar / hardware-keyboard commands in
+`AppCommands.swift` — New Session ⌘N, Settings ⌘, Toggle Sidebar ⌃⌘S, and a
+Session menu (Session Settings ⌘I, Session Files ⌘⇧O, Rename, Export, Stop ⌘.,
+Previous/Next Session ⌥⌘↑/↓). Dropping files on the composer or pasting an
+image-only clipboard or copied files adds attachments
+(`ItemProviderAttachmentLoader` copies the provider file before preparing it).
+
+Run locally: Xcode → `Hapi` scheme → **My Mac (Mac Catalyst)** with your team
+selected; the first run creates the Mac Catalyst development profiles. An
+ad-hoc signed build launches but cannot write the Keychain, so pairing fails
+with "Could not save". Regression checks run on the Mac directly (CI does the
+same, unsigned):
+
+```sh
+xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi \
+  -destination 'platform=macOS,variant=Mac Catalyst' \
+  -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO \
+  -only-testing:HapiTests/SessionNavigationTests \
+  -only-testing:HapiTests/SessionSplitPresentationTests \
+  -only-testing:HapiTests/TranscriptGeometryTests
+```
+
+`TranscriptTypographyTests` stay on iOS simulators: content-size overrides do
+not scale Mac-idiom windows. Coverage must stay off for Catalyst test builds
+(the instrumented `cmark-gfm` dynamic product fails to link). Before release,
+manually check window resizing to the compact collapse, full screen, light/dark,
+Chinese/English, VoiceOver and full keyboard access, notification delivery
+and click-through, and reconnection after sleep.
 
 ### Reading typography
 
@@ -411,7 +554,15 @@ TEST_RUNNER_HAPI_TYPOGRAPHY_CAPTURE=/tmp/hapi-typography-review \
 The chat gear presents a single-page model/effort and permission/collaboration
 form. All selections use native menus; permission explanations, high-risk
 indicators, model-loading/retry states and update feedback remain in the form.
-Changes apply immediately; Done only dismisses. On regular-width windows the
+Changes apply immediately; Done only dismisses. Models follow each agent's
+catalog: Claude presets, the Codex session catalog, and for live sessions the
+`/api/sessions/:id/<flavor>-models` routes (agy uses its machine catalog; grok
+and copilot skip terminal-controlled sessions). Copilot, cursor, dsh, grok and
+kimi offer a Default/Auto row; opencode, agy and pi switch between listed
+models only, and Pi switches with a `{provider, modelId}` reference. Grok and
+OpenCode efforts come from their `*-reasoning-effort-options` routes (OpenCode
+hides options that still describe the previous model); Pi shows the current
+model's thinking levels. On regular-width windows the
 production toolbar button anchors an iPad popover; compact windows adapt that
 same presenter to a medium/large sheet (large for accessibility text).
 
@@ -553,9 +704,14 @@ TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
 ### Home filtering
 
 Home keeps a fixed Sessions title: hub switching on the leading edge,
-Filters and New Session on the trailing edge. The native menu currently
-offers machine single-selection; only applied filters add a summary line.
-Filters are transient per home/hub and never select a new session's machine.
+Filters and New Session on the trailing edge. The native menu offers an
+**Unread Only** lens, machine single-selection (two or more machines) and
+**Mark All as Read** (shared read state, confirmed first); only applied filters
+add a summary line. The unread lens keeps the iPad's selected chat listed.
+The search field (`.searchable`) ranks matches with the web relevance rules
+(`SessionListSearch`: title, worktree, summary, agent, machine, path and id;
+every word must match; `*`/`?` wildcards) while keeping pinned sections first.
+Filters and search are transient per home/hub and never select a new session's machine.
 Options/counts come from all session summaries, including historical machines;
 the online roster supplies names only. Missing names use a labeled short ID.
 Session-count updates do not reorder options or reset the list's scroll position.
@@ -581,3 +737,7 @@ TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
   with `CODE_SIGNING_ALLOWED=NO`.
 - CI uses the runner's default Xcode; each job prints `xcodebuild -version`
   first so failures are attributable to a toolchain bump.
+
+Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
+Only a foreground transcript laid out at the latest tail acknowledges content.
+Local pending reads persist before the dot clears and retry when connectivity returns.

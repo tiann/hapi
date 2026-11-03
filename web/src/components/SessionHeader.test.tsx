@@ -252,26 +252,26 @@ describe('SessionHeader', () => {
     it('shows an inherited catalog-default Fast tier', () => {
         renderHeader(baseSession(), { serviceTier: 'priority' })
         expect(screen.getByText('fast')).toBeInTheDocument()
-        expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
+        expect(screen.queryByText('effort default')).not.toBeInTheDocument()
     })
 
-    it('shows Pi ordinary effort as reasoning metadata', () => {
+    it('shows Pi ordinary effort as effort metadata', () => {
         renderHeader(baseSession({
             metadata: { flavor: 'pi', path: '/repo', host: 'machine' },
             modelReasoningEffort: null,
             effort: 'max'
         }))
 
-        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('reasoning max')
+        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('effort max')
     })
 
-    it('keeps model reasoning effort for Codex and hides ordinary effort for non-Pi flavors', () => {
+    it('uses model reasoning effort for Codex and ordinary effort for Claude', () => {
         const { rerender } = renderHeader(baseSession({
             modelReasoningEffort: 'xhigh',
             effort: 'max'
         }))
 
-        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('reasoning xhigh')
+        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('effort xhigh')
 
         rerender(
             <QueryClientProvider client={new QueryClient()}>
@@ -291,7 +291,7 @@ describe('SessionHeader', () => {
             </QueryClientProvider>
         )
 
-        expect(screen.queryByTestId('session-header-reasoning')).not.toBeInTheDocument()
+        expect(screen.getByTestId('session-header-reasoning')).toHaveTextContent('effort max')
     })
 
     it('hides Pi reasoning metadata when the header reasoning setting is disabled', () => {
@@ -319,6 +319,32 @@ describe('SessionHeader', () => {
 
         expect(screen.getByTestId('session-header-machine')).toHaveTextContent(/oos-linux/)
         expect(screen.getByTestId('session-header-age')).toHaveTextContent(/5m ago|5分钟前/)
+    })
+
+    it('shows the project label from the worktree base path separately from its branch', () => {
+        renderHeader(baseSession({
+            metadata: {
+                flavor: 'cursor',
+                path: '/home/user/coding/hapi-worktrees/fix-resume',
+                host: 'machine',
+                worktree: {
+                    basePath: '/home/user/coding/hapi',
+                    branch: 'fix/resume',
+                    name: 'fix-resume',
+                    worktreePath: '/home/user/coding/hapi-worktrees/fix-resume'
+                }
+            }
+        }))
+
+        expect(screen.getByTestId('session-header-project')).toHaveTextContent('project: coding/hapi')
+        expect(screen.getByText('worktree: fix/resume')).toBeInTheDocument()
+    })
+
+    it('hides the project label when its display setting is disabled', () => {
+        localStorage.setItem('hapi-session-header-metadata', JSON.stringify({ project: false }))
+        renderHeader(baseSession({ metadata: { flavor: 'cursor', path: '/home/user/coding/hapi', host: 'machine' } }))
+
+        expect(screen.queryByTestId('session-header-project')).not.toBeInTheDocument()
     })
 
     it('advances relative age on the minute tick without a session prop change', () => {

@@ -8,8 +8,7 @@ import Observation
 /// `SessionListStore`).
 @MainActor
 public protocol SessionListStoring: AnyObject {
-    /// Sorted with `sortSessionSummaries` (globalPinned > pinned > active >
-    /// pending > recency).
+    /// Sorted with `sortSessionSummaries` (manual pins, then user-input recency).
     var sessions: [SessionSummary] { get }
 
     /// `GET /api/sessions` — replaces the list wholesale. Throws on failure.
@@ -31,6 +30,18 @@ public protocol SessionListStoring: AnyObject {
 
     /// `POST /sessions/:id/archive`, optimistic removal.
     func archiveSession(sessionId: String) async throws
+
+    /// `PATCH /sessions/:id` rename, optimistic `metadata.name`; rolls
+    /// forward to server truth on failure.
+    func renameSession(sessionId: String, name: String) async throws
+
+    /// `DELETE /sessions/:id`, optimistic removal; 409 while active
+    /// (restore + rethrow).
+    func deleteSession(sessionId: String) async throws
+
+    /// `POST /sessions/:id/reopen` — the returned id may differ (superseding
+    /// spawn); 422 when required metadata is gone.
+    func reopenSession(sessionId: String) async throws -> ReopenSessionResponse
 }
 
 /// Session list + detail cache for one hub, fed by the global SSE pipe
@@ -85,7 +96,7 @@ public final class SessionListStore: SessionListStoring {
     @ObservationIgnored public var onScratchlistInvalidation: (@MainActor (String) -> Void)?
 
     /// Authoritative removal only: SSE from either pipe, or a successful
-    /// archive. Optimistic list removal/rollback, filters and failed refreshes
+    /// archive/delete. Optimistic list removal/rollback, filters and failed refreshes
     /// must not dismiss a client's currently selected session.
     @ObservationIgnored public var onSessionRemoved: (@MainActor (String) -> Void)?
 
@@ -122,7 +133,9 @@ public final class SessionListStore: SessionListStoring {
     /// `GET /api/sessions/:id` into the detail cache (chat open / resync).
     @discardableResult
     public func loadSessionDetail(_ sessionId: String) async throws -> Session {
-        let session = try await api.session(id: sessionId)
+        var session = try await api.session(id: sessionId)
+        session.contentRevision = [details[sessionId]?.contentRevision, session.contentRevision].compactMap { $0 }.max()
+        session.readState = SessionReadState.merge(details[sessionId]?.readState, session.readState)
         details[sessionId] = session
         return session
     }
@@ -157,7 +170,18 @@ public final class SessionListStore: SessionListStoring {
         // A later-started refresh already applied fresher server truth.
         guard generation > lastAppliedRefresh else { return }
         lastAppliedRefresh = generation
-        setSessions(sortSessionSummaries(list))
+        // A user-input SSE patch can overtake an in-flight REST snapshot.
+        let cachedRows = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let reconciled = list.map { row in
+            var next = row
+            next.contentRevision = [cachedRows[row.id]?.contentRevision, row.contentRevision].compactMap { $0 }.max()
+            next.readState = SessionReadState.merge(cachedRows[row.id]?.readState, row.readState)
+            if let cached = cachedRows[row.id]?.lastUserMessageAt, cached > (row.lastUserMessageAt ?? Int.min) {
+                next.lastUserMessageAt = cached
+            }
+            return next
+        }
+        setSessions(sortSessionSummaries(reconciled))
     }
 
     public func scheduleRefresh() {
@@ -243,6 +267,75 @@ public final class SessionListStore: SessionListStoring {
         }
     }
 
+    // MARK: - Rename / delete / reopen
+
+    public func renameSession(sessionId: String, name: String) async throws {
+        // Optimistic `metadata.name` on both caches. A row without metadata
+        // has nothing renderable to update; server truth arrives via the
+        // session-updated patch.
+        if let index = sessions.firstIndex(where: { $0.id == sessionId }),
+           sessions[index].metadata != nil {
+            var list = sessions
+            list[index].metadata?.name = name
+            setSessions(list)
+        }
+        updateDetailLocal(sessionId) { $0.metadata?.name = name }
+        do {
+            try await api.renameSession(id: sessionId, name: name)
+        } catch {
+            // Roll forward to server truth (an SSE patch may have moved other
+            // fields since the optimistic write) — same policy as setPinMode.
+            scheduleRefresh()
+            if details[sessionId] != nil {
+                Task { _ = try? await self.loadSessionDetail(sessionId) }
+            }
+            throw error
+        }
+    }
+
+    public func deleteSession(sessionId: String) async throws {
+        let removed = sessions.first { $0.id == sessionId }
+        let removedDetail = details[sessionId]
+        let filtered = sessions.filter { $0.id != sessionId }
+        if filtered.count != sessions.count {
+            setSessions(filtered)
+        }
+        details.removeValue(forKey: sessionId)
+        do {
+            try await api.deleteSession(id: sessionId)
+            onSessionRemoved?(sessionId)
+        } catch {
+            // 409 while active (archive first) or plain failure: restore.
+            if let removed, !sessions.contains(where: { $0.id == sessionId }) {
+                setSessions(sortSessionSummaries(sessions + [removed]))
+            }
+            if let removedDetail, details[sessionId] == nil {
+                details[sessionId] = removedDetail
+            }
+            throw error
+        }
+    }
+
+    public func reopenSession(sessionId: String) async throws -> ReopenSessionResponse {
+        let response = try await api.reopenSession(id: sessionId)
+        // The session-alive SSE may land before or after this answer: show
+        // the RETURNED id active now (web `markSessionActiveInCache`).
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        if let index = sessions.firstIndex(where: { $0.id == response.sessionId }) {
+            var list = sessions
+            list[index].active = true
+            list[index].activeAt = max(list[index].activeAt, now)
+            setSessions(sortSessionSummaries(list))
+        }
+        updateDetailLocal(response.sessionId) { detail in
+            detail.active = true
+            detail.activeAt = max(detail.activeAt, now)
+        }
+        // A superseding spawn is not in the list yet.
+        scheduleRefresh()
+        return response
+    }
+
     // MARK: - Internal
 
     private func upsertOrPatch(sessionId: String, data: SessionUpdatedData?) {
@@ -252,8 +345,11 @@ public final class SessionListStore: SessionListStoring {
         // already encodes the session-vs-strict-patch discrimination.
         switch data {
         case .session(let full) where full.id == sessionId:
-            details[full.id] = full
-            upsertSummary(full)
+            var merged = full
+            merged.contentRevision = [details[full.id]?.contentRevision, full.contentRevision].compactMap { $0 }.max()
+            merged.readState = SessionReadState.merge(details[full.id]?.readState, full.readState)
+            details[full.id] = merged
+            upsertSummary(merged)
         case .patch(let patch) where patch != SessionPatch():
             patchDetail(sessionId: sessionId, patch: patch)
             if !patchSummary(sessionId: sessionId, patch: patch) {
@@ -288,6 +384,9 @@ public final class SessionListStore: SessionListStoring {
         var summary = SummaryPatching.toSessionSummary(session)
         summary.futureScheduledMessageCount = existing?.futureScheduledMessageCount ?? 0
         summary.nextScheduledAt = existing?.nextScheduledAt
+        summary.contentRevision = [existing?.contentRevision, session.contentRevision].compactMap { $0 }.max()
+        summary.readState = SessionReadState.merge(existing?.readState, session.readState)
+        summary.lastUserMessageAt = session.lastUserMessageAt.map { max(existing?.lastUserMessageAt ?? 0, $0) } ?? existing?.lastUserMessageAt
         if let index {
             list[index] = summary
         } else {

@@ -184,6 +184,44 @@ public func permissionApproveBody(
     }
 }
 
+// MARK: - Scheduled send
+
+/// A send time chosen in the composer before Send (web `PendingSchedule`).
+/// Presets are relative to the moment of Send, so "in 5 minutes" never
+/// shrinks while the user is still typing.
+public enum PendingSchedule: Hashable, Sendable {
+    case delay(minutes: Int)
+    /// Absolute epoch milliseconds.
+    case at(Int)
+
+    /// Web presets `+5m`, `+30m`, `+1h`, `+4h`.
+    public static let presets: [PendingSchedule] = [
+        .delay(minutes: 5), .delay(minutes: 30), .delay(minutes: 60), .delay(minutes: 240),
+    ]
+    /// Hub `SendMessageRequestSchema` limit.
+    public static let maxDays = 7
+
+    public enum Problem: Equatable, Sendable {
+        case past
+        case tooFar
+    }
+
+    public func resolve(now: Int) -> Int {
+        switch self {
+        case .delay(let minutes): now + minutes * 60_000
+        case .at(let ms): ms
+        }
+    }
+
+    /// `validateSpecificDatetime`: 30 s grace for a minute-resolution pick
+    /// that slipped into the past while the user confirmed.
+    public static func validate(_ ms: Int, now: Int) -> Problem? {
+        if ms < now - 30_000 { return .past }
+        if ms > now + maxDays * 24 * 60 * 60_000 { return .tooFar }
+        return nil
+    }
+}
+
 // MARK: - Session config
 
 /// Load state of the per-session codex model catalog.
@@ -191,6 +229,14 @@ public enum CodexModelsState: Equatable, Sendable {
     case idle
     case loading
     case loaded([CodexModelSummary])
+    case failed
+}
+
+/// Load state of a discovered agent's catalog (`<flavor>-models`).
+public enum AgentCatalogLoadState: Equatable, Sendable {
+    case idle
+    case loading
+    case loaded(AgentModelsResponse)
     case failed
 }
 
@@ -210,9 +256,12 @@ public struct SessionConfigState: Equatable, Sendable {
     public let model: String?
     /// nil → hide the model section (flavor without a known catalog).
     public let modelOptions: [CatalogOption]?
-    /// True while the codex model catalog loads (sheet shows a spinner row).
+    /// True while the model catalog loads (sheet shows a spinner row).
     public let modelOptionsLoading: Bool
-    /// Claude `effort` or codex `modelReasoningEffort`, whichever applies.
+    /// The catalog request failed (sheet offers Retry).
+    public let modelLoadFailed: Bool
+    /// `effort` (claude, grok, pi) or `modelReasoningEffort` (codex,
+    /// opencode), whichever applies.
     public let effort: String?
     /// nil → hide the effort section.
     public let effortOptions: [CatalogOption]?
@@ -228,6 +277,7 @@ public struct SessionConfigState: Equatable, Sendable {
         model: String?,
         modelOptions: [CatalogOption]?,
         modelOptionsLoading: Bool,
+        modelLoadFailed: Bool = false,
         effort: String?,
         effortOptions: [CatalogOption]?
     ) {
@@ -241,6 +291,7 @@ public struct SessionConfigState: Equatable, Sendable {
         self.model = model
         self.modelOptions = modelOptions
         self.modelOptionsLoading = modelOptionsLoading
+        self.modelLoadFailed = modelLoadFailed
         self.effort = effort
         self.effortOptions = effortOptions
     }
@@ -251,15 +302,18 @@ public struct SessionConfigState: Equatable, Sendable {
 public func buildSessionConfigState(
     detail: Session?,
     summary: SessionSummary?,
-    codexModels: CodexModelsState
+    codexModels: CodexModelsState,
+    agentModels: AgentCatalogLoadState = .idle,
+    agentEfforts: ReasoningEffortOptionsResponse? = nil
 ) -> SessionConfigState {
     let flavor = detail?.metadata?.flavor ?? summary?.metadata?.flavor
     let active = detail?.active ?? summary?.active ?? false
     let controlledByUser = detail?.agentState?.controlledByUser == true
         && detail?.metadata?.capabilities?.concurrentClients != true
-    let model = detail?.model
+    var model = detail?.model
     var modelOptions: [CatalogOption]?
     var modelOptionsLoading = false
+    var modelLoadFailed = false
     var effort: String?
     var effortOptions: [CatalogOption]?
 
@@ -288,8 +342,59 @@ public func buildSessionConfigState(
         case .loading:
             modelOptions = []
             modelOptionsLoading = true
-        case .idle, .failed:
+        case .idle:
             modelOptions = []
+        case .failed:
+            modelOptions = []
+            modelLoadFailed = true
+        }
+    case let raw? where AgentModelCatalog.scope(for: AgentFlavor(rawValue: raw)) != nil:
+        // Discovered catalogs need a live session; idle stays hidden until
+        // the sheet asks for the catalog.
+        let agent = AgentFlavor(rawValue: raw)
+        guard active else { break }
+        switch agentModels {
+        case .idle:
+            break
+        case .loading:
+            modelOptions = []
+            modelOptionsLoading = true
+        case .failed:
+            modelOptions = []
+            modelLoadFailed = true
+        case .loaded(let response):
+            model = AgentModelCatalog.sessionCurrentModel(
+                flavor: agent,
+                response: response,
+                sessionModel: detail?.model,
+                piSelectedModel: detail?.metadata?.piSelectedModel
+            )
+            modelOptions = AgentModelCatalog.sessionModelOptions(
+                flavor: agent,
+                response: response,
+                currentModel: model
+            )
+        }
+        switch agent {
+        case .grok:
+            effort = detail?.effort
+            effortOptions = agentEfforts.map(AgentModelCatalog.grokSessionEffortOptions)
+        case .opencode:
+            effort = detail?.modelReasoningEffort
+            effortOptions = agentEfforts.map { response in
+                AgentModelCatalog.opencodeSessionEffortOptions(
+                    response,
+                    sessionModel: detail?.model,
+                    currentValue: effort
+                )
+            }
+        case .pi:
+            effort = detail?.effort
+            if case .loaded(let response) = agentModels {
+                effortOptions = AgentModelCatalog.piSessionEffortOptions(response: response, currentModel: model)
+            }
+        default:
+            break
         }
     default:
         modelOptions = nil // Generic fallback: hide the picker.
@@ -300,14 +405,13 @@ public func buildSessionConfigState(
         active: active,
         controlledByUser: controlledByUser,
         permissionMode: detail?.permissionMode,
-        permissionModes: permissionModeOptions(forFlavor: flavor).filter {
-            detail?.metadata?.capabilities?.concurrentClients != true || $0.mode.rawValue != "safe-yolo"
-        },
+        permissionModes: permissionModeOptions(forFlavor: flavor),
         collaborationMode: detail?.collaborationMode,
         canChangeCollaborationMode: detail != nil && flavor == "codex" && active && !controlledByUser,
         model: model,
         modelOptions: modelOptions,
         modelOptionsLoading: modelOptionsLoading,
+        modelLoadFailed: modelLoadFailed,
         effort: effort,
         effortOptions: effortOptions
     )

@@ -52,8 +52,8 @@ describe('SyncEngine.steerQueuedMessage', () => {
         const { store, engine } = createEngine()
         try {
             const session = engine.getOrCreateSession(
-                'steer-claude',
-                { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+                'steer-opencode',
+                { path: '/tmp/project', host: 'localhost', flavor: 'opencode' },
                 { requests: {}, completedRequests: {} },
                 'default'
             )
@@ -63,7 +63,7 @@ describe('SyncEngine.steerQueuedMessage', () => {
 
             expect(result).toEqual({
                 status: 'failed',
-                error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions',
+                error: 'Steering is only supported for Claude, Pi, Codex, and Cursor ACP sessions',
                 localId: null
             })
         } finally {

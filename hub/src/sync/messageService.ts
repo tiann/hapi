@@ -12,7 +12,12 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
-import type { MessageDeliveryMode, MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
+import type {
+    MessageContextResponse,
+    MessageDeliveryMode,
+    MessagesResponse,
+    QueuedStateResponse
+} from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -20,6 +25,20 @@ import { EventPublisher } from './eventPublisher'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
+
+// Search jumps only need a compact render window around the hit. Keeping this
+// bounded to 41 rows avoids transferring large historical attachments and
+// tool payloads that are unrelated to the selected message; normal scrolling
+// can request older pages when the user needs more context.
+const MESSAGE_CONTEXT_BEFORE_LIMIT = 20
+const MESSAGE_CONTEXT_AFTER_LIMIT = 20
+/**
+ * localId prefix for peer submissions (`hapi ping-peer` / MCP `ping_peer`).
+ * Excludes peer rows from the session-end synthetic sweep so their invocation
+ * timestamps reflect real runtime consumption and unconsumed rows remain
+ * replayable. Shared with the CLI sender.
+ */
+export const PEER_MESSAGE_LOCAL_ID_PREFIX = 'ping-peer-'
 
 function messagePosition(message: StoredMessageForDelivery): MessagePosition {
     return {
@@ -40,6 +59,7 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
     return {
         id: message.id,
         seq: message.seq,
+        ...(message.contentRevision ? { contentRevision: message.contentRevision } : {}),
         localId: message.localId,
         content: message.content,
         createdAt: message.createdAt,
@@ -190,6 +210,49 @@ export class MessageService {
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
+    }
+
+    getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {
+        const target = this.store.messages.getMessageById(sessionId, messageId)
+        if (!target) {
+            return null
+        }
+
+        const targetPosition = messagePosition(target)
+        const before = this.store.messages.getMessagesByPosition(
+            sessionId,
+            MESSAGE_CONTEXT_BEFORE_LIMIT,
+            targetPosition
+        )
+        const snapshotHead = this.store.messages.getNewestMessagePosition(sessionId)
+        const after = this.store.messages.getMessagesAfterPosition(
+            sessionId,
+            MESSAGE_CONTEXT_AFTER_LIMIT,
+            targetPosition,
+            snapshotHead ?? undefined
+        )
+        // Keep pending local prompts visible when a cold client opens a
+        // historical result. They are intentionally out-of-band: pending
+        // rows must not change the bounded context's pagination cursor.
+        const queued = this.store.messages.getUninvokedLocalMessages(sessionId)
+        const contextRows = [...new Map(
+            [...before, target, ...after, ...queued].map((message) => [message.id, message])
+        ).values()].sort((a, b) => comparePosition(messagePosition(a), messagePosition(b)))
+        const oldest = before[0] ?? target
+        const oldestPosition = messagePosition(oldest)
+
+        return {
+            messages: toVisibleDecryptedMessages(contextRows),
+            targetMessageId: messageId,
+            page: {
+                epoch: this.store.messages.getMessageEpoch(sessionId),
+                nextBeforeSeq: oldestPosition.seq,
+                nextBeforeAt: oldestPosition.at,
+                snapshotHeadSeq: snapshotHead?.seq ?? null,
+                snapshotHeadAt: snapshotHead?.at ?? null,
+                hasMore: this.store.messages.getMessagesByPosition(sessionId, 1, oldestPosition).length > 0
+            }
+        }
     }
 
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
@@ -378,6 +441,7 @@ export class MessageService {
         return {
             messages,
             page: {
+                ...(direction === 'latest' ? { readThroughRevision: this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 } : {}),
                 direction,
                 limit,
                 epoch,
@@ -405,10 +469,13 @@ export class MessageService {
             ? (comparePosition(requestedUntil, currentHead) <= 0 ? requestedUntil : currentHead)
             : requestedUntil ?? currentHead
 
+        const atCurrentHead = !currentHead || (snapshotHead !== null && comparePosition(snapshotHead, currentHead) === 0)
+        const readThroughRevision = atCurrentHead ? this.store.sessions.getSession(sessionId)?.contentRevision ?? 0 : undefined
         if (!snapshotHead || comparePosition(snapshotHead, after) <= 0) {
             return {
                 messages: [],
                 page: {
+                    readThroughRevision,
                     direction: 'after',
                     limit,
                     epoch,
@@ -437,6 +504,7 @@ export class MessageService {
         return {
             messages: toVisibleDecryptedMessages(pageRows),
             page: {
+                ...(!hasMore && readThroughRevision !== undefined ? { readThroughRevision } : {}),
                 direction: 'after',
                 limit,
                 epoch,
@@ -881,10 +949,13 @@ export class MessageService {
             }
         }
 
+        // Every user message needs an identity: agents echo the turn back under
+        // it (Shared Codex clientUserMessageId), and (session, localId) is the
+        // only dedupe key. A sender that omits one gets a hub-minted id.
         const inserted = this.store.addMessageForCurrentSession(
             sessionId,
             content,
-            payload.localId ?? undefined,
+            payload.localId ?? randomUUID(),
             payload.scheduledAt ?? null
         )
         const actualSessionId = inserted.sessionId
@@ -957,6 +1028,12 @@ export class MessageService {
      * see the row in the next mature-scan tick and the user's prompt would be
      * silently dropped.  See HAPI Bot R4 finding.
      *
+     * Peer rows (`ping-peer-` localIds) are also skipped: the sweep's synthetic
+     * invokedAt is not a runtime-consumption ACK, so stamping one would falsely
+     * confirm a delivery the recipient runtime never made. Skipped peer rows
+     * stay pending and replayable on re-attach; only a real runtime ACK
+     * (messages-consumed) confirms them.
+     *
      * Returns the list of localIds that were stamped and the invokedAt timestamp,
      * or null if no messages needed sweeping.
      */
@@ -967,7 +1044,7 @@ export class MessageService {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
         const localIds = queued
             .map((m) => m.localId)
-            .filter((id): id is string => typeof id === 'string')
+            .filter((id): id is string => typeof id === 'string' && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX))
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)

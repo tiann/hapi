@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthProxyRedirectError } from './authProxy'
 import { ApiClient, ApiError } from './client'
 
 describe('ApiClient error mapping', () => {
@@ -11,8 +12,34 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
     })
 
+    it('passes an optional maxBytes bound to session file reads', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ success: true, content: '' }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await api.readSessionFile('session-1', 'images/page.png', 10 * 1024 * 1024)
+
+        expect(String(fetchMock.mock.calls[0]?.[0])).toContain('path=images%2Fpage.png')
+        expect(String(fetchMock.mock.calls[0]?.[0])).toContain('maxBytes=10485760')
+    })
+
     afterEach(() => {
         globalThis.fetch = originalFetch
+    })
+
+    it('passes cancellation through to session file search', async () => {
+        const controller = new AbortController()
+        fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+            init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+        }))
+        const api = new ApiClient('test-token')
+        const request = api.searchSessionFiles('session /', 'some path', 50, controller.signal)
+        const rejected = expect(request).rejects.toMatchObject({ name: 'AbortError' })
+        expect(fetchMock.mock.calls[0][0]).toBe('/api/sessions/session%20%2F/files?query=some+path&limit=50')
+        expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+        controller.abort()
+        await rejected
     })
 
     it('prefers the stable `code` field over the human-readable `error` message in ApiError.code', async () => {
@@ -330,6 +357,100 @@ describe('ApiClient error mapping', () => {
     })
 })
 
+describe('ApiClient session content search', () => {
+    it('uses the opt-in content-search endpoint with encoded query, limit, and session scope', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify({ results: [] }), { status: 200 })
+        )
+        try {
+            const api = new ApiClient('test-token')
+            await api.searchSessionContent(' cache search ', 12, undefined, ['session /?#', 'session /?#', 'other'])
+            const request = fetchMock.mock.calls[0]?.[0]
+            const init = fetchMock.mock.calls[0]?.[1]
+            expect(String(request)).toBe('/api/sessions/content-search')
+            expect(init?.method).toBe('POST')
+            expect(init?.body).toBe(JSON.stringify({
+                query: 'cache search',
+                limit: 12,
+                sessionIds: ['session /?#', 'other']
+            }))
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    it('chunks oversized session scopes and merges results before applying the limit', async () => {
+        const requests: string[][] = []
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+            const body = JSON.parse(String(init?.body)) as { sessionIds: string[] }
+            requests.push(body.sessionIds)
+            const resultSessionId = body.sessionIds.at(-1) ?? ''
+            const index = Number(resultSessionId.match(/session-(\d+)/)?.[1] ?? 0)
+            return new Response(JSON.stringify({
+                results: [{
+                    session: { id: resultSessionId, updatedAt: index },
+                    match: { messageId: `message-${index}`, role: 'user', seq: index, createdAt: index, snippet: `hit-${index}`, truncated: false }
+                }],
+                hasPotentiallyIncompleteResults: body.sessionIds.some(id => id.startsWith('session-0-'))
+            }), { status: 200 })
+        })
+
+        try {
+            const sessionIds = Array.from({ length: 7_000 }, (_, index) =>
+                `session-${index}-${'x'.repeat(32)}`
+            )
+            const api = new ApiClient('test-token')
+            const response = await api.searchSessionContent('cache', 2, undefined, sessionIds)
+
+            expect(requests.length).toBeGreaterThan(1)
+            expect(requests.flat()).toHaveLength(sessionIds.length)
+            expect(Math.max(...requests.map(chunk => new TextEncoder().encode(JSON.stringify(chunk)).byteLength)))
+                .toBeLessThan(192 * 1024)
+            const expectedTopIds = requests
+                .map(chunk => Number(chunk.at(-1)?.match(/session-(\d+)/)?.[1] ?? 0))
+                .sort((a, b) => b - a)
+                .slice(0, 2)
+            expect(response.results.map(result => result.match.messageId)).toEqual([
+                ...expectedTopIds.map(index => `message-${index}`)
+            ])
+            expect(response.hasPotentiallyIncompleteResults).toBe(true)
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    it('requests an encoded message context endpoint', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify(null), { status: 200 })
+        )
+        try {
+            const api = new ApiClient('test-token')
+            await expect(api.getMessageContext('session /?#', 'message /?#')).resolves.toBeNull()
+            expect(fetchMock.mock.calls[0]?.[0]).toBe(
+                '/api/sessions/session%20%2F%3F%23/messages/message%20%2F%3F%23/context'
+            )
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    it('loads all matching messages for an opened session', async () => {
+        const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+            new Response(JSON.stringify({ matches: [], total: 0 }), { status: 200 })
+        )
+        try {
+            const api = new ApiClient('test-token')
+            await api.searchSessionContentMatches('session /?#', ' cache search ', 42)
+            const request = fetchMock.mock.calls[0]?.[0]
+            expect(String(request)).toContain(
+                '/api/sessions/session%20%2F%3F%23/content-search?query=cache+search&limit=42'
+            )
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+})
+
 describe('ApiClient Kimi session model discovery', () => {
     let originalFetch: typeof globalThis.fetch
     let fetchMock: ReturnType<typeof vi.fn>
@@ -357,5 +478,59 @@ describe('ApiClient Kimi session model discovery', () => {
         const api = new ApiClient('test-token')
         await expect(api.getSessionKimiModels('session/1')).resolves.toEqual(catalog)
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%2F1/kimi-models')
+    })
+})
+
+describe('ApiClient auth proxy redirect', () => {
+    let originalFetch: typeof globalThis.fetch
+    let fetchMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+        fetchMock = vi.fn()
+        globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const opaqueRedirect = () => ({ type: 'opaqueredirect', status: 0, ok: false }) as Response
+
+    // Every hub call site must classify an auth-proxy redirect instead of
+    // surfacing the browser's opaque `Failed to fetch`.
+    const callSites: Array<{ name: string; run: (api: ApiClient) => Promise<unknown> }> = [
+        { name: 'authenticate', run: (api) => api.authenticate({ accessToken: 'token' }) },
+        { name: 'bind', run: (api) => api.bind({ initData: 'init', accessToken: 'token' }) },
+        { name: 'getSessions', run: (api) => api.getSessions() },
+        {
+            name: 'getGeneratedImageBlob',
+            run: (api) => api.getGeneratedImageBlob('session-1', 'image-1')
+        },
+        { name: 'migrateCursorSessionToAcp', run: (api) => api.migrateCursorSessionToAcp('session-1') },
+        {
+            name: 'fetchScratchlistAttachmentBlob',
+            run: (api) => api.fetchScratchlistAttachmentBlob('session-1', 'attachment-1')
+        }
+    ]
+
+    it.each(callSites)('$name rejects with AuthProxyRedirectError', async ({ run }) => {
+        fetchMock
+            .mockResolvedValueOnce(opaqueRedirect())
+            .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(run(api)).rejects.toBeInstanceOf(AuthProxyRedirectError)
+    })
+
+    it('getGeneratedImageBlob rejects with AuthProxyRedirectError on the 304 cache re-read', async () => {
+        fetchMock
+            .mockResolvedValueOnce({ type: 'basic', status: 304, ok: false } as Response)
+            .mockResolvedValueOnce(opaqueRedirect())
+            .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(api.getGeneratedImageBlob('session-1', 'image-1')).rejects.toBeInstanceOf(AuthProxyRedirectError)
+        expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: 'force-cache', redirect: 'manual' })
     })
 })

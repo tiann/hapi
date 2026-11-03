@@ -806,7 +806,7 @@ describe('AcpMessageHandler', () => {
             }
         });
 
-        it('keeps full edit rawInput (filePath/oldString/newString) over locations-only fallback', () => {
+        it('keeps full edit rawInput over locations-only fallback (canonicalized to the Edit view shape)', () => {
             const messages: AgentMessage[] = [];
             const handler = new AcpMessageHandler((message) => messages.push(message));
 
@@ -820,11 +820,6 @@ describe('AcpMessageHandler', () => {
                 rawInput: {}
             });
 
-            const fullInput = {
-                filePath: '/tmp/a.ts',
-                oldString: 'foo',
-                newString: 'bar'
-            };
             handler.handleUpdate({
                 sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
                 toolCallId: 'oc-edit-1',
@@ -832,13 +827,178 @@ describe('AcpMessageHandler', () => {
                 kind: 'edit',
                 status: 'in_progress',
                 locations: [{ path: '/tmp/a.ts' }],
-                rawInput: fullInput
+                rawInput: {
+                    filePath: '/tmp/a.ts',
+                    oldString: 'foo',
+                    newString: 'bar'
+                }
             });
 
             const calls = messages.filter(
                 (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
             );
-            expect(calls[calls.length - 1].input).toEqual(fullInput);
+            // The full args must survive instead of the locations-only
+            // fallback — now in the canonical shape the web Edit view renders.
+            expect(calls[calls.length - 1].name).toBe('Edit');
+            expect(calls[calls.length - 1].input).toEqual({
+                file_path: '/tmp/a.ts',
+                old_string: 'foo',
+                new_string: 'bar'
+            });
+        });
+
+        it('canonicalizes the OpenCode edit lifecycle to the Edit view shape', () => {
+            // Recorded wire shape (opencode v1.18.x acp/tool.ts): pending with
+            // rawInput {}, running with native camelCase args, completed with a
+            // text block FIRST and a diff block WITHOUT _meta.kind second.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-edit-canonical-1',
+                title: 'edit',
+                kind: 'edit',
+                status: 'pending',
+                locations: [{ path: '/tmp/a.ts' }],
+                rawInput: {}
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-edit-canonical-1',
+                title: 'a.ts',
+                kind: 'edit',
+                status: 'in_progress',
+                locations: [{ path: '/tmp/a.ts' }],
+                rawInput: {
+                    filePath: '/tmp/a.ts',
+                    oldString: 'const x = 1\n',
+                    newString: 'const x = 2\n'
+                }
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-edit-canonical-1',
+                status: 'completed',
+                content: [
+                    { type: 'content', content: { type: 'text', text: 'Edit applied successfully.' } },
+                    { type: 'diff', path: '/tmp/a.ts', oldText: 'const x = 1\n', newText: 'const x = 2\n' }
+                ],
+                rawOutput: { output: 'Edit applied successfully.' }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls[calls.length - 1].name).toBe('Edit');
+            expect(calls[calls.length - 1].input).toEqual({
+                file_path: '/tmp/a.ts',
+                old_string: 'const x = 1\n',
+                new_string: 'const x = 2\n'
+            });
+
+            const results = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_result' }> => m.type === 'tool_result'
+            );
+            expect(results).toHaveLength(1);
+            expect(results[0].status).toBe('completed');
+        });
+
+        it('canonicalizes an OpenCode edit as soon as rawInput arrives on the initial tool_call', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-edit-canonical-2',
+                title: 'edit',
+                kind: 'edit',
+                status: 'pending',
+                locations: [{ path: '/tmp/a.ts' }],
+                rawInput: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls).toHaveLength(1);
+            expect(calls[0].name).toBe('Edit');
+            expect(calls[0].input).toEqual({ file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' });
+        });
+
+        it('canonicalizes the OpenCode write lifecycle to the Write view shape', () => {
+            // OpenCode maps write to kind=edit and its completed content carries
+            // no diff block at all (diffContent requires oldString), so only
+            // rawInput-based canonicalization can produce the Write view shape.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-write-canonical-1',
+                title: 'write',
+                kind: 'edit',
+                status: 'pending',
+                locations: [{ path: '/tmp/b.txt' }],
+                rawInput: {}
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-write-canonical-1',
+                title: 'b.txt',
+                kind: 'edit',
+                status: 'in_progress',
+                locations: [{ path: '/tmp/b.txt' }],
+                rawInput: { filePath: '/tmp/b.txt', content: 'hello\n' }
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-write-canonical-1',
+                status: 'completed',
+                content: [
+                    { type: 'content', content: { type: 'text', text: 'Wrote 6 bytes to /tmp/b.txt' } }
+                ],
+                rawOutput: { output: 'Wrote 6 bytes to /tmp/b.txt' }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls[calls.length - 1].name).toBe('Write');
+            expect(calls[calls.length - 1].input).toEqual({ file_path: '/tmp/b.txt', content: 'hello\n' });
+        });
+
+        it('leaves non-diff OpenCode rawInput untouched (bash command args)', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-bash-canonical-1',
+                title: 'bash',
+                kind: 'execute',
+                status: 'pending',
+                rawInput: {}
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-bash-canonical-1',
+                title: 'bash',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'ls -la /tmp' }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls[calls.length - 1].name).toBe('bash');
+            expect(calls[calls.length - 1].input).toEqual({ command: 'ls -la /tmp' });
         });
     });
 
@@ -2543,5 +2703,393 @@ describe('AcpMessageHandler', () => {
             expect(messages[imageIndex].source).toEqual({ ingress: 'acp', flavor: 'cursor' });
         }
         clearGeneratedImages();
+    });
+});
+
+describe('AcpMessageHandler idle text flush', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    function textMessages(messages: AgentMessage[]): Array<Extract<AgentMessage, { type: 'text' }>> {
+        return messages.filter((message): message is Extract<AgentMessage, { type: 'text' }> =>
+            message.type === 'text'
+        );
+    }
+
+    it('flushes buffered text after the idle interval without a boundary event', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello world' }
+        });
+
+        await vi.advanceTimersByTimeAsync(999);
+        expect(messages).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(messages).toEqual([{ type: 'text', text: 'hello world', id: expect.any(String), streamSnapshot: true, live: true }]);
+
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(textMessages(messages)).toHaveLength(1);
+    });
+
+    it('postpones the idle flush while updates keep arriving', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello ' }
+        });
+
+        await vi.advanceTimersByTimeAsync(600);
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'world' }
+        });
+
+        await vi.advanceTimersByTimeAsync(600);
+        expect(messages).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(400);
+        expect(messages).toEqual([{ type: 'text', text: 'hello world', id: expect.any(String), streamSnapshot: true, live: true }]);
+    });
+
+    it('finalizes an idled segment under the same stream id at the boundary', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello' }
+        });
+
+        await vi.advanceTimersByTimeAsync(1000);
+        const [snapshot] = textMessages(messages);
+        expect(snapshot).toEqual({
+            type: 'text',
+            text: 'hello',
+            id: expect.any(String),
+            streamSnapshot: true,
+            live: true
+        });
+
+        handler.flushText();
+        const text = textMessages(messages);
+        expect(text).toHaveLength(2);
+        expect(text[1]).toEqual({
+            type: 'text',
+            text: 'hello',
+            id: snapshot.id,
+            streamSnapshot: true
+        });
+
+        handler.drainBuffers();
+        expect(textMessages(messages)).toHaveLength(2);
+    });
+
+    it('cancels the idle timer when a tool call closes the text segment', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello' }
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-1',
+            title: 'Read',
+            rawInput: { path: 'README.md' },
+            status: 'in_progress'
+        });
+
+        expect(messages.map((m) => m.type)).toEqual(['text', 'tool_call']);
+
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(messages).toHaveLength(2);
+    });
+
+    it('dedupe mode streams full-text snapshots under one stream id', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'Hello world.' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'Hello world. And more.' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        handler.flushText();
+
+        const text = textMessages(messages);
+        expect(text).toHaveLength(3);
+        expect(text[0].text).toEqual('Hello world.');
+        expect(text[1].text).toEqual('Hello world. And more.');
+        expect(text[2].text).toEqual('Hello world. And more.');
+        expect(text[0].id).toEqual(expect.any(String));
+        expect(text[1].id).toEqual(text[0].id);
+        expect(text[2].id).toEqual(text[0].id);
+        expect(text[2].streamSnapshot).toBe(true);
+    });
+
+    it('stays silent when no text is buffered', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'thinking' }
+        });
+
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(messages.filter((m) => m.type === 'text')).toEqual([]);
+    });
+
+    it('is disabled when textIdleFlushMs is zero', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 0
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello' }
+        });
+
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(textMessages(messages)).toHaveLength(0);
+
+        handler.flushText();
+        expect(messages).toEqual([{ type: 'text', text: 'hello' }]);
+    });
+
+    it('re-asserts the same snapshot for a repeated cumulative chunk', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'abc' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'abc' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        const text = textMessages(messages);
+        expect(text).toHaveLength(2);
+        expect(text[0].id).toEqual(expect.any(String));
+        expect(text[1].id).toEqual(text[0].id);
+        expect(text[1].text).toEqual('abc');
+    });
+
+    it('settles a prepend-then-append rewrite on the full answer under one stream id', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'world' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello world' }
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'hello world!' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        handler.flushText();
+
+        const text = textMessages(messages);
+        expect(text).toHaveLength(3);
+        const id = text[0].id;
+        expect(id).toEqual(expect.any(String));
+        for (const message of text) {
+            expect(message.id).toEqual(id);
+        }
+        expect(text[0].text).toEqual('world');
+        expect(text[1].text).toEqual('hello world!');
+        expect(text[2].text).toEqual('hello world!');
+        expect(text.some((message) => message.text === 'hello ')).toBe(false);
+    });
+
+    it('defers an incomplete internal envelope until a boundary flush drops it', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '{"type":"ou' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(textMessages(messages)).toEqual([]);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'tput","data":{"parentUuid":null,"sessionId":"s","userType":"x"}}' }
+        });
+        handler.drainBuffers();
+        expect(textMessages(messages)).toEqual([]);
+    });
+
+    it('still flushes a complete JSON answer at idle', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '{"a":1}' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(textMessages(messages)).toEqual([{ type: 'text', text: '{"a":1}', id: expect.any(String), streamSnapshot: true, live: true }]);
+    });
+
+    it('keeps reasoning above the answer when a trailing thought arrives after text', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'the answer' }
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'trailing thought' }
+        });
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(textMessages(messages)).toEqual([]);
+
+        handler.drainBuffers();
+
+        const ordered = messages.filter((message) => message.type === 'text' || message.type === 'reasoning');
+        const reasoningIndex = ordered.findIndex(
+            (message) => message.type === 'reasoning' && message.text.includes('trailing thought')
+        );
+        const textIndex = ordered.findIndex((message) => message.type === 'text');
+        expect(reasoningIndex).toBeGreaterThanOrEqual(0);
+        expect(textIndex).toBeGreaterThan(reasoningIndex);
+        expect(ordered[textIndex]).toEqual({ type: 'text', text: 'the answer' });
+    });
+
+    it('still flushes brace-leading text that cannot be a control envelope', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '{"name":"hapi",' }
+        });
+
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(textMessages(messages)).toEqual([{ type: 'text', text: '{"name":"hapi",', id: expect.any(String), streamSnapshot: true, live: true }]);
+    });
+
+    it('defers a control envelope whose data key arrives before type', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '{"data":{"parentUuid":null,"sessionId":"s","userType":"x"},' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(textMessages(messages)).toEqual([]);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '"type":"output"}' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(textMessages(messages)).toEqual([]);
+
+        handler.drainBuffers();
+        expect(textMessages(messages)).toEqual([]);
+    });
+
+    it('keeps one stream id across an idle gap inside an open code fence', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            textChunkMode: 'delta',
+            textIdleFlushMs: 1000
+        });
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: '```js\nconst a = 1;\n' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'console.log(a);\n```' }
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+
+        const text = textMessages(messages);
+        expect(text).toHaveLength(2);
+        expect(text[0].id).toEqual(expect.any(String));
+        expect(text[1].id).toEqual(text[0].id);
+        expect(text[1].text).toEqual('```js\nconst a = 1;\nconsole.log(a);\n```');
     });
 });

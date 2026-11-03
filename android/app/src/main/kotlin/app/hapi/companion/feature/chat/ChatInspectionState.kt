@@ -117,6 +117,7 @@ internal class TranscriptProjection {
                 is ToolGroupBlock -> block.withTools(emptyList())
                 is ToolCallBlock -> ToolCallBlock(block.id, block.localId, block.createdAt, block.invokedAt,
                     durationMs = block.durationMs, usage = block.usage, model = block.model,
+                    roundSummary = block.roundSummary,
                     tool = toolForTranscript(block.tool), children = emptyList(), meta = block.meta)
                 else -> block
             })
@@ -130,5 +131,6 @@ internal class TranscriptProjection {
 
 private fun ToolGroupBlock.withTools(members: List<ToolCallBlock>) = ToolGroupBlock(
     id, createdAt, invokedAt, firstToolId, lastToolId, members, defaultOpen,
-    historyState, needsOlderHistory, activityTitle, presentationMode, summary,
+    historyState, needsOlderHistory, activityTitle, presentationMode,
+    roundSummary, summary,
 )

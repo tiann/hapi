@@ -124,7 +124,7 @@ request scheduling, answer APIs or notification withdrawal.
 | Allow | `POST /api/sessions/:id/permissions/:requestId/approve` |
 | Deny | `POST /api/sessions/:id/permissions/:requestId/deny` |
 
-`localId` is optional in the send-message body - an opaque client-generated id for reconciling the locally shown message with the server-echoed one.
+`localId` is optional in the send-message body - an opaque client-generated id for reconciling the locally shown message with the server-echoed one. When omitted, the hub mints one.
 
 The REST send endpoint stamps `sentFrom: 'webapp'` server-side for native
 and web sends alike; clients do not send a `sentFrom` field. See
