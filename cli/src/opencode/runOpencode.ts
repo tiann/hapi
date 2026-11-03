@@ -1,3 +1,4 @@
+import type { OpencodeSteerCancelHandler } from './utils/opencodeV2Steer';
 import { logger } from '@/ui/logger';
 import { randomUUID } from 'node:crypto';
 import { opencodeLoop } from './loop';
@@ -461,9 +462,12 @@ export async function runOpencode(opts: {
         });
     });
 
+    let cancelNativeSteer: OpencodeSteerCancelHandler | null = null;
     session.onCancelQueuedMessage((localId) => {
+        const nativeCancellation = cancelNativeSteer?.(localId);
+        if (nativeCancellation !== undefined) return nativeCancellation;
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
-        if (removedFromQueue) {
+        if (removedFromQueue === true) {
             if (queuedClearLocalId === localId) {
                 queuedClearLocalId = null;
                 clearTransitionLatched = false;
@@ -480,6 +484,7 @@ export async function runOpencode(opts: {
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
         }
+        if (removedFromQueue !== false) return removedFromQueue;
         if (preparingLocalIds.has(localId)) {
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
@@ -572,6 +577,7 @@ export async function runOpencode(opts: {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
             },
+            onSteerCancelHandlerChange: (handler) => { cancelNativeSteer = handler; },
             onCompactAvailabilityChange: (available) => {
                 compactSupported = available;
                 if (!available) {
