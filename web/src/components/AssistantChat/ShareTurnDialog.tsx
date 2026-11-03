@@ -160,6 +160,28 @@ function setPreviewCodeWrap(control: HTMLElement, enabled: boolean): void {
     }
 }
 
+function ensurePreviewTableControls(root: HTMLElement, label: string): void {
+    for (const frame of Array.from(root.querySelectorAll<HTMLElement>('.aui-md-table-frame'))) {
+        if (frame.querySelector('[data-hapi-table-open-fullscreen="true"]')) continue
+
+        const actions = document.createElement('div')
+        actions.className = 'aui-md-table-actions flex items-center gap-1'
+        actions.dataset.hapiShareExportExclude = 'true'
+        actions.dataset.hapiTableActionsLayout = 'horizontal'
+
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.dataset.hapiTableOpenFullscreen = 'true'
+        button.dataset.hapiTableViewerControl = 'true'
+        button.dataset.hapiTableAction = 'fullscreen'
+        button.setAttribute('aria-label', label)
+        button.title = label
+        button.className = 'flex h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-[color] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
+        button.textContent = '⛶'
+        actions.append(button)
+        frame.append(actions)
+    }
+}
 function prepareExportElement(element: HTMLElement, exportWidth: number, preserveSourceLayout: boolean): HTMLElement {
     const captureElement = element.cloneNode(true)
     if (!(captureElement instanceof HTMLElement)) {
@@ -735,6 +757,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         // capture-only controls nested in a snapshot root that was assembled
         // from multiple top-level nodes.
         stripCaptureOnlyControls(body)
+        ensurePreviewTableControls(body, t('table.openFullscreen'))
 
         if ((body.innerText || body.textContent || '').trim().length === 0 && textLength > 0) {
             for (const snapshot of props.sourceSnapshots) {

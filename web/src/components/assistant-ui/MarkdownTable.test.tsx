@@ -109,6 +109,18 @@ describe('MarkdownTable', () => {
         expect(screen.getByRole('button', { name: 'Open table full screen' })).toBeInTheDocument()
     })
 
+    it('keeps a hover-opened action menu open on the first click', async () => {
+        renderTable()
+
+        const trigger = screen.getByRole('button', { name: 'Copy table' })
+        fireEvent.mouseEnter(trigger)
+        expect(await screen.findByRole('menuitem', { name: 'Copy image' })).toBeInTheDocument()
+
+        fireEvent.pointerDown(trigger, { button: 0 })
+        fireEvent.click(trigger)
+
+        expect(screen.getByRole('menuitem', { name: 'Copy image' })).toBeInTheDocument()
+    })
     it('does not size inline table actions to the wrapped header row', () => {
         renderTable()
 
@@ -840,9 +852,12 @@ describe('MarkdownTable', () => {
         const code = document.createElement('code')
         code.textContent = 'docs/main.ts'
         codeLink.append(code)
-        cell.append(plainLink, ' ', codeLink)
+        const inertLink = document.createElement('span')
+        inertLink.dataset.hapiMarkdownHref = 'hapi-file:docs%2Fconfig.ts'
+        inertLink.textContent = 'docs/config.ts'
+        cell.append(plainLink, ' ', codeLink, ' ', inertLink)
 
-        expect(serializeTableToMarkdown(table)).toBe('| Files |\n| --- |\n| docs/router.tsx `docs/main.ts` |\n')
+        expect(serializeTableToMarkdown(table)).toBe('| Files |\n| --- |\n| docs/router.tsx `docs/main.ts` docs/config.ts |\n')
     })
 
     it('escapes image alt text before rebuilding Markdown', () => {

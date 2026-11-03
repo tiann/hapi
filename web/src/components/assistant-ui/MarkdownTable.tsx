@@ -232,6 +232,7 @@ function TableActionMenu(props: {
     const [open, setOpen] = useState(false)
     const closeTimerRef = useRef<number | null>(null)
     const hoverOpenedRef = useRef(false)
+    const suppressHoverClickRef = useRef(false)
 
     const clearCloseTimer = useCallback(() => {
         if (closeTimerRef.current == null) return
@@ -277,10 +278,20 @@ function TableActionMenu(props: {
                             if (!hoverOpenedRef.current) return
 
                             hoverOpenedRef.current = false
+                            suppressHoverClickRef.current = true
+                            window.setTimeout(() => {
+                                suppressHoverClickRef.current = false
+                            }, 0)
                             if (!open || event.button !== 0 || event.ctrlKey) return
 
                             event.currentTarget.focus()
                             event.preventDefault()
+                        }}
+                        onClick={(event) => {
+                            if (!suppressHoverClickRef.current) return
+                            suppressHoverClickRef.current = false
+                            event.preventDefault()
+                            event.stopPropagation()
                         }}
                         className={cn(
                             props.compact
@@ -417,6 +428,7 @@ function serializeInlineMarkdown(node: Node): string {
         }
         case 'span': {
             const href = element.dataset.hapiMarkdownHref
+            if (href?.startsWith('hapi-file:') || href?.startsWith('hapi-file-candidate:')) return children()
             return href ? `[${children()}](${serializeMarkdownDestination(href)})` : children()
         }
         default:
