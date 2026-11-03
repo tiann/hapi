@@ -169,7 +169,7 @@ struct SessionListView: View {
                 }
             }
         }
-        .listStyle(.plain)
+        .modifier(PlatformSessionListStyle())
         // The default plain header height leaves a blank band between
         // Pinned and Recent; headers size to their compact text instead.
         .environment(\.defaultMinListHeaderHeight, 0)
@@ -211,7 +211,7 @@ struct SessionListView: View {
                 .buttonStyle(.plain)
             }
         }
-        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+        .listRowInsets(EdgeInsets(top: Self.rowVerticalInset, leading: 16, bottom: Self.rowVerticalInset, trailing: 16))
         // Default separator color reads heavy against these rows; the theme
         // divider is the WeChat-style faint hairline.
         .listRowSeparatorTint(theme.divider)
@@ -224,6 +224,15 @@ struct SessionListView: View {
         .contextMenu {
             contextMenuActions(row)
         }
+    }
+
+    /// Pointer rows on a Mac sidebar are denser than touch rows.
+    private static var rowVerticalInset: CGFloat {
+        #if targetEnvironment(macCatalyst)
+        6
+        #else
+        12
+        #endif
     }
 
     /// Compact header (Mail-style) instead of the large plain-list default.
@@ -558,5 +567,17 @@ struct FilterChip: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Mac windows get the native sidebar list (vibrant background, rounded
+/// accent selection, hover); touch layouts keep the plain list.
+private struct PlatformSessionListStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        content.listStyle(.sidebar)
+        #else
+        content.listStyle(.plain)
+        #endif
     }
 }

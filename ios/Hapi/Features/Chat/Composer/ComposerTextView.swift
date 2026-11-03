@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// A selection-aware multiline input on every supported iOS version. UIKit
 /// owns selection and IME marked text while editing; SwiftUI owns the draft.
@@ -10,6 +11,11 @@ struct ComposerTextView: UIViewRepresentable {
     @Binding var isComposing: Bool
     let font: UIFont
     let accessibilityLabel: String
+    /// Mac: a bare Return submits through this handler (true = consumed);
+    /// Shift/Option-Return and IME commits still edit the text.
+    var onReturn: (() -> Bool)? = nil
+    /// Pasted images and copied files become attachments instead of text.
+    var onPasteItems: (([NSItemProvider]) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -60,6 +66,8 @@ struct ComposerTextView: UIViewRepresentable {
                 coordinator.publishSelection(view)
             }
         }
+        view.onReturn = onReturn
+        view.onPasteItems = onPasteItems
         view.wantsFocus = isFocused
         view.updateFocus()
     }
@@ -79,6 +87,41 @@ struct ComposerTextView: UIViewRepresentable {
 
     final class NativeTextView: UITextView {
         var wantsFocus = false
+        var onReturn: (() -> Bool)?
+        var onPasteItems: (([NSItemProvider]) -> Void)?
+
+        /// Only image-only clipboards and copied files; anything with text
+        /// keeps the normal text paste.
+        private var pastesAttachments: Bool {
+            guard onPasteItems != nil else { return false }
+            let board = UIPasteboard.general
+            return board.types.contains(UTType.fileURL.identifier) || (board.hasImages && !board.hasStrings)
+        }
+
+        override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+            if action == #selector(paste(_:)), pastesAttachments { return true }
+            return super.canPerformAction(action, withSender: sender)
+        }
+
+        override func paste(_ sender: Any?) {
+            if pastesAttachments, let onPasteItems {
+                onPasteItems(UIPasteboard.general.itemProviders)
+                return
+            }
+            super.paste(sender)
+        }
+
+        #if targetEnvironment(macCatalyst)
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            if markedTextRange == nil, let key = presses.first?.key,
+               key.keyCode == .keyboardReturnOrEnter || key.keyCode == .keypadEnter,
+               key.modifierFlags.isDisjoint(with: [.shift, .alternate, .command, .control]),
+               onReturn?() == true {
+                return
+            }
+            super.pressesBegan(presses, with: event)
+        }
+        #endif
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
