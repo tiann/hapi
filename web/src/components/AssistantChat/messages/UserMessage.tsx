@@ -33,6 +33,9 @@ export function HappyUserMessage() {
     const invokedAt = useAuiState((s) => (
         s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.invokedAt)
+    const sourceMessageId = useAuiState((s) => (
+        s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.sourceMessageId)
     const attachments = useAuiState((s) => {
         if (s.message.role !== 'user') return undefined
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -146,8 +149,8 @@ export function HappyUserMessage() {
                 align="end"
                 copyText={hasText ? text : undefined}
                 messageElementId={elementId}
-                onBranch={ctx.onBranchConversation && localId && invokedAt != null
-                    ? () => ctx.onBranchConversation?.(localId) : undefined}
+                onBranch={ctx.onBranchConversation && (localId || sourceMessageId) && invokedAt != null
+                    ? () => localId ? ctx.onBranchConversation?.(localId) : ctx.onBranchConversation?.(undefined, sourceMessageId) : undefined}
                 showFork={showFork}
                 allowForkWhileRunning={showHistoricalFork && ctx.metadata?.flavor === 'codex'}
                 showRewind={showRewind}

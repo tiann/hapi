@@ -1754,7 +1754,7 @@ export class SyncEngine {
             // inputs and subsequent source events can never enter this reference.
             const reference = buildBranchPrompt(this.store.messages.getAllMessages(sessionId), request)
             const branch = {
-                sourceSessionId: sessionId, messageLocalId: request.messageLocalId,
+                sourceSessionId: sessionId, messageLocalId: request.messageLocalId, messageId: request.messageId,
                 boundary: request.boundary, mode: 'visible-text' as const,
                 requestFingerprint: fingerprint, state: 'launching' as const,
                 createdAt: Date.now(), messageCount: reference.messageCount, workspace: request.workspace

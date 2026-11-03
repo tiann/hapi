@@ -670,7 +670,7 @@ function SessionChatInner(props: SessionChatProps) {
     const { toolCardDisplayMode } = useToolCardDisplayMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
-    const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string } | null>(null)
+    const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string; messageId?: string } | null>(null)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
@@ -2092,6 +2092,7 @@ function SessionChatInner(props: SessionChatProps) {
                         machineId={props.session.metadata.machineId}
                         sourceAgent={props.session.metadata.flavor ?? 'claude'}
                         messageLocalId={branchPoint.messageLocalId}
+                        messageId={branchPoint.messageId}
                         onClose={() => setBranchPoint(null)}
                         onSubmit={async options => {
                             setHistoryActionPending(true)
@@ -2121,7 +2122,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onContinuePlan={() => focusComposerRef.current?.()}
                         historyActionPending={historyActionPending}
                         onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && ['claude', 'codex'].includes(props.session.metadata?.flavor ?? 'claude')
-                            ? messageLocalId => setBranchPoint({ messageLocalId }) : undefined}
+                            ? (messageLocalId, messageId) => setBranchPoint({ messageLocalId, messageId }) : undefined}
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}

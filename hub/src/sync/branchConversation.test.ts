@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { CreateOrLoadSessionRequestSchema, type BranchConversationRequest } from '@hapi/protocol/apiTypes'
+import { BranchConversationRequestSchema, CreateOrLoadSessionRequestSchema, type BranchConversationRequest } from '@hapi/protocol/apiTypes'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
@@ -29,6 +29,27 @@ function fixture() {
     return { store, engine, source, rpc }
 }
 describe('portable branch lifecycle', () => {
+    it('accepts one stored or local boundary identifier, but not both', () => {
+        expect(BranchConversationRequestSchema.safeParse({ ...request, messageLocalId: undefined, messageId: 'stored' }).success).toBe(true)
+        expect(BranchConversationRequestSchema.safeParse({ ...request, messageId: 'stored' }).success).toBe(false)
+    })
+    it('branches from a stored terminal message and retains its boundary provenance', async () => {
+        const { store, engine, source, rpc } = fixture()
+        const terminal = store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'Terminal prompt' } })
+        store.messages.addMessage(source.id, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Terminal reply' } } })
+        rpc.spawnSession = async (...args) => ({ type: 'success', sessionId: args[17]! })
+        const options = { ...request, messageLocalId: undefined, messageId: terminal.id, boundary: 'after' as const }
+        try {
+            const result = await engine.branchConversation(source.id, 'default', options)
+            expect(result.type).toBe('success')
+            if (result.type !== 'success') throw new Error(result.message)
+            expect(engine.getSession(result.sessionId)?.metadata?.conversationBranch?.messageId).toBe(terminal.id)
+            const prompt = JSON.stringify(store.messages.getAllMessages(result.sessionId))
+            expect(prompt).toContain('Terminal prompt')
+            expect(prompt).toContain('Terminal reply')
+            expect(await engine.branchConversation(source.id, 'default', options)).toEqual(result)
+        } finally { engine.stop() }
+    })
     it('preallocates a fresh target, persists reference before spawn, and submits once', async () => {
         const { store, engine, source, rpc } = fixture()
         let calls = 0

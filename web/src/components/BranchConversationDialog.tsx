@@ -12,6 +12,7 @@ export function BranchConversationDialog(props: {
     machineId: string
     sourceAgent: string
     messageLocalId?: string
+    messageId?: string
     onClose: () => void
     onSubmit: (options: BranchConversationRequest) => Promise<void>
 }) {
@@ -43,7 +44,7 @@ export function BranchConversationDialog(props: {
     })
     const submit = async () => {
         const options = { agent, model: model || undefined, boundary, workspace,
-            messageLocalId: props.messageLocalId, instruction: instruction.trim() }
+            messageLocalId: props.messageLocalId, messageId: props.messageId, instruction: instruction.trim() }
         const fingerprint = JSON.stringify(options)
         const requestId = attempt?.fingerprint === fingerprint ? attempt.requestId : crypto.randomUUID()
         setAttempt({ fingerprint, requestId })
@@ -61,7 +62,7 @@ export function BranchConversationDialog(props: {
                 <DialogDescription>{t('branch.description')}</DialogDescription>
             </DialogHeader>
             <div className="flex flex-col gap-3">
-                {props.messageLocalId ? <label className="text-sm">{t('branch.boundary')}
+                {props.messageLocalId || props.messageId ? <label className="text-sm">{t('branch.boundary')}
                     <SelectControl aria-label={t('branch.boundary')} className={control} value={boundary} disabled={pending}
                         onChange={event => setBoundary(event.target.value as 'before' | 'after')}>
                         <option value="before">{t('branch.before')}</option>

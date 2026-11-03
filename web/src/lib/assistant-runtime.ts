@@ -35,6 +35,7 @@ export type HappyChatMessageMetadata = {
     kind: 'user' | 'assistant' | 'tool' | 'event' | 'cli-output' | 'codex-review' | 'compact-summary'
     status?: HappyMessageStatus
     localId?: string | null
+    sourceMessageId?: string
     originalText?: string
     toolCallId?: string
     event?: AgentEvent
@@ -506,6 +507,7 @@ function toThreadMessageLike(
                     kind: 'user',
                     status: block.status,
                     localId: block.localId,
+                    sourceMessageId: block.id,
                     originalText: block.originalText,
                     attachments: block.attachments,
                     invokedAt: block.invokedAt,

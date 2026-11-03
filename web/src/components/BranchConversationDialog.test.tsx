@@ -5,19 +5,29 @@ import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { BranchConversationDialog } from './BranchConversationDialog'
 
-function mount(onSubmit = vi.fn().mockResolvedValue(undefined)) {
+function mount(onSubmit = vi.fn().mockResolvedValue(undefined), boundary: { messageLocalId?: string; messageId?: string } = { messageLocalId: 'turn-two' }) {
     const api = {
         getMachineClaudeModels: vi.fn().mockResolvedValue({ success: true, availableModels: [{ value: 'claude-opus-test', displayName: 'Opus test' }] }),
         getMachineCodexModels: vi.fn().mockResolvedValue({ success: true, models: [{ id: 'codex-test', displayName: 'Codex test' }] })
     } as unknown as ApiClient
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
         <I18nProvider><BranchConversationDialog api={api} machineId="machine" sourceAgent="claude"
-            messageLocalId="turn-two" onClose={vi.fn()} onSubmit={onSubmit} /></I18nProvider>
+            {...boundary} onClose={vi.fn()} onSubmit={onSubmit} /></I18nProvider>
     </QueryClientProvider>)
     return { api, onSubmit }
 }
 afterEach(cleanup)
 describe('BranchConversationDialog', () => {
+    it('submits a terminal message id as the historical boundary', async () => {
+        const onSubmit = vi.fn().mockResolvedValue(undefined)
+        mount(onSubmit, { messageId: 'stored-turn' })
+        fireEvent.change(screen.getByLabelText('Keep history'), { target: { value: 'after' } })
+        fireEvent.change(screen.getByLabelText('First instruction in the new branch'), { target: { value: 'Continue' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
+        await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+        expect(onSubmit.mock.calls[0][0]).toMatchObject({ messageId: 'stored-turn', boundary: 'after' })
+        expect(onSubmit.mock.calls[0][0].messageLocalId).toBeUndefined()
+    })
     it('selects another harness, its discovered model, boundary and workspace', async () => {
         const { onSubmit } = mount()
         await screen.findByRole('option', { name: 'Opus test' })

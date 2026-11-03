@@ -10,7 +10,7 @@ const onFork = vi.fn(async (_localId?: string) => {})
 const state = {
     message: { id: 'user-text:interrupted', role: 'user', createdAt: new Date(10),
         content: [{ type: 'text', text: 'Interrupted prompt' }],
-        metadata: { custom: { kind: 'user', localId: 'local-interrupted', invokedAt: 10 as number | null } } },
+        metadata: { custom: { kind: 'user', localId: 'local-interrupted' as string | null, sourceMessageId: 'stored-message', invokedAt: 10 as number | null } } },
     thread: { isRunning: true, messages: [] }
 }
 const ctx = {
@@ -53,6 +53,7 @@ describe('user-only completed fork boundary', () => {
         onFork.mockClear()
         onBranch.mockClear()
         state.message.metadata.custom.invokedAt = 10
+        state.message.metadata.custom.localId = 'local-interrupted'
         state.thread.isRunning = true
         ctx.metadata.flavor = 'codex'
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = true
@@ -90,6 +91,15 @@ describe('user-only completed fork boundary', () => {
         state.message.metadata.custom.invokedAt = null
         mount()
         expect(screen.queryByRole('button', { name: 'Branch with options' })).toBeNull()
+    })
+
+    it('offers a portable branch for an invoked terminal message without a local id', () => {
+        state.message.metadata.custom.localId = null
+        state.thread.isRunning = false
+        ctx.metadata.flavor = 'claude'
+        mount()
+        fireEvent.click(screen.getByRole('button', { name: 'Branch with options' }))
+        expect(onBranch).toHaveBeenCalledWith(undefined, 'stored-message')
     })
 
     it('retains current-fork semantics for the same card when idle', async () => {

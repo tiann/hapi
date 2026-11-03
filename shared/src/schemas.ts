@@ -79,6 +79,7 @@ export const MetadataSchema = z.object({
     conversationBranch: z.object({
         sourceSessionId: z.string(),
         messageLocalId: z.string().optional(),
+        messageId: z.string().optional(),
         boundary: z.enum(['before', 'after']),
         mode: z.literal('visible-text'),
         requestFingerprint: z.string(),

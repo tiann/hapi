@@ -3,6 +3,7 @@ import { isObject } from '@hapi/protocol'
 import { extractAssistantPlainText, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { BranchConversationRequest } from '@hapi/protocol/apiTypes'
 import type { StoredMessage } from '../store/types'
+import { isUserInputMessage } from '../store/sessionUserActivity'
 
 export const BRANCH_CONTEXT_MAX_BYTES = 256 * 1024
 
@@ -60,6 +61,7 @@ function referenceEntries(message: StoredMessage): ReferenceEntry[] {
     const record = unwrapRoleWrappedRecordEnvelope(message.content)
     if (!record) return []
     if (record.role === 'user') {
+        if (!isUserInputMessage(message.content)) return []
         const text = userText(record.content)
         return text ? [{ role: 'user', text }] : []
     }
@@ -105,12 +107,12 @@ export function buildBranchPrompt(messages: StoredMessage[], request: BranchConv
     const ordered = messages.filter(row => row.invokedAt !== null).sort((a, b) =>
         (a.invokedAt! - b.invokedAt!) || a.seq - b.seq)
     let end = ordered.length
-    if (request.messageLocalId) {
-        const index = ordered.findIndex(row => row.localId === request.messageLocalId
-            && unwrapRoleWrappedRecordEnvelope(row.content)?.role === 'user')
+    if (request.messageLocalId || request.messageId) {
+        const index = ordered.findIndex(row => (request.messageId ? row.id === request.messageId : row.localId === request.messageLocalId)
+            && isUserInputMessage(row.content))
         if (index < 0) throw new Error('Branch boundary user message not found or not invoked')
         end = request.boundary === 'before' ? index : ordered.findIndex((row, i) =>
-            i > index && unwrapRoleWrappedRecordEnvelope(row.content)?.role === 'user')
+            i > index && isUserInputMessage(row.content))
         if (end < 0) end = ordered.length
     }
     const entries = ordered.slice(0, end).flatMap(referenceEntries)
