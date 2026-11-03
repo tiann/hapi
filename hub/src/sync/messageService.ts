@@ -309,6 +309,10 @@ export class MessageService {
     }
 
     clearScheduledAttachmentDeliveryCache(sessionId: string): void {
+        // A replacement CLI process has an empty in-memory queue. Allow the
+        // durable handoff reconstruction to replay the full remaining order;
+        // same-client transport reconnects return before this invalidation.
+        this.completedOrderedDeliverableSignatures.delete(sessionId)
         this.scheduledAttachmentDeliveryGenerations.set(
             sessionId,
             (this.scheduledAttachmentDeliveryGenerations.get(sessionId) ?? 0) + 1,
@@ -1580,6 +1584,23 @@ export class MessageService {
         return released
     }
 
+    private completedClearHandoffCutoff(sessionId: string): number | null {
+        for (const source of this.store.sessions.getSessions()) {
+            const metadata = source.metadata
+            if (!isObject(metadata)
+                || metadata.supersededBySessionId !== sessionId
+                || !isObject(metadata.opencodeClearOperation)
+                || metadata.opencodeClearOperation.state !== 'completed'
+                || metadata.opencodeClearOperation.replacementSessionId !== sessionId) {
+                continue
+            }
+            return typeof metadata.opencodeClearOperation.updatedAt === 'number'
+                ? metadata.opencodeClearOperation.updatedAt
+                : source.updatedAt
+        }
+        return null
+    }
+
     private deliverableQueueSignature(sessionId: string): string {
         return this.store.messages
             .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
@@ -1650,20 +1671,23 @@ export class MessageService {
             if (this.matureReleaseInFlightSessions.has(sessionId)) return
             const deliverable = this.store.messages
                 .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
-            const hasImmediateDeliverable = deliverable.some((message) => message.scheduledAt === null)
+            const clearHandoffCutoff = this.completedClearHandoffCutoff(sessionId)
+            const hasHandoffMature = clearHandoffCutoff !== null
+                && messages.some((message) => message.createdAt <= clearHandoffCutoff)
+            const hasHandoffImmediate = clearHandoffCutoff !== null
+                && deliverable.some((message) => message.scheduledAt === null
+                    && message.createdAt <= clearHandoffCutoff)
             const deliverableSignature = deliverable
                 .map((message) => `${message.id}:${message.seq}`)
                 .join('\u001f')
-            // The retry marker is process-local, so reconstruct the ordered
-            // drain from durable rows after a Hub restart. A mature scheduled
-            // row followed by an immediate row must not take the scheduled-only
-            // path, or the immediate row arrives after later scheduled rows.
-            // The signature prevents re-emitting an already drained queue on
-            // each tick while the CLI ACK is still pending.
+            // Reconstruct only the durable OpenCode clear-handoff prefix. An
+            // ordinary mixed queue must retain scheduled_at ordering, even when
+            // it also has an immediate prompt waiting behind it. The signature
+            // prevents re-emitting a drained handoff while its CLI ACK is pending.
             const hasPendingOrderedDrain = this.pendingOrderedDeliverableReleaseSessions.has(sessionId)
             const needsOrderedDrain = hasPendingOrderedDrain
-                || (messages.length > 0
-                    && hasImmediateDeliverable
+                || (hasHandoffMature
+                    && hasHandoffImmediate
                     && this.completedOrderedDeliverableSignatures.get(sessionId) !== deliverableSignature)
             if (needsOrderedDrain) {
                 if (!hasPendingOrderedDrain && !this.hasCliSessionConnection(sessionId)) return

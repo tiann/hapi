@@ -3045,6 +3045,136 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('keeps scheduled_at ordering for ordinary mixed queues with a pending immediate prompt', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordinary-mixed-deadline-order')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(store, io, makePublisher() as any)
+        const now = Date.now()
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'later deadline' } },
+            'ordinary-later-deadline',
+            now - 100,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'earlier deadline' } },
+            'ordinary-earlier-deadline',
+            now - 500,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'pending immediate' } },
+            'ordinary-pending-immediate',
+        )
+
+        await service.releaseMatureScheduledMessages(now)
+
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordinary-earlier-deadline',
+            'ordinary-later-deadline',
+        ])
+    })
+
+    it('invalidates a completed ordered drain when the CLI instance is replaced', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-handoff-replacement-cli')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => (
+                    attachments.map((attachment) => ({ ...attachment, path: '/tmp/replacement-cli.png' }))
+                ),
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'replacement-cli')],
+                },
+            },
+            'replacement-cli-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'replacement-cli-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'replacement-cli-c',
+            scheduledAt,
+        )
+        const clearCutoff = Date.now() + 1_000
+        store.sessions.getOrCreateSession(
+            'opencode-clear-source',
+            {
+                path: '/tmp/opencode-clear-source',
+                host: 'localhost',
+                flavor: 'opencode',
+                supersededBySessionId: session.id,
+                opencodeClearOperation: {
+                    replacementSessionId: session.id,
+                    state: 'completed',
+                    updatedAt: clearCutoff,
+                },
+            },
+            null,
+            'default',
+        )
+
+        await service.releaseDeliverableQueuedMessages(session.id, Date.now())
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'replacement-cli-a',
+            'replacement-cli-b',
+            'replacement-cli-c',
+        ])
+        cliEmitted.length = 0
+
+        service.clearScheduledAttachmentDeliveryCache(session.id)
+        await service.releaseMatureScheduledMessages(Date.now())
+
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'replacement-cli-a',
+            'replacement-cli-b',
+            'replacement-cli-c',
+        ])
+    })
+
     it('reconstructs a pending ordered handoff after the Hub restarts', async () => {
         const store = makeStore()
         const session = makeSession(store, 'ordered-handoff-restart')
@@ -3097,6 +3227,24 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
             { role: 'user', content: { type: 'text', text: 'scheduled C' } },
             'restart-handoff-c',
             scheduledAt,
+        )
+
+        const clearCutoff = Date.now() + 1_000
+        store.sessions.getOrCreateSession(
+            'ordered-handoff-restart-source',
+            {
+                path: '/tmp/ordered-handoff-restart-source',
+                host: 'localhost',
+                flavor: 'opencode',
+                supersededBySessionId: session.id,
+                opencodeClearOperation: {
+                    replacementSessionId: session.id,
+                    state: 'completed',
+                    updatedAt: clearCutoff,
+                },
+            },
+            null,
+            'default',
         )
 
         await expect(firstService.releaseDeliverableQueuedMessages(session.id, Date.now())).resolves.toBe(0)
