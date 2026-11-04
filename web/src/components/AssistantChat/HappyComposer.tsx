@@ -950,6 +950,11 @@ export function HappyComposer(props: {
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion) return
+        if (suggestion.action) {
+            suggestion.action.onSelect()
+            haptic('light')
+            return
+        }
         if (suggestion.text.startsWith('$')) {
             markSkillUsed(suggestion.text.slice(1))
         }
@@ -1859,7 +1864,7 @@ export function HappyComposer(props: {
         const sheetModelReasoningEffortSettings = showModelReasoningEffortSettings && sheetEffortAreaOn
         const sheetEffortSettings = showEffortSettings && sheetEffortAreaOn
         const sheetPermissionSettings = showPermissionSettings && sheetOthersOn
-        const sheetFastModeSettings = showFastModeSettings && sheetOthersOn
+        const sheetFastModeSettings = showFastModeSettings && (sheetOthersOn || settingsSection === 'model')
         const sheetCollaborationSettings = showCollaborationSettings && sheetOthersOn
         const sheetCopilotAgentModeSettings = showCopilotAgentModeSettings && sheetOthersOn
         const sheetModelAreaSettings = sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings
@@ -2543,6 +2548,10 @@ export function HappyComposer(props: {
                                 modelValueDisabled={modelEffortControlsDisabled}
                                 modelValueOpen={showSettings && settingsSection !== 'effort'}
                                 onModelValueToggle={handleModelValueToggle}
+                                fastModeEnabled={displayedServiceTier === 'fast'}
+                                onFastModeToggle={onServiceTierChange
+                                    ? () => handleServiceTierChange(displayedServiceTier === 'fast' ? 'standard' : 'fast')
+                                    : undefined}
                                 effortValueLabel={effortValueLabel}
                                 effortValueDisabled={modelEffortControlsDisabled}
                                 effortValueOpen={showSettings && settingsSection !== 'model'}

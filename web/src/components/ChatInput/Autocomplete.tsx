@@ -35,7 +35,12 @@ export const Autocomplete = memo(function Autocomplete(props: AutocompleteProps)
                     key={suggestion.key}
                     type="button"
                     data-suggestion-index={index}
+                    aria-expanded={suggestion.action?.expanded}
                     className={`flex w-full cursor-pointer flex-col items-start gap-0.5 px-3 py-2 text-left text-sm transition-colors ${
+                        index > 0 && !suggestion.sessionMention && !suggestion.action
+                            && (suggestions[index - 1]?.sessionMention || suggestions[index - 1]?.action)
+                            ? 'border-t border-[var(--app-divider)]' : ''
+                    } ${
                         index === selectedIndex
                             ? 'bg-[var(--app-button)] text-[var(--app-button-text)]'
                             : 'text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)]'
@@ -43,7 +48,10 @@ export const Autocomplete = memo(function Autocomplete(props: AutocompleteProps)
                     onClick={() => onSelect(index)}
                     onMouseDown={(e) => e.preventDefault()} // Prevent blur on textarea
                 >
-                    <span className="w-full font-medium">{suggestion.label}</span>
+                    <span className={`w-full font-medium ${suggestion.action ? 'border-t border-[var(--app-divider)] pt-2' : ''}`}>
+                        {suggestion.action ? <span aria-hidden="true">{suggestion.action.expanded ? '▾ ' : '▸ '}</span> : null}
+                        {suggestion.label}
+                    </span>
                     {suggestion.description && (
                         <span className={`w-full min-h-[2.25rem] text-xs leading-snug line-clamp-2 ${
                             index === selectedIndex
