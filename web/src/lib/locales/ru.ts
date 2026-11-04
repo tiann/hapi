@@ -703,6 +703,8 @@ export default {
   'queuedMessages.editCurrentDraftKept': 'Отложенное сообщение отменено — текущий черновик и расписание сохранены.',
   'queuedMessages.steer': 'Доставить в текущий ход сейчас',
   'queuedMessages.steerFailed': 'Не удалось направить — сообщение остаётся в очереди',
+  'queuedMessages.steerRequesting': 'Запрос доставки…',
+  'queuedMessages.deliveryPending': 'Ожидание подтверждения от агента',
   'queuedMessages.steerOutcomeUnknown': 'Исход доставки неизвестен — повторите или явно отмените',
   'queuedMessages.compactionPending': 'Сжатие контекста — ожидание подтверждения приёма сообщения',
   'queuedMessages.retryOutcome': 'Повторить неопределённую доставку',
