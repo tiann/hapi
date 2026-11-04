@@ -4,6 +4,7 @@ import type { AgentMessage, PlanItem } from '@/agent/types';
 import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 import { asString, isObject } from '@hapi/protocol';
+import { extractNotifySummary } from '@hapi/protocol/messages';
 import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
@@ -611,6 +612,34 @@ export class AcpMessageHandler {
     drainBuffers(): void {
         this.flushReasoning();
         this.flushText();
+    }
+
+    /**
+     * Drop buffered speech/reasoning without emitting. Used when a post-done
+     * harness resume was suppressed as live snapshots (#2267): idle flush keeps
+     * the text in the buffer, and the next prompt()'s pre-swap drain would
+     * otherwise forward it once the silence gate reopens.
+     */
+    discardBuffers(): void {
+        this.bufferedText = '';
+        this.textStreamId = null;
+        this.clearTextIdleFlushTimer();
+        this.resetReasoningState();
+    }
+
+    /**
+     * #2267 / #2268 — if the open text buffer already ends with a done footer,
+     * flush it now (before the post-prompt quiet window) so finished-shell
+     * harness prose cannot coalesce onto the same segment.
+     *
+     * End-anchored only: destructive truncation of buried harness/steer text
+     * belongs in the Cursor launcher, which knows soft-steer ownership.
+     */
+    sealDoneNotifySummaryIfPresent(): boolean {
+        if (!this.bufferedText) return false;
+        if (extractNotifySummary(this.bufferedText)?.status !== 'done') return false;
+        this.drainBuffers();
+        return true;
     }
 
     private clearTextIdleFlushTimer(): void {
