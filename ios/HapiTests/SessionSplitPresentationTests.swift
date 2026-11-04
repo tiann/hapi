@@ -305,7 +305,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     /// simulator may boot folded (466×678pt, compact), so this is not read
     /// from the current screen.
     private var wide: CGSize {
-        UIDevice.current.userInterfaceIdiom == .pad
+        isSplitIdiom
             ? CGSize(width: 1194, height: 834)
             : CGSize(width: 951, height: 669)
     }
@@ -313,7 +313,7 @@ final class SessionSplitPresentationTests: XCTestCase {
     /// iPad keeps its fixed wide window; a foldable uses its current screen and
     /// size class so captures match the folded or unfolded device.
     private var current: (size: CGSize, compact: Bool) {
-        guard UIDevice.current.userInterfaceIdiom != .pad,
+        guard !isSplitIdiom,
               let scene = hostScene
         else { return (wide, false) }
         return (scene.screen.bounds.size, scene.traitCollection.horizontalSizeClass == .compact)
@@ -325,9 +325,14 @@ final class SessionSplitPresentationTests: XCTestCase {
         return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
     }
 
-    /// iPad, or a foldable iPhone once its hinge has been reported.
+    /// iPad and Mac (Catalyst) windows always use the split.
+    private var isSplitIdiom: Bool {
+        [.pad, .mac].contains(UIDevice.current.userInterfaceIdiom)
+    }
+
+    /// iPad, Mac, or a foldable iPhone once its hinge has been reported.
     private func requireSplitDevice() async throws {
-        if UIDevice.current.userInterfaceIdiom == .pad || FoldableDevice.shared.hasHinge { return }
+        if isSplitIdiom || FoldableDevice.shared.hasHinge { return }
         let (window, _) = try makeWindow(HingeProbe(), width: 390, height: 844)
         defer { window.isHidden = true }
         for _ in 0..<50 where !FoldableDevice.shared.hasHinge {

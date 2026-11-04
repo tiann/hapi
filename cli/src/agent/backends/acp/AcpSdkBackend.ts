@@ -733,6 +733,13 @@ export class AcpSdkBackend implements AgentBackend {
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
         } finally {
+            // Cursor (#2267/#2268): drain any session updates already queued with
+            // the native response, then seal a done footer before the quiet
+            // window so finished-shell harness text cannot bury it in one flush.
+            await this.sessionUpdateQueue;
+            if (this.options.flavor === 'cursor') {
+                this.messageHandler?.sealDoneNotifySummaryIfPresent();
+            }
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
@@ -1004,6 +1011,17 @@ export class AcpSdkBackend implements AgentBackend {
 
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
+    }
+
+    /**
+     * Drop buffered speech on the current message handler without emitting.
+     * Cursor post-done silence (#2267): call while the silence gate still
+     * applies, before opening the next HAPI prompt, so prompt()'s pre-swap
+     * drain cannot resurrect a suppressed harness-resume live snapshot.
+     */
+    async discardPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.discardBuffers();
     }
 
     /**
