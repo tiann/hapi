@@ -65,7 +65,8 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
         createdAt: message.createdAt,
         invokedAt: message.invokedAt,
         scheduledAt: message.scheduledAt,
-        ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
+        ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
+        ...(message.deliveryPending ? { deliveryPending: true as const } : {})
     }
 }
 
@@ -257,7 +258,9 @@ export class MessageService {
 
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
         const states = this.store.messages.getLocalMessageStates(sessionId, localIds)
+        const dispatchingLocalIds = states.filter(state => state.invokedAt === null && state.deliveryState === 'dispatching').map(state => state.localId)
         return {
+            ...(dispatchingLocalIds.length ? { dispatchingLocalIds } : {}),
             queuedLocalIds: states
                 .filter((state) => state.invokedAt === null && state.deliveryState !== 'indeterminate' && state.deliveryState !== 'dispatching')
                 .map((state) => state.localId),
@@ -537,7 +540,8 @@ export class MessageService {
             createdAt: message.createdAt,
             invokedAt: message.invokedAt,
             scheduledAt: message.scheduledAt,
-            ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
+            ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
+            ...(message.deliveryPending ? { deliveryPending: true as const } : {})
         }))
     }
 
@@ -1009,7 +1013,8 @@ export class MessageService {
                 createdAt: msg.createdAt,
                 invokedAt: msg.invokedAt,
                 scheduledAt: msg.scheduledAt,
-                ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {})
+                ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {}),
+                ...(msg.deliveryPending ? { deliveryPending: true as const } : {})
             }
         })
         return { actualSessionId, createdAt: msg.createdAt }
