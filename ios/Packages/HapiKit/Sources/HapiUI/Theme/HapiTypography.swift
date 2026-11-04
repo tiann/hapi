@@ -63,10 +63,21 @@ private struct HapiTypographyModifier: ViewModifier {
     @Environment(\.legibilityWeight) private var legibilityWeight
 
     func body(content: Content) -> some View {
-        content.environment(\.hapiTypography, HapiTypography(
-            bodyScale: bodyScale, codeScale: codeScale, captionScale: captionScale,
-            boldText: legibilityWeight == .bold
+        let platform = Self.platformScale
+        return content.environment(\.hapiTypography, HapiTypography(
+            bodyScale: bodyScale * platform, codeScale: codeScale * platform,
+            captionScale: captionScale * platform, boldText: legibilityWeight == .bold
         ))
+    }
+
+    /// The point sizes are tuned for touch screens. A Mac-idiom window renders
+    /// them 1:1 next to 13pt system text, so reading text steps down to 14pt.
+    private static var platformScale: CGFloat {
+        #if targetEnvironment(macCatalyst)
+        0.875
+        #else
+        1
+        #endif
     }
 }
 

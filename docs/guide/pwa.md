@@ -78,7 +78,7 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
 The share-target session picker starts with recent active sessions; typing a
-query or choosing a date range searches the full snapshot. See the [session
+query searches the full snapshot. See the [session
 list behavior guide](./session-list.md#share-target-picker) for its ordering
 and matching rules.
 

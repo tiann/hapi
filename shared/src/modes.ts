@@ -191,13 +191,17 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  * Steer = soft mid-turn delivery (same idea as Cursor GUI default "Send"):
  * - Pi: native steer over the Pi runtime (first-class since #1466)
  * - Codex: app-server `turn/steer` (true mid-turn inject)
+ * - OpenCode v1: concurrent ACP `session/prompt`; v2: durable REST inbox
+ *   steering at a native step boundary. Both require live steeringActive.
  * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
  *   stream-json Cursor sessions are NOT steerable — gate with
  *   {@link isSteeringSupportedForSession}.
+ * - Claude: stream-json stdin write during the turn (TUI Ctrl+X Ctrl+S);
+ *   Claude folds it in at the next tool boundary. Remote mode only.
  *
- * Claude / others: not supported (no reachable soft-steer path) — UI hides Steer.
+ * Others: not supported — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['codex', 'cursor', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'opencode', 'pi'] as const
 
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
     return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
@@ -216,7 +220,10 @@ export function isSteeringSupportedForSession(metadata?: {
     cursorSessionId?: string | null
     cursorSessionProtocol?: 'acp' | 'stream-json' | null
 } | null): boolean {
-    if (metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
+    if (metadata?.flavor === 'claude'
+        || metadata?.flavor === 'codex'
+        || metadata?.flavor === 'opencode'
+        || metadata?.flavor === 'pi') {
         return true
     }
     if (metadata?.flavor !== 'cursor') {

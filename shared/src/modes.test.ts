@@ -145,21 +145,24 @@ describe('claude auto permission mode', () => {
 })
 
 describe('isSteeringSupportedForFlavor', () => {
-    it('supports codex, cursor and pi', () => {
+    it('supports claude, codex, cursor, opencode and pi', () => {
         expect(isSteeringSupportedForFlavor('codex')).toBe(true)
         expect(isSteeringSupportedForFlavor('cursor')).toBe(true)
+        expect(isSteeringSupportedForFlavor('opencode')).toBe(true)
         expect(isSteeringSupportedForFlavor('pi')).toBe(true)
-        expect(isSteeringSupportedForFlavor('claude')).toBe(false)
-        expect(isSteeringSupportedForFlavor('opencode')).toBe(false)
+        expect(isSteeringSupportedForFlavor('claude')).toBe(true)
+        expect(isSteeringSupportedForFlavor('gemini')).toBe(false)
         expect(isSteeringSupportedForFlavor(undefined)).toBe(false)
         expect(isSteeringSupportedForFlavor(null)).toBe(false)
     })
 })
 
 describe('isSteeringSupportedForSession', () => {
-    it('supports codex and pi sessions', () => {
+    it('supports claude, codex, opencode and pi sessions', () => {
         expect(isSteeringSupportedForSession({ flavor: 'codex' })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'opencode' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'pi' })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'claude' })).toBe(true)
     })
 
     it('supports Cursor ACP sessions', () => {
@@ -184,7 +187,7 @@ describe('isSteeringSupportedForSession', () => {
     })
 
     it('rejects non-steerable flavors', () => {
-        expect(isSteeringSupportedForSession({ flavor: 'claude' })).toBe(false)
+        expect(isSteeringSupportedForSession({ flavor: 'gemini' })).toBe(false)
         expect(isSteeringSupportedForSession(null)).toBe(false)
     })
 })

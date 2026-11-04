@@ -24,8 +24,20 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setAppBadgeEnabled: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const hubSettingsFixture = {
+    sessionSummaryContract: false,
+    sessionSummaryInChat: false,
+    peerSpawnDefaults: {
+        agent: 'claude' as const,
+        permissionMode: 'bypassPermissions' as const,
+        models: { claude: 'sonnet' }
+    }
+}
+const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
+const updateHubSettings = vi.fn().mockResolvedValue({
+    ...hubSettingsFixture,
+    sessionSummaryContract: true
+})
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -218,8 +230,11 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue(hubSettingsFixture)
+        updateHubSettings.mockResolvedValue({
+            ...hubSettingsFixture,
+            sessionSummaryContract: true
+        })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -293,7 +308,7 @@ describe('responsive settings pages', () => {
         expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
-        expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
@@ -367,15 +382,15 @@ describe('responsive settings pages', () => {
 
     it('renders the collapse-reasoning switch with its streaming behavior', () => {
         renderPage(<SettingsChatPage />)
-        expect(screen.getByRole('checkbox', { name: 'Collapse reasoning' })).not.toBeChecked()
-        expect(screen.getByText('Keep AI reasoning content collapsed. It will not auto-expand while streaming.')).toBeInTheDocument()
+        expect(screen.getByRole('checkbox', { name: 'Collapse reasoning by default' })).not.toBeChecked()
+        expect(screen.getByText('Keep AI reasoning messages collapsed, including while streaming.')).toBeInTheDocument()
     })
 
     it('renders the updated collapse-reasoning copy in Chinese', () => {
         localStorage.setItem('hapi-lang', 'zh-CN')
         renderPage(<SettingsChatPage />)
-        expect(screen.getByRole('checkbox', { name: '折叠思考' })).not.toBeChecked()
-        expect(screen.getByText('AI思考内容保持折叠，流式输出期间也不会自动展开。')).toBeInTheDocument()
+        expect(screen.getByRole('checkbox', { name: '思考默认折叠' })).not.toBeChecked()
+        expect(screen.getByText('AI 思考内容默认保持折叠，流式输出期间也不会自动展开。')).toBeInTheDocument()
     })
 
     it('renders About metadata on its own route page', () => {
