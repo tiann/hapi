@@ -1041,6 +1041,7 @@ export default {
   'settings.chat.composerToolbar.item.settings': '会话设置',
   'settings.chat.composerToolbar.item.expand': '展开消息编辑器',
   'settings.chat.composerToolbar.item.model': '模型',
+  'settings.chat.composerToolbar.item.fast': '快速模式',
   'settings.chat.composerToolbar.item.effort': '推理强度',
   'settings.chat.composerToolbar.item.terminal': '终端',
   'settings.chat.composerToolbar.item.abort': '中止',

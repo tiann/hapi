@@ -673,7 +673,7 @@ describe('pingPeer delivery modes', () => {
     it.each([
         { ...active, active: false },
         { ...active, thinking: false, agentState: { steeringActive: false } },
-        { ...active, metadata: { flavor: 'opencode' } },
+        { ...active, metadata: { flavor: 'gemini' } },
         { ...active, metadata: { flavor: 'cursor', cursorSessionProtocol: 'stream-json' as const } },
         { ...active, metadata: { flavor: 'cursor', cursorSessionId: 'legacy' } },
         { ...active, agentState: { controlledByUser: true } }
