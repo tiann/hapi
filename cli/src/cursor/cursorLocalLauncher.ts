@@ -53,6 +53,7 @@ export async function cursorLocalLauncher(session: CursorSession): Promise<'swit
                 autoReview,
                 worktree: session.cursorWorktree,
                 addDirs: session.cursorAddDirs,
+                peerToolsDisabled: session.client.peerToolsDisabled,
                 onChatFound: (chatId) => session.onSessionFound(chatId)
             });
         },

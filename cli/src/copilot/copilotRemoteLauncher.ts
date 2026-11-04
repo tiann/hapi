@@ -14,6 +14,7 @@ import { resolveCopilotRuntimeConfig } from './utils/config';
 import { getCopilotAgentModeLabel, type CopilotAgentMode } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { buildCopilotModelsResponseFromBackend } from '@/modules/common/copilotModels';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 
 export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CopilotSession;
@@ -67,7 +68,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         const runtimeConfig = resolveCopilotRuntimeConfig({ model: this.model });
 
         this.currentAgentMode = session.getAgentMode();
-        const backend = createCopilotBackend({ agentMode: this.currentAgentMode });
+        const backend = createCopilotBackend({ agentMode: this.currentAgentMode, env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled()) });
         this.backend = backend;
         registerAcpSessionTitleSync(backend, session.client);
 

@@ -16,7 +16,8 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
     return {
         sessionSummaryContract: settings.sessionSummaryContract === true,
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
-        peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults)
+        peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults),
+        disablePeerTools: settings.disablePeerTools === true
     }
 }
 
@@ -53,6 +54,9 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
                     current,
                     parsed.data.peerSpawnDefaults
                 )
+            }
+            if (parsed.data.disablePeerTools !== undefined) {
+                settings.disablePeerTools = parsed.data.disablePeerTools
             }
             return {
                 settings,

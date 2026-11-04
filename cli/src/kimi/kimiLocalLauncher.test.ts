@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Metadata } from '@/api/types';
 
 const harness = vi.hoisted(() => ({
+    launcherOptions: null as null | {
+        launch: (abortSignal: AbortSignal) => Promise<void>;
+    },
     locatorOptions: null as null | {
         onLocated: (located: { sessionId: string; wirePath: string; statePath: string }) => void;
     },
@@ -42,6 +45,11 @@ vi.mock('./utils/kimiSessionTitleWatcher', () => ({
 
 vi.mock('@/modules/common/launcher/BaseLocalLauncher', () => ({
     BaseLocalLauncher: class {
+        constructor(options: Record<string, unknown>) {
+            harness.launcherOptions = options as {
+                launch: (abortSignal: AbortSignal) => Promise<void>;
+            };
+        }
         async run(): Promise<'exit'> {
             harness.locatorOptions?.onLocated({
                 sessionId: 'session_native',
@@ -54,16 +62,23 @@ vi.mock('@/modules/common/launcher/BaseLocalLauncher', () => ({
     }
 }));
 
+vi.mock('./kimiLocal', () => ({
+    kimiLocal: vi.fn(async () => {})
+}));
+
 import { kimiLocalLauncher } from './kimiLocalLauncher';
+import { kimiLocal } from './kimiLocal';
 
 describe('kimiLocalLauncher title sync', () => {
     afterEach(() => {
+        harness.launcherOptions = null;
         harness.locatorOptions = null;
         harness.titleWatcherOptions = null;
         harness.titlesToEmit = [];
         harness.locatorCleanup.mockClear();
         harness.scannerCleanup.mockClear();
         harness.titleWatcherCleanup.mockClear();
+        vi.mocked(kimiLocal).mockClear();
     });
 
     it('syncs the native state title and cleans up both session watchers', async () => {
@@ -148,3 +163,29 @@ describe('kimiLocalLauncher title sync', () => {
         expect(sendClaudeSessionMessage).not.toHaveBeenCalled();
     });
 });
+
+    it('threads the session peer-tools snapshot into kimiLocal (#2056)', async () => {
+        const session = {
+            path: '/tmp/workspace',
+            sessionId: null,
+            startedBy: 'terminal' as const,
+            startingMode: 'local' as const,
+            queue: {},
+            client: {
+                rpcHandlerManager: {},
+                peerToolsDisabled: true
+            },
+            getPermissionMode: () => 'default',
+            onSessionFound: () => {},
+            sendUserMessage: () => {},
+            sendAgentMessage: () => {},
+            sendSessionEvent: () => {},
+            recordLocalLaunchFailure: () => {}
+        };
+
+        await expect(kimiLocalLauncher(session as never, {})).resolves.toBe('exit');
+        expect(harness.launcherOptions?.launch).toBeTypeOf('function');
+        await harness.launcherOptions!.launch(new AbortController().signal);
+
+        expect(kimiLocal).toHaveBeenCalledWith(expect.objectContaining({ peerToolsDisabled: true }));
+    });

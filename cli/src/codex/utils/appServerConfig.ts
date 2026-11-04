@@ -115,9 +115,11 @@ function buildMcpServerConfig(mcpServers: CodexMcpServersConfig): Record<string,
 function resolveInstructions(args: {
     baseInstructions?: string;
     developerInstructions?: string;
+    /** Env used to resolve the hapi developer instructions; defaults to process.env. */
+    env?: NodeJS.ProcessEnv;
 }): { baseInstructions: string | undefined; developerInstructions: string } {
     const baseInstructions = args.baseInstructions;
-    const hapiDeveloperInstructions = getCodexSystemPrompt();
+    const hapiDeveloperInstructions = getCodexSystemPrompt(args.env ?? process.env);
     const developerInstructions = args.developerInstructions
         ? `${hapiDeveloperInstructions}\n\n${args.developerInstructions}`
         : hapiDeveloperInstructions;
@@ -198,6 +200,8 @@ export function buildThreadStartParams(args: {
     baseInstructions?: string;
     developerInstructions?: string;
     contextManagementConfig?: CodexContextManagementConfig;
+    /** Env for resolving hapi developer instructions; defaults to process.env. */
+    env?: NodeJS.ProcessEnv;
 }): ThreadStartParams {
     const approvalPolicy = resolveApprovalPolicy(args.mode);
     const sandbox = resolveSandbox(args.mode);
@@ -263,6 +267,8 @@ export function buildTurnStartParams(args: {
         model?: string;
         suppressCollaborationMode?: boolean;
     };
+    /** Env for resolving hapi developer instructions; defaults to process.env. */
+    env?: NodeJS.ProcessEnv;
 }): TurnStartParams {
     const params: TurnStartParams = {
         threadId: args.threadId,

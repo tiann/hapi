@@ -31,7 +31,8 @@ const hubSettingsFixture = {
         agent: 'claude' as const,
         permissionMode: 'bypassPermissions' as const,
         models: { claude: 'sonnet' }
-    }
+    },
+    disablePeerTools: false
 }
 const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
 const updateHubSettings = vi.fn().mockResolvedValue({
@@ -270,9 +271,10 @@ describe('responsive settings pages', () => {
     })
 
     it('explains and keeps summary generation separate from chat display', async () => {
-        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean }) => ({
+        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; disablePeerTools?: boolean }) => ({
             sessionSummaryContract: patch.sessionSummaryContract ?? false,
             sessionSummaryInChat: patch.sessionSummaryInChat ?? false,
+            disablePeerTools: patch.disablePeerTools ?? false,
         }))
 
         renderPage(<SettingsGeneralPage />)
@@ -292,6 +294,25 @@ describe('responsive settings pages', () => {
         fireEvent.click(screen.getByRole('checkbox', { name: 'Show status summaries in chat' }))
         await waitFor(() => {
             expect(updateHubSettings).toHaveBeenCalledWith({ sessionSummaryInChat: true })
+        })
+    })
+
+    it('toggles the hub-wide peer-tools opt-out from the general page', async () => {
+        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; disablePeerTools?: boolean }) => ({
+            sessionSummaryContract: patch.sessionSummaryContract ?? false,
+            sessionSummaryInChat: patch.sessionSummaryInChat ?? false,
+            disablePeerTools: patch.disablePeerTools ?? false,
+        }))
+
+        renderPage(<SettingsGeneralPage />)
+
+        expect(await screen.findByRole('heading', { name: 'Peer session tools' })).toBeInTheDocument()
+        expect(screen.getByText('Control whether agents can browse or contact other sessions on this hub.')).toBeInTheDocument()
+        const toggle = await screen.findByRole('checkbox', { name: 'Disable peer session tools' })
+        expect(toggle).not.toBeChecked()
+        fireEvent.click(toggle)
+        await waitFor(() => {
+            expect(updateHubSettings).toHaveBeenCalledWith({ disablePeerTools: true })
         })
     })
 

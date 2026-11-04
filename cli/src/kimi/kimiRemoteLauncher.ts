@@ -2,6 +2,7 @@ import React from 'react';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
 import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLauncherExitReason } from '@/modules/common/remote/RemoteLauncherBase';
@@ -52,7 +53,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
 
         const runtimeConfig = resolveKimiRuntimeConfig({ model: this.model });
 
-        const backend = createKimiBackend();
+        const backend = createKimiBackend(withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled()));
         this.backend = backend;
         registerAcpSessionTitleSync(backend, session.client);
 

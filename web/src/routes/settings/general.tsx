@@ -173,6 +173,24 @@ export default function SettingsGeneralPage() {
                     ) : null}
                 </SettingsSection>
             ) : null}
+            {isOwner ? (
+                <SettingsSection
+                    title={t('settings.general.peerTools.title')}
+                    description={t('settings.general.peerTools.description')}
+                >
+                    {hubSettingsQuery.data ? (
+                        <SettingsSwitch
+                            label={t('settings.general.disablePeerTools')}
+                            description={t('settings.general.disablePeerTools.desc')}
+                            checked={hubSettingsQuery.data.disablePeerTools}
+                            onChange={(checked) => {
+                                if (hubSettingsMutation.isPending) return
+                                hubSettingsMutation.mutate({ disablePeerTools: checked })
+                            }}
+                        />
+                    ) : null}
+                </SettingsSection>
+            ) : null}
             <SettingsSection title={t('settings.companion.title')}>
                 <div className="px-3 py-3">
                     <CompanionPairing baseUrl={baseUrl} />
