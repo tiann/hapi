@@ -176,4 +176,60 @@ describe('SessionList issue-ref chip isolation', () => {
         fireEvent.click(title)
         expect(onSelect).toHaveBeenCalledWith('session-1', undefined, undefined)
     })
+
+    // Regression (bot review, hapi#2147): the chip and the hover-to-archive
+    // button (upstream #2264) are both shrink-0 siblings packed against the
+    // row's right edge, and the archive button is absolutely positioned over
+    // that same corner — without `session-row-trailing`, hovering/focusing to
+    // reveal archive left the chip's own hit target sitting underneath it,
+    // so a click meant for archive could land on the issue link instead.
+    it('hides in sync with the trailing cluster (via session-row-trailing) only when a quick-archive button exists', () => {
+        const active = makeSession({
+            id: 'active-session',
+            active: true,
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/home/ubuntu',
+                name: 'Active with issue',
+                flavor: 'codex',
+                externalRefs: [
+                    { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1 }
+                ]
+            }
+        })
+        const idle = makeSession({
+            id: 'idle-session',
+            active: false,
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/home/ubuntu',
+                name: 'Idle with issue',
+                flavor: 'codex',
+                externalRefs: [
+                    { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/236', repo: 'heavygee/hapi', number: 236, linkedAt: 1 }
+                ]
+            }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[active, idle]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const activeChip = screen.getByText('Active with issue').closest('[role="button"]')
+            ?.parentElement?.querySelector('[data-testid="issue-ref-chip"]')?.closest('span')
+        expect(activeChip?.className).toContain('session-row-trailing')
+
+        const idleChip = screen.getByText('Idle with issue').closest('[role="button"]')
+            ?.parentElement?.querySelector('[data-testid="issue-ref-chip"]')?.closest('span')
+        expect(idleChip?.className).not.toContain('session-row-trailing')
+    })
 })

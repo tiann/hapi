@@ -1249,13 +1249,21 @@ const SessionItem = memo(function SessionItem(props: {
                 {linkedIssue ? (
                     <IssueRefChip
                         ref={linkedIssue}
-                        className="mt-0.5 shrink-0"
+                        // Shares the quick-archive button's footprint at the row's
+                        // right edge (both are shrink-0 flex siblings packed
+                        // against it) — `session-row-trailing` hides this in sync
+                        // with SessionRowSummary's own trailing cluster whenever
+                        // hover/focus reveals the (absolutely-positioned) archive
+                        // button over it, so a misclick there can't land on an
+                        // invisible-but-still-hittable chip underneath (bot
+                        // review, hapi#2147).
+                        className={`mt-0.5 shrink-0 ${showQuickArchive ? 'session-row-trailing' : ''}`}
                         boardMatch={linkedIssueBoardMatch}
                         onOpenBoardItem={onOpenBoardItem}
                     />
                 ) : null}
                 {githubPrAwarenessEnabled && primaryPrRef ? (
-                    <div className="flex shrink-0 items-center self-start py-2 pr-2">
+                    <div className={`flex shrink-0 items-center self-start py-2 pr-2 ${showQuickArchive ? 'session-row-trailing' : ''}`}>
                         <SessionPrChip
                             refs={s.metadata?.externalRefs}
                             displayProfile={prChipDisplay}
