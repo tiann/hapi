@@ -30,8 +30,8 @@ it ahead of conversations you have interacted with more recently.
 The detailed API contract is documented in [REST — sessions](../api/client-contract/rest.md#sessions--list--detail)
 and [SSE — keep-alive noise](../api/client-contract/sse.md#keep-alive-noise).
 
-`updatedAt` remains the session activity clock used by timestamps and the date
-filter, not the ordering key. It is different from `activeAt`: `activeAt` is the CLI connection keep-alive
+`updatedAt` remains the session activity clock used by timestamps, not the
+ordering key. It is different from `activeAt`: `activeAt` is the CLI connection keep-alive
 clock and does not, by itself, move a session in the list. A connected session
 can therefore be idle; see [active is transport liveness, not agent health](../api/client-contract/sse.md#active-is-transport-liveness-not-agent-health).
 
@@ -71,18 +71,23 @@ matching rows.
 
 ## Filters and display settings
 
-- **Date range** filters by the local calendar date of `updatedAt`. The end
-  date includes the whole local day.
-- **Unread only** is a transient view filter. The currently open session stays
-  visible, and the filter is cleared when the page is reloaded.
-- **Machine** filters can be applied when more than one machine is present.
-  The selection is remembered locally in the browser and falls back to All
-  when that machine is no longer available.
-- **Active sessions only** hides inactive sessions but keeps the selected
-  session visible.
+- **Sort and filter** in the list toolbar holds the rarely changed view
+  choices: sort by last message (the default) or date created; **Active
+  first** (on by default); and show all sessions, active only, or archived
+  only. The currently open session stays visible. Choices are remembered
+  locally, and a dot on the button marks a non-default view.
+- **Machine** filters can be applied when more than one machine is present:
+  chips under the toolbar on wide screens, a filter button in the toolbar on
+  narrow ones. The selection is remembered locally in the browser and falls
+  back to All when that machine is no longer available.
+- **Unread** sessions need no filter. A collapsed project still lists its
+  unread sessions under its header, and the preview limit never hides one.
+  The toolbar shows **Mark all as read** with the unread count while any
+  session is unread.
 - **Session preview limit** controls how many rows are initially visible within
-  each project group. Sessions with pending requests and the selected session
-  can remain visible; a project can reveal more rows in batches.
+  each project group. Unread sessions, sessions with pending requests, and the
+  selected session can remain visible; a project can reveal more rows in
+  batches.
 - **Session-list status** controls whether rows show the standard or detailed
   attention/status presentation.
 
@@ -100,9 +105,9 @@ The other Web surfaces intentionally use related but different policies:
 The `/share` picker snapshots the session list when it opens so live SSE
 updates do not reshuffle the rows under the user's finger.
 
-- With no query or date range, it shows recent active sessions, sorted by
-  `updatedAt` and capped by the session preview limit.
-- With a text query or date range, it searches all matching sessions,
+- With no query, it shows recent active sessions, sorted by `updatedAt` and
+  capped by the session preview limit.
+- With a text query, it searches all matching sessions,
   including inactive sessions, and keeps `updatedAt` descending order.
 - It reuses the session metadata matching fields, but it does not apply the
   main sidebar's relevance ranking.
@@ -110,6 +115,8 @@ updates do not reshuffle the rows under the user's finger.
 ### `@` session suggestions
 
 Composer `@` suggestions only include sessions with conversation content.
-With an empty query they prefer active and recent sessions; after typing, they
-use a separate title/ID/active/recency ranking. Names, directories, and
-machine labels affect matching, but an empty stub is never a mention target.
+Active sessions appear first, followed by an inactive section that can be
+collapsed or expanded. The browser remembers that choice. Each group shows up
+to 20 matches, ordered by relevance and recency; names, directories, and
+machine labels affect matching. Empty stubs are never mention targets, and
+collapsing inactive sessions does not hide file suggestions.

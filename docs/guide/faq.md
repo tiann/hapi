@@ -118,6 +118,9 @@ Some agents (especially Cursor) can resume after idle from harness signals such 
 
 Use session-attached jobs (`hapi job`). The agent (or a wrapper script) registers a job on the session, heartbeats while the process runs, and clears it when done. The session list shows remaining / fraction / or an indeterminate "running" meter even when the agent is idle. See [Session-attached jobs](./session-jobs.md). This is Layer 0 list chrome - not an A2A Layer 1 work advertisement ([#1332](https://github.com/tiann/hapi/discussions/1332)).
 
+Exception: when the previous turn already closed with an `AGENT_NOTIFY_SUMMARY` line whose `status` is `done`, Cursor's finished-shell *"Briefly inform the user…"* wake does not open a second spoken reply (assistant text/reasoning and thinking bumps are dropped). Tool activity from a follow-up wake still surfaces. A new message from you re-opens normal speech.
+
+
 ### Can I access a terminal remotely?
 
 Yes. Open a session in the web app and tap the Terminal tab for a remote shell.

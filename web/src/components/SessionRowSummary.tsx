@@ -108,6 +108,8 @@ export function SessionRowSummary(props: {
     contentSnippet?: string
     /** The indexed message exceeded the search index budget. */
     contentSearchTruncated?: boolean
+    /** Extra classes for the right-hand time/progress cluster (e.g. to yield to hover actions). */
+    trailingClassName?: string
 }) {
     const {
         session: s,
@@ -124,6 +126,7 @@ export function SessionRowSummary(props: {
         machineLabel,
         contentSnippet,
         contentSearchTruncated = false,
+        trailingClassName,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -263,7 +266,7 @@ export function SessionRowSummary(props: {
                             </span>
                         ) : null}
                     </div>
-                    <div className="flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs">
+                    <div className={`flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs ${trailingClassName ?? ''}`}>
                         {todoProgress ? (
                             <span className="flex shrink-0 items-center gap-1 text-[var(--app-hint)]">
                                 <BulbIcon className="h-3 w-3" />
