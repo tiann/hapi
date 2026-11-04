@@ -9,10 +9,6 @@ function renderSearch(overrides: Partial<Parameters<typeof SessionListSearch>[0]
             <SessionListSearch
                 value=""
                 onChange={vi.fn()}
-                customStart=""
-                customEnd=""
-                sessionActivityDates={new Set()}
-                onDateRangeChange={vi.fn()}
                 expanded={true}
                 onExpandedChange={vi.fn()}
                 searchMode="metadata"
