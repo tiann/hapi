@@ -65,3 +65,13 @@ jobs:
                   arch: x86_64
                   disable-animations: true
                   script: cd android && ./gradlew :app:connectedDebugAndroidTest
+            - name: Upload instrumentation reports
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: android-test-results-api-${{ matrix.api-level }}
+                  path: |
+                      android/app/build/reports/androidTests/**
+                      android/app/build/outputs/androidTest-results/**
+                  if-no-files-found: ignore
+                  retention-days: 7

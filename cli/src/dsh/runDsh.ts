@@ -1,6 +1,7 @@
 import { hashObject } from '@/utils/deterministicJson'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
+import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
@@ -16,6 +17,7 @@ export async function runDsh(opts: {
     startedBy?: 'runner' | 'terminal'
     startingMode?: 'remote'
     existingSessionId?: string
+    resumeSessionId?: string
     /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
@@ -45,7 +47,7 @@ export async function runDsh(opts: {
             reservedSessionId: opts.reservedSessionId,
             model: opts.model
         })
-    const { api, session } = bootstrap
+    const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
 
     const queue = new MessageQueue2<DshMode>((mode) => hashObject(mode))
@@ -92,6 +94,7 @@ export async function runDsh(opts: {
     })
     lifecycle.registerProcessHandlers()
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const dshSession = new DshSession({
         api,
@@ -99,6 +102,7 @@ export async function runDsh(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
+        sessionId: opts.resumeSessionId ?? sessionInfo.metadata?.dshSessionId,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy

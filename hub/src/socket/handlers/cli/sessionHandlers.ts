@@ -72,7 +72,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'promptTitle'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
@@ -270,7 +271,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
-                invokedAt: msg.invokedAt
+                invokedAt: msg.invokedAt,
+                ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }
         })
     })
@@ -521,8 +523,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 sessionAccess.value.namespace
             )
             reply({ ok })
-            if (ok && data.state === 'queued') {
-                onWebappEvent?.({ type: 'messages-requeued', sessionId: data.sid, localIds })
+            if (ok) {
+                onWebappEvent?.(data.state === 'queued'
+                    ? { type: 'messages-requeued', sessionId: data.sid, localIds }
+                    : { type: 'messages-indeterminate', sessionId: data.sid, localIds, dispatching: true })
             }
         } catch (err) {
             console.error('recordSteerDeliveryState failed', err)

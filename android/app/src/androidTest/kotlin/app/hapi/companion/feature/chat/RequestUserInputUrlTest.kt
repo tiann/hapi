@@ -61,18 +61,18 @@ class RequestUserInputUrlTest {
     @Test fun confirmedBrowserValidUrlOpensBeforeApproval() {
         val events = mutableListOf<String>()
         showFooter(events)
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle { assertEquals(emptyList<String>(), events) }
-        compose.onNodeWithTag("request-input-__mcp_url_confirmation-option-0").performClick()
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-0-choice-0").performClick()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle { assertEquals(listOf("open", "approve"), events) }
     }
 
     @Test fun failureToOpenBrowserValidUrlPreventsApproval() {
         val events = mutableListOf<String>()
         showFooter(events, failToOpen = true)
-        compose.onNodeWithTag("request-input-__mcp_url_confirmation-option-0").performClick()
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-0-choice-0").performClick()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle { assertEquals(listOf("open"), events) }
     }
 }

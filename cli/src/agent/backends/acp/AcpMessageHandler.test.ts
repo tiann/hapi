@@ -1653,6 +1653,92 @@ describe('AcpMessageHandler', () => {
         ]);
     });
 
+    it('discardBuffers drops pending speech without emitting (#2267)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'harness briefly-inform prose' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'thought' }
+        });
+
+        handler.discardBuffers();
+        handler.drainBuffers();
+
+        expect(messages).toEqual([]);
+    });
+
+    it('sealDoneNotifySummaryIfPresent flushes a done footer before quiet-drain coalescing (#2268)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: `Finished.\n\n${doneFooter}` }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(true);
+        expect(messages).toEqual([
+            { type: 'text', text: `Finished.\n\n${doneFooter}` }
+        ]);
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'Shell finished; here is a redundant summary.' }
+        });
+        handler.drainBuffers();
+
+        expect(messages).toEqual([
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'text', text: 'Shell finished; here is a redundant summary.' }
+        ]);
+    });
+
+    it('sealDoneNotifySummaryIfPresent does not truncate coalesced steer/harness text (launcher owns that)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+            }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(false);
+        handler.drainBuffers();
+        expect(messages).toEqual([
+            {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+            }
+        ]);
+    });
+
+    it('sealDoneNotifySummaryIfPresent is a no-op without an end-anchored done footer', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'still working' }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(false);
+        expect(messages).toEqual([]);
+        handler.drainBuffers();
+        expect(messages).toEqual([{ type: 'text', text: 'still working' }]);
+    });
+
     it('silently drops agent_thought_chunk with empty text', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

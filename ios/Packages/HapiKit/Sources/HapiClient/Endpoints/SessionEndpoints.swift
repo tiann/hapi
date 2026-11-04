@@ -11,6 +11,10 @@ public enum SessionsListOrder: String, Sendable {
 /// Session list, detail, and lifecycle endpoints
 /// (`docs/api/client-contract/rest.md`).
 extension APIClient {
+    public func updateSessionReadState(id: String, state: SessionReadStateRequest) async throws -> SessionReadStateResponse {
+        try await request(.put, "/api/sessions/\(encodePathComponent(id))/read-state", body: state)
+    }
+
     /// `GET /api/sessions`.
     public func listSessions(
         limit: Int? = nil,
