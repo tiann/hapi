@@ -42,6 +42,9 @@ export type AgentRoundSummary = {
     totalCostUsd?: number;
     numTurns: number;
     durationMs: number;
+    /** Assistant output + reasoning and provider-active time, excluding tools/compaction. */
+    generationMs?: number;
+    generationOutputTokens?: number;
 };
 
 export type AgentMessage =

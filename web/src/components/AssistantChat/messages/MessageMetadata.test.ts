@@ -271,3 +271,20 @@ describe('Codex cached input metadata', () => {
         expect(labels(input, cached).join(' ')).not.toMatch(/NaN|Infinity/)
     })
 })
+
+
+describe('provider throughput metadata', () => {
+    const summary = {
+        modelUsage: { 'fixture/model': { outputTokens: 1_000 } },
+        durationMs: 9_000, numTurns: 2, generationMs: 1_500, generationOutputTokens: 30
+    }
+    it('uses provider time and assistant-only output instead of wall time or compaction usage', () => {
+        expect(buildMessageMetadataLabels({ roundSummary: summary })).toContain('Round: 9s · 2 turns · 20.0 tok/s')
+    })
+    it.each([undefined, 0, -1, NaN, Infinity, Number.MIN_VALUE])('hides invalid or overflowing duration %s', (generationMs) => {
+        expect(buildMessageMetadataLabels({ roundSummary: { ...summary, generationMs } }).join(' ')).not.toContain('tok/s')
+    })
+    it.each([undefined, 0, -1, NaN, Infinity, 1.5])('hides invalid output %s', (generationOutputTokens) => {
+        expect(buildMessageMetadataLabels({ roundSummary: { ...summary, generationOutputTokens } }).join(' ')).not.toContain('tok/s')
+    })
+})

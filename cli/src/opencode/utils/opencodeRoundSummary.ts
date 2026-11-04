@@ -18,6 +18,9 @@ export type OpencodeRoundSummary = {
     totalCostUsd?: number;
     numTurns: number;
     durationMs: number;
+    /** Assistant output + reasoning and provider-active time, excluding tools/compaction. */
+    generationMs?: number;
+    generationOutputTokens?: number;
 };
 
 export type OpencodeRoundSummaryResult = {
@@ -33,6 +36,8 @@ type OpencodeMessage = {
         modelID?: unknown;
         tokens?: unknown;
         cost?: unknown;
+        time?: unknown;
+        isCompaction?: boolean;
     };
     parts?: unknown;
 };
@@ -71,7 +76,9 @@ function normalizeV2Messages(payload: unknown): OpencodeMessage[] | null {
                 providerID: model?.providerID,
                 modelID: model?.id,
                 tokens: entry.tokens,
-                cost: entry.cost
+                cost: entry.cost,
+                time: entry.time,
+                isCompaction: entry.type === 'compaction'
             },
             parts: entry.type === 'user' ? [{ type: 'text', text: entry.text }] : undefined
         });
@@ -236,6 +243,9 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
     let totalCostUsd = 0;
     let hasCompleteCost = true;
     let numTurns = 0;
+    let generationMs = 0;
+    let generationOutputTokens = 0;
+    let hasCompleteGeneration = options.api?.version === 'v2';
     for (const message of delta) {
         if (message.info?.role !== 'assistant') continue;
         const parsed = parseAssistantUsage(message, options.api?.version === 'v2');
@@ -253,6 +263,16 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
         if (!addUsage(perModel, parsed.usage) || !addUsage(usage, parsed.usage)) return { snapshot, summary: null };
         if (parsed.cost === undefined) hasCompleteCost = false;
         else totalCostUsd += parsed.cost;
+        if (!message.info.isCompaction) {
+            // Match OpenCode v2 turnTokensPerSecond: assistant steps only, with
+            // the provider body boundary (before tool settlement) on every step.
+            const time = message.info.time;
+            const created = isRecord(time) ? safeInteger(time.created) : null;
+            const streamed = isRecord(time) ? safeInteger(time.streamed) : null;
+            if (created === null || streamed === null) hasCompleteGeneration = false;
+            else generationMs += Math.max(0, streamed - created);
+            generationOutputTokens += parsed.usage.outputTokens;
+        }
         numTurns++;
     }
     if (numTurns === 0 || !Number.isSafeInteger(numTurns) || !Number.isFinite(totalCostUsd)) {
@@ -266,7 +286,10 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
             modelUsage: Object.fromEntries(modelUsage),
             ...(hasCompleteCost && totalCostUsd > 0 ? { totalCostUsd } : {}),
             numTurns,
-            durationMs: options.durationMs
+            durationMs: options.durationMs,
+            ...(hasCompleteGeneration && Number.isSafeInteger(generationMs) && generationMs > 0
+                && Number.isSafeInteger(generationOutputTokens) && generationOutputTokens > 0
+                ? { generationMs, generationOutputTokens } : {})
         }
     };
 }

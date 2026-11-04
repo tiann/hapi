@@ -93,6 +93,12 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
     if (summary.numTurns !== undefined && summary.numTurns > 0) {
         round.push(`${summary.numTurns} turn${summary.numTurns === 1 ? '' : 's'}`)
     }
+    const { generationMs, generationOutputTokens } = summary
+    if (generationMs !== undefined && Number.isSafeInteger(generationMs) && generationMs > 0
+        && generationOutputTokens !== undefined && Number.isSafeInteger(generationOutputTokens) && generationOutputTokens > 0) {
+        const tokensPerSecond = generationOutputTokens / (generationMs / 1_000)
+        if (Number.isFinite(tokensPerSecond)) round.push(`${tokensPerSecond.toFixed(1)} tok/s`)
+    }
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts
 }

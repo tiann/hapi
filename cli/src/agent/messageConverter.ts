@@ -50,6 +50,8 @@ export type CodexMessage =
             total_cost_usd?: number;
             num_turns: number;
             duration_ms: number;
+            generation_ms?: number;
+            generation_output_tokens?: number;
         };
     }
     | {
@@ -144,7 +146,9 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                     modelUsage: message.summary.modelUsage,
                     ...(message.summary.totalCostUsd !== undefined ? { total_cost_usd: message.summary.totalCostUsd } : {}),
                     num_turns: message.summary.numTurns,
-                    duration_ms: message.summary.durationMs
+                    duration_ms: message.summary.durationMs,
+                    ...(message.summary.generationMs !== undefined && message.summary.generationOutputTokens !== undefined
+                        ? { generation_ms: message.summary.generationMs, generation_output_tokens: message.summary.generationOutputTokens } : {})
                 }
             };
         case 'generated_image':

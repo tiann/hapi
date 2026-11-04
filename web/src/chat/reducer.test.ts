@@ -657,7 +657,7 @@ describe('reduceChatBlocks', () => {
             decryptedMessage('answer', { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'fixture final answer' } } }, 8),
             decryptedMessage('usage2', { role: 'agent', content: { type: 'codex', data: { type: 'token_count', info: { total: { inputTokens: 2, outputTokens: 2 } } } } }, 9),
             decryptedMessage('title', { role: 'agent', content: { type: 'output', data: { type: 'summary', summary: 'title' } } }, 10),
-            decryptedMessage('round', { role: 'agent', content: { type: 'codex', data: { type: 'round-summary', summary: { usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, modelUsage: { 'fixture/model': { inputTokens: 3, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }, num_turns: 2, duration_ms: 10 } } } }, 11),
+            decryptedMessage('round', { role: 'agent', content: { type: 'codex', data: { type: 'round-summary', summary: { usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, modelUsage: { 'fixture/model': { inputTokens: 3, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }, num_turns: 2, duration_ms: 10, generation_ms: 500, generation_output_tokens: 2 } } } }, 11),
             decryptedMessage('ready', { role: 'agent', content: { type: 'codex', data: { type: 'ready' } } }, 12)
         ].map(normalizeDecryptedMessage).filter((message): message is NormalizedMessage => message !== null)
         const before = reduceChatBlocks(wire.slice(0, -2), null)
@@ -671,10 +671,10 @@ describe('reduceChatBlocks', () => {
         expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.id : null).toBe('call_fixture')
         expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.tool.name : null).toBe('Read')
         expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.tool.state : null).toBe('completed')
-        expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.roundSummary : undefined).toMatchObject({ numTurns: 2, durationMs: 10 })
+        expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.roundSummary : undefined).toMatchObject({ numTurns: 2, durationMs: 10, generationMs: 500, generationOutputTokens: 2 })
 
         const aggregate = aggregateResponseGroups(visible).get('call_fixture')
-        expect(aggregate?.roundSummary).toMatchObject({ numTurns: 2, durationMs: 10 })
+        expect(aggregate?.roundSummary).toMatchObject({ numTurns: 2, durationMs: 10, generationMs: 500, generationOutputTokens: 2 })
 
         const beforeFirst = beforeVisible.find(block => block.kind === 'tool-call')
         const afterFirst = visible.find(block => block.kind === 'tool-call')

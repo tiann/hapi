@@ -12,7 +12,9 @@ describe('convertAgentMessage round summary', () => {
                 },
                 totalCostUsd: 0.034,
                 numTurns: 2,
-                durationMs: 1_250
+                durationMs: 1_250,
+                generationMs: 500,
+                generationOutputTokens: 25
             }
         } as never);
 
@@ -25,7 +27,9 @@ describe('convertAgentMessage round summary', () => {
                 },
                 total_cost_usd: 0.034,
                 num_turns: 2,
-                duration_ms: 1_250
+                duration_ms: 1_250,
+                generation_ms: 500,
+                generation_output_tokens: 25
             }
         });
     });

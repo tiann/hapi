@@ -21,7 +21,9 @@ describe('OpenCode round summary carrier', () => {
                             },
                             total_cost_usd: 0.034,
                             num_turns: 2,
-                            duration_ms: 1_250
+                            duration_ms: 1_250,
+                            generation_ms: 500,
+                            generation_output_tokens: 25
                         }
                     }
                 }
@@ -38,7 +40,9 @@ describe('OpenCode round summary carrier', () => {
                     },
                     totalCostUsd: 0.034,
                     numTurns: 2,
-                    durationMs: 1_250
+                    durationMs: 1_250,
+                    generationMs: 500,
+                    generationOutputTokens: 25
                 }
             }
         });
@@ -81,3 +85,27 @@ describe('OpenCode round summary carrier', () => {
         expect(legacy).toMatchObject({ content: { type: 'turn-summary', summary: { durationMs: 5 } } })
     })
 });
+
+
+it('omits only the throughput pair for absent, partial or invalid optional generation data', () => {
+    const valid = {
+        usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        modelUsage: { 'fixture/model': { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+        num_turns: 1, duration_ms: 100
+    }
+    for (const generation of [
+        {}, { generation_ms: 1 }, { generation_output_tokens: 2 },
+        ...[0, -1, NaN, Infinity, '5', 0.5, Number.MAX_SAFE_INTEGER + 1].flatMap(value => [
+            { generation_ms: value, generation_output_tokens: 2 },
+            { generation_ms: 10, generation_output_tokens: value }
+        ])
+    ]) {
+        const normalized = normalizeDecryptedMessage({
+            id: 'summary', seq: 1, localId: null, createdAt: 1,
+            content: { role: 'agent', content: { type: 'codex', data: { type: 'round-summary', summary: { ...valid, ...generation } } } }
+        })
+        expect(normalized).toMatchObject({ content: { type: 'turn-summary', summary: { durationMs: 100, numTurns: 1 } } })
+        expect(normalized?.content).not.toHaveProperty('summary.generationMs')
+        expect(normalized?.content).not.toHaveProperty('summary.generationOutputTokens')
+    }
+})

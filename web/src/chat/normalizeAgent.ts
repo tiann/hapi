@@ -130,7 +130,14 @@ function normalizeOpencodeRoundSummary(value: unknown): RoundSummary | undefined
     const totalCostUsd = hasCost ? nonNegativeNumber(value.total_cost_usd) : undefined
     if (hasCost && (totalCostUsd === undefined || totalCostUsd <= 0)) return undefined
 
+    const generationMs = nonNegativeSafeInteger(value.generation_ms)
+    const generationOutputTokens = nonNegativeSafeInteger(value.generation_output_tokens)
+    const generation = generationMs !== undefined && generationMs > 0
+        && generationOutputTokens !== undefined && generationOutputTokens > 0
+        ? { generationMs, generationOutputTokens } : {}
+
     return {
+        ...generation,
         usage,
         modelUsage: Object.fromEntries(entries),
         totalCostUsd,
