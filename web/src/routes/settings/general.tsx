@@ -173,6 +173,22 @@ export default function SettingsGeneralPage() {
                     ) : null}
                 </SettingsSection>
             ) : null}
+            {isOwner && hubSettingsQuery.data ? (
+                <SettingsSection
+                    title={t('settings.general.sessionTitles.title')}
+                    description={t('settings.general.sessionTitles.description')}
+                >
+                    <SettingsSwitch
+                        label={t('settings.general.autoTitlePerTurn')}
+                        description={t('settings.general.autoTitlePerTurn.desc')}
+                        checked={hubSettingsQuery.data.autoTitlePerTurn}
+                        onChange={(checked) => {
+                            if (hubSettingsMutation.isPending) return
+                            hubSettingsMutation.mutate({ autoTitlePerTurn: checked })
+                        }}
+                    />
+                </SettingsSection>
+            ) : null}
             <SettingsSection title={t('settings.companion.title')}>
                 <div className="px-3 py-3">
                     <CompanionPairing baseUrl={baseUrl} />
