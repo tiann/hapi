@@ -574,7 +574,12 @@ export function reduceTimeline(
                 for (let index = blocks.length - 1; index >= 0; index -= 1) {
                     const block = blocks[index]
                     if (block.kind === 'user-text' || (block.kind === 'cli-output' && block.source === 'user')) break
-                    if (block.kind === 'agent-event') continue
+                    // Ignore trailing notices, but never cross a rendered response
+                    // boundary after locating the latest assistant group.
+                    if (block.kind === 'agent-event') {
+                        if (firstIndex !== -1) break
+                        continue
+                    }
                     if (!isSummaryTarget(block)) break
                     firstIndex = index
                 }
