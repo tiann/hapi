@@ -88,7 +88,7 @@ directory browsing and session creation.
 | Capability | Current native behavior |
 |---|---|
 | Chat and permissions | Streaming messages, history, tool inspection, approvals and question answering on both platforms. |
-| Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. |
+| Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. iOS also offers `@` session references, plus file references for Codex/Copilot (editable text, not inline chips). |
 | Android incoming shares | Share files, photos, text or links to HAPI, choose a session and confirm sending from its composer. The picker can switch paired hubs and explicitly restore stopped sessions. |
 | Session controls | Both support pin, rename, stopping a turn and sending to resume an inactive session. Active sessions can be archived; inactive sessions can be reopened explicitly or deleted. |
 | Files and Git | Open **Session files** from the chat menu to browse/search files, inspect Git status and read diffs. |
@@ -162,8 +162,9 @@ separate from exporting an entire session.
 
 ## Multiple hubs and sign-out
 
-The home screen's hub menu lets you add or switch hubs, open Settings, and
-sign out. You can keep several hubs paired, with one active at a time; session
+On iOS, Settings lists your hubs: add or switch hubs and sign out there. On
+Android, the home screen's hub menu lets you add or switch hubs, open Settings,
+and sign out. You can keep several hubs paired, with one active at a time; session
 lists and drafts belong to their hub. Signing out removes that hub's stored
 credentials and attempts to unregister its push token.
 

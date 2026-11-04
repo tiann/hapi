@@ -26,6 +26,7 @@ import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
+import { filterConciseChatBlocks } from '@/chat/conciseView'
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
@@ -87,7 +88,7 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { useTranslation } from '@/lib/use-translation'
-import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
+import type { SendMessageAcceptance } from '@/hooks/mutations/useSendMessage'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
@@ -96,6 +97,7 @@ import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
+import { useConciseChatMode } from '@/hooks/useConciseChatMode'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
@@ -586,6 +588,7 @@ function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
 }
 
 type SessionChatProps = {
+    readThroughRevision?: number
     api: ApiClient
     titleSuggestionAvailable?: boolean
     session: Session
@@ -595,10 +598,10 @@ type SessionChatProps = {
     messages: DecryptedMessage[]
     messagesWarning: string | null
     hasMoreMessages: boolean
+    hasMoreNewerMessages?: boolean
     isSyncingTail: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
-    sendSettlement: SendMessageSettlement | null
     viewMode: 'tail' | 'history'
     messagesVersion: number
     historyVersion: number
@@ -606,6 +609,7 @@ type SessionChatProps = {
     onBack: () => void
     onRefresh: () => void | Promise<void>
     onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    onLoadNewer?: (resolvePreserveMessageId?: () => string | null) => Promise<boolean>
     onCancelLoadMore: () => void
     // Returns the accepted mutation's attempt id, or false when
     // pre-mutation guards (no-api / no-session / pending) rejected the call OR async
@@ -624,6 +628,7 @@ type SessionChatProps = {
     /** Navigate/seed after a voice direct-send resumed an inactive session. */
     onVoiceSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
+    onJumpToTail: () => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: SuggestionHandler
     availableSlashCommands?: readonly SlashCommand[]
@@ -636,6 +641,12 @@ type SessionChatProps = {
     onSuppressSendErrorRestore?: (id: number) => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
+    initialTargetMessageId?: string
+    initialTargetMessageQuery?: string
+    searchRequestId?: number
+    onLoadMessageContext?: (messageId: string) => Promise<boolean>
+    onInitialTargetConsumed?: () => void
+    onSearchTargetDismissed?: () => void
     // Called when an `abort-restore` event arrives and the composer is not empty,
     // so the caller can surface the aborted text via the existing sendError path.
     onAbortRestore?: (text: string) => void
@@ -667,6 +678,7 @@ function SessionChatInner(props: SessionChatProps) {
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { conciseChatMode, setConciseChatMode } = useConciseChatMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
@@ -1583,15 +1595,24 @@ function SessionChatInner(props: SessionChatProps) {
         blocksByIdRef.current = reconciled.byId
     }, [reconciled.byId])
 
+    // A search jump can target any message, so show the full thread while a
+    // search target is active and restore the concise view once dismissed.
+    const conciseViewActive = conciseChatMode
+        && !(props.initialTargetMessageId && props.initialTargetMessageQuery)
+    const threadBlocks = useMemo(
+        () => conciseViewActive ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks,
+        [conciseViewActive, reconciled.blocks]
+    )
+
     const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, {
+        () => buildVisibleChatBlocks(threadBlocks, {
             hasMoreMessages: props.hasMoreMessages,
             previousGroups: visibleGroupsRef.current,
             previousGroupingMode: visibleGroupsModeRef.current,
             groupingMode: toolGroupingMode,
             codexExplorationCollapsed
         }),
-        [reconciled.blocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
+        [threadBlocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
     )
 
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
@@ -1850,7 +1871,6 @@ function SessionChatInner(props: SessionChatProps) {
     // absolute epoch-ms using Date.now() at that moment (send-time base for presets).
     const [pendingSchedule, setPendingSchedule] = useState<PendingSchedule | null>(null)
     const [pendingScheduleRevision, setPendingScheduleRevision] = useState(0)
-    const [sendAcceptance, setSendAcceptance] = useState<{ attemptId: string | null } | null>(null)
     const updatePendingSchedule = useCallback((next: PendingSchedule | null) => {
         setPendingSchedule(next)
         setPendingScheduleRevision((revision) => revision + 1)
@@ -1932,7 +1952,6 @@ function SessionChatInner(props: SessionChatProps) {
         })
         const accepted = await onSendForComposer(text, attachments, scheduledAt, deliveryMode)
         if (!accepted) return
-        setSendAcceptance({ attemptId: accepted.attemptId })
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
             // accepted - covers both pre-mutation guards AND async
@@ -2024,6 +2043,8 @@ function SessionChatInner(props: SessionChatProps) {
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
+                onToggleConciseView={() => setConciseChatMode(!conciseChatMode)}
+                conciseViewActive={conciseChatMode}
                 onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
                 terminalActive={terminalVisible}
                 api={props.api}
@@ -2090,19 +2111,25 @@ function SessionChatInner(props: SessionChatProps) {
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
                         disabled={sessionInactive}
+                        allowInactiveFork={sessionInactive && props.session.metadata?.flavor === 'codex'
+                            && Boolean(props.session.metadata?.codexSessionId && props.session.metadata?.machineId)}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
                         historyActionPending={historyActionPending}
-                        onForkConversation={controlledByUser ? undefined : onForkConversation}
+                        onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
                         onViewModeChange={props.onViewModeChange}
+                        onJumpToTail={props.onJumpToTail}
+                        readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
+                        hasMoreNewerMessages={props.hasMoreNewerMessages}
                         isLoadingMoreMessages={props.isLoadingMoreMessages}
                         onLoadMore={props.onLoadMore}
+                        onLoadNewer={props.onLoadNewer}
                         onCancelLoadMore={props.onCancelLoadMore}
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
@@ -2113,6 +2140,12 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineOpen={outlineOpen}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
+                        initialTargetMessageId={props.initialTargetMessageId}
+                        initialTargetMessageQuery={props.initialTargetMessageQuery}
+                        searchRequestId={props.searchRequestId}
+                        onLoadMessageContext={props.onLoadMessageContext}
+                        onInitialTargetConsumed={props.onInitialTargetConsumed}
+                        onSearchTargetDismissed={props.onSearchTargetDismissed}
                     />
                     </div>
 
@@ -2170,7 +2203,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                canSteer={isSteeringSupportedForSession(props.session.metadata)
+                                deliveryActive={props.session.active && props.session.thinking}
+                                canSteer={props.session.active && props.session.thinking
+                                    && isSteeringSupportedForSession(props.session.metadata)
                                     && (agentFlavor === 'pi'
                                         ? props.session.thinking
                                         : props.session.agentState?.steeringActive === true)
@@ -2183,6 +2218,7 @@ function SessionChatInner(props: SessionChatProps) {
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         canRestoreAttachments={props.session.active}
+                        attachmentsEnabled={attachmentAdapter !== undefined}
                         onUploadDraftSnapshot={(text, attachments) => {
                             uploadDraftSnapshotRef.current = { text, attachments }
                         }}
@@ -2190,8 +2226,6 @@ function SessionChatInner(props: SessionChatProps) {
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
-                        sendAcceptance={sendAcceptance}
-                        sendSettlement={props.sendSettlement}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
                         permissionMode={props.session.permissionMode}

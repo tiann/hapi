@@ -43,6 +43,7 @@ export type {
     ClaudeModelSummary,
     ClaudeModelsResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
@@ -54,8 +55,11 @@ export type {
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,
+    SessionContentMatch,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
     SessionsResponse,
+    SessionContentSearchResponse,
     SpawnResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -156,6 +160,7 @@ export type FileSearchResponse = {
     success: boolean
     files?: FileSearchItem[]
     error?: string
+    pathSearch?: boolean
 }
 
 export type GitFileStatus = {

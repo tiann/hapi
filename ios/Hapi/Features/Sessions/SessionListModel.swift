@@ -65,8 +65,8 @@ enum SessionRowStatus: Equatable {
         }
     }
 
-    /// Unfilled attention symbols; running uses the native loading indicator.
-    /// Status wording/count remain available to VoiceOver in either case.
+    /// Unfilled attention symbols; running is a pulsing badge on the agent
+    /// icon. Status wording/count remain available to VoiceOver in either case.
     var symbolName: String? {
         switch self {
         case .needsReply: return "bubble.left"
@@ -87,7 +87,7 @@ struct MachineFilterUI: Identifiable, Equatable {
 /// Transient, per-home filters. Add future dimensions here, not to navigation.
 struct SessionListFilters: Equatable, Hashable {
     var machineId: String?
-    /// Web "unread only" lens: hide sessions already seen on this device.
+    /// Web "unread only" lens: hide sessions already read in this namespace.
     var unreadOnly = false
 
     var isActive: Bool { machineId != nil || unreadOnly }
@@ -118,6 +118,8 @@ final class SessionListModel {
     private(set) var isRefreshing = false
     /// Last refresh failed — show the offline state over snapshot data.
     private(set) var isOffline = false
+    /// Last successful list fetch, for the offline notice's "updated …".
+    private(set) var lastRefreshedAt: Date?
     private(set) var hasRefreshedOnce = false
     @ObservationIgnored private var hasAttemptedRefresh = false
     /// Transient row-action failure for an alert.
@@ -241,20 +243,34 @@ final class SessionListModel {
         filters.unreadOnly = enabled
     }
 
-    /// Unread sessions this device has not opened since their last update.
+    /// Content not yet read by a client in this namespace.
     var unreadCount: Int {
-        let lastSeen = lastSeenStore.state.lastSeen
+        let readState = lastSeenStore.state
+        let followedTails = lastSeenStore.followedTails
         return sessionStore.sessions.filter {
-            LastSeenStore.isUnread($0, lastSeenAt: lastSeen[$0.id] ?? 0)
+            LastSeenStore.isUnread($0, state: readState, followedTails: followedTails)
         }.count
     }
 
-    /// Web `markAllSessionsSeen`: local watermarks only, nothing hub-side.
+    /// Capture the observed heads; concurrent output must remain unread.
     func markAllRead() {
-        let lastSeen = lastSeenStore.state.lastSeen
-        for summary in sessionStore.sessions
-        where LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0) {
-            lastSeenStore.markSeen(sessionId: summary.id, seenAt: summary.updatedAt)
+        let observed = sessionStore.sessions
+        Task {
+            for summary in observed {
+                await lastSeenStore.markSeen(sessionId: summary.id,
+                    revision: summary.contentRevision ?? 0, serverState: summary.readState)
+            }
+            if let error = lastSeenStore.persistenceError { actionError = error }
+        }
+    }
+
+    /// Swipe action: mark the observed head of one session as read.
+    func markRead(sessionId: String) {
+        guard let summary = sessionStore.sessions.first(where: { $0.id == sessionId }) else { return }
+        Task {
+            await lastSeenStore.markSeen(sessionId: summary.id,
+                revision: summary.contentRevision ?? 0, serverState: summary.readState)
+            if let error = lastSeenStore.persistenceError { actionError = error }
         }
     }
 
@@ -277,7 +293,8 @@ final class SessionListModel {
     /// Machine filter → unread lens → text search (relevance order, pin
     /// sections kept so the Pinned header still applies).
     var rows: [SessionRowUI] {
-        let lastSeen = lastSeenStore.state.lastSeen
+        let readState = lastSeenStore.state
+        let followedTails = lastSeenStore.followedTails
         let activeFilter = activeMachineFilter
         var visible = sessionStore.sessions.filter { summary in
             guard let activeFilter else { return true }
@@ -286,7 +303,7 @@ final class SessionListModel {
         if filters.unreadOnly {
             visible = visible.filter { summary in
                 summary.id == selectedSessionId
-                    || LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
+                    || LastSeenStore.isUnread(summary, state: readState, followedTails: followedTails)
             }
         }
         if isSearching {
@@ -303,7 +320,7 @@ final class SessionListModel {
                 title: Self.sessionTitle(summary),
                 project: Self.projectLabel(summary),
                 flavor: summary.metadata?.flavor,
-                unread: LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
+                unread: LastSeenStore.isUnread(summary, state: readState, followedTails: followedTails)
             )
         }
     }
@@ -334,9 +351,7 @@ final class SessionListModel {
         await Task { await self.refresh() }.value
     }
 
-    /// Pull-to-refresh / initial load. Coalesces concurrent calls; the first
-    /// successful list seeds the unread baseline so historical sessions do
-    /// not all light up as unread.
+    /// Pull-to-refresh / initial load. Coalesces concurrent calls.
     func refresh() async {
         guard !isRefreshing else { return }
         hasAttemptedRefresh = true
@@ -345,24 +360,14 @@ final class SessionListModel {
         do {
             try await sessionStore.refresh()
             reconcileFilters()
-            try await machineStore.refresh()
             isOffline = false
+            lastRefreshedAt = Date()
             hasRefreshedOnce = true
-            lastSeenStore.initializeBaseline(
-                scopeKey: hubUrl,
-                sessions: sessionStore.sessions
-            )
+            do { try await machineStore.refresh() }
+            catch { actionError = error.localizedDescription }
         } catch {
             isOffline = true
         }
-    }
-
-    /// Call when navigating into a session: stamps the last-seen watermark.
-    func onSessionOpened(_ sessionId: String) {
-        guard let summary = sessionStore.sessions.first(where: { $0.id == sessionId }) else {
-            return
-        }
-        lastSeenStore.markSeen(sessionId: sessionId, seenAt: summary.updatedAt)
     }
 
     /// `PUT /sessions/:id/pin` with store-side optimistic re-sort; failures
