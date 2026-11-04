@@ -948,6 +948,11 @@ export function reduceTimeline(
                         }
                     }
 
+                    // Claude Code stores thinking with an empty body when the
+                    // content is not displayed. An empty block renders nothing
+                    // but still splits adjacent tool calls out of their group.
+                    if (c.text.trim().length === 0) continue
+
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',
                         // Keep the reasoning panel mounted across snapshots,

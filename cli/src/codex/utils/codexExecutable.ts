@@ -68,6 +68,21 @@ function resolveWindowsCodexCommand(): CodexCommand {
     return { command: 'codex', args: [] };
 }
 
+/** Resolve a selected app-server executable without passing JSON overrides through cmd.exe. */
+export function resolveSelectedCodexCommand(command: string, platform: NodeJS.Platform = process.platform): CodexCommand {
+    if (platform !== 'win32') return { command, args: [] };
+    if (command === 'codex') return resolveWindowsCodexCommand();
+    const candidates = windowsPath.basename(command) === command ? findWhereResults(command) : [];
+    for (const candidate of [...candidates, command]) {
+        const resolved = resolveWindowsCandidate(candidate);
+        if (resolved) return resolved;
+    }
+    if (/\.(cmd|bat)$/i.test(command)) {
+        throw new Error('Use a Codex executable or an npm Codex shim with its launcher script on Windows.');
+    }
+    return { command, args: [] };
+}
+
 export const MACOS_CODEX_APP_COMMAND = '/Applications/Codex.app/Contents/Resources/codex';
 
 export function resolveCodexCommand(

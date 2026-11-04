@@ -34,13 +34,13 @@ import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
+import { useMentionInactiveCollapsed } from '@/hooks/useMentionInactiveCollapsed'
 import { useSession } from '@/hooks/queries/useSession'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
-import { getSessionTitle } from '@/lib/sessionTitle'
-import { buildSessionReferenceText, matchSessionsForMention } from '@/lib/sessionReference'
+import { buildSessionMentionSuggestions } from '@/lib/sessionMentionSuggestions'
 import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
 import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
@@ -308,7 +308,7 @@ function SessionsPage() {
                         onBrowse={canBrowse ? () => navigate({ to: '/browse' }) : undefined}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
-                        // Keep ranks: new 4, unread lens 5, settings 6,
+                        // Keep ranks: new 4, sort and filter 5, settings 6,
                         // mark-all 7, browse 8. Higher sheds into More first (#2039).
                         renderHeader
                         toolbarExtras={[
@@ -771,8 +771,9 @@ function SessionPage() {
     const {
         getSuggestions: getSkillSuggestions,
     } = useSkills(api, sessionId)
-    // Mention pool is stricter than sidebar (#1506): titled sessions only; match via sessionMatchesQuery.
+    // Mentionable sessions must have conversation content (#1506).
     const { sessions: allSessions } = useSessions(api)
+    const { mentionInactiveCollapsed, setMentionInactiveCollapsed } = useMentionInactiveCollapsed()
     const { machines: mentionMachines } = useMachines(api, true)
     const mentionMachineLabelsById = useMachineLabels(mentionMachines)
     // Same fallbacks as share picker / SessionList search.
@@ -793,25 +794,15 @@ function SessionPage() {
             const search = query.slice(1)
             // v1: plain-text expansion (same grammar as Copy reference) — #1213.
             // v2: segmented rich composer with inline session tokens — #1215.
-            // Match via sessionMatchesQuery (share/sidebar); label/insert via getSessionTitle.
-            const sessionHits = matchSessionsForMention(allSessions, search, {
+            // Match via sessionMatchesQuery (share/sidebar).
+            const sessionHits = buildSessionMentionSuggestions({
+                sessions: allSessions,
+                query: search,
                 excludeId: sessionId,
-                limit: 20,
                 resolveMachineLabel: resolveMentionMachineLabel,
-            }).map((s) => {
-                const title = getSessionTitle(s)
-                const mentionText = buildSessionReferenceText(title, s.id)
-                const idPrefix = s.id.slice(0, 8)
-                return {
-                    key: `session:${s.id}`,
-                    text: mentionText,
-                    label: `@${title || idPrefix}`,
-                    description: s.active
-                        ? `Session · ${idPrefix} · active`
-                        : `Session · ${idPrefix}`,
-                    // Rich composer atom; textarea path still inserts `text` prose.
-                    sessionMention: { id: s.id, title: title || idPrefix },
-                }
+                inactiveCollapsed: mentionInactiveCollapsed,
+                inactiveLabel: t('richComposer.inactiveSessions'),
+                toggleInactive: () => setMentionInactiveCollapsed(!mentionInactiveCollapsed),
             })
 
             if ((agentType === 'codex' || agentType === 'copilot') && api && sessionId) {
@@ -853,6 +844,9 @@ function SessionPage() {
         api,
         sessionId,
         allSessions,
+        mentionInactiveCollapsed,
+        setMentionInactiveCollapsed,
+        t,
         resolveMentionMachineLabel,
         getSkillSuggestions,
         getSlashSuggestions,
