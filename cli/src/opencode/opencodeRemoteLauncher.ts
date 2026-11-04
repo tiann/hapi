@@ -51,8 +51,8 @@ import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 import { OpencodeConversationHistory } from './conversationHistory';
-import { OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
-import { OpenCodeRewindSchema } from '@hapi/protocol/schemas';
+import { OpenCodeRewind, OpenCodeRewindSupersededError, OpenCodeRuntimeGate } from './rewind';
+import { OpenCodeRewindSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas';
 import { configuration } from '@/configuration';
 import { join } from 'node:path';
 import { getProcessStartMarker } from '@/utils/process';
@@ -262,6 +262,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private rewind: OpenCodeRewind | null = null;
     private rewindInFlight = false;
     private rewindReconnect: (() => void) | null = null;
+    private rewindReconnectPending = false;
+    private rewindStopped = false;
+    private rewindSupersededId: string | undefined;
     private v2Steers = new Map<string, OpencodeV2SteerEntry>();
     private v2AbortInProgress: Promise<void> | null = null;
     private v2ResetInProgress: Promise<void> | null = null;
@@ -274,6 +277,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.session = session;
         this.runtimeGate = session.runtimeGate ?? new OpenCodeRuntimeGate();
         this.workerId = this.runtimeGate.workerId;
+    }
+
+    private noteSupersededRewind(error: unknown): void {
+        if (!this.rewindStopped && error instanceof OpenCodeRewindSupersededError
+            && error.operationId !== this.rewindSupersededId) {
+            this.rewindSupersededId = error.operationId;
+            this.rewindReconnectPending = true;
+        }
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -307,6 +318,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // session; any detection failure falls back to the v1 path.
         this.majorVersion = await detectOpencodeFlavorVersion();
         const isV2 = this.majorVersion === 'v2';
+        const workerStartMarker = getProcessStartMarker(process.pid);
 
         // v1: pre-select a loopback port for the ACP subprocess's internal
         // HTTP API and pass it explicitly via --port/--hostname. opencode
@@ -616,10 +628,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         if (loaded !== acpSessionId) throw new Error('Rewind native reload changed identity');
                         await this.conversationHistory.reconcileHistory();
                         this.instructionsSent = (this.conversationHistory.getCheckpoint()?.userMessageIds.length ?? 0) > 0;
-                        session.client.updateMetadata(meta => ({ ...meta, opencodeWorkerId: this.workerId }));
+                        if (!workerStartMarker) throw new Error('OpenCode worker generation is unavailable');
+                        session.client.updateMetadata(meta => ({ ...meta, opencodeWorkerId: this.workerId,
+                            opencodeWorkerProcess: { workerId: this.workerId, pid: process.pid, startMarker: workerStartMarker } }));
                         if (!await session.client.flushMetadata()) throw new Error('Rewind runtime consumption is not durable');
                     },
                     report: report => session.client.reportOpenCodeRewind(report),
+                    getAuthoritativeOperation: async () => {
+                        if (!await session.client.refreshMetadata()) throw new Error('Cannot refresh OpenCode rewind metadata');
+                        return session.client.getMetadata()?.opencodeRewind;
+                    },
                     flush: async () => {
                         await this.conversationHistory.reconcileHistory();
                         return await session.client.flush() && await session.client.flushMetadata();
@@ -628,9 +646,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         && !this.hasUnresolvedNativeInput(),
                     sourceCheckpoint: () => this.conversationHistory.getCheckpoint(),
                     sourceIndexes: () => this.conversationHistory.getHistoryIndexes(),
-                    previousWorkerCannotRun: () => {
-                        const previous = this.rewind?.readIntent()?.ownerProcess;
-                        if (!previous) return false;
+                    previousWorkerCannotRun: previous => {
                         const marker = getProcessStartMarker(previous.pid);
                         if (marker !== null) return marker !== previous.startMarker;
                         try { process.kill(previous.pid, 0); return false; }
@@ -645,8 +661,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
                     }
                 });
-                const pending = currentMetadata?.opencodeRewind;
-                if (pending && pending.phase !== 'rejected') {
+                let pending: OpenCodeRewindOperation | undefined;
+                try {
+                    if (!await session.client.refreshMetadata()) throw new Error('Cannot refresh OpenCode rewind metadata');
+                    const refreshed = session.client.getMetadata();
+                    pending = refreshed?.opencodeRewind;
+                    this.conversationHistory.clearPromptIndexes();
+                    this.conversationHistory.restoreCheckpoint(refreshed?.opencodeHistoryCheckpoint);
+                    this.conversationHistory.restorePromptIndexes(refreshed?.conversationHistoryIndexes);
+                } catch (error) {
+                    this.runtimeGate.block();
+                    logger.warn('[opencode-rewind] Initial metadata refresh failed', error);
+                }
+                if (pending) {
                     this.runtimeGate.block();
                     try {
                         await this.rewind.recover(pending);
@@ -654,7 +681,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         this.conversationHistory.clearPromptIndexes();
                         this.conversationHistory.restoreCheckpoint(restored?.opencodeHistoryCheckpoint);
                         this.conversationHistory.restorePromptIndexes(restored?.conversationHistoryIndexes);
-                    } catch (error) { logger.warn('[opencode-rewind] Recovery remains blocked', error); }
+                    } catch (error) {
+                        this.noteSupersededRewind(error);
+                        logger.warn('[opencode-rewind] Recovery remains blocked', error);
+                    }
+                } else if (!this.runtimeGate.isBlocked()) {
+                    try {
+                        const intent = this.rewind.readIntent();
+                        if (intent && intent.phase !== 'finalized') this.runtimeGate.block();
+                    } catch (error) {
+                        this.runtimeGate.block();
+                        logger.warn('[opencode-rewind] Invalid recovery journal', error);
+                    }
                 }
             }
             if (!historyMetadataDurable) {
@@ -680,9 +718,28 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             return { ...result, opencodeHistoryCheckpoint: await this.conversationHistory.checkpointForkedSession(result.nativeSessionId) };
             } finally { release(); }
         });
-        if (this.rewind && this.nativeProcess && !this.conversationHistory.isDisabled()) {
-            if (!this.runtimeGate.isBlocked()) session.client.updateMetadata(metadata => ({ ...metadata, opencodeWorkerId: this.workerId }));
+        if (this.rewind && this.nativeProcess && workerStartMarker && !this.conversationHistory.isDisabled()) {
+            if (!this.runtimeGate.isBlocked()) session.client.updateMetadata(metadata => ({ ...metadata, opencodeWorkerId: this.workerId,
+                opencodeWorkerProcess: { workerId: this.workerId, pid: process.pid, startMarker: workerStartMarker } }));
             if (await session.client.flushMetadata()) {
+                const drainReconnect = () => {
+                    if (this.rewindStopped || this.rewindInFlight || !this.rewindReconnectPending) return;
+                    this.rewindReconnectPending = false;
+                    if (!this.runtimeGate.isBlocked()) return;
+                    this.rewindInFlight = true;
+                    void (async () => {
+                        if (!await session.client.refreshMetadata()) return;
+                        const operation = session.client.getMetadata()?.opencodeRewind;
+                        if (!operation) return;
+                        await this.rewind!.recover(operation);
+                        this.conversationHistory.setRewindReady(!this.runtimeGate.isBlocked());
+                        await this.conversationHistory.publish();
+                    })().catch(error => {
+                        this.noteSupersededRewind(error);
+                        logger.warn('[opencode-rewind] Reconnect recovery remains blocked', error);
+                    })
+                        .finally(() => { this.rewindInFlight = false; drainReconnect(); });
+                };
                 session.client.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
                     const input = payload as { messageLocalId?: string; opencodeRewind?: unknown };
                     const operation = OpenCodeRewindSchema.parse(input?.opencodeRewind);
@@ -701,26 +758,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         await this.conversationHistory.publish();
                         return result;
                     } catch (error) {
-                        // A synchronous busy refusal precedes native mutation.
-                        if (!this.runtimeGate.isBlocked()) await session.client.reportOpenCodeRewind({ operation, phase: 'rejected' });
+                        this.noteSupersededRewind(error);
                         throw error;
-                    } finally { this.rewindInFlight = false; }
+                    } finally { this.rewindInFlight = false; drainReconnect(); }
                 });
                 this.conversationHistory.setRewindReady(!this.runtimeGate.isBlocked());
                 this.rewindReconnect = () => {
-                    if (this.rewindInFlight || !this.runtimeGate.isBlocked()) return;
-                    this.rewindInFlight = true;
-                    void (async () => {
-                        if (!await session.client.refreshMetadata()) return;
-                        const operation = session.client.getMetadata()?.opencodeRewind;
-                        if (!operation) return;
-                        await this.rewind!.recover(operation);
-                        this.conversationHistory.setRewindReady(!this.runtimeGate.isBlocked());
-                        await this.conversationHistory.publish();
-                    })().catch(error => logger.warn('[opencode-rewind] Reconnect recovery remains blocked', error))
-                        .finally(() => { this.rewindInFlight = false; });
+                    this.rewindReconnectPending = true;
+                    drainReconnect();
                 };
                 session.client.on('connected', this.rewindReconnect);
+                drainReconnect();
             }
         }
         if (!historyDiverged) {
@@ -1829,6 +1877,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * comment on RemoteLauncherBase for exactly when this fires.
      */
     protected onLeavingRemote(): void {
+        this.rewindStopped = true;
         // Synchronous, before anything here could await: a steer parked on a
         // durable-state await must not be able to inject into a backend that is
         // already on its way out.
@@ -1845,6 +1894,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
+        this.rewindStopped = true;
         if (this.rewindReconnect) this.session.client.off('connected', this.rewindReconnect);
         // Before anything that can fail: a steer still parked on a
         // durable-state await must not be able to send into the backend that is

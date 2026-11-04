@@ -1,15 +1,20 @@
 import { describe, expect, it, spyOn } from 'bun:test'
 import type { Database } from 'bun:sqlite'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
+import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
+import type { CliSocketWithData } from '../socket/socketTypes'
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 
-function fixture(searchable = false) {
-    const store = new Store(':memory:')
+function fixture(searchable = false, dbPath = ':memory:') {
+    const store = new Store(dbPath)
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     const session = engine.getOrCreateSession('opencode-rewind', { path: '/tmp/project', host: 'fixture', flavor: 'opencode',
-        opencodeSessionId: 'native', opencodeWorkerId: 'worker', conversationHistoryIndexes: { one: 0, two: 1 },
+        opencodeSessionId: 'native', opencodeWorkerId: 'worker', opencodeWorkerProcess: { workerId: 'worker', pid: 4321, startMarker: 'worker-generation' }, conversationHistoryIndexes: { one: 0, two: 1 },
         opencodeHistoryCheckpoint: { sessionId: 'native', messageIds: ['u1', 'a1', 'u2', 'a2'], userMessageIds: ['u1', 'u2'], localMessageIds: [] },
         capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default')
     engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
@@ -28,6 +33,101 @@ function fixture(searchable = false) {
 }
 
 describe('OpenCode durable Hub rewind commit', () => {
+    it('snapshots the worker process generation into the reservation and correlates it on reports', async () => {
+        const f = fixture()
+        const current = f.store.sessions.getSession(f.id)!
+        f.store.sessions.updateSessionMetadata(f.id, { ...current.metadata as object,
+            opencodeWorkerProcess: { workerId: 'worker', pid: 4321, startMarker: 'worker-generation' } }, f.version(), 'default')
+        ;(f.engine as any).sessionCache.refreshSession(f.id)
+        let operation!: OpenCodeRewindOperation
+        try {
+            ;(f.engine as any).rpcGateway.rewindConversation = async (_id: string, request: { opencodeRewind: OpenCodeRewindOperation }) => {
+                operation = request.opencodeRewind
+                return { success: false, outcome: 'unknown', error: 'synthetic transport failure' }
+            }
+            await f.engine.rewindConversation(f.id, 'default', 'two')
+            expect(operation).toMatchObject({ workerId: 'worker', workerPid: 4321, workerStartMarker: 'worker-generation' })
+            expect(() => f.engine.reportOpenCodeRewind(f.id, 'default', { operation: { ...operation, workerPid: 4322 }, phase: 'rejected' }, f.version())).toThrow('mismatch')
+            expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'rejected' }, f.version()).phase).toBe('rejected')
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
+    it('does not create a new reservation without an immutable worker process generation', async () => {
+        const f = fixture()
+        try {
+            const current = f.store.sessions.getSession(f.id)!
+            f.store.sessions.updateSessionMetadata(f.id, { ...current.metadata as object,
+                opencodeWorkerProcess: undefined }, f.version(), 'default')
+            ;(f.engine as any).sessionCache.refreshSession(f.id)
+            expect(await f.engine.rewindConversation(f.id, 'default', 'two')).toMatchObject({ type: 'error' })
+            expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind).toBeUndefined()
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
+    it('refuses a new reservation when an older CLI changes only the outer worker ID', async () => {
+        const f = fixture()
+        const handlers = new Map<string, (data: unknown, ack: (result: unknown) => void) => void>()
+        const socket = { on: (name: string, handler: (data: unknown, ack: (result: unknown) => void) => void) => handlers.set(name, handler),
+            to: () => ({ emit() {} }) }
+        registerSessionHandlers(socket as unknown as CliSocketWithData, { store: f.store,
+            resolveSessionAccess: () => ({ ok: true, value: f.store.sessions.getSession(f.id)! }), emitAccessError() {} })
+        let rpcCount = 0
+        ;(f.engine as any).rpcGateway.rewindConversation = async () => { rpcCount++; throw new Error('must not dispatch') }
+        try {
+            const before = f.store.sessions.getSession(f.id)!
+            let acknowledgement: any
+            handlers.get('update-metadata')!({ sid: f.id, expectedVersion: before.metadataVersion,
+                metadata: { ...before.metadata as object, opencodeWorkerId: 'older-wrapper' } }, result => { acknowledgement = result })
+            expect(acknowledgement.result).toBe('success')
+            const changed = f.store.sessions.getSession(f.id)!.metadata as any
+            expect(changed.opencodeWorkerProcess.workerId).toBe('worker')
+            ;(f.engine as any).sessionCache.refreshSession(f.id)
+            expect(await f.engine.rewindConversation(f.id, 'default', 'two')).toMatchObject({ type: 'error' })
+            expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind).toBeUndefined()
+            expect(rpcCount).toBe(0)
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
+    it.each([{ workerId: 'other', pid: 4321, startMarker: 'worker-generation' },
+        { workerId: 'worker', pid: 4321 }, { workerId: 'worker', startMarker: 'worker-generation' }])(
+        'refuses an unmatched or incomplete worker process proof', async proof => {
+            const f = fixture(); const current = f.store.sessions.getSession(f.id)!
+            f.store.sessions.updateSessionMetadata(f.id, { ...current.metadata as object, opencodeWorkerProcess: proof }, f.version(), 'default')
+            ;(f.engine as any).sessionCache.refreshSession(f.id)
+            let rpcCount = 0
+            ;(f.engine as any).rpcGateway.rewindConversation = async () => { rpcCount++; throw new Error('must not dispatch') }
+            try {
+                expect(await f.engine.rewindConversation(f.id, 'default', 'two')).toMatchObject({ type: 'error' })
+                expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind).toBeUndefined()
+                expect(rpcCount).toBe(0)
+            } finally { f.engine.stop(); f.store.close() }
+        })
+
+    it.each(['prepare-first', 'reject-first'] as const)('serializes preparation and rejection with file SQLite (%s)', async order => {
+        const f = fixture(true, join(mkdtempSync(join(tmpdir(), 'hapi-rewind-cas-')), 'hub.sqlite'))
+        let operation!: OpenCodeRewindOperation
+        const hashes = { sourceHash: 'a'.repeat(64), prefixHash: 'b'.repeat(64) }
+        try {
+            ;(f.engine as any).rpcGateway.rewindConversation = async (_id: string, request: { opencodeRewind: OpenCodeRewindOperation }) => {
+                operation = request.opencodeRewind
+                return { success: false, outcome: 'unknown', error: 'synthetic lost RPC' }
+            }
+            await f.engine.rewindConversation(f.id, 'default', 'two')
+            const reservedVersion = f.version()
+            if (order === 'prepare-first') {
+                expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'prepared', ...hashes }, reservedVersion).phase).toBe('prepared')
+                expect(() => f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'rejected' }, reservedVersion)).toThrow('version changed')
+                expect(() => f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'rejected' }, f.version())).toThrow('without recovery evidence')
+                expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind.phase).toBe('prepared')
+            } else {
+                expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'rejected' }, reservedVersion).phase).toBe('rejected')
+                expect(f.engine.reportOpenCodeRewind(f.id, 'default', { operation, phase: 'prepared', ...hashes }, reservedVersion).phase).toBe('rejected')
+                expect((f.store.sessions.getSession(f.id)!.metadata as any).opencodeRewind.phase).toBe('rejected')
+            }
+            expect(f.store.messages.getAllMessages(f.id)).toHaveLength(4)
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
     it('keeps an unprepared unknown report reserved and admission blocked until rejection', async () => {
         const f = fixture(true)
         let operation!: OpenCodeRewindOperation
@@ -152,7 +252,7 @@ describe('OpenCode durable Hub rewind commit', () => {
             userMessageIds: ['u1', 'u2'], localMessageIds: [] }
         const checkpoint = { ...sourceCheckpoint, messageIds: ['u1', 'a1'], userMessageIds: ['u1'] }
         const session = engine.getOrCreateSession('scheduled-rewind', { path: '/tmp/project', host: 'fixture', flavor: 'opencode',
-            opencodeSessionId: 'native', opencodeWorkerId: 'worker', conversationHistoryIndexes: { one: 0, two: 1 },
+            opencodeSessionId: 'native', opencodeWorkerId: 'worker', opencodeWorkerProcess: { workerId: 'worker', pid: 4321, startMarker: 'worker-generation' }, conversationHistoryIndexes: { one: 0, two: 1 },
             opencodeHistoryCheckpoint: sourceCheckpoint,
             capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default')
         engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })

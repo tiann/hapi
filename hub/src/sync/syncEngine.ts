@@ -2208,7 +2208,9 @@ export class SyncEngine {
         const checkpoint = metadata.opencodeHistoryCheckpoint
         const index = metadata.conversationHistoryIndexes?.[localId]
         const nativeMessageId = index === undefined ? undefined : checkpoint?.userMessageIds[index]
-        if (!metadata.opencodeWorkerId || !checkpoint || !nativeMessageId || checkpoint.localPublicationPending
+        if (!metadata.opencodeWorkerId || !metadata.opencodeWorkerProcess
+            || metadata.opencodeWorkerProcess.workerId !== metadata.opencodeWorkerId
+            || !checkpoint || !nativeMessageId || checkpoint.localPublicationPending
             || checkpoint.localMessageIds === undefined || checkpoint.sessionId !== metadata.opencodeSessionId) {
             return { type: 'error', message: 'OpenCode rewind requires a verified native boundary and worker' }
         }
@@ -2216,7 +2218,8 @@ export class SyncEngine {
         const boundary = messages.find(m => m.localId === localId && m.invokedAt != null)
         if (!boundary) return { type: 'error', message: 'History boundary is not invoked' }
         const operation: OpenCodeRewindOperation = { operationId: randomUUID(), nativeSessionId: checkpoint.sessionId,
-            workerId: metadata.opencodeWorkerId, requestedLocalId: localId, nativeMessageId, cutoffSeq: boundary.seq,
+            workerId: metadata.opencodeWorkerId, workerPid: metadata.opencodeWorkerProcess.pid, workerStartMarker: metadata.opencodeWorkerProcess.startMarker,
+            requestedLocalId: localId, nativeMessageId, cutoffSeq: boundary.seq,
             sourceEpoch: this.store.messages.getMessageEpoch(session.id), sourceMaxSeq: Math.max(0, ...messages.map(m => m.seq)),
             sourceTranscriptHash: createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
             reservationVersion: current.metadataVersion + 1, phase: 'reserved' }
@@ -2241,7 +2244,7 @@ export class SyncEngine {
             const metadata = MetadataSchema.parse(current.metadata)
             const op = metadata.opencodeRewind
             const incoming = report.operation
-            const keys = ['operationId', 'nativeSessionId', 'workerId', 'requestedLocalId', 'nativeMessageId',
+            const keys = ['operationId', 'nativeSessionId', 'workerId', 'workerPid', 'workerStartMarker', 'requestedLocalId', 'nativeMessageId',
                 'cutoffSeq', 'sourceEpoch', 'sourceMaxSeq', 'reservationVersion', 'sourceTranscriptHash'] as const
             if (!op || keys.some(key => op[key] !== incoming[key]) || metadata.opencodeSessionId !== op.nativeSessionId) throw new Error('OpenCode rewind operation mismatch')
             // Check the operation tombstone BEFORE the optimistic version/cutoff.

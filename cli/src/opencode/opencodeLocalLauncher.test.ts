@@ -4,6 +4,7 @@ import type { OpencodeSession } from './session';
 import type { OpencodeHookEvent } from './types';
 import type { OpencodeHookServer } from './utils/startOpencodeHookServer';
 import { OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
+import { getProcessStartMarker } from '@/utils/process';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,6 +30,7 @@ describe('local canonical tool updates through the publication journal', () => {
     beforeEach(() => { vi.clearAllMocks(); native.wait = Promise.resolve(); });
 
     const operation: OpenCodeRewindOperation = { operationId: 'local-resume-op', nativeSessionId: 'native', workerId: 'worker',
+        workerPid: process.pid, workerStartMarker: getProcessStartMarker(process.pid)!,
         requestedLocalId: 'two', nativeMessageId: 'u2', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 4,
         reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
     function localSession(metadata: Metadata, runtimeGate = new OpenCodeRuntimeGate()) {
@@ -42,17 +44,36 @@ describe('local canonical tool updates through the publication journal', () => {
     }
     const localOptions = { hookUrl: 'http://fixture/hook', hookServer: { token: 'fixture' } as unknown as OpencodeHookServer };
 
-    it.each(['reserved', 'prepared', 'unknown', 'committed'] as const)(
+    it.each(['reserved', 'prepared', 'unknown', 'committed', 'rejected'] as const)(
         'blocks terminal local native launch before settlement of %s, even with a fresh open JS gate', async (phase) => {
             const session = localSession({ path: '/tmp/project', host: 'fixture', opencodeRewind: { ...operation, phase } });
             await expect(opencodeLocalLauncher(session, localOptions)).rejects.toThrow('reconciliation');
             expect(native.launched).not.toHaveBeenCalled();
         });
 
-    it.each([undefined, 'rejected'] as const)('allows local native launch for the safe %s control', async (phase) => {
+    it.each([undefined] as const)('allows local native launch for the safe %s control', async (phase) => {
         const session = localSession({ path: '/tmp/project', host: 'fixture',
             ...(phase ? { opencodeRewind: { ...operation, phase } } : {}) });
         expect(await opencodeLocalLauncher(session, localOptions)).toBe('exit');
+        expect(native.launched).toHaveBeenCalledOnce();
+    });
+
+    it('allows local launch only after this wrapper reconciles the exact rejected tombstone', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        const rejected = { ...operation, phase: 'rejected' as const };
+        const metadata: Metadata = { path: '/tmp/project', host: 'fixture', opencodeRewind: rejected };
+        const controller = new OpenCodeRewind({ directory: mkdtempSync(join(tmpdir(), 'rewind-local-rejected-')),
+            hapiSessionId: 'rejected-local', workerId: 'worker', gate, baseUrl: 'http://native', nativeSessionId: 'native', headers: {},
+            request: async () => { throw new Error('native must not be queried'); },
+            report: async () => { throw new Error('Hub rejection already confirmed'); },
+            getAuthoritativeOperation: async () => metadata.opencodeRewind,
+            flush: async () => true, isIdle: () => true, sourceCheckpoint: () => undefined,
+            sourceIndexes: () => ({}), requestsFromPreviousWorkerCannotRun: () => false });
+        expect(await controller.recover(rejected)).toMatchObject({ outcome: 'rejected' });
+        expect(await opencodeLocalLauncher(localSession(metadata, gate), localOptions)).toBe('exit');
+        expect(native.launched).toHaveBeenCalledOnce();
+        metadata.opencodeRewind = { ...rejected, operationId: 'different-rejection' };
+        await expect(opencodeLocalLauncher(localSession(metadata, gate), localOptions)).rejects.toThrow('reconciliation');
         expect(native.launched).toHaveBeenCalledOnce();
     });
 
@@ -73,7 +94,7 @@ describe('local canonical tool updates through the publication journal', () => {
             }, report: async report => {
                 const value = { ...operation, phase: report.phase === 'applied' ? 'committed' as const : report.phase };
                 metadata.opencodeRewind = value; return value;
-            }, flush: async () => true, isIdle: () => true,
+            }, getAuthoritativeOperation: async () => metadata.opencodeRewind, flush: async () => true, isIdle: () => true,
             sourceCheckpoint: () => ({ sessionId: 'native', messageIds: ['u1', 'u2'], userMessageIds: ['u1', 'u2'], localMessageIds: [] }),
             sourceIndexes: () => ({ one: 0, two: 1 }), requestsFromPreviousWorkerCannotRun: () => false,
             consumeCommitted: async () => {} });

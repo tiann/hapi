@@ -8,6 +8,7 @@ import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { OpenCodeRewind, OpenCodeRuntimeGate } from '../opencode/rewind'
 import { MessageQueue2 } from '../utils/MessageQueue2'
+import { getProcessStartMarker } from '../utils/process'
 
 const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
@@ -746,7 +747,7 @@ describe('ApiSessionClient incoming user messages', () => {
             }
             const initial = runHub(`
                 const session = engine.getOrCreateSession('preparation-recovery', { path: '/tmp', host: 'test', flavor: 'opencode',
-                    opencodeSessionId: 'native', opencodeWorkerId: 'worker', conversationHistoryIndexes: { local1: 0, local2: 1 },
+                    opencodeSessionId: 'native', opencodeWorkerId: 'worker', opencodeWorkerProcess: { workerId: 'worker', pid: ${process.pid}, startMarker: ${JSON.stringify(getProcessStartMarker(process.pid))} }, conversationHistoryIndexes: { local1: 0, local2: 1 },
                     opencodeHistoryCheckpoint: { sessionId: 'native', messageIds: ['u1', 'a1', 'u2', 'a2'],
                         userMessageIds: ['u1', 'u2'], localMessageIds: [] },
                     capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default');
@@ -803,6 +804,7 @@ describe('ApiSessionClient incoming user messages', () => {
             const gate = new OpenCodeRuntimeGate()
             const options = { directory, hapiSessionId:id, workerId:'worker', gate, baseUrl:'http://synthetic-native',
                 nativeSessionId:'native', headers:{}, request:nativeRequest, report:(report:OpenCodeRewindReport) => client.reportOpenCodeRewind(report),
+                getAuthoritativeOperation: async () => { if (!await client.refreshMetadata()) throw new Error('refresh failed'); return client.getMetadata()?.opencodeRewind },
                 flush:async () => true, isIdle:() => true,
                 sourceCheckpoint:() => initial.state.session.metadata.opencodeHistoryCheckpoint,
                 sourceIndexes:() => ({ local1:0, local2:1 }), requestsFromPreviousWorkerCannotRun:() => false }
@@ -848,7 +850,7 @@ describe('ApiSessionClient incoming user messages', () => {
             const checkpoint = { sessionId: 'native', messageIds: ['u1', 'u2', 'u3'],
                 userMessageIds: ['u1', 'u2', 'u3'], localMessageIds: [] };
             const session = engine.getOrCreateSession('ordered-catchup', { path: '/tmp', host: 'test', flavor: 'opencode',
-                opencodeSessionId: 'native', opencodeWorkerId: 'worker', opencodeHistoryCheckpoint: checkpoint,
+                opencodeSessionId: 'native', opencodeWorkerId: 'worker', opencodeWorkerProcess: { workerId: 'worker', pid: 4321, startMarker: 'worker-generation' }, opencodeHistoryCheckpoint: checkpoint,
                 conversationHistoryIndexes: { one: 0, two: 1, three: 2 },
                 capabilities: { conversationHistory: { rewindToMessage: true } } }, null, 'default');
             engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' });
@@ -1342,6 +1344,7 @@ describe('ApiSessionClient incoming user messages', () => {
         axiosHarness.post.mockReset()
         const operation: OpenCodeRewindOperation = {
             operationId: 'same-client-delivery', nativeSessionId: 'native', workerId: 'worker',
+            workerPid: process.pid, workerStartMarker: getProcessStartMarker(process.pid)!,
             requestedLocalId: 'two', nativeMessageId: 'u2', cutoffSeq: 3, sourceEpoch: 0,
             sourceMaxSeq: 9, reservationVersion: 2, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved'
         }
@@ -1404,6 +1407,7 @@ describe('ApiSessionClient incoming user messages', () => {
             directory: mkdtempSync(join(tmpdir(), 'api-rewind-delivery-')), hapiSessionId: client.sessionId,
             workerId: 'worker', gate, baseUrl: 'http://synthetic-native', nativeSessionId: 'native', headers: {},
             request: nativeRequest, report: report => client.reportOpenCodeRewind(report),
+            getAuthoritativeOperation: async () => { if (!await client.refreshMetadata()) throw new Error('refresh failed'); return client.getMetadata()?.opencodeRewind },
             flush: async () => true, isIdle: () => true,
             sourceCheckpoint: () => ({ sessionId: 'native', messageIds: ['u1', 'a1', 'u2', 'a2'],
                 userMessageIds: ['u1', 'u2'], localMessageIds: [] }),

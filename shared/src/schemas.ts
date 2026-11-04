@@ -15,6 +15,7 @@ export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error'
 /** OpenCode-only durable operation. No native identity change or filesystem rewind. */
 export const OpenCodeRewindSchema = z.object({
     operationId: z.string().min(1), nativeSessionId: z.string().min(1), workerId: z.string().min(1),
+    workerPid: z.number().int().positive().optional(), workerStartMarker: z.string().min(1).optional(),
     requestedLocalId: z.string().min(1), nativeMessageId: z.string().min(1),
     cutoffSeq: z.number().int().positive(), sourceEpoch: z.number().int().nonnegative(),
     sourceMaxSeq: z.number().int().nonnegative(), reservationVersion: z.number().int().nonnegative(),
@@ -196,6 +197,8 @@ export const MetadataSchema = z.object({
     // Hub-owned until the child's first validated session-ready is committed.
     opencodeForkPending: z.literal(true).optional(),
     opencodeWorkerId: z.string().optional(),
+    opencodeWorkerProcess: z.object({ workerId: z.string().min(1), pid: z.number().int().positive(),
+        startMarker: z.string().min(1) }).optional(),
     opencodeRewind: OpenCodeRewindSchema.optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),

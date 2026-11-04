@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import type { OpencodeMode, PermissionMode } from './types';
-import { OpenCodeRuntimeGate } from './rewind';
+import { OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
+import { configuration } from '@/configuration';
+import { getProcessStartMarker } from '@/utils/process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { OpencodeConversationHistory } from './conversationHistory';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
@@ -411,6 +417,90 @@ afterEach(() => {
     harness.metadataUpdates.length = 0;
 });
 
+function createRewindHubProcess() {
+    const database = join(mkdtempSync(join(tmpdir(), 'opencode-rewind-hub-r1-')), 'hub.sqlite');
+    const hubSource = join(process.cwd(), '..', 'hub', 'src');
+    const source = `
+        import { Store } from ${JSON.stringify(join(hubSource, 'store', 'index.ts'))};
+        import { SyncEngine } from ${JSON.stringify(join(hubSource, 'sync', 'syncEngine.ts'))};
+        import { RpcRegistry } from ${JSON.stringify(join(hubSource, 'socket', 'rpcRegistry.ts'))};
+        import { createInterface } from 'node:readline';
+        const store = new Store(process.env.REWIND_TEST_DB);
+        const engines = []; const pending = new Map(); let engine; let session;
+        const send = value => process.stdout.write('@@' + JSON.stringify(value) + '\\n');
+        function startEngine() {
+            engine = new SyncEngine(store, {}, new RpcRegistry(), { broadcast() {} }); engines.push(engine);
+            if (session) engine.handleSessionAlive({ sid:session.id, time:Date.now(), mode:'remote' });
+        }
+        startEngine();
+        const snapshot = () => ({ session:store.sessions.getSession(session.id), rows:store.messages.getAllMessages(session.id) });
+        async function command(input) {
+            if (input.kind === 'init') {
+                session=engine.getOrCreateSession('r1-session', input.metadata, null, 'default');
+                engine.handleSessionAlive({ sid:session.id, time:Date.now(), mode:'remote' });
+                for (const [role,localId] of [['user','one'],['agent',null],['user','two'],['agent',null]]) {
+                    store.messages.addMessage(session.id,{role,content:'synthetic'},localId??undefined);
+                    if (localId) store.messages.markMessagesInvoked(session.id,[localId],Date.now());
+                }
+                return snapshot();
+            }
+            if (input.kind === 'snapshot') return snapshot();
+            if (input.kind === 'restart') { engine.stop(); startEngine(); return snapshot(); }
+            if (input.kind === 'reserve') {
+                let dispatch; const received=new Promise(resolve => { dispatch=resolve; });
+                const chosen=engine;
+                chosen.rpcGateway.rewindConversation=async (_id, request) => {
+                    dispatch(request.opencodeRewind);
+                    return await new Promise(resolve => pending.set(request.opencodeRewind.operationId,resolve));
+                };
+                void chosen.rewindConversation(session.id,'default',input.localId).catch(error => send({event:'hub-error',error:String(error)}));
+                return await received;
+            }
+            if (input.kind === 'answer') { const resolve=pending.get(input.operationId); if (!resolve) throw new Error('missing RPC');
+                pending.delete(input.operationId); resolve({success:false,outcome:'unknown',error:'synthetic busy or lost response'}); return snapshot(); }
+            if (input.kind === 'report') {
+                const version=store.sessions.getSession(session.id).metadataVersion;
+                const operation=engine.reportOpenCodeRewind(session.id,'default',input.report,version);
+                return {operation,...snapshot()};
+            }
+            if (input.kind === 'close') {
+                for (const resolve of pending.values()) resolve({success:false});
+                for (const item of engines) item.stop(); store.close(); setTimeout(() => process.exit(0),0); return {};
+            }
+            throw new Error('unknown command');
+        }
+        createInterface({input:process.stdin}).on('line', line => {
+            const input=JSON.parse(line);
+            Promise.resolve().then(() => command(input)).then(result => send({id:input.id,result}), error => send({id:input.id,error:String(error)}));
+        });
+    `;
+    const child = spawn('bun', ['--eval', source], {
+        cwd: process.cwd(), env: { PATH: process.env.PATH, HOME: process.env.HOME, REWIND_TEST_DB: database }, stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let sequence = 0; let buffered = ''; let stderr = '';
+    const waiting = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
+    child.stderr.on('data', data => { stderr += String(data); });
+    child.stdin.on('error', () => {});
+    child.stdout.on('data', data => {
+        buffered += String(data);
+        for (;;) {
+            const newline = buffered.indexOf('\n'); if (newline < 0) break;
+            const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
+            if (!line.startsWith('@@')) continue;
+            const message = JSON.parse(line.slice(2));
+            if (message.event === 'hub-error') continue;
+            const waiter = waiting.get(message.id); if (!waiter) continue;
+            waiting.delete(message.id);
+            if (message.error) waiter.reject(new Error(message.error)); else waiter.resolve(message.result);
+        }
+    });
+    child.on('exit', code => { for (const waiter of waiting.values()) waiter.reject(new Error(`Hub fixture exited ${code}: ${stderr}`)); waiting.clear(); });
+    const call = (kind: string, data: Record<string, unknown> = {}): Promise<any> => new Promise((resolve, reject) => {
+        const id = ++sequence; waiting.set(id, { resolve, reject }); child.stdin.write(JSON.stringify({ id, kind, ...data }) + '\n');
+    });
+    return { call, close: async () => { await call('close'); } };
+}
+
 function createMode(model?: string): OpencodeMode {
     return {
         permissionMode: 'default' as PermissionMode,
@@ -671,6 +761,412 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
+    it.each([false, true])('drains a reconnect received while preparation is unresolved after execution settles (retry=%s)', async retry => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }];
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id),
+                userMessageIds: ['u1', 'u2'], localMessageIds: [] }, conversationHistoryIndexes: { one: 0, two: 1 } };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1' } });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        let connected: (() => void) | undefined;
+        let failPreparation!: () => void;
+        const preparation = new Promise<OpenCodeRewindOperation>((_resolve, reject) => {
+            failPreparation = () => reject(new Error('prepared ACK lost'));
+        });
+        const reports: string[] = [];
+        let rejectRecovery = retry;
+        Object.assign(session.client, { sessionId: `reconnect-latched-${Date.now()}`, flushMetadata: async () => true,
+            flush: async () => true, refreshMetadata: async () => true,
+            on: vi.fn((event: string, listener: () => void) => { if (event === 'connected') connected = listener; }), off: vi.fn(),
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+                reports.push(report.phase);
+                if (report.phase === 'prepared') return await preparation;
+                if (report.phase === 'rejected' && rejectRecovery) { rejectRecovery = false; throw new Error('synthetic recovery failure'); }
+                const result = { ...report.operation, phase: report.phase === 'applied' ? 'committed' as const : report.phase };
+                harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: result };
+                return result;
+            } });
+        const pending = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(harness.clientMetadata?.capabilities).toMatchObject({ conversationHistory: { rewindToMessage: true } }));
+            const operation: OpenCodeRewindOperation = { operationId: 'latched', nativeSessionId: 'acp-session-1',
+                nativeMessageId: 'u2', workerId: harness.clientMetadata!.opencodeWorkerId as string,
+                workerPid: (harness.clientMetadata!.opencodeWorkerProcess as { pid: number } | undefined)?.pid ?? process.pid,
+                workerStartMarker: (harness.clientMetadata!.opencodeWorkerProcess as { startMarker: string } | undefined)?.startMarker ?? getProcessStartMarker(process.pid)!,
+                requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 3,
+                reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+            harness.clientMetadata!.opencodeRewind = operation;
+            const executing = rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: operation }) as Promise<unknown>;
+            await vi.waitFor(() => expect(reports).toContain('prepared'));
+            expect(connected).toBeTypeOf('function'); connected!(); connected!();
+            expect(gate.isBlocked()).toBe(true);
+            failPreparation(); await executing;
+            if (retry) {
+                await vi.waitFor(() => expect(reports.filter(phase => phase === 'rejected')).toHaveLength(1));
+                await new Promise<void>(resolve => setImmediate(resolve));
+                expect(reports.filter(phase => phase === 'rejected')).toHaveLength(1);
+                expect(gate.isBlocked()).toBe(true); connected!();
+            }
+            await vi.waitFor(() => expect(harness.clientMetadata?.opencodeRewind).toMatchObject({ operationId: 'latched', phase: 'rejected' }));
+            expect(reports.filter(phase => phase === 'rejected')).toHaveLength(retry ? 2 : 1);
+            expect(gate.isBlocked()).toBe(false);
+        } finally { gate.release(); session.queue.close(); await pending; fetchSpy.mockRestore(); }
+    });
+
+    it.each(['execute', 'recover', 'applied-ack-loss', 'unknown-success'] as const)('keeps a reconstructed Hub reservation gated during committed %s consumption', async mode => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const hub = createRewindHubProcess(); const gate = new OpenCodeRuntimeGate();
+        const marker = getProcessStartMarker(process.pid)!;
+        const checkpoint = { sessionId: 'acp-session-1', messageIds: ['u1', 'a1', 'u2', 'a2'],
+            userMessageIds: ['u1', 'u2'], localMessageIds: [] };
+        const initial = await hub.call('init', { metadata: { path: '/tmp/hapi-opencode-test', host: 'fixture', flavor: 'opencode',
+            opencodeSessionId: 'acp-session-1', opencodeWorkerId: gate.workerId,
+            opencodeWorkerProcess: { workerId: gate.workerId, pid: process.pid, startMarker: marker },
+            opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: { one: 0, two: 1 },
+            capabilities: { conversationHistory: { rewindToMessage: true } } } });
+        harness.clientMetadata = initial.session.metadata;
+        let rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }, { id: 'a2', type: 'assistant', text: 'answer two' }];
+        let staged: string | undefined; let stages = 0; let commits = 0; let loadCount = 0;
+        let releaseConsumption!: () => void; let consumptionHeld = false; let consumptionReleased = false; let refreshAfterRelease = 0;
+        const holding = new Promise<void>(resolve => { releaseConsumption = resolve; });
+        harness.loadSessionImpl = async () => {
+            loadCount++;
+            if ((mode === 'recover' || mode === 'unknown-success') && loadCount === 2) throw new Error('synthetic first consumption failure');
+            if ((mode === 'execute' && loadCount === 2) || (mode === 'recover' && loadCount === 3)) { consumptionHeld = true; await holding; }
+            return 'acp-session-1';
+        };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage')) { stages++; staged = 'u2'; return Response.json({}); }
+            if (url.endsWith('/revert/commit')) { commits++; rows = rows.slice(0, 2); staged = undefined; return new Response(null, { status: 204 }); }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1', ...(staged ? { revert: { messageID: staged } } : {}) } });
+        });
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let connected: (() => void) | undefined; let nextId = ''; let nextPending = false; let earlyRelease = false;
+        let rejectionStarted = false; let rejectionCount = 0; let releaseRejection!: () => void;
+        const rejectionHold = new Promise<void>(resolve => { releaseRejection = resolve; });
+        const originalRelease = gate.release.bind(gate);
+        vi.spyOn(gate, 'release').mockImplementation(id => { if (nextPending) earlyRelease = true; originalRelease(id); });
+        Object.assign(session.client, { sessionId: initial.session.id, flushMetadata: async () => true, flush: async () => true,
+            refreshMetadata: async () => { const value = await hub.call('snapshot'); harness.clientMetadata = value.session.metadata;
+                if (consumptionReleased) refreshAfterRelease++; return true; },
+            on: vi.fn((event: string, listener: () => void) => { if (event === 'connected') connected = listener; }), off: vi.fn(),
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+                if (report.operation.operationId === nextId && report.phase === 'rejected') {
+                    rejectionCount++; rejectionStarted = true; await rejectionHold;
+                }
+                const result = await hub.call('report', { report });
+                harness.clientMetadata = result.session.metadata;
+                if (mode === 'applied-ack-loss' && report.phase === 'applied') { consumptionHeld = true; await holding; throw new Error('synthetic applied ACK loss'); }
+                if (mode === 'unknown-success' && report.phase === 'unknown') { consumptionHeld = true; await holding; }
+                if (report.operation.operationId === nextId && result.operation.phase === 'rejected') nextPending = false;
+                return result.operation;
+            } });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let firstExecution: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.get('rewind-conversation')).toBeTypeOf('function'));
+            const first: OpenCodeRewindOperation = await hub.call('reserve', { localId: 'two' });
+            firstExecution = Promise.resolve(rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: first }));
+            if (mode === 'recover') {
+                expect(await firstExecution).toMatchObject({ outcome: 'unknown' });
+                await hub.call('answer', { operationId: first.operationId });
+                expect(connected).toBeTypeOf('function'); connected!();
+            }
+            await vi.waitFor(() => expect(consumptionHeld).toBe(true));
+            expect((await hub.call('snapshot')).session.metadata.opencodeRewind.phase).toBe('committed');
+            expect(gate.isBlocked()).toBe(true);
+            await hub.call('restart');
+            const newer: OpenCodeRewindOperation = await hub.call('reserve', { localId: 'one' });
+            nextId = newer.operationId; nextPending = true;
+            await expect(Promise.resolve(rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'one', opencodeRewind: newer }))).rejects.toThrow('busy');
+            await hub.call('answer', { operationId: newer.operationId });
+            expect((await hub.call('snapshot')).session.metadata.opencodeRewind).toMatchObject({ operationId: nextId, phase: 'reserved' });
+            consumptionReleased = true; releaseConsumption();
+            if (mode !== 'recover') await firstExecution!.catch(() => {});
+            if (mode === 'applied-ack-loss' || mode === 'unknown-success') {
+                await vi.waitFor(() => expect(refreshAfterRelease).toBeGreaterThanOrEqual(3));
+                expect(earlyRelease).toBe(false); expect(gate.isBlocked()).toBe(true);
+                expect(() => gate.enterRuntime()).toThrow('pending reconciliation');
+                expect(rejectionCount).toBe(0);
+                const path = join(configuration.happyHomeDir, 'opencode-rewind',
+                    (await import('@/utils/deterministicJson')).hashObject(initial.session.id), 'intent.json');
+                expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ operation: { operationId: first.operationId },
+                    phase: mode === 'unknown-success' ? 'unknown' : 'applied' });
+                const final = await hub.call('snapshot');
+                expect(final.session.metadata.opencodeRewind).toMatchObject({ operationId: nextId, phase: 'reserved' });
+            } else {
+                await vi.waitFor(() => { expect(earlyRelease).toBe(false); expect(rejectionStarted).toBe(true); });
+                expect(gate.isBlocked()).toBe(true);
+                expect(() => gate.enterRuntime()).toThrow('pending reconciliation');
+                expect(rejectionCount).toBe(1);
+                releaseRejection();
+                await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+                const final = await hub.call('snapshot');
+                expect(final.session.metadata.opencodeRewind).toMatchObject({ operationId: nextId, phase: 'rejected' });
+                expect(final.rows.filter((row: { localId?: string }) => row.localId === 'one')).toHaveLength(1);
+                expect(rejectionCount).toBe(1);
+            }
+            expect(stages).toBe(1); expect(commits).toBe(1);
+        } finally {
+            releaseConsumption(); releaseRejection(); await firstExecution?.catch(() => {});
+            harness.loadSessionImpl = null; gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore();
+            await hub.close();
+        }
+    });
+
+    it.each([false, true])('automatically recovers a newer reservation after a stale queued rewind (retry=%s)', async retry => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        let rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }];
+        let staged: string | undefined; let resumeFlush!: () => void;
+        let holdFlush = true;
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id),
+                userMessageIds: ['u1', 'u2'], localMessageIds: [] }, conversationHistoryIndexes: { one: 0, two: 1 } };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage')) { staged = 'u2'; return Response.json({}); }
+            if (url.endsWith('/revert/commit')) { rows = rows.slice(0, 2); staged = undefined; return new Response(null, { status: 204 }); }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1', ...(staged ? { revert: { messageID: staged } } : {}) } });
+        });
+        const gate = new OpenCodeRuntimeGate(); const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1'; const reports: Array<{ id: string; phase: string }> = [];
+        let connected: (() => void) | undefined; let failOnce = retry;
+        Object.assign(session.client, { sessionId: `superseded-rewind-${Date.now()}`, flushMetadata: async () => true,
+            flush: async () => { if (holdFlush) { holdFlush = false; return await new Promise<boolean>(resolve => { resumeFlush = () => resolve(true); }); } return true; },
+            refreshMetadata: async () => true, on: vi.fn((event: string, listener: () => void) => { if (event === 'connected') connected = listener; }), off: vi.fn(),
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+                reports.push({ id: report.operation.operationId, phase: report.phase });
+                if (report.operation.operationId === 'newer-two' && report.phase === 'rejected' && failOnce) { failOnce = false; throw new Error('synthetic rejection failure'); }
+                const result = { ...report.operation, phase: report.phase === 'applied' ? 'committed' as const : report.phase };
+                harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: result,
+                    ...(report.phase === 'applied' ? { opencodeHistoryCheckpoint: report.checkpoint, conversationHistoryIndexes: report.indexes } : {}) };
+                return result;
+            } });
+        const pending = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(harness.clientMetadata?.capabilities).toMatchObject({ conversationHistory: { rewindToMessage: true } }));
+            const proof = harness.clientMetadata!.opencodeWorkerProcess as { pid: number; startMarker: string } | undefined;
+            const first: OpenCodeRewindOperation = { operationId: 'stale-one', nativeSessionId: 'acp-session-1', nativeMessageId: 'u2',
+                workerId: gate.workerId, workerPid: proof?.pid ?? process.pid, workerStartMarker: proof?.startMarker ?? getProcessStartMarker(process.pid)!, requestedLocalId: 'two',
+                cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 3, reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+            harness.clientMetadata!.opencodeRewind = first;
+            const old = rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: first }) as Promise<unknown>;
+            await vi.waitFor(() => expect(resumeFlush).toBeTypeOf('function'));
+            const newer = { ...first, operationId: 'newer-two', reservationVersion: 2 };
+            harness.clientMetadata!.opencodeRewind = newer; resumeFlush();
+            await expect(old).rejects.toThrow();
+            if (retry) {
+                await vi.waitFor(() => expect(reports.filter(item => item.id === 'newer-two' && item.phase === 'rejected')).toHaveLength(1));
+                await new Promise<void>(resolve => setImmediate(resolve));
+                expect(reports.filter(item => item.id === 'newer-two' && item.phase === 'rejected')).toHaveLength(1);
+                expect(gate.isBlocked()).toBe(true); connected!();
+            }
+            await vi.waitFor(() => expect(harness.clientMetadata?.opencodeRewind).toMatchObject({ operationId: 'newer-two', phase: 'rejected' }));
+            expect(reports.filter(item => item.id === 'stale-one')).toEqual([]);
+            expect(reports.filter(item => item.id === 'newer-two' && item.phase === 'rejected')).toHaveLength(retry ? 2 : 1);
+            expect(gate.isBlocked()).toBe(false);
+            const next = { ...first, operationId: 'next-three', reservationVersion: 3 };
+            harness.clientMetadata!.opencodeRewind = next;
+            await vi.waitFor(async () => {
+                expect(await rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: next })).toMatchObject({ success: true });
+            });
+            harness.promptImpl = async () => { rows.push({ id: 'u3', type: 'user', text: 'after' }); };
+            session.queue.push('after rewind', createMode(), 'after');
+            await vi.waitFor(() => expect(harness.promptCount).toBeGreaterThan(0));
+        } finally { resumeFlush?.(); gate.release(); session.queue.close(); await pending; fetchSpy.mockRestore(); }
+    });
+
+    it('consumes a newer prepared operation that commits before the automatic recovery refresh', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        let rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }];
+        let staged: string | undefined; let stageCount = 0; let commitCount = 0; let loads = 0;
+        let resumeOld!: () => void; let releasePrepared!: () => void; let sawPrepared!: () => void;
+        let releaseDrain!: () => void; let drainStarted!: () => void;
+        const prepared = new Promise<void>(resolve => { sawPrepared = resolve; });
+        const holdPrepared = new Promise<void>(resolve => { releasePrepared = resolve; });
+        const drainWaiting = new Promise<void>(resolve => { drainStarted = resolve; });
+        const holdDrain = new Promise<void>(resolve => { releaseDrain = resolve; });
+        let observedPrepared = false; let drainHeld = false;
+        const gate = new OpenCodeRuntimeGate(); const sessionId = `superseded-committed-${Date.now()}`;
+        const checkpoint = { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id), userMessageIds: ['u1', 'u2'], localMessageIds: [] };
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeHistoryCheckpoint: checkpoint,
+            conversationHistoryIndexes: { one: 0, two: 1 } };
+        harness.loadSessionImpl = async () => { loads++; return 'acp-session-1'; };
+        const nativeRequest = async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage')) { stageCount++; staged = 'u2'; return Response.json({}); }
+            if (url.endsWith('/revert/commit')) { commitCount++; rows = rows.slice(0, 2); staged = undefined; return new Response(null, { status: 204 }); }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1', ...(staged ? { revert: { messageID: staged } } : {}) } });
+        };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(nativeRequest);
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let holdFlush = true; const reports: string[] = [];
+        const report = async (value: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+            reports.push(`${value.operation.operationId}:${value.phase}`);
+            const result = { ...value.operation, phase: value.phase === 'applied' ? 'committed' as const : value.phase };
+            harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: result,
+                ...(value.phase === 'applied' ? { opencodeHistoryCheckpoint: value.checkpoint, conversationHistoryIndexes: value.indexes } : {}) };
+            if (value.operation.operationId === 'newer-committed' && value.phase === 'prepared') { sawPrepared(); await holdPrepared; }
+            return result;
+        };
+        Object.assign(session.client, { sessionId, flushMetadata: async () => true,
+            flush: async () => { if (holdFlush) { holdFlush = false; return await new Promise<boolean>(resolve => { resumeOld = () => resolve(true); }); } return true; },
+            refreshMetadata: async () => {
+                const current = harness.clientMetadata?.opencodeRewind as OpenCodeRewindOperation | undefined;
+                if (current?.operationId === 'newer-committed' && current.phase === 'prepared') {
+                    if (!observedPrepared) observedPrepared = true;
+                    else if (!drainHeld) { drainHeld = true; drainStarted(); await holdDrain; }
+                }
+                return true;
+            }, on: vi.fn(), off: vi.fn(), reportOpenCodeRewind: report });
+        const pending = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let newerExecution: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(harness.clientMetadata?.capabilities).toMatchObject({ conversationHistory: { rewindToMessage: true } }));
+            const proof = harness.clientMetadata!.opencodeWorkerProcess as { pid: number; startMarker: string } | undefined;
+            const old: OpenCodeRewindOperation = { operationId: 'stale-one', nativeSessionId: 'acp-session-1', nativeMessageId: 'u2',
+                workerId: gate.workerId, workerPid: proof?.pid ?? process.pid, workerStartMarker: proof?.startMarker ?? getProcessStartMarker(process.pid)!,
+                requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 3, reservationVersion: 1,
+                sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+            harness.clientMetadata!.opencodeRewind = old;
+            const oldExecution = rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: old }) as Promise<unknown>;
+            await vi.waitFor(() => expect(resumeOld).toBeTypeOf('function'));
+            const newer = { ...old, operationId: 'newer-committed', workerId: 'other-worker', reservationVersion: 2 };
+            harness.clientMetadata!.opencodeRewind = newer;
+            const second = new OpenCodeRewind({ directory: join(configuration.happyHomeDir, 'opencode-rewind'), hapiSessionId: sessionId,
+                workerId: 'other-worker', gate: new OpenCodeRuntimeGate(), baseUrl: 'http://synthetic-native', nativeSessionId: 'acp-session-1', headers: {},
+                request: nativeRequest, report, getAuthoritativeOperation: async () => harness.clientMetadata?.opencodeRewind as OpenCodeRewindOperation,
+                flush: async () => true, isIdle: () => true, sourceCheckpoint: () => checkpoint,
+                sourceIndexes: () => ({ one: 0, two: 1 }), requestsFromPreviousWorkerCannotRun: () => false });
+            newerExecution = second.execute(newer); await prepared;
+            resumeOld(); await expect(oldExecution).rejects.toThrow();
+            await vi.waitFor(() => expect(drainHeld).toBe(true)); await drainWaiting;
+            releasePrepared(); expect(await newerExecution).toMatchObject({ success: true });
+            const journal = second.readIntent()!;
+            const exited = spawnSync(process.execPath, ['-e', 'process.exit(0)']);
+            expect(exited.status).toBe(0);
+            // Model a later recovery owner that has exited; the operation and
+            // backup remain those of the real second controller above.
+            const path = join(configuration.happyHomeDir, 'opencode-rewind',
+                (await import('@/utils/deterministicJson')).hashObject(sessionId), 'intent.json');
+            writeFileSync(path, JSON.stringify({ ...journal, ownerWorkerId: 'retired-recovery-worker',
+                ownerProcess: { pid: exited.pid, startMarker: 'synthetic-retired-generation' } }));
+            expect(stageCount).toBe(1); expect(commitCount).toBe(1);
+            releaseDrain();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            expect(loads).toBe(2);
+            expect(stageCount).toBe(1); expect(commitCount).toBe(1);
+            expect(reports.filter(value => value === 'newer-committed:applied')).toHaveLength(1);
+            expect(reports.some(value => value.startsWith('stale-one:'))).toBe(false);
+        } finally {
+            resumeOld?.(); releasePrepared?.(); releaseDrain?.(); await newerExecution;
+            harness.loadSessionImpl = null; gate.release(); session.queue.close(); await pending; fetchSpy.mockRestore();
+        }
+    });
+
+    it('finalizes a rejected ACK-loss journal on launcher restart before the next successful rewind', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        let rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }];
+        let staged: string | undefined;
+        const gate = new OpenCodeRuntimeGate();
+        const sessionId = `rejected-startup-${Date.now()}`;
+        const first: OpenCodeRewindOperation = { operationId: 'old-rejected', nativeSessionId: 'acp-session-1',
+            nativeMessageId: 'u2', workerId: gate.workerId, workerPid: process.pid,
+            workerStartMarker: getProcessStartMarker(process.pid)!, requestedLocalId: 'two', cutoffSeq: 3,
+            sourceEpoch: 0, sourceMaxSeq: 3, reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+        let authoritative: OpenCodeRewindOperation = first;
+        let dropPreparation = true; let dropRejection = true;
+        const checkpoint = { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id),
+            userMessageIds: ['u1', 'u2'], localMessageIds: [] };
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
+            opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: { one: 0, two: 1 }, opencodeRewind: first };
+        const nativeRequest = async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage')) { staged = 'u2'; return Response.json({}); }
+            if (url.endsWith('/revert/commit')) { rows = rows.slice(0, 2); staged = undefined; return new Response(null, { status: 204 }); }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1', ...(staged ? { revert: { messageID: staged } } : {}) } });
+        };
+        const report = async (value: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+            if (value.phase === 'prepared' && dropPreparation) { dropPreparation = false; throw new Error('prepare ACK lost'); }
+            if (value.phase === 'rejected' && dropRejection) {
+                dropRejection = false; authoritative = { ...value.operation, phase: 'rejected' };
+                harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: authoritative };
+                throw new Error('rejection ACK lost');
+            }
+            if (authoritative.phase !== 'rejected' || value.operation.operationId !== authoritative.operationId) {
+                authoritative = { ...value.operation, phase: value.phase === 'applied' ? 'committed' : value.phase };
+            }
+            harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: authoritative,
+                ...(value.phase === 'applied' ? { opencodeHistoryCheckpoint: value.checkpoint, conversationHistoryIndexes: value.indexes } : {}) };
+            return authoritative;
+        };
+        const prior = new OpenCodeRewind({ directory: join(configuration.happyHomeDir, 'opencode-rewind'), hapiSessionId: sessionId,
+            workerId: gate.workerId, gate, baseUrl: 'http://synthetic-native', nativeSessionId: 'acp-session-1', headers: {},
+            request: nativeRequest, report, getAuthoritativeOperation: async () => authoritative,
+            flush: async () => true, isIdle: () => true, sourceCheckpoint: () => checkpoint,
+            sourceIndexes: () => ({ one: 0, two: 1 }), requestsFromPreviousWorkerCannotRun: () => false });
+        expect(await prior.execute(first)).toMatchObject({ outcome: 'unknown' });
+        expect(await prior.recover(authoritative)).toMatchObject({ outcome: 'unknown' });
+        expect(authoritative.phase).toBe('rejected');
+        const original = prior.readIntent()!; const backup = readFileSync(original.backupPath, 'utf8');
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(nativeRequest);
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        Object.assign(session.client, { sessionId, flushMetadata: async () => true, flush: async () => true,
+            refreshMetadata: async () => true, on: vi.fn(), off: vi.fn(), reportOpenCodeRewind: report });
+        const pending = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(harness.clientMetadata?.capabilities).toMatchObject({ conversationHistory: { rewindToMessage: true } }));
+            expect(prior.readIntent()?.phase).toBe('finalized');
+            expect(readFileSync(original.backupPath, 'utf8')).toBe(backup);
+            const next = { ...first, operationId: 'next-after-rejection', reservationVersion: 2 };
+            authoritative = next; harness.clientMetadata!.opencodeRewind = next;
+            expect(await rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: next })).toMatchObject({ success: true });
+            expect(rows.map(row => row.id)).toEqual(['u1', 'a1']);
+        } finally { gate.release(); session.queue.close(); await pending; fetchSpy.mockRestore(); }
+    });
+
     it('consumes a successful rewind after same-wrapper remote/local/remote and drains a new input', async () => {
         harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
         harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
@@ -708,7 +1204,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             await vi.waitFor(() => expect(harness.clientMetadata?.capabilities).toMatchObject({ conversationHistory: { rewindToMessage: true } }));
             const workerId = harness.clientMetadata!.opencodeWorkerId as string;
             const operation: OpenCodeRewindOperation = { operationId: 'same-wrapper-operation', nativeSessionId: 'acp-session-1',
-                nativeMessageId: 'u2', workerId, requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 3,
+                nativeMessageId: 'u2', workerId, workerPid: (harness.clientMetadata!.opencodeWorkerProcess as { pid: number } | undefined)?.pid ?? process.pid,
+                workerStartMarker: (harness.clientMetadata!.opencodeWorkerProcess as { startMarker: string } | undefined)?.startMarker ?? getProcessStartMarker(process.pid)!, requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 3,
                 reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
             harness.clientMetadata!.opencodeRewind = operation;
             expect(await rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: operation })).toMatchObject({ success: true });
@@ -847,7 +1344,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             expect(backend.isPromptRequestInFlight()).toBe(false);
             const operation: OpenCodeRewindOperation = { operationId: `reload-replay-${timing}`,
                 nativeSessionId: 'acp-session-1', nativeMessageId: 'u2', workerId: harness.clientMetadata!.opencodeWorkerId as string,
-                requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 4,
+                workerPid: (harness.clientMetadata!.opencodeWorkerProcess as { pid: number } | undefined)?.pid ?? process.pid,
+                workerStartMarker: (harness.clientMetadata!.opencodeWorkerProcess as { startMarker: string } | undefined)?.startMarker ?? getProcessStartMarker(process.pid)!, requestedLocalId: 'two', cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 4,
                 reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
             harness.clientMetadata!.opencodeRewind = operation;
             const result = await rpcHandlers.get('rewind-conversation')!({ messageLocalId: 'two', opencodeRewind: operation });
@@ -3465,8 +3963,10 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             releasePrompt();
             await vi.waitFor(() => expect(stub.session.thinking).toBe(false));
             const operation: OpenCodeRewindOperation = { operationId: 'unresolved-native-steer', nativeSessionId: 'acp-session-1',
-                nativeMessageId: 'u2', workerId, requestedLocalId: 'two', cutoffSeq: 2, sourceEpoch: 0, sourceMaxSeq: 3,
+                nativeMessageId: 'u2', workerId, workerPid: (harness.clientMetadata!.opencodeWorkerProcess as { pid: number } | undefined)?.pid ?? process.pid,
+                workerStartMarker: (harness.clientMetadata!.opencodeWorkerProcess as { startMarker: string } | undefined)?.startMarker ?? getProcessStartMarker(process.pid)!, requestedLocalId: 'two', cutoffSeq: 2, sourceEpoch: 0, sourceMaxSeq: 3,
                 reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+            harness.clientMetadata!.opencodeRewind = operation;
             const result = await (stub.rpcHandlers.get('rewind-conversation') as (p: unknown) => Promise<unknown>)({
                 messageLocalId: 'two', opencodeRewind: operation
             }).catch(error => ({ success: false, error: String(error) }));
