@@ -776,6 +776,7 @@ export default {
   'scratchlist.fueTitle': '新功能：暂存清单',
   'scratchlist.fueBody': '在此暂存笔记和草稿，不会被发送。暂存模式下发送按钮会显示琥珀色；再次点击图标（或 Ctrl/Cmd+Shift+S）可退出。',
   'richComposer.fueTitle': '新功能：@ 提及其他会话',
+  'richComposer.inactiveSessions': '非活跃会话',
   'richComposer.fueBody': '输入 @ 可提及另一个会话，会变成芯片（悬停可查看与侧边栏一致的详情）。发送后消息会包含该会话的完整 ID，供智能体使用 inspect_peer 或 ping_peer。',
   'scratchlist.addPlaceholder': '笔记、草稿或想法 — 回车键添加',
   'scratchlist.addAriaLabel': '添加草稿夹条目',

@@ -779,6 +779,7 @@ export default {
   'scratchlist.fueTitle': 'New: Scratchlist',
   'scratchlist.fueBody': 'Park notes & drafts here without sending. The Send button glows amber while you stash; click the icon (or Ctrl/Cmd+Shift+S) again to leave.',
   'richComposer.fueTitle': 'New: @mention another session',
+  'richComposer.inactiveSessions': 'Inactive sessions',
   'richComposer.fueBody': 'Type @ to mention another session. It becomes a chip (hover for sidebar-style details). On send, the message includes that session\'s full ID so the agent can inspect_peer or ping_peer.',
   'scratchlist.addPlaceholder': 'Note, draft, or idea — Enter to add',
   'scratchlist.addAriaLabel': 'Add scratchlist entry',

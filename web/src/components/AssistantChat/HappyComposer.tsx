@@ -948,6 +948,11 @@ export function HappyComposer(props: {
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion) return
+        if (suggestion.action) {
+            suggestion.action.onSelect()
+            haptic('light')
+            return
+        }
         if (suggestion.text.startsWith('$')) {
             markSkillUsed(suggestion.text.slice(1))
         }
