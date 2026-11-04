@@ -220,4 +220,18 @@ describe('createRunnerLifecycle archiveReason defaults (tiann/hapi#914)', () => 
             archiveReason: 'User terminated'
         })
     })
+
+    it('relays SIGUSR2 from the runner daemon to session.wake()', async () => {
+        const wake = vi.fn();
+        const session = { ...createMockApiSession(), wake } as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'];
+        const lifecycle = createRunnerLifecycle({ session, logTag: 'test' });
+
+        lifecycle.registerProcessHandlers();
+
+        process.kill(process.pid, 'SIGUSR2');
+        // Signal delivery to our own process is asynchronous.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(wake).toHaveBeenCalledTimes(1);
+    });
 })
