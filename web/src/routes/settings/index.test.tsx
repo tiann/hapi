@@ -319,8 +319,8 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
-        // #1424 keeps fixed-order + tri-state pin (upstream removed fixed-order alone).
-        expect(screen.getByRole('checkbox', { name: 'Fixed session order' })).toBeInTheDocument()
+        // Fixed session order removed — SessionListView owns list order (#2263).
+        expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
         expect(screen.getByRole('radio', { name: 'Long-running jobs' })).toBeInTheDocument()
     })
 
