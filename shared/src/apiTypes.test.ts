@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { STOCK_PEER_SPAWN_DEFAULTS } from './peerSpawnDefaults'
 import {
     ClearOpencodeSessionCallbackRequestSchema,
     ClearOpencodeSessionResponseSchema,
@@ -160,13 +161,15 @@ describe('disablePeerTools hub setting wire shapes', () => {
         const parsed = HubSettingsResponseSchema.safeParse({
             sessionSummaryContract: false,
             sessionSummaryInChat: false,
+            peerSpawnDefaults: STOCK_PEER_SPAWN_DEFAULTS,
             disablePeerTools: true
         })
         expect(parsed.success).toBe(true)
         if (parsed.success) expect(parsed.data.disablePeerTools).toBe(true)
         expect(HubSettingsResponseSchema.safeParse({
             sessionSummaryContract: false,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            peerSpawnDefaults: STOCK_PEER_SPAWN_DEFAULTS
         }).success).toBe(false)
     })
 
