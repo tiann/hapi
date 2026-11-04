@@ -194,6 +194,7 @@ describe('SessionList manual project preferences', () => {
     })
 
     it('preserves manual preferences with user-activity ordering', () => {
+        localStorage.setItem('hapi-session-list-active-first', 'false')
         const sessions = [
             { ...session('older'), createdAt: 100, lastUserMessageAt: 100, updatedAt: 999, active: true },
             { ...session('newer'), createdAt: 200, lastUserMessageAt: 200, updatedAt: 1 },
