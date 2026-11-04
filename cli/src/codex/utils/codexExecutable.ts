@@ -72,8 +72,11 @@ function resolveWindowsCodexCommand(): CodexCommand {
 export function resolveSelectedCodexCommand(command: string, platform: NodeJS.Platform = process.platform): CodexCommand {
     if (platform !== 'win32') return { command, args: [] };
     if (command === 'codex') return resolveWindowsCodexCommand();
-    const resolved = resolveWindowsCandidate(command);
-    if (resolved) return resolved;
+    const candidates = windowsPath.basename(command) === command ? findWhereResults(command) : [];
+    for (const candidate of [...candidates, command]) {
+        const resolved = resolveWindowsCandidate(candidate);
+        if (resolved) return resolved;
+    }
     if (/\.(cmd|bat)$/i.test(command)) {
         throw new Error('Use a Codex executable or an npm Codex shim with its launcher script on Windows.');
     }

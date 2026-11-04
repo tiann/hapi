@@ -101,6 +101,19 @@ describe('resolveCodexCommand', () => {
         expect(resolveSelectedCodexCommand(shim, 'win32')).toEqual({ command: 'node', args: [script] });
     });
 
+    it('resolves an explicitly selected npm shim name through PATH', async () => {
+        const shim = 'C:\\Elsewhere\\npm\\codex.cmd';
+        const script = win32.join(win32.dirname(shim), 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+        execFileSyncMock.mockImplementation((command: string, args: string[]) => {
+            if (command === 'where.exe' && args[0] === 'codex.cmd') return `${shim}\r\n`;
+            throw new Error('not found');
+        });
+        existsSyncMock.mockImplementation((candidate: string) => candidate === shim || candidate === script);
+        const { resolveSelectedCodexCommand } = await import('./codexExecutable');
+        expect(resolveSelectedCodexCommand('codex.cmd', 'win32')).toEqual({ command: 'node', args: [script] });
+        expect(execFileSyncMock).toHaveBeenCalledWith('where.exe', ['codex.cmd'], expect.anything());
+    });
+
     it('rejects unsupported Windows batch launchers instead of shell-interpreting JSON', async () => {
         const { resolveSelectedCodexCommand } = await import('./codexExecutable');
         expect(() => resolveSelectedCodexCommand('C:\\custom.cmd', 'win32')).toThrow('Use a Codex executable');
