@@ -114,6 +114,8 @@ Yes. Open any session and use the chat interface to send messages directly to th
 
 Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI updates the session's thinking indicator when the agent resumes work or requests permission, so the list reflects that activity.
 
+Exception: when the previous turn already closed with an `AGENT_NOTIFY_SUMMARY` line whose `status` is `done`, Cursor's finished-shell *"Briefly inform the user…"* wake does not open a second spoken reply (assistant text/reasoning and thinking bumps are dropped). Tool activity from a follow-up wake still surfaces. A new message from you re-opens normal speech.
+
 ### Can I access a terminal remotely?
 
 Yes. Open a session in the web app and tap the Terminal tab for a remote shell.

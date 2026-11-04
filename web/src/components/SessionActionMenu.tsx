@@ -5,7 +5,7 @@ import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
-import { CopyIcon, ForkIcon } from '@/components/icons'
+import { ArchiveIcon, CopyIcon, ForkIcon } from '@/components/icons'
 import { buildSessionWindowPath } from '@/lib/sessionNavigation'
 
 type SessionActionMenuProps = {
@@ -77,27 +77,6 @@ function PinIcon(props: { className?: string; filled?: boolean }) {
             <path d="M12 17v5" />
             <path d="M5 17h14" />
             <path d="M7 4V2h10v2l-2 5v4l2 2H7l2-2V9Z" />
-        </svg>
-    )
-}
-
-function ArchiveIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <rect width="20" height="5" x="2" y="3" rx="1" />
-            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
-            <path d="M10 12h4" />
         </svg>
     )
 }
@@ -463,7 +442,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                         className={`${baseItemClassName} text-red-500 hover:bg-red-500/10`}
                         onClick={handleArchive}
                     >
-                        <ArchiveIcon className="text-red-500" />
+                        <ArchiveIcon className="h-[18px] w-[18px] text-red-500" />
                         {t('session.action.archive')}
                     </button>
                 ) : (

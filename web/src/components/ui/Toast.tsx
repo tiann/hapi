@@ -21,12 +21,17 @@ export type ToastProps = React.HTMLAttributes<HTMLDivElement> &
     title: string
     body: string
     onClose?: () => void
+    action?: { label: string; onClick: () => void }
 }
 
-export function Toast({ title, body, onClose, className, variant, ...props }: ToastProps) {
+export function Toast({ title, body, onClose, action, className, variant, ...props }: ToastProps) {
     const handleClose = (event: React.MouseEvent<HTMLButtonElement>) => {
         event.stopPropagation()
         onClose?.()
+    }
+    const handleAction = (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.stopPropagation()
+        action?.onClick()
     }
 
     return (
@@ -36,6 +41,15 @@ export function Toast({ title, body, onClose, className, variant, ...props }: To
                     <div className="text-sm font-semibold leading-5">{title}</div>
                     <div className="mt-1 text-xs text-[var(--app-hint)]">{body}</div>
                 </div>
+                {action ? (
+                    <button
+                        type="button"
+                        className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-[var(--app-link)] hover:bg-[var(--app-subtle-bg)]"
+                        onClick={handleAction}
+                    >
+                        {action.label}
+                    </button>
+                ) : null}
                 {onClose ? (
                     <button
                         type="button"
