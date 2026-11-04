@@ -100,20 +100,28 @@ class DataStoreCodexImportedSessionsStore(
     override suspend fun markImported(ids: List<String>, importedAt: Long) {
         val additions = ids.mapNotNull { it.trim().ifEmpty { null } }.associateWith { importedAt }
         if (additions.isEmpty()) return
-        dataStore.edit { prefs ->
+        val prefs = dataStore.edit { prefs ->
             val next = decode(prefs[key]).let { it + additions }
             prefs[key] = HapiJson.encodeToString(CodexImportedSessionsData.serializer(), CodexImportedSessionsData(next))
         }
+        // Write-through: a DataStore reader whose first read races this write can capture the
+        // post-increment version with the pre-write content, and the data flow's stale-version
+        // filter then swallows this write's own cache update for that collector — so a
+        // collector-only store may never observe its own write. Publish it here; the collector
+        // still covers initial load and writes from other stores on the same DataStore.
+        mutable.value = decode(prefs[key])
     }
 
     override suspend fun clearMarker(id: String) {
-        dataStore.edit { prefs ->
+        val prefs = dataStore.edit { prefs ->
             val current = decode(prefs[key])
             if (id in current) {
                 val next = current - id
                 prefs[key] = HapiJson.encodeToString(CodexImportedSessionsData.serializer(), CodexImportedSessionsData(next))
             }
         }
+        // Same write-through as markImported; a no-op clear re-publishes the same map.
+        mutable.value = decode(prefs[key])
     }
 
     private fun decode(raw: String?): Map<String, Long> {
