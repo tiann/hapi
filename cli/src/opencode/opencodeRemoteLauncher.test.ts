@@ -2814,6 +2814,100 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         }
     });
 
+    it('keeps inbox receipts and retry progress live while v2 cancellation drains, then closes the stream', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 48274;
+        harness.discoveredPassword = 'synthetic-password';
+        const actual = await vi.importActual<typeof import('./utils/opencodeEventStream')>('./utils/opencodeEventStream');
+        const eventStreamModule = await import('./utils/opencodeEventStream');
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        let streamCancelled = false;
+        const stream = new ReadableStream<Uint8Array>({
+            start(value) { controller = value; },
+            cancel() { streamCancelled = true; }
+        });
+        const push = (type: string, data: Record<string, unknown>) => {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type, data })}\n\n`));
+        };
+        const retry = (attempt: number) => push('session.retry.scheduled', {
+            sessionID: 'acp-session-1', attempt, error: { message: 'Fixture rate limit' }
+        });
+        let subscriptionClosed = false;
+        vi.mocked(eventStreamModule.subscribeToOpencodeEvents).mockImplementationOnce(options => {
+            expect(options).toMatchObject({ mode: 'v2', sessionId: 'acp-session-1' });
+            const subscription = actual.subscribeToOpencodeEvents({
+                ...options,
+                fetchImpl: async () => new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+            });
+            return { close() { subscriptionClosed = true; subscription.close(); } };
+        });
+        let inputId = '';
+        let deleteStarted = false;
+        let delivered = false;
+        let releaseDelete!: () => void;
+        const deleting = new Promise<void>(resolve => { releaseDelete = resolve; });
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') inputId = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') {
+                deleteStarted = true;
+                await deleting;
+                return new Response(null, { status: 204 });
+            }
+            const item = { id: inputId, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return Response.json({ data: String(url).endsWith('/inbox') ? delivered ? [] : [item]
+                : { id: inputId, sessionID: 'acp-session-1', type: 'user', text: 'correction' } });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let switching: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await expect(steerHandlerOf(stub)({ localId: 'v2-steer' })).resolves.toEqual({ steered: true });
+            retry(2);
+            push('session.inbox.enqueued', { sessionID: 'acp-session-1', inboxID: inputId,
+                item: { type: 'user', payload: { text: 'correction' } } });
+            retry(2);
+            await vi.waitFor(() => expect(stub.claudeSessionMessages).toHaveLength(1));
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+
+            switching = (stub.rpcHandlers.get('switch') as () => Promise<void>)();
+            await vi.waitFor(() => expect(deleteStarted).toBe(true));
+            releasePrompt();
+            stub.session.queue.close();
+            await vi.waitFor(() => expect(harness.events).toContain('prompt:end'));
+            expect(subscriptionClosed).toBe(false);
+            expect(harness.cleanupEvents).not.toContain('cleanup:disconnect');
+
+            // The real parser still feeds both launcher consumers while the
+            // native DELETE and foreground drain await the delivery outcome.
+            retry(3);
+            push('session.step.started', { sessionID: 'acp-session-1' });
+            retry(2);
+            await vi.waitFor(() => expect(stub.claudeSessionMessages).toHaveLength(3));
+            expect(stub.claudeSessionMessages.map(message => (message as { retryAttempt: number }).retryAttempt)).toEqual([1, 2, 1]);
+            delivered = true;
+            push('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: inputId });
+            push('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: inputId });
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([
+                { localIds: ['v2-steer'], options: { steered: true } }
+            ]));
+            releaseDelete();
+            await Promise.all([switching, runPromise]);
+            expect(subscriptionClosed).toBe(true);
+            expect(streamCancelled).toBe(true);
+            expect(harness.cleanupEvents).toContain('cleanup:disconnect');
+            expect(stub.emitMessagesConsumedCalls).toHaveLength(1);
+            expect(harness.softSteerCalls).toEqual([]);
+        } finally {
+            delivered = true;
+            releaseDelete();
+            releasePrompt();
+            stub.session.queue.close();
+            await Promise.all([switching, runPromise]);
+            nativeFetch.mockRestore();
+        }
+    });
+
     it('v2 recovers a missing delivered event by exact native projection readback', async () => {
         harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
         let id = '';
