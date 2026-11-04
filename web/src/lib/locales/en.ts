@@ -977,8 +977,6 @@ export default {
   'settings.display.pinInProgressMode.off': 'Off',
   'settings.display.pinInProgressMode.jobs': 'Long-running jobs',
   'settings.display.pinInProgressMode.all': 'Working & pending',
-  'settings.display.fixedSessionOrder': 'Fixed session order',
-  'settings.display.fixedSessionOrder.desc': 'Keep the session list from jumping: sessions and workspaces no longer reorder on updates or status changes; newest-created first. Pins still float to the top, and "Pin in-progress sessions" is paused while this is on.',
   'settings.display.appBadge': 'Taskbar unread badge',
   'settings.display.appBadge.desc': 'Show the number of sessions with new activity on an installed Edge or Chrome PWA. The host browser controls its appearance; this has no effect in a normal browser tab.',
   'settings.display.sessionListStatus': 'Session list status hints',

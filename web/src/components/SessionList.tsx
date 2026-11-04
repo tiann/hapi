@@ -1442,8 +1442,7 @@ export function SessionList(props: {
         [lastSeenVersion] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const { pinInProgressMode } = usePinInProgressSessions()
-    // List sort/filter lives in SessionListView (#2263). The old
-    // `hapi-fixed-session-order` key is obsolete and must not override it.
+    // List sort/filter lives in SessionListView (#2263).
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'

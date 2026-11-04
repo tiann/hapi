@@ -974,8 +974,6 @@ export default {
   'settings.display.pinInProgressMode.off': '关闭',
   'settings.display.pinInProgressMode.jobs': '长时间任务',
   'settings.display.pinInProgressMode.all': '工作中与待处理',
-  'settings.display.fixedSessionOrder': '固定会话顺序',
-  'settings.display.fixedSessionOrder.desc': '会话与工作区不随更新和状态变化重排，按创建时间固定顺序（新建在前）。置顶仍浮于最上方；开启期间「置顶进行中会话」暂不生效。',
   'settings.display.appBadge': '任务栏未读角标',
   'settings.display.appBadge.desc': '在已安装的 Edge 或 Chrome PWA 图标上显示有新活动的会话数。角标样式由宿主浏览器控制；普通浏览器标签页不受影响。',
   'settings.display.sessionListStatus': '会话列表状态提示',
