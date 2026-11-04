@@ -22,11 +22,15 @@ struct HingeProbe: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.isUserInteractionEnabled = false
+        // Mac Catalyst exposes no hinge hardware and no UIHingeInteraction in
+        // its macabi SDK surface, so the probe is iOS-only at compile time.
+        #if !targetEnvironment(macCatalyst)
         if #available(iOS 27.1, *) {
             view.addInteraction(UIHingeInteraction { _, update in
                 if update.hinge != nil { FoldableDevice.shared.recordHinge() }
             })
         }
+        #endif
         return view
     }
 
