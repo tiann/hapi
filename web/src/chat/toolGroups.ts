@@ -293,7 +293,7 @@ function summarizeToolGroup(tools: ToolCallBlock[]): ToolGroupSummary {
     }
 }
 
-function isInteractiveToolBlock(block: ToolCallBlock): boolean {
+export function isInteractiveToolBlock(block: ToolCallBlock): boolean {
     const permission = block.tool.permission
     const hasTerminalPermissionReason = (
         permission?.status === 'denied' || permission?.status === 'canceled'

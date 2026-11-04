@@ -31,6 +31,7 @@ import {
     countMessages,
     markMessagesInvoked,
     markMessagesIndeterminate,
+    markDispatchingMessagesIndeterminate,
     setMessagesDeliveryState,
     markUninvokedImmediateMessages,
     mergeSessionMessages,
@@ -243,6 +244,10 @@ export class MessageStore {
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
         return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    }
+
+    markDispatchingMessagesIndeterminate(sessionId: string): string[] {
+        return markDispatchingMessagesIndeterminate(this.db, sessionId)
     }
 
     markMessagesIndeterminate(sessionId: string, localIds: string[]): number {
