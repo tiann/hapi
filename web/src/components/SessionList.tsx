@@ -99,7 +99,7 @@ import {
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
 } from '@hapi/protocol'
-import { createSessionComparator, filterSessionsByStatus, getSessionSortKey } from '@/lib/sessionListOrder'
+import { createSessionComparator, getSessionSortKey } from '@/lib/sessionListOrder'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import {
     getSessionLastSeenAt,
@@ -411,6 +411,23 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
         session.active
         || session.id === selectedSessionId
         || hasRunningAttachedJob(session)
+    )
+}
+
+/**
+ * List-view status filter with the #1404 jobs exception on "active": idle rows
+ * that still have a running attachedJob stay visible (and stay out of archived).
+ */
+export function filterSessionsForListStatus(
+    sessions: SessionSummary[],
+    status: SessionListView['status'],
+    selectedSessionId?: string | null
+): SessionSummary[] {
+    if (status === 'all') return sessions
+    if (status === 'active') return filterActiveSessionsOnly(sessions, selectedSessionId)
+    return sessions.filter(session =>
+        session.id === selectedSessionId
+        || (!session.active && !hasRunningAttachedJob(session))
     )
 }
 
@@ -1414,7 +1431,6 @@ export function SessionList(props: {
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
-    const listComparator = useMemo(() => createSessionComparator(listView), [listView])
     const lastSeenVersion = useSessionLastSeenVersion()
     // Unread rows stay visible without a filter: collapsed project groups still
     // show them, and the preview limit never hides them.
@@ -1427,8 +1443,18 @@ export function SessionList(props: {
     )
     const { pinInProgressMode } = usePinInProgressSessions()
     const { fixedSessionOrder } = useFixedSessionOrder()
-    // Fixed session order: pause status-driven float (list view still owns sort).
+    // Fixed session order: creation-time sort + no active-first float + pause pin float.
     const effectivePinInProgressMode: PinInProgressMode = fixedSessionOrder ? 'off' : pinInProgressMode
+    const effectiveListView = useMemo(
+        () => (fixedSessionOrder
+            ? { ...listView, sort: 'created' as const, activeFirst: false }
+            : listView),
+        [fixedSessionOrder, listView]
+    )
+    const listComparator = useMemo(
+        () => createSessionComparator(effectiveListView),
+        [effectiveListView]
+    )
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
@@ -1522,7 +1548,7 @@ export function SessionList(props: {
         [props.sessions, selectedSessionId]
     )
     const allSessions = useMemo(
-        () => filterSessionsByStatus(sidebarSessions, listView.status, selectedSessionId),
+        () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
         [sidebarSessions, selectedSessionId, listView.status]
     )
     const unreadSessionCount = useMemo(
@@ -1541,7 +1567,7 @@ export function SessionList(props: {
             if (contentSearchActive) {
                 const results = contentSearchResponse?.results.map((result) => result.session) ?? []
                 const prepared = prepareSidebarSessions(results, selectedSessionId)
-                return filterSessionsByStatus(prepared, listView.status, selectedSessionId)
+                return filterSessionsForListStatus(prepared, listView.status, selectedSessionId)
             }
             if (!isFiltering) return allSessions
             const matched = hasTextQuery && searchScoreIndex
@@ -1735,14 +1761,14 @@ export function SessionList(props: {
                 }),
                 // Search keeps its own contract: relevance first, then the stable
                 // last-message order for ties, whatever the list view says.
-                hasTextQuery ? undefined : listView
+                hasTextQuery ? undefined : effectiveListView
             )
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
             return grouped
         },
-        [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listView]
+        [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, effectiveListView]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -1752,9 +1778,9 @@ export function SessionList(props: {
     const allDirectoryGroups = useMemo(
         () => groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned),
-            listView
+            effectiveListView
         ),
-        [machineFilteredSessions, listView]
+        [machineFilteredSessions, effectiveListView]
     )
     const actionOnlyGroups = useMemo(() => {
         if (effectivePinInProgressMode === 'off') {

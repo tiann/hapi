@@ -8,6 +8,7 @@ import {
     filterActiveSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
+    filterSessionsForListStatus,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
     getPreviousSessionVisibleCount,
@@ -815,5 +816,34 @@ describe('session list sort and filter view', () => {
             session('pinned-archived', { pinned: true })
         ]
         expect(ids(sessions, { sort: 'last-message', activeFirst: true })).toEqual(['pinned-archived', 'active'])
+    })
+})
+
+describe('filterSessionsForListStatus', () => {
+    const base = (id: string, extra: Partial<SessionSummary> = {}): SessionSummary =>
+        makeSession({ id, active: false, metadata: { path: '/p' }, ...extra })
+
+    it('keeps inactive running-job rows under the active status filter', () => {
+        const job = base('job', {
+            attachedJob: {
+                key: 'drain', label: 'drain', status: 'running',
+                heartbeatAt: 1, startedAt: 1, updatedAt: 1
+            }
+        })
+        const idle = base('idle')
+        const ids = filterSessionsForListStatus([job, idle], 'active', null).map(s => s.id)
+        expect(ids).toEqual(['job'])
+    })
+
+    it('excludes running-job rows from the archived status filter', () => {
+        const job = base('job', {
+            attachedJob: {
+                key: 'drain', label: 'drain', status: 'running',
+                heartbeatAt: 1, startedAt: 1, updatedAt: 1
+            }
+        })
+        const archived = base('archived')
+        const ids = filterSessionsForListStatus([job, archived], 'archived', null).map(s => s.id)
+        expect(ids).toEqual(['archived'])
     })
 })
