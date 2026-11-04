@@ -99,22 +99,41 @@ class SessionDirectoryGroupsUiTest {
 
         // Grouped default: two directory groups, one display title — the
         // machine+directory header keys keep the LazyColumn from colliding,
-        // so both headers and both machines' rows render.
-        compose.onAllNodesWithText("repo/app").assertCountEquals(2)
+        // so both headers render. With two machines and no machine filter
+        // each header carries its machine suffix (web `groupTitle` parity);
+        // no machine names are configured, so the labels fall back to the
+        // raw machine ids. Both groups are quiet (no active, pinned, or
+        // selected rows), so they start collapsed — web `isGroupCollapsed`
+        // default — and their rows stay unrendered until expanded.
+        compose.onAllNodesWithText("repo/app · laptop").assertCountEquals(1)
+        compose.onAllNodesWithText("repo/app · desktop").assertCountEquals(1)
+        compose.onAllNodesWithText("Laptop build").assertCountEquals(0)
+        compose.onAllNodesWithText("Desktop build").assertCountEquals(0)
+
+        // Header-tap path (`toggleDirectoryGroup`) expands both groups and
+        // both machines' rows become reachable.
+        compose.runOnIdle {
+            viewModel.toggleDirectoryGroup("laptop::/repo/app")
+            viewModel.toggleDirectoryGroup("desktop::/repo/app")
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Laptop build").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Laptop build").assertIsDisplayed()
         compose.onNodeWithText("Desktop build").assertIsDisplayed()
 
-        // Grouped + search: both groups still keyed apart (relevance order).
+        // Grouped + search: both groups still keyed apart (relevance order);
+        // searching forces groups open and the suffix does not depend on it.
         compose.runOnIdle { viewModel.setSearchQuery("build") }
         compose.waitUntil(10_000) { viewModel.uiState.value.isSearching && viewModel.uiState.value.rows.size == 2 }
-        compose.onAllNodesWithText("repo/app").assertCountEquals(2)
+        compose.onAllNodesWithText("repo/app · laptop").assertCountEquals(1)
+        compose.onAllNodesWithText("repo/app · desktop").assertCountEquals(1)
         compose.onNodeWithText("Laptop build").assertIsDisplayed()
         compose.onNodeWithText("Desktop build").assertIsDisplayed()
 
         // Flat + search: the headers disappear, both rows stay reachable.
         compose.runOnIdle { viewModel.setGrouped(false) }
         compose.waitUntil(10_000) { !viewModel.uiState.value.grouped && viewModel.uiState.value.rows.size == 2 }
-        compose.onAllNodesWithText("repo/app").assertCountEquals(0)
+        compose.onAllNodesWithText("repo/app · laptop").assertCountEquals(0)
+        compose.onAllNodesWithText("repo/app · desktop").assertCountEquals(0)
         compose.onNodeWithText("Laptop build").assertIsDisplayed()
         compose.onNodeWithText("Desktop build").assertIsDisplayed()
     }
