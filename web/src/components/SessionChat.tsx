@@ -26,6 +26,7 @@ import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
+import { filterConciseChatBlocks } from '@/chat/conciseView'
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
@@ -96,6 +97,7 @@ import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
+import { useConciseChatMode } from '@/hooks/useConciseChatMode'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
@@ -676,6 +678,7 @@ function SessionChatInner(props: SessionChatProps) {
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { conciseChatMode, setConciseChatMode } = useConciseChatMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
@@ -1592,15 +1595,24 @@ function SessionChatInner(props: SessionChatProps) {
         blocksByIdRef.current = reconciled.byId
     }, [reconciled.byId])
 
+    // A search jump can target any message, so show the full thread while a
+    // search target is active and restore the concise view once dismissed.
+    const conciseViewActive = conciseChatMode
+        && !(props.initialTargetMessageId && props.initialTargetMessageQuery)
+    const threadBlocks = useMemo(
+        () => conciseViewActive ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks,
+        [conciseViewActive, reconciled.blocks]
+    )
+
     const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, {
+        () => buildVisibleChatBlocks(threadBlocks, {
             hasMoreMessages: props.hasMoreMessages,
             previousGroups: visibleGroupsRef.current,
             previousGroupingMode: visibleGroupsModeRef.current,
             groupingMode: toolGroupingMode,
             codexExplorationCollapsed
         }),
-        [reconciled.blocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
+        [threadBlocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
     )
 
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
@@ -2031,6 +2043,8 @@ function SessionChatInner(props: SessionChatProps) {
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
+                onToggleConciseView={() => setConciseChatMode(!conciseChatMode)}
+                conciseViewActive={conciseChatMode}
                 onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
                 terminalActive={terminalVisible}
                 api={props.api}
@@ -2189,7 +2203,9 @@ function SessionChatInner(props: SessionChatProps) {
                                     // Restore the schedule so the clock button re-activates
                                     updatePendingSchedule(restored)
                                 }}
-                                canSteer={isSteeringSupportedForSession(props.session.metadata)
+                                deliveryActive={props.session.active && props.session.thinking}
+                                canSteer={props.session.active && props.session.thinking
+                                    && isSteeringSupportedForSession(props.session.metadata)
                                     && (agentFlavor === 'pi'
                                         ? props.session.thinking
                                         : props.session.agentState?.steeringActive === true)
