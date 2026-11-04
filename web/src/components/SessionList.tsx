@@ -13,14 +13,15 @@ import {
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
-import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
-import { CheckIcon, CopyIcon, InfoIcon, MarkAllReadIcon } from '@/components/icons'
+import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon } from '@/components/icons'
 
 function PinnedSectionIcon(props: { className?: string }) {
     return (
@@ -1300,7 +1301,7 @@ const SessionItem = memo(function SessionItem(props: {
         }
     }
 
-    const handleReopen = async () => {
+    const handleReopen = async (onError: (message: string) => void = setReopenError) => {
         setReopenError(null)
         try {
             const result = await reopenSession()
@@ -1315,7 +1316,50 @@ const SessionItem = memo(function SessionItem(props: {
                 )
             }
         } catch (error) {
-            setReopenError(formatReopenError(error))
+            onError(formatReopenError(error))
+        }
+    }
+
+    // Hover archive: an idle session archives in one click with a Reopen toast;
+    // one that is replying, waiting on approval or running background work
+    // still goes through the confirmation, since archiving stops its agent.
+    // Read from the shared mutation cache, not row state: the row remounts when
+    // an archived session moves between sections (e.g. out of Active), and the
+    // spinner must survive that until the request settles.
+    const quickArchivePending = useIsMutating({ mutationKey: sessionArchiveMutationKey(s.id), exact: true }) > 0
+    const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
+    // The row can turn inactive before the archive request settles (the hub
+    // still confirms cleanup); keep the spinner until it does.
+    const showQuickArchive = s.active || quickArchivePending
+    const handleQuickArchive = async () => {
+        if (archiveNeedsConfirmation) {
+            setArchiveOpen(true)
+            return
+        }
+        try {
+            await archiveSession()
+            addToast({
+                title: t('session.archived.title'),
+                body: getSessionTitle(s),
+                sessionId: s.id,
+                url: `/sessions/${s.id}`,
+                action: {
+                    label: t('session.action.reopen'),
+                    onClick: () => void handleReopen((message) => addToast({
+                        title: t('dialog.reopen.errorTitle'),
+                        body: message,
+                        sessionId: s.id,
+                        url: `/sessions/${s.id}`
+                    }))
+                }
+            })
+        } catch (error) {
+            addToast({
+                title: t('dialog.archive.error'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: s.id,
+                url: `/sessions/${s.id}`
+            })
         }
     }
 
@@ -1358,31 +1402,51 @@ const SessionItem = memo(function SessionItem(props: {
     )
     return (
         <>
-            <button
-                type="button"
-                {...longPressHandlers}
-                data-session-scroll-anchor
-                className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
-                style={{ WebkitTouchCallout: 'none' }}
-                aria-current={selected ? 'page' : undefined}
-                aria-describedby={describedBy}
+            <div
+                className="session-list-row relative"
+                data-quick-action-pending={quickArchivePending ? '' : undefined}
             >
-                <SessionRowSummary
-                    session={s}
-                    showPath={showPath}
-                    showDetailedStatus={showDetailedStatus}
-                    selected={selected}
-                    nestedTooltips
-                    attentionTooltipId={attentionId}
-                    lastSeenVersion={lastSeenVersion}
-                    scheduleTooltipId={scheduleId}
-                    inRunningSection={inRunningSection}
-                    projectLabel={projectLabel}
-                    machineLabel={machineLabel}
-                    contentSnippet={contentSnippet}
-                    contentSearchTruncated={contentSearchTruncated}
-                />
-            </button>
+                <button
+                    type="button"
+                    {...longPressHandlers}
+                    data-session-scroll-anchor
+                    className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                    style={{ WebkitTouchCallout: 'none' }}
+                    aria-current={selected ? 'page' : undefined}
+                    aria-describedby={describedBy}
+                >
+                    <SessionRowSummary
+                        session={s}
+                        showPath={showPath}
+                        showDetailedStatus={showDetailedStatus}
+                        selected={selected}
+                        nestedTooltips
+                        attentionTooltipId={attentionId}
+                        lastSeenVersion={lastSeenVersion}
+                        scheduleTooltipId={scheduleId}
+                        inRunningSection={inRunningSection}
+                        projectLabel={projectLabel}
+                        machineLabel={machineLabel}
+                        contentSnippet={contentSnippet}
+                        contentSearchTruncated={contentSearchTruncated}
+                        trailingClassName={showQuickArchive ? 'session-row-trailing' : undefined}
+                    />
+                </button>
+                {showQuickArchive ? (
+                    <button
+                        type="button"
+                        className="session-row-quick-action absolute right-1 top-1.5 h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-wait"
+                        aria-label={t('session.action.archive')}
+                        title={t('session.action.archive')}
+                        disabled={quickArchivePending}
+                        onClick={() => void handleQuickArchive()}
+                    >
+                        {quickArchivePending
+                            ? <LoaderIcon className="h-4 w-4 animate-spin" />
+                            : <ArchiveIcon className="h-4 w-4" />}
+                    </button>
+                ) : null}
+            </div>
 
             <SessionActionMenu
                 isOpen={menuOpen}
@@ -1401,7 +1465,7 @@ const SessionItem = memo(function SessionItem(props: {
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
                 onArchive={() => setArchiveOpen(true)}
-                onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
+                onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
                 reopenHint={cursorReopenUnverifiedHint}
                 onDelete={() => setDeleteOpen(true)}

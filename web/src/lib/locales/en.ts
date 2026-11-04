@@ -294,6 +294,7 @@ export default {
   'session.action.syncCodex': 'Sync Codex',
   'session.action.syncPi': 'Sync Pi history',
   'session.action.archive': 'Archive',
+  'session.archived.title': 'Session archived',
   'session.action.reopen': 'Reopen',
   'session.action.reopenCursorChecking': 'Checking whether Cursor chat data is still available on the recorded machine.',
   'session.action.reopenCursorMissing': 'Cursor chat data is no longer available on the recorded machine.',
