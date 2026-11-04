@@ -110,6 +110,8 @@ updates do not reshuffle the rows under the user's finger.
 ### `@` session suggestions
 
 Composer `@` suggestions only include sessions with conversation content.
-With an empty query they prefer active and recent sessions; after typing, they
-use a separate title/ID/active/recency ranking. Names, directories, and
-machine labels affect matching, but an empty stub is never a mention target.
+Active sessions appear first, followed by an inactive section that can be
+collapsed or expanded. The browser remembers that choice. Each group shows up
+to 20 matches, ordered by relevance and recency; names, directories, and
+machine labels affect matching. Empty stubs are never mention targets, and
+collapsing inactive sessions does not hide file suggestions.

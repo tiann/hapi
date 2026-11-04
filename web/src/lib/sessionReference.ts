@@ -27,7 +27,6 @@ export function buildSessionReferenceText(sessionTitle: string, sessionId: strin
 export type MatchSessionsForMentionOptions = {
     excludeId?: string
     limit?: number
-    activeOnly?: boolean
     /** Same resolver share/sidebar pass into `sessionMatchesQuery`. */
     resolveMachineLabel?: (machineId: string | null) => string
 }
@@ -64,7 +63,7 @@ export function isMentionableSession(session: SessionSummary): boolean {
  * Pool is sidebar-visible rows (`prepareSidebarSessions`) that also have
  * conversation content. Empty stubs stay out even if sidebar shows them.
  * Match filter then reuses share/sidebar `sessionMatchesQuery`.
- * Empty query → active/recent shortlist (excludes archived + empty stubs).
+ * Active sessions lead, with relevance and recency ordering within each group.
  */
 export function matchSessionsForMention(
     sessions: readonly SessionSummary[],
@@ -81,14 +80,9 @@ export function matchSessionsForMention(
     for (const session of candidates) {
         if (excludeId && session.id === excludeId) continue
         if (!isMentionableSession(session)) continue
-        if (options.activeOnly && !session.active) continue
 
         if (!normalized) {
-            // Empty / whitespace query: shortlist only — active first, then recent.
-            // Archived stay searchable once the user types (same as share: type to widen).
-            if (session.metadata?.lifecycleState === 'archived') continue
-            const score = session.active ? 1_000_000_000 + session.updatedAt : session.updatedAt
-            scored.push({ session, score })
+            scored.push({ session, score: session.updatedAt })
             continue
         }
 
@@ -97,7 +91,7 @@ export function matchSessionsForMention(
         scored.push({ session, score: scoreMatchedSession(session, normalized) })
     }
 
-    scored.sort((a, b) => b.score - a.score)
+    scored.sort((a, b) => Number(b.session.active) - Number(a.session.active) || b.score - a.score)
     return scored.slice(0, limit).map((entry) => entry.session)
 }
 

@@ -169,16 +169,6 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toContain('ccc-old')
     })
 
-    it('optionally limits both typed searches and the initial shortlist to active sessions', () => {
-        expect(matchSessionsForMention(sessions, 'scratch', { activeOnly: true }).map(s => s.id))
-            .toEqual(['aaa-active'])
-        expect(matchSessionsForMention(sessions, 'bbb-rec', { activeOnly: true })).toEqual([])
-        expect(matchSessionsForMention(sessions, '', { activeOnly: true }).map(s => s.id))
-            .toEqual(['eee-parity', 'ddd-meta', 'aaa-active'])
-        expect(matchSessionsForMention(sessions, 'scratch', { activeOnly: false }).map(s => s.id))
-            .toContain('ccc-old')
-    })
-
     it('matches id prefixes via sessionMatchesQuery', () => {
         const hits = matchSessionsForMention(sessions, 'bbb-rec')
         expect(hits.map((s) => s.id)).toEqual(['bbb-recent'])
@@ -232,16 +222,16 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toEqual(['full-and'])
     })
 
-    it('empty query returns active/recent shortlist without archived', () => {
+    it('empty query returns active sessions first and includes archived sessions', () => {
         const hits = matchSessionsForMention(sessions, '', { limit: 10 })
-        // Active first (by updatedAt), then inactive recent — archived omitted.
+        // Active first (by updatedAt), followed by inactive sessions.
         expect(hits.map((s) => s.id)).toEqual([
             'eee-parity',
             'ddd-meta',
             'aaa-active',
             'bbb-recent',
+            'ccc-old',
         ])
-        expect(hits.map((s) => s.id)).not.toContain('ccc-old')
     })
 
     // #1506 — mention pool is stricter than sidebar visibility.

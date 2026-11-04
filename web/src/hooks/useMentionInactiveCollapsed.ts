@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-const STORAGE_KEY = 'hapi-mention-active-sessions-only'
+const STORAGE_KEY = 'hapi-mention-inactive-collapsed'
 const listeners = new Set<(value: boolean) => void>()
 
 function readPreference(): boolean {
@@ -11,8 +11,8 @@ function readPreference(): boolean {
     }
 }
 
-export function useMentionActiveSessionsOnly() {
-    const [mentionActiveSessionsOnly, setState] = useState(readPreference)
+export function useMentionInactiveCollapsed() {
+    const [mentionInactiveCollapsed, setState] = useState(readPreference)
 
     useEffect(() => {
         listeners.add(setState)
@@ -28,7 +28,7 @@ export function useMentionActiveSessionsOnly() {
         }
     }, [])
 
-    const setMentionActiveSessionsOnly = useCallback((value: boolean) => {
+    const setMentionInactiveCollapsed = useCallback((value: boolean) => {
         setState(value)
         for (const listener of listeners) listener(value)
         try {
@@ -39,5 +39,5 @@ export function useMentionActiveSessionsOnly() {
         }
     }, [])
 
-    return { mentionActiveSessionsOnly, setMentionActiveSessionsOnly }
+    return { mentionInactiveCollapsed, setMentionInactiveCollapsed }
 }
