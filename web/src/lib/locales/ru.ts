@@ -975,6 +975,7 @@ export default {
   'settings.chat.composerToolbar.item.settings': 'Настройки сессии',
   'settings.chat.composerToolbar.item.expand': 'Развернуть редактор сообщений',
   'settings.chat.composerToolbar.item.model': 'Модель',
+  'settings.chat.composerToolbar.item.fast': 'Быстрый режим',
   'settings.chat.composerToolbar.item.effort': 'Уровень рассуждений',
   'settings.chat.composerToolbar.item.terminal': 'Терминал',
   'settings.chat.composerToolbar.item.abort': 'Прервать',
