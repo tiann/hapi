@@ -137,9 +137,6 @@
         }
       }
     },
-    "%@ attachments" : {
-
-    },
     "%@ is over the 50 MB upload limit" : {
       "extractionState" : "manual",
       "localizations" : {
