@@ -6,10 +6,8 @@ import {
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
-    filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
-    getSessionTimeRange,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
     getPreviousSessionVisibleCount,
@@ -21,7 +19,6 @@ import {
     normalizeSearch,
     prepareSidebarSessions,
     sessionMatchesQuery,
-    sessionMatchesTimeRange,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -434,23 +431,6 @@ describe('session list search helpers', () => {
     })
 })
 
-describe('session list time filter helpers', () => {
-    it('treats the selected end date as inclusive in local time', () => {
-        const range = getSessionTimeRange('2026-07-01', '2026-07-18')
-        expect(range).toEqual({
-            start: new Date(2026, 6, 1).getTime(),
-            end: new Date(2026, 6, 19).getTime()
-        })
-        expect(sessionMatchesTimeRange(makeSession({ id: 'inside', updatedAt: new Date(2026, 6, 18, 23, 59).getTime() }), range)).toBe(true)
-        expect(sessionMatchesTimeRange(makeSession({ id: 'outside', updatedAt: new Date(2026, 6, 19).getTime() }), range)).toBe(false)
-    })
-
-    it('does not filter until both dates are selected', () => {
-        expect(getSessionTimeRange('', '')).toBeNull()
-        expect(getSessionTimeRange('2026-07-01', '')).toBeNull()
-    })
-})
-
 describe('getVisibleSessionPreview', () => {
     it('keeps selected and pending sessions inside the collapsed preview without promoting them', () => {
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
@@ -467,6 +447,21 @@ describe('getVisibleSessionPreview', () => {
         })
 
         expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('keeps unread sessions inside the preview without promoting them', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, {
+            limit: 3,
+            isUnread: session => session.id === 's-5'
+        })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-5'])
     })
 
     it('does not let archived pending sessions displace active ones', () => {
@@ -548,75 +543,6 @@ describe('filterActiveSessionsOnly', () => {
             makeSession({ id: 'c', active: true, metadata: { path: '/p' } })
         ]
         expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['a', 'c'])
-    })
-})
-
-describe('filterUnreadSessionsOnly', () => {
-    const lastSeen = (id: string): number => {
-        if (id === 'unread') return 1000
-        return 10_000
-    }
-
-    it('keeps only sessions newer than lastSeen; drops seen and selected-only quiet rows stay when selected', () => {
-        const sessions = [
-            makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
-            makeSession({ id: 'seen', contentRevision: 1000, metadata: { path: '/p' } }),
-            makeSession({
-                id: 'permission-but-seen',
-                pendingRequestKinds: ['permission'],
-                pendingRequestsCount: 1,
-                contentRevision: 1000,
-                metadata: { path: '/p' },
-            }),
-        ]
-        expect(filterUnreadSessionsOnly(sessions, null, lastSeen).map(s => s.id))
-            .toEqual(['unread'])
-    })
-
-    it('keeps the selected session visible even when it would otherwise filter out', () => {
-        const sessions = [
-            makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
-            makeSession({ id: 'selected-quiet', contentRevision: 1000, metadata: { path: '/p' } }),
-        ]
-        expect(filterUnreadSessionsOnly(sessions, 'selected-quiet', lastSeen).map(s => s.id))
-            .toEqual(['unread', 'selected-quiet'])
-    })
-
-    it('composes with machine filter as empty intersection (unread after machine scope stays selected)', () => {
-        // Mirrors SessionList pipeline: unread on visibleSessions, then machine filter.
-        // Machine B selected + only machine A unread → empty list, not "all unread".
-        const sessions = [
-            makeSession({
-                id: 'unread-a',
-                contentRevision: 5000,
-                metadata: { path: '/a', machineId: 'machine-a' },
-            }),
-            makeSession({
-                id: 'seen-b',
-                contentRevision: 1000,
-                metadata: { path: '/b', machineId: 'machine-b' },
-            }),
-        ]
-        const lastSeenById = (id: string) => (id === 'unread-a' ? 0 : 10_000)
-        const unreadFiltered = filterUnreadSessionsOnly(sessions, null, lastSeenById)
-        const machineB = unreadFiltered.filter(
-            session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === 'machine-b'
-        )
-        expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
-        expect(machineB).toEqual([])
-    })
-
-    it('keeps an explicitly unread generating session in the unread lens', () => {
-        const sessions = [
-            makeSession({ id: 'manual-thinking', active: true, thinking: true, contentRevision: 5000, metadata: { path: '/p' } })
-        ]
-
-        expect(filterUnreadSessionsOnly(
-            sessions,
-            null,
-            () => 5000,
-            () => 5000
-        ).map(s => s.id)).toEqual(['manual-thinking'])
     })
 })
 

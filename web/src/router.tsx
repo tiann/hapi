@@ -308,7 +308,7 @@ function SessionsPage() {
                         onBrowse={canBrowse ? () => navigate({ to: '/browse' }) : undefined}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
-                        // Keep ranks: new 4, unread lens 5, settings 6,
+                        // Keep ranks: new 4, sort and filter 5, settings 6,
                         // mark-all 7, browse 8. Higher sheds into More first (#2039).
                         renderHeader
                         toolbarExtras={[
