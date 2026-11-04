@@ -50,7 +50,10 @@ class CompactionSummaryTest {
         compose.onNodeWithTag("compaction-header-compact").assertHasNoClickAction()
         compose.onNodeWithTag("compaction-summary-compact").assertDoesNotExist()
         compose.runOnIdle { state.value = block(" \n", "tokensBefore" to -1, "tokensAfter" to 1.5) }
-        compose.onNodeWithText("📦 Context compacted").assertIsDisplayed().assertHasNoClickAction()
+        // The ordinary status row splits the presentation into glyph + text
+        // (AgentEventBlockView maps the 📦 icon onto a vector glyph instead of
+        // keeping it in the string), so the text no longer carries the emoji.
+        compose.onNodeWithText("Context compacted").assertIsDisplayed().assertHasNoClickAction()
         compose.onNodeWithTag("compaction-card-compact").assertDoesNotExist()
         compose.runOnIdle { state.value = block("", "tokensBefore" to 100, "estimatedTokensAfter" to 40) }
         compose.onNodeWithText("100 → ~40 tokens (estimated after)", substring = true).assertIsDisplayed()
