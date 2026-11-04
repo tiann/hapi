@@ -949,7 +949,7 @@ export function ComposerButtons(props: {
                         onClick={props.onFastModeToggle}
                         className={`flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                             props.fastModeEnabled
-                                ? 'bg-[var(--app-link)] text-white'
+                                ? 'bg-[var(--app-button)] text-[var(--app-button-text)]'
                                 : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
                         }`}
                     >
