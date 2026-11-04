@@ -1933,6 +1933,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: (namespace: string, query: string, sessionIds?: readonly string[]) => {
                 expect(namespace).toBe('default')
                 expect(query).toBe('needle')
@@ -1995,6 +1997,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: () => false,
             searchSessionContent: (_query: string, _namespace: string, _limit: number, sessionIds?: readonly string[]) => {
                 receivedSessionIds = sessionIds

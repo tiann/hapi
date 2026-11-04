@@ -181,6 +181,57 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
         expect(listed.primary).toBeNull()
     })
 
+    it('includes attachedJob on content-search session summaries', async () => {
+        const session = createSession({ active: false })
+        const job: AttachedJob = {
+            key: 'beets',
+            label: 'beets import',
+            status: 'running',
+            remaining: 42,
+            unit: 'tracks',
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        }
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: () => new Map([[session.id, 0]]),
+            getNextScheduledAtBySessionIds: () => new Map([[session.id, null]]),
+            getPrimaryAttachedJobsBySessionIds: (ids: string[]) => {
+                const map = new Map<string, AttachedJob>()
+                for (const id of ids) map.set(id, job)
+                return map
+            },
+            allocateAttachedJobVersion: () => 77,
+            hasPotentiallyIncompleteSessionContent: () => false,
+            searchSessionContent: () => [{
+                sessionId: session.id,
+                messageId: 'message-1',
+                role: 'assistant' as const,
+                seq: 1,
+                createdAt: 1,
+                snippet: 'needle',
+                truncated: false
+            }]
+        } as unknown as SyncEngine
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine))
+
+        const res = await app.request('/api/sessions/content-search?query=needle')
+        expect(res.status).toBe(200)
+        const body = await res.json() as {
+            results: Array<{ session: { attachedJob: AttachedJob | null; attachedJobUpdatedAt: number } }>
+        }
+        expect(body.results[0]!.session.attachedJob?.key).toBe('beets')
+        expect(body.results[0]!.session.attachedJob?.remaining).toBe(42)
+        expect(body.results[0]!.session.attachedJobUpdatedAt).toBe(77)
+    })
+
     it('follows jobsAccepted redirect when the pre-merge session id 404s', async () => {
         const owner = createSession({ id: '22222222-2222-2222-2222-222222222222' })
         const deletedId = '11111111-1111-1111-1111-111111111111'

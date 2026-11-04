@@ -171,11 +171,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const matchedSessionIds = matches.map((match) => match.sessionId)
         const scheduledCounts = engine.getFutureScheduledMessageCounts(matchedSessionIds)
         const nextScheduledAt = engine.getNextScheduledAtBySessionIds(matchedSessionIds)
+        // Same job extras as GET /sessions — content-search summaries replace the
+        // live list rows, so omitting attachedJob drops meters and the active-filter
+        // jobs exception for matching idle sessions (#1424).
+        const attachedJobVersions = new Map(
+            matchedSessionIds.map((id) => [id, engine.allocateAttachedJobVersion(id)])
+        )
+        const attachedJobs = engine.getPrimaryAttachedJobsBySessionIds(matchedSessionIds)
         const results = matches
             .flatMap((match) => {
                 const session = sessionsById.get(match.sessionId)
                 if (!session) return []
-                const summary = toSessionSummary(session)
+                const summary = toSessionSummary(session, {
+                    attachedJob: attachedJobs.get(session.id) ?? null,
+                    attachedJobUpdatedAt: attachedJobVersions.get(session.id) ?? 0
+                })
                 return [{
                     session: {
                         ...summary,
