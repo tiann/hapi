@@ -111,7 +111,8 @@ describe('GET/PUT /api/hub-settings', () => {
                     claude: 'sonnet',
                     cursor: 'auto'
                 }
-            }
+            },
+            disablePeerTools: false
         })
     })
 
@@ -150,7 +151,8 @@ describe('GET/PUT /api/hub-settings', () => {
                 models: {
                     claude: 'sonnet'
                 }
-            }
+            },
+            disablePeerTools: false
         })
     })
 
