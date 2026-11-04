@@ -353,6 +353,7 @@ export class ApiSessionClient extends EventEmitter {
 
         this.socket.on('connect', () => {
             logger.debug('Socket connected successfully')
+            this.emit('connection-start')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
             const isReconnect = this.hasConnectedOnce
@@ -947,12 +948,13 @@ export class ApiSessionClient extends EventEmitter {
 
     /** Refresh Hub-owned metadata before an explicit tool action or after reconnect. */
     async reportOpenCodeRewind(report: import('@hapi/protocol/apiTypes').OpenCodeRewindReport): Promise<import('@hapi/protocol/schemas').OpenCodeRewindOperation> {
-        if (!await this.refreshMetadata()) throw new Error('Cannot reconcile Hub rewind reservation')
+        const before = await this.readRewindMetadata()
+        if (!before) throw new Error('Cannot reconcile Hub rewind reservation')
         const response = await axios.post(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/opencode-rewind`,
-            { report, expectedVersion: this.metadataVersion }, { headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }), timeout: 15_000 })
+            { report, expectedVersion: before.version }, { headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }), timeout: 15_000 })
         const { OpenCodeRewindSchema } = await import('@hapi/protocol/schemas')
         const operation = OpenCodeRewindSchema.parse(response.data?.operation)
-        if (!await this.refreshMetadata()) throw new Error('Cannot confirm authoritative rewind state')
+        if (!await this.readRewindMetadata()) throw new Error('Cannot confirm authoritative rewind state')
         return operation
     }
 
@@ -979,6 +981,27 @@ export class ApiSessionClient extends EventEmitter {
         } catch (error) {
             logger.debug('[API] Session metadata reconcile failed', error)
             return false
+        }
+    }
+
+    /** Read the exact validated REST snapshot for rewind admission decisions. */
+    async readRewindMetadata(): Promise<{ metadata: Metadata; version: number } | null> {
+        if (this.state !== 'active') return null
+        try {
+            const response = await axios.get(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}`, {
+                headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }),
+                timeout: 15_000
+            })
+            const session = response.data?.session
+            if (this.state !== 'active' || !session || !Number.isSafeInteger(session.metadataVersion) || session.metadataVersion < this.metadataVersion
+                || session.metadata === null) return null
+            const parsed = MetadataSchema.safeParse(session.metadata)
+            if (!parsed.success) return null
+            if (session.metadataVersion > this.metadataVersion) this.applyRemoteMetadata(session.metadataVersion, parsed.data)
+            return { metadata: parsed.data, version: session.metadataVersion }
+        } catch (error) {
+            logger.debug('[API] Strict rewind metadata reconcile failed', error)
+            return null
         }
     }
 

@@ -82,6 +82,13 @@ vi.mock('@/agent/sessionFactory', () => ({
 vi.mock('./loop', () => ({
     opencodeLoop: vi.fn(async (options: Record<string, unknown>) => {
         harness.opencodeLoopArgs.push(options);
+        // This mock represents a remote launcher that has reconciled an
+        // operation-free session; pending-operation cases stay fenced.
+        const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        if (!harness.session.getMetadata()?.opencodeRewind) {
+            const token = gate.takeInitialEntryFence();
+            if (token) gate.releaseEntryFence(token);
+        }
         if (harness.opencodeLoopError) {
             throw harness.opencodeLoopError;
         }

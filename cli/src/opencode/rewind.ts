@@ -18,20 +18,73 @@ type Intent = {
     lastError?: string;
 };
 
+export function readOpenCodeRewindIntent(directory: string, hapiSessionId: string): Intent | undefined {
+    if (!existsSync(join(directory, hashObject(hapiSessionId), 'intent.json'))) return;
+    // A malformed journal is a blocking error, never an absent operation.
+    const intent = JSON.parse(readFileSync(join(directory, hashObject(hapiSessionId), 'intent.json'), 'utf8')) as Intent;
+    if (!intent.operation || !Array.isArray(intent.source) || !Array.isArray(intent.prefix)
+        || !['prepared', 'stage-issued', 'staged', 'commit-issued', 'applied', 'unknown', 'finalized'].includes(intent.phase)
+        || typeof intent.pendingRequest !== 'boolean' || typeof intent.ownerWorkerId !== 'string' || !intent.ownerWorkerId
+        || typeof intent.backupPath !== 'string'
+        || (intent.phase !== 'finalized' && intent.operation.workerPid && intent.operation.workerStartMarker
+            && intent.ownerWorkerId === intent.operation.workerId
+            && (intent.ownerProcess?.pid !== intent.operation.workerPid
+                || intent.ownerProcess?.startMarker !== intent.operation.workerStartMarker))
+        || hashObject(intent.source) !== intent.sourceHash || hashObject(intent.prefix) !== intent.prefixHash) {
+        throw new Error('Invalid OpenCode rewind intent');
+    }
+    const backup = JSON.parse(readFileSync(intent.backupPath, 'utf8'));
+    if (backup.info?.id !== intent.operation.nativeSessionId || hashObject(backup.messages) !== intent.sourceHash) {
+        throw new Error('OpenCode projected backup is missing or corrupt');
+    }
+    return intent;
+}
+
+export class OpenCodeRuntimeBlockedError extends Error {
+    constructor() { super('OpenCode rewind is pending reconciliation'); }
+}
+
 /** Shared by OpenCode input/config preparation, dequeue, handoff and history RPCs. */
 export class OpenCodeRuntimeGate {
     /** One session/wrapper owner, shared by sequential local/remote launchers. */
     readonly workerId = randomUUID();
     private active = 0;
+    private cancellations = 0;
     private blocked = false;
+    private readonly entryFences = new Set<symbol>();
+    private initialEntryFence: symbol | undefined;
+    private entryHandoffListener: (() => void) | undefined;
+    private readonly idleWaiters: Array<() => void> = [];
+    private readonly cancellationWaiters: Array<() => void> = [];
     private rewindOwner: symbol | undefined;
     private reconciledOperationId: string | undefined;
     private readonly waiters: Array<() => void> = [];
+    constructor(initialEntryFence = false) {
+        if (initialEntryFence) this.initialEntryFence = this.acquireEntryFence();
+    }
     enterRuntime(): () => void {
-        if (this.blocked) throw new Error('OpenCode rewind is pending reconciliation');
+        if (this.isBlocked()) throw new OpenCodeRuntimeBlockedError();
+        return this.enterActivity(false);
+    }
+    /** An admitted Stop may cross an entry fence, but never a rewind blocker. */
+    enterCancellation(): () => void {
+        if (this.blocked) throw new OpenCodeRuntimeBlockedError();
+        return this.enterActivity(true);
+    }
+    private enterActivity(cancellation: boolean): () => void {
         this.active++;
+        if (cancellation) this.cancellations++;
         let released = false;
-        return () => { if (!released) { released = true; this.active--; } };
+        return () => {
+            if (!released) {
+                released = true; this.active--;
+                if (cancellation) {
+                    this.cancellations--;
+                    if (!this.cancellations) for (const resolve of this.cancellationWaiters.splice(0)) resolve();
+                }
+                if (!this.active) for (const resolve of this.idleWaiters.splice(0)) resolve();
+            }
+        };
     }
     enterLocalRuntime(operation: OpenCodeRewindOperation | undefined): () => void {
         if (operation && (!['committed', 'rejected'].includes(operation.phase)
@@ -42,16 +95,80 @@ export class OpenCodeRuntimeGate {
         return this.enterRuntime();
     }
     reserve(): void {
-        if (this.active || this.blocked) throw new Error('OpenCode runtime is busy');
+        if (this.active || this.isBlocked()) throw new Error('OpenCode runtime is busy');
         this.blocked = true;
     }
     block(): void { this.blocked = true; }
     release(reconciledOperationId?: string): void {
         if (reconciledOperationId) this.reconciledOperationId = reconciledOperationId;
-        this.blocked = false; for (const resolve of this.waiters.splice(0)) resolve();
+        this.blocked = false; this.notifyOpen();
     }
-    waitUntilOpen(): Promise<void> { return this.blocked ? new Promise(resolve => this.waiters.push(resolve)) : Promise.resolve(); }
-    isBlocked(): boolean { return this.blocked; }
+    private notifyOpen(): void { if (!this.isBlocked()) for (const resolve of this.waiters.splice(0)) resolve(); }
+    waitUntilOpen(signal?: AbortSignal): Promise<void> {
+        if (!this.isBlocked() || signal?.aborted) return Promise.resolve();
+        return new Promise(resolve => {
+            const done = () => {
+                signal?.removeEventListener('abort', done);
+                const index = this.waiters.indexOf(done);
+                if (index >= 0) this.waiters.splice(index, 1);
+                resolve();
+            };
+            this.waiters.push(done);
+            signal?.addEventListener('abort', done, { once: true });
+        });
+    }
+    isBlocked(): boolean { return this.blocked || this.entryFences.size > 0; }
+    isRewindBlocked(): boolean { return this.blocked; }
+    isRuntimeActive(): boolean { return this.active > 0; }
+    hasOrdinaryRuntimeActivity(): boolean { return this.active > this.cancellations; }
+    hasCancellationActivity(): boolean { return this.cancellations > 0; }
+    waitUntilIdle(signal?: AbortSignal): Promise<void> {
+        if (!this.active || signal?.aborted) return Promise.resolve();
+        return new Promise(resolve => {
+            const done = () => {
+                signal?.removeEventListener('abort', done);
+                const index = this.idleWaiters.indexOf(done);
+                if (index >= 0) this.idleWaiters.splice(index, 1);
+                resolve();
+            };
+            this.idleWaiters.push(done);
+            signal?.addEventListener('abort', done, { once: true });
+        });
+    }
+    waitUntilCancellationsIdle(signal?: AbortSignal): Promise<void> {
+        if (!this.cancellations || signal?.aborted) return Promise.resolve();
+        return new Promise(resolve => {
+            const done = () => {
+                signal?.removeEventListener('abort', done);
+                const index = this.cancellationWaiters.indexOf(done);
+                if (index >= 0) this.cancellationWaiters.splice(index, 1);
+                resolve();
+            };
+            this.cancellationWaiters.push(done);
+            signal?.addEventListener('abort', done, { once: true });
+        });
+    }
+    acquireEntryFence(): symbol { const token = Symbol('opencode-entry'); this.entryFences.add(token); return token; }
+    releaseEntryFence(token: symbol): void { this.entryFences.delete(token); this.notifyOpen(); }
+    takeInitialEntryFence(): symbol | undefined { const token = this.initialEntryFence; this.initialEntryFence = undefined; return token; }
+    adoptInitialEntryFence(owner?: symbol): symbol | undefined {
+        const token = this.takeInitialEntryFence();
+        if (token && owner && this.entryFences.has(owner)) {
+            this.entryFences.delete(token);
+            return owner;
+        }
+        return token ?? owner;
+    }
+    onEntryHandoff(listener: () => void): () => void {
+        this.entryHandoffListener = listener;
+        return () => { if (this.entryHandoffListener === listener) this.entryHandoffListener = undefined; };
+    }
+    handoffEntryFence(token: symbol): void {
+        if (!this.entryFences.has(token)) return;
+        if (this.initialEntryFence && this.initialEntryFence !== token) this.entryFences.delete(token);
+        else this.initialEntryFence = token;
+        this.entryHandoffListener?.();
+    }
     hasReconciled(operationId: string): boolean { return this.reconciledOperationId === operationId; }
     acquireRewind(): symbol {
         if (this.rewindOwner) throw new Error('OpenCode rewind is busy');
@@ -82,7 +199,7 @@ function operationIdentity(op: OpenCodeRewindOperation) {
         nativeMessageId: op.nativeMessageId, cutoffSeq: op.cutoffSeq, sourceEpoch: op.sourceEpoch,
         sourceMaxSeq: op.sourceMaxSeq, reservationVersion: op.reservationVersion, sourceTranscriptHash: op.sourceTranscriptHash };
 }
-function sameOperation(a: OpenCodeRewindOperation, b: OpenCodeRewindOperation): boolean {
+export function sameOperation(a: OpenCodeRewindOperation, b: OpenCodeRewindOperation): boolean {
     return hashObject(operationIdentity(a)) === hashObject(operationIdentity(b));
 }
 export class OpenCodeRewindSupersededError extends Error {
@@ -117,25 +234,7 @@ export class OpenCodeRewind {
         this.path = join(this.directory, 'intent.json');
     }
     readIntent(): Intent | undefined {
-        if (!existsSync(this.path)) return;
-        // A malformed journal is a blocking error, never an absent operation.
-        const intent = JSON.parse(readFileSync(this.path, 'utf8')) as Intent;
-        if (!intent.operation || !Array.isArray(intent.source) || !Array.isArray(intent.prefix)
-            || !['prepared', 'stage-issued', 'staged', 'commit-issued', 'applied', 'unknown', 'finalized'].includes(intent.phase)
-            || typeof intent.pendingRequest !== 'boolean' || typeof intent.ownerWorkerId !== 'string' || !intent.ownerWorkerId
-            || typeof intent.backupPath !== 'string'
-            || (intent.phase !== 'finalized' && intent.operation.workerPid && intent.operation.workerStartMarker
-                && intent.ownerWorkerId === intent.operation.workerId
-                && (intent.ownerProcess?.pid !== intent.operation.workerPid
-                    || intent.ownerProcess?.startMarker !== intent.operation.workerStartMarker))
-            || hashObject(intent.source) !== intent.sourceHash || hashObject(intent.prefix) !== intent.prefixHash) {
-            throw new Error('Invalid OpenCode rewind intent');
-        }
-        const backup = JSON.parse(readFileSync(intent.backupPath, 'utf8'));
-        if (backup.info?.id !== intent.operation.nativeSessionId || hashObject(backup.messages) !== intent.sourceHash) {
-            throw new Error('OpenCode projected backup is missing or corrupt');
-        }
-        return intent;
+        return readOpenCodeRewindIntent(this.options.directory, this.options.hapiSessionId);
     }
     private save(intent: Intent): void {
         protectedWrite(this.path, intent);

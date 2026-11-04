@@ -76,6 +76,57 @@ describe('OpenCode same-native-ID durable rewind', () => {
         expect(f.gate.isBlocked()).toBe(false);
     });
 
+    it('keeps independently owned entry fences and rewind blocks isolated', async () => {
+        const gate = new OpenCodeRuntimeGate() as OpenCodeRuntimeGate & { acquireEntryFence(): symbol; releaseEntryFence(token: symbol): void };
+        const first = gate.acquireEntryFence(); const second = gate.acquireEntryFence();
+        gate.block(); gate.releaseEntryFence(first); expect(gate.isBlocked()).toBe(true);
+        gate.release(); expect(gate.isBlocked()).toBe(true);
+        gate.releaseEntryFence(first); expect(gate.isBlocked()).toBe(true);
+        gate.releaseEntryFence(second); expect(gate.isBlocked()).toBe(false);
+    });
+
+    it('fences new runtime synchronously while waiting for an existing owner to drain', async () => {
+        const gate = new OpenCodeRuntimeGate() as OpenCodeRuntimeGate & { acquireEntryFence(): symbol; releaseEntryFence(token: symbol): void; waitUntilIdle(): Promise<void> };
+        const release = gate.enterRuntime(); const fence = gate.acquireEntryFence(); let idle = false;
+        const drained = gate.waitUntilIdle().then(() => { idle = true; });
+        expect(() => gate.enterRuntime()).toThrow('reconciliation');
+        await Promise.resolve(); expect(idle).toBe(false);
+        release(); await drained; expect(idle).toBe(true);
+        expect(gate.isBlocked()).toBe(true); gate.releaseEntryFence(fence); expect(gate.isBlocked()).toBe(false);
+    });
+
+    it('hands a disposed owner fence to a successor without clearing the successor fence', () => {
+        const gate = new OpenCodeRuntimeGate();
+        const old = gate.acquireEntryFence(); const successor = gate.acquireEntryFence();
+        let adopted: symbol | undefined;
+        const detach = gate.onEntryHandoff(() => { adopted = gate.adoptInitialEntryFence(successor); });
+        gate.handoffEntryFence(old);
+        expect(adopted).toBe(successor);
+        gate.releaseEntryFence(old);
+        expect(gate.isBlocked()).toBe(true);
+        detach(); gate.releaseEntryFence(successor);
+        expect(gate.isBlocked()).toBe(false);
+        const orphan = gate.acquireEntryFence(); gate.handoffEntryFence(orphan);
+        expect(gate.takeInitialEntryFence()).toBe(orphan);
+        gate.releaseEntryFence(orphan);
+    });
+
+    it('counts cancellation owners independently and refuses a real rewind blocker', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        const fence = gate.acquireEntryFence();
+        const first = gate.enterCancellation(); const second = gate.enterCancellation();
+        expect(gate.isRuntimeActive()).toBe(true);
+        expect(gate.hasOrdinaryRuntimeActivity()).toBe(false);
+        expect(() => gate.enterRuntime()).toThrow('reconciliation');
+        gate.block(); expect(() => gate.enterCancellation()).toThrow('reconciliation');
+        first(); first(); let idle = false;
+        const waiting = gate.waitUntilIdle().then(() => { idle = true; });
+        await Promise.resolve(); expect(idle).toBe(false);
+        second(); second(); await waiting; expect(idle).toBe(true);
+        expect(gate.isBlocked()).toBe(true);
+        gate.release(); gate.releaseEntryFence(fence); expect(gate.isBlocked()).toBe(false);
+    });
+
     it('owns the runtime gate synchronously before its first await', async () => {
         const f = fixture();
         const pending = f.rewind.execute(operation);

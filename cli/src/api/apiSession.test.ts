@@ -1937,6 +1937,84 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
     })
 })
 
+describe('strict OpenCode rewind metadata and socket entry', () => {
+    type StrictReader = { readRewindMetadata(): Promise<{ metadata: NonNullable<Session['metadata']>; version: number } | null> };
+    it('returns the parsed equal-version REST snapshot itself without rewriting the equal-version cache', async () => {
+        const cached = { path: '/cached', host: 'test', name: 'cached' };
+        const authoritative = { path: '/fresh', host: 'test', name: 'fresh' };
+        const client = new ApiSessionClient('test-token', createSession({ metadataVersion: 10, metadata: cached }));
+        try {
+            axiosHarness.get.mockResolvedValue({ data: { session: { metadataVersion: 10, metadata: authoritative } } });
+            expect(await (client as unknown as StrictReader).readRewindMetadata()).toEqual({ metadata: authoritative, version: 10 });
+            expect(client.getMetadata()).toMatchObject(cached);
+        } finally { client.close(); }
+    });
+
+    it('rejects null, malformed, stale and failed strict metadata snapshots', async () => {
+        const client = new ApiSessionClient('test-token', createSession({ metadataVersion: 10, metadata: { path: '/cached', host: 'test' } }));
+        try {
+            for (const session of [{ metadataVersion: 11, metadata: null }, { metadataVersion: 11, metadata: { titleLocked: true } },
+                { metadataVersion: 9, metadata: { path: '/stale', host: 'test' } }]) {
+                axiosHarness.get.mockResolvedValue({ data: { session } });
+                expect(await (client as unknown as StrictReader).readRewindMetadata()).toBeNull();
+            }
+            axiosHarness.get.mockRejectedValue(new Error('offline'));
+            expect(await (client as unknown as StrictReader).readRewindMetadata()).toBeNull();
+        } finally { client.close(); }
+    });
+
+    it('rejects a snapshot superseded by a socket version while REST is in flight', async () => {
+        const client = new ApiSessionClient('test-token', createSession({ metadataVersion: 10, metadata: { path: '/old', host: 'test' } }));
+        const socket = socketHarness.sockets.at(-1)!; const held = deferred<unknown>();
+        try {
+            axiosHarness.get.mockReturnValue(held.promise);
+            const reading = (client as unknown as StrictReader).readRewindMetadata();
+            socket.trigger('update', { body: { t: 'update-session', metadata: { version: 12, value: { path: '/new', host: 'test' } } } });
+            held.resolve({ data: { session: { metadataVersion: 11, metadata: { path: '/stale', host: 'test' } } } });
+            expect(await reading).toBeNull();
+            expect(client.getMetadata()).toMatchObject({ path: '/new' });
+        } finally { client.close(); }
+    });
+
+    it('does not invent authoritative absence or materialize a lazy pending session', async () => {
+        const materialize = vi.fn(async () => createSession());
+        const client = new ApiSessionClient('test-token', createSession(), { materialize });
+        try {
+            axiosHarness.get.mockClear();
+            expect(await client.readRewindMetadata()).toBeNull();
+            expect(axiosHarness.get).not.toHaveBeenCalled();
+            expect(materialize).not.toHaveBeenCalled();
+        } finally { client.close(); }
+    });
+
+    it('emits a synchronous opt-in reconnect start before REST and queued acknowledgement', async () => {
+        const client = new ApiSessionClient('test-token', createSession({ metadataVersion: 1, metadata: { path: '/fixture', host: 'test' } }));
+        const socket = socketHarness.sockets.at(-1)!; const held = deferred<unknown>(); const gate = new OpenCodeRuntimeGate();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const queue = new MessageQueue2<{ permissionMode: 'default' }>(() => 'mode'); const acknowledged = vi.fn();
+        queue.beforeDequeue = () => { gate.enterRuntime(); }; queue.onBatchConsumed = acknowledged;
+        let fence: symbol | undefined; const order: string[] = [];
+        const rpcConnect = vi.spyOn(client.rpcHandlerManager, 'onSocketConnect').mockImplementation(() => { order.push('rpc'); });
+        client.on('connection-start', () => { order.push('start'); fence = (gate as unknown as { acquireEntryFence(): symbol }).acquireEntryFence(); });
+        client.on('connected', () => { order.push('connected'); });
+        try {
+            axiosHarness.get.mockImplementation(() => { order.push('REST'); return held.promise; });
+            queue.push('queued input', { permissionMode: 'default' }, 'queued'); socket.triggerConnect();
+            expect(order[0]).toBe('start'); expect(gate.isBlocked()).toBe(true);
+            expect(order.indexOf('rpc')).toBeGreaterThan(order.indexOf('start'));
+            expect(order.indexOf('REST')).toBeGreaterThan(order.indexOf('rpc'));
+            await expect(queue.waitForMessagesAndGetAsString()).rejects.toThrow('reconciliation');
+            expect(acknowledged).not.toHaveBeenCalled(); expect(queue.size()).toBe(1);
+            expect(order).not.toContain('connected');
+        } finally {
+            held.resolve({ data: { session: { metadataVersion: 1, metadata: { path: '/fixture', host: 'test' } } } });
+            rpcConnect.mockRestore();
+            if (fence) (gate as unknown as { releaseEntryFence(token: symbol): void }).releaseEntryFence(fence);
+            queue.close(); client.close();
+        }
+    });
+});
+
 describe('explicit title action metadata refresh', () => {
     it('observes user lock changes without rolling back a newer socket metadata version', async () => {
         const client = new ApiSessionClient('test-token', createSession({

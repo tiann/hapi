@@ -5,7 +5,7 @@ import type { OpencodeMode, PermissionMode } from './types';
 import { OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
 import { configuration } from '@/configuration';
 import { getProcessStartMarker } from '@/utils/process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
 import { AcpSdkBackend } from '@/agent/backends/acp/AcpSdkBackend';
 import type { PromptContent } from '@/agent/types';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
+import { hashObject } from '@/utils/deterministicJson';
 
 const harness = vi.hoisted(() => ({
     backendOverride: null as AcpSdkBackend | null,
@@ -572,6 +573,15 @@ function createSessionStub(
     });
 
     const client = {
+        sessionId: `entry-fixture-${crypto.randomUUID()}`,
+        on: vi.fn(),
+        off: vi.fn(),
+        flushMetadata: async () => true,
+        async readRewindMetadata() {
+            const refresh = (client as unknown as { refreshMetadata?: () => Promise<boolean> }).refreshMetadata;
+            if (refresh && !await refresh()) return null;
+            return { metadata: { ...harness.clientMetadata, opencodeSessionId: harness.clientMetadata?.opencodeSessionId ?? session.sessionId ?? 'acp-session-1' }, version: 1 };
+        },
         getMetadata() {
             return harness.clientMetadata;
         },
@@ -759,6 +769,569 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await expect(forkHandler!({})).rejects.toThrow(/Session is busy|not supported/);
         const backendModule = await import('./utils/opencodeBackend');
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it.each(['idle', 'active'] as const)('recovers a real Hub reservation whose RPC was dropped before this wrapper saw it (%s)', async runtime => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const hub = createRewindHubProcess(); const gate = new OpenCodeRuntimeGate();
+        const rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }, { id: 'a2', type: 'assistant', text: 'answer two' }];
+        const initial = await hub.call('init', { metadata: { path: '/tmp/hapi-opencode-test', host: 'fixture', flavor: 'opencode',
+            opencodeSessionId: 'acp-session-1', opencodeWorkerId: gate.workerId,
+            opencodeWorkerProcess: { workerId: gate.workerId, pid: process.pid, startMarker: getProcessStartMarker(process.pid)! },
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id), userMessageIds: ['u1', 'u2'], localMessageIds: [] },
+            conversationHistoryIndexes: { one: 0, two: 1 }, capabilities: { conversationHistory: { rewindToMessage: true } } } });
+        harness.clientMetadata = initial.session.metadata;
+        let mutations = 0; let reports = 0; let connected: (() => void) | undefined;
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage') || url.endsWith('/revert/commit')) { mutations++; return Response.json({}); }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1' } });
+        });
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        Object.assign(session.client, { sessionId: initial.session.id, flushMetadata: async () => true, flush: async () => true,
+            refreshMetadata: async () => { const snapshot = await hub.call('snapshot'); harness.clientMetadata = snapshot.session.metadata; return true; },
+            on: vi.fn((event: string, handler: () => void) => { if (event === 'connected') connected = handler; }), off: vi.fn(),
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+                reports++; const result = await hub.call('report', { report }); harness.clientMetadata = result.session.metadata; return result.operation;
+            } });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let releaseActive: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.get('rewind-conversation')).toBeTypeOf('function'));
+            expect(gate.isBlocked()).toBe(false);
+            if (runtime === 'active') releaseActive = gate.enterRuntime();
+            const operation: OpenCodeRewindOperation = await hub.call('reserve', { localId: 'two' });
+            await hub.call('answer', { operationId: operation.operationId });
+            expect((await hub.call('snapshot')).session.metadata.opencodeRewind).toMatchObject({ operationId: operation.operationId, phase: 'reserved' });
+            expect(connected).toBeTypeOf('function'); connected!();
+            expect.soft(gate.isBlocked()).toBe(true);
+            if (releaseActive) {
+                await new Promise<void>(resolve => setImmediate(resolve));
+                expect(reports).toBe(0); expect(mutations).toBe(0);
+                releaseActive();
+            }
+            await vi.waitFor(async () => expect((await hub.call('snapshot')).session.metadata.opencodeRewind)
+                .toMatchObject({ operationId: operation.operationId, phase: 'rejected' }));
+            expect(reports).toBe(1); expect(mutations).toBe(0); expect(gate.isBlocked()).toBe(false);
+        } finally { releaseActive?.(); gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore(); await hub.close(); }
+    });
+
+    it('admits one queued input after initial metadata failure recovers to a verified no-operation state', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' }];
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1',
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id), userMessageIds: ['u1'], localMessageIds: [] },
+            conversationHistoryIndexes: { one: 0 } };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1' } });
+        });
+        const gate = new OpenCodeRuntimeGate(); const { session } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let connected: (() => void) | undefined; let refreshes = 0;
+        Object.assign(session.client, { sessionId: `no-op-reconnect-${Date.now()}`, flushMetadata: async () => true, flush: async () => true,
+            refreshMetadata: async () => ++refreshes > 1,
+            on: vi.fn((event: string, handler: () => void) => { if (event === 'connected') connected = handler; }), off: vi.fn(),
+            reportOpenCodeRewind: async () => { throw new Error('no rewind report expected'); } });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(connected).toBeTypeOf('function'));
+            await vi.waitFor(() => expect(refreshes).toBeGreaterThan(0));
+            expect(gate.isBlocked()).toBe(true);
+            session.queue.push('ordinary input', createMode(), 'ordinary');
+            expect(harness.promptCount).toBe(0); connected!();
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(gate.isBlocked()).toBe(false);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(harness.promptCount).toBe(1);
+        } finally { gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore(); }
+    });
+
+    it.each(['unavailable', 'native-mismatch', 'corrupt-journal', 'unfinished-journal'] as const)(
+        'keeps reconnect admission fenced and does not spin for %s', async problem => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        let dequeuedRelease: (() => void) | undefined; const acknowledged: string[] = [];
+        session.queue.beforeDequeue = () => { dequeuedRelease = gate.enterRuntime(); };
+        session.queue.onBatchConsumed = ids => acknowledged.push(...ids);
+        Object.assign(session, { takeDequeuedRuntimeRelease: () => { const release = dequeuedRelease; dequeuedRelease = undefined; return release; } });
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        let fault = false; let reads = 0;
+        const directory = join(configuration.happyHomeDir, 'opencode-rewind', hashObject(session.client.sessionId));
+        const operation = { nativeSessionId: 'acp-session-1' };
+        const writeJournal = (phase: 'prepared' | 'finalized') => {
+            mkdirSync(directory, { recursive: true });
+            const backupPath = join(directory, 'entry-test-backup.json');
+            writeFileSync(backupPath, JSON.stringify({ info: { id: 'acp-session-1' }, messages: [] }));
+            writeFileSync(join(directory, 'intent.json'), JSON.stringify({ operation, phase, backupPath,
+                source: [], prefix: [], sourceHash: hashObject([]), prefixHash: hashObject([]),
+                ownerWorkerId: 'fixture', pendingRequest: false }));
+        };
+        Object.assign(session.client, {
+            on: vi.fn((event: string, handler: () => void) => {
+                if (event === 'connection-start') start = handler;
+                if (event === 'connected') connected = handler;
+            }),
+            readRewindMetadata: async () => {
+                reads++;
+                if (fault && problem === 'unavailable') return null;
+                return { metadata: { ...harness.clientMetadata,
+                    opencodeSessionId: fault && problem === 'native-mismatch' ? 'wrong-native' : 'acp-session-1' }, version: 1 };
+            }
+        });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('fork-conversation')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            if (problem === 'corrupt-journal') {
+                mkdirSync(directory, { recursive: true }); writeFileSync(join(directory, 'intent.json'), '{');
+            }
+            if (problem === 'unfinished-journal') writeJournal('prepared');
+            fault = true; start!();
+            expect(gate.isBlocked()).toBe(true);
+            if (problem === 'unavailable') {
+                await rpcHandlers.get('abort')!({});
+                expect(harness.cancelPrompt).not.toHaveBeenCalled();
+            }
+            session.queue.push('held input', createMode(), 'held');
+            const beforeReads = reads;
+            connected!();
+            await vi.waitFor(() => expect(reads).toBeGreaterThan(beforeReads));
+            const stoppedAt = reads;
+            await new Promise<void>(resolve => setTimeout(resolve, 30));
+            expect(reads).toBe(stoppedAt);
+            expect(gate.isBlocked()).toBe(true);
+            expect(harness.promptCount).toBe(0);
+            expect(acknowledged).toEqual([]);
+            fault = false;
+            if (problem === 'corrupt-journal' || problem === 'unfinished-journal') writeJournal('finalized');
+            connected!();
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(acknowledged).toEqual(['held']);
+        } finally { session.queue.close(); await launcher; }
+    });
+
+    it('does not wait for an unrelated active turn when reconnect proves a genuine no-op', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        Object.assign(session.client, { on: vi.fn((event: string, handler: () => void) => {
+            if (event === 'connection-start') start = handler;
+            if (event === 'connected') connected = handler;
+        }) });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let finish: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('fork-conversation')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            finish = gate.enterRuntime(); start!();
+            expect(() => gate.enterRuntime()).toThrow('pending reconciliation');
+            await rpcHandlers.get('abort')!({});
+            expect(harness.cancelPrompt).toHaveBeenCalledOnce();
+            connected!();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            expect(gate.isRuntimeActive()).toBe(true);
+        } finally { finish?.(); session.queue.close(); await launcher; }
+    });
+
+    it('holds real Hub pending recovery until an entry-time Stop and reset settle', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const hub = createRewindHubProcess(); const gate = new OpenCodeRuntimeGate();
+        const rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' },
+            { id: 'u2', type: 'user', text: 'two' }, { id: 'a2', type: 'assistant', text: 'answer two' }];
+        const initial = await hub.call('init', { metadata: { path: '/tmp/hapi-opencode-test', host: 'fixture', flavor: 'opencode',
+            opencodeSessionId: 'acp-session-1', opencodeWorkerId: gate.workerId,
+            opencodeWorkerProcess: { workerId: gate.workerId, pid: process.pid, startMarker: getProcessStartMarker(process.pid)! },
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id), userMessageIds: ['u1', 'u2'], localMessageIds: [] },
+            conversationHistoryIndexes: { one: 0, two: 1 }, capabilities: { conversationHistory: { rewindToMessage: true } } } });
+        harness.clientMetadata = initial.session.metadata;
+        let cancelEntered = false; let releaseCancel!: () => void;
+        const heldCancel = new Promise<void>(resolve => { releaseCancel = resolve; });
+        harness.cancelPromptImpl = async () => { cancelEntered = true; await heldCancel; };
+        let reportStarted = false; let releaseReport!: () => void; let reports = 0; let mutations = 0;
+        const heldReport = new Promise<void>(resolve => { releaseReport = resolve; });
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.endsWith('/revert/stage') || url.endsWith('/revert/commit')) { mutations++; return Response.json({}); }
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1' } });
+        });
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        let dequeuedRelease: (() => void) | undefined; const acknowledged: string[] = [];
+        session.queue.beforeDequeue = () => { dequeuedRelease = gate.enterRuntime(); };
+        session.queue.onBatchConsumed = ids => acknowledged.push(...ids);
+        Object.assign(session, { takeDequeuedRuntimeRelease: () => { const result = dequeuedRelease; dequeuedRelease = undefined; return result; } });
+        Object.assign(session.client, { sessionId: initial.session.id, flushMetadata: async () => true, flush: async () => true,
+            refreshMetadata: async () => { harness.clientMetadata = (await hub.call('snapshot')).session.metadata; return true; },
+            on: vi.fn((event: string, handler: () => void) => { if (event === 'connection-start') start = handler; if (event === 'connected') connected = handler; }), off: vi.fn(),
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport): Promise<OpenCodeRewindOperation> => {
+                reports++; reportStarted = true; await heldReport;
+                const result = await hub.call('report', { report }); harness.clientMetadata = result.session.metadata; return result.operation;
+            } });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let releaseOriginal: (() => void) | undefined; let stop: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('rewind-conversation')).toBe(true));
+            releaseOriginal = gate.enterRuntime(); start!();
+            stop = Promise.resolve(rpcHandlers.get('abort')!({}));
+            await vi.waitFor(() => expect(cancelEntered).toBe(true));
+            const operation: OpenCodeRewindOperation = await hub.call('reserve', { localId: 'two' });
+            await hub.call('answer', { operationId: operation.operationId });
+            connected!(); releaseOriginal(); releaseOriginal = undefined;
+            await new Promise<void>(resolve => setTimeout(resolve, 60));
+            expect(reportStarted).toBe(false); expect(reports).toBe(0); expect(mutations).toBe(0);
+            expect(gate.isBlocked()).toBe(true); expect(() => gate.enterRuntime()).toThrow('reconciliation');
+            expect((await hub.call('snapshot')).session.metadata.opencodeRewind.phase).toBe('reserved');
+            releaseCancel(); await stop;
+            await vi.waitFor(() => expect(reportStarted).toBe(true));
+            session.queue.push('after stop', createMode(), 'after-stop');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(acknowledged).toEqual([]); expect(harness.promptCount).toBe(0); expect(gate.isBlocked()).toBe(true);
+            releaseReport();
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(acknowledged).toEqual(['after-stop']); expect(reports).toBe(1); expect(mutations).toBe(0);
+            expect((await hub.call('snapshot')).session.metadata.opencodeRewind.phase).toBe('rejected');
+        } finally {
+            releaseOriginal?.(); releaseCancel(); releaseReport(); await stop?.catch(() => {});
+            gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore(); await hub.close(); harness.cancelPromptImpl = null;
+        }
+    });
+
+    it('keeps a verified no-op fenced until a held Stop resets, then admits one input', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        let cancelEntered = false; let cancellationSettled = false; let releaseCancel!: () => void;
+        let confirmationHeld = false; let releaseConfirmation!: () => void;
+        const heldCancel = new Promise<void>(resolve => { releaseCancel = resolve; });
+        const heldConfirmation = new Promise<void>(resolve => { releaseConfirmation = resolve; });
+        harness.cancelPromptImpl = async () => { cancelEntered = true; await heldCancel; cancellationSettled = true; };
+        let dequeuedRelease: (() => void) | undefined; const acknowledged: string[] = [];
+        session.queue.beforeDequeue = () => { dequeuedRelease = gate.enterRuntime(); };
+        session.queue.onBatchConsumed = ids => acknowledged.push(...ids);
+        Object.assign(session, { takeDequeuedRuntimeRelease: () => { const result = dequeuedRelease; dequeuedRelease = undefined; return result; } });
+        Object.assign(session.client, {
+            on: vi.fn((event: string, handler: () => void) => { if (event === 'connection-start') start = handler; if (event === 'connected') connected = handler; }),
+            readRewindMetadata: async () => {
+                if (cancellationSettled) { confirmationHeld = true; await heldConfirmation; }
+                return { metadata: { ...harness.clientMetadata }, version: 1 };
+            }
+        });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let original: (() => void) | undefined; let stopping: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('abort')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            original = gate.enterRuntime(); start!(); stopping = Promise.resolve(rpcHandlers.get('abort')!({}));
+            await vi.waitFor(() => expect(cancelEntered).toBe(true));
+            original(); original = undefined; connected!();
+            session.queue.push('before reset', createMode(), 'discarded-before-reset');
+            await new Promise<void>(resolve => setTimeout(resolve, 60));
+            expect(gate.isBlocked()).toBe(true); expect(() => gate.enterRuntime()).toThrow('reconciliation');
+            expect(harness.promptCount).toBe(0); expect(acknowledged).toEqual([]); expect(session.queue.size()).toBe(1);
+            releaseCancel(); await stopping;
+            expect(session.queue.size()).toBe(0);
+            await vi.waitFor(() => expect(confirmationHeld).toBe(true));
+            session.queue.push('after reset', createMode(), 'after-reset');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(acknowledged).toEqual([]); expect(harness.promptCount).toBe(0); expect(gate.isBlocked()).toBe(true);
+            releaseConfirmation(); await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(acknowledged).toEqual(['after-reset']);
+        } finally {
+            original?.(); releaseCancel(); releaseConfirmation(); await stopping?.catch(() => {});
+            session.queue.close(); await launcher; harness.cancelPromptImpl = null;
+        }
+    });
+
+    it.each(['v1', 'v2'] as const)('counts an entry-time %s Stop through deferred cancellation', async version => {
+        harness.detectedVersion = version;
+        if (version === 'v2') { harness.discoveredPort = 41234; harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid; }
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: [], cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            return Response.json({ data: { id: 'acp-session-1' }, paths: {} });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        Object.assign(session.client, { on: vi.fn((event: string, handler: () => void) => {
+            if (event === 'connection-start') start = handler; if (event === 'connected') connected = handler;
+        }) });
+        let entered = false; let resume!: () => void;
+        const held = new Promise<void>(resolve => { resume = resolve; });
+        harness.cancelPromptImpl = async () => { entered = true; await held; };
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let original: (() => void) | undefined; let stopping: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('abort')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            original = gate.enterRuntime(); start!();
+            stopping = Promise.resolve(rpcHandlers.get('abort')!({}));
+            await vi.waitFor(() => expect(entered).toBe(true));
+            original(); original = undefined;
+            let idle = false; const waiting = gate.waitUntilIdle().then(() => { idle = true; });
+            await new Promise<void>(resolve => setImmediate(resolve)); expect(idle).toBe(false);
+            resume(); await stopping; await waiting; expect(idle).toBe(true);
+        } finally {
+            original?.(); resume(); await stopping?.catch(() => {}); connected?.();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            session.queue.close(); await launcher; harness.cancelPromptImpl = null; fetchSpy.mockRestore();
+        }
+    });
+
+    it.each(['v1', 'v2'] as const)('does not issue a native cancel for an idle entry-time %s Stop', async version => {
+        harness.detectedVersion = version;
+        if (version === 'v2') { harness.discoveredPort = 41234; harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid; }
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: [], cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            return Response.json({ data: { id: 'acp-session-1' }, paths: {} });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        Object.assign(session.client, { on: vi.fn((event: string, handler: () => void) => {
+            if (event === 'connection-start') start = handler; if (event === 'connected') connected = handler;
+        }) });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('abort')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            start!(); await rpcHandlers.get('abort')!({});
+            expect(harness.cancelPrompt).not.toHaveBeenCalled();
+            await gate.waitUntilIdle(); expect(gate.isBlocked()).toBe(true);
+        } finally {
+            connected?.(); await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            session.queue.close(); await launcher; fetchSpy.mockRestore();
+        }
+    });
+
+    it.each(['v1', 'v2'] as const)('retains %s Stop ownership through rejection without changing reset semantics', async version => {
+        harness.detectedVersion = version;
+        if (version === 'v2') { harness.discoveredPort = 41234; harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid; }
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: [], cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            return Response.json({ data: { id: 'acp-session-1' }, paths: {} });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        Object.assign(session.client, { on: vi.fn((event: string, handler: () => void) => {
+            if (event === 'connection-start') start = handler; if (event === 'connected') connected = handler;
+        }) });
+        let entered = false; let rejectCancel!: () => void;
+        const held = new Promise<void>((_resolve, reject) => { rejectCancel = () => reject(new Error('cancel failed')); });
+        harness.cancelPromptImpl = async () => { entered = true; await held; };
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        const reset = vi.spyOn(session.queue, 'reset'); let original: (() => void) | undefined; let stopping: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('abort')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            harness.cleanupEvents.length = 0;
+            original = gate.enterRuntime(); start!();
+            stopping = Promise.resolve(rpcHandlers.get('abort')!({}));
+            const rejection = expect(stopping).rejects.toThrow('cancel failed');
+            await vi.waitFor(() => expect(entered).toBe(true)); original(); original = undefined;
+            let idle = false; const waiting = gate.waitUntilIdle().then(() => { idle = true; });
+            await new Promise<void>(resolve => setImmediate(resolve)); expect(idle).toBe(false);
+            rejectCancel(); await rejection; await waiting;
+            expect(idle).toBe(true); expect(reset).not.toHaveBeenCalled();
+            expect(harness.cleanupEvents).not.toContain('cleanup:permission');
+        } finally {
+            original?.(); rejectCancel(); await stopping?.catch(() => {}); connected?.();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            session.queue.close(); await launcher; harness.cancelPromptImpl = null; fetchSpy.mockRestore();
+        }
+    });
+
+    it.each(['v1', 'v2'] as const)('keeps overlapping %s Stops and switch counted until cleanup', async version => {
+        harness.detectedVersion = version;
+        if (version === 'v2') { harness.discoveredPort = 41234; harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid; }
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: [], cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            return Response.json({ data: { id: 'acp-session-1' }, paths: {} });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined;
+        Object.assign(session.client, { on: vi.fn((event: string, handler: () => void) => { if (event === 'connection-start') start = handler; }) });
+        let cancelCalls = 0; let resume!: () => void;
+        const held = new Promise<void>(resolve => { resume = resolve; });
+        harness.cancelPromptImpl = async () => { cancelCalls++; await held; };
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        let original: (() => void) | undefined; let first: Promise<unknown> | undefined; let second: Promise<unknown> | undefined; let switching: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('switch')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            original = gate.enterRuntime(); start!();
+            first = Promise.resolve(rpcHandlers.get('abort')!({})); second = Promise.resolve(rpcHandlers.get('abort')!({}));
+            await vi.waitFor(() => expect(cancelCalls).toBe(version === 'v1' ? 2 : 1));
+            original(); original = undefined;
+            let idle = false; const waiting = gate.waitUntilIdle().then(() => { idle = true; });
+            switching = Promise.resolve(rpcHandlers.get('switch')!({}));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(idle).toBe(false); expect(gate.isBlocked()).toBe(true);
+            expect(() => gate.enterRuntime()).toThrow('reconciliation');
+            resume(); await Promise.all([first, second, switching]); await waiting;
+            expect(idle).toBe(true); expect(await launcher).toBe('switch');
+            expect(() => gate.enterLocalRuntime(undefined)).toThrow('reconciliation');
+        } finally {
+            original?.(); resume(); await Promise.allSettled([first, second, switching].filter(Boolean) as Promise<unknown>[]);
+            const inherited = gate.takeInitialEntryFence(); if (inherited) gate.releaseEntryFence(inherited);
+            session.queue.close(); await launcher; harness.cancelPromptImpl = null; fetchSpy.mockRestore();
+        }
+    });
+
+    it('defers the native identity publication until initial authority is available', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        const found = vi.spyOn(session, 'onSessionFound');
+        let connected: (() => void) | undefined; let healthy = false; let reads = 0;
+        Object.assign(session.client, {
+            on: vi.fn((event: string, handler: () => void) => { if (event === 'connected') connected = handler; }),
+            readRewindMetadata: async () => { reads++; return healthy ? { metadata: { ...harness.clientMetadata }, version: 1 } : null; }
+        });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('fork-conversation')).toBe(true));
+            expect(reads).toBe(1); expect(found).not.toHaveBeenCalled(); expect(gate.isBlocked()).toBe(true);
+            healthy = true; connected!();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            expect(found).toHaveBeenCalledOnce(); expect(found).toHaveBeenCalledWith('acp-session-1');
+        } finally { session.queue.close(); await launcher; }
+    });
+
+    it('hands an unresolved entry fence across shutdown to a later remote owner', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const first = createSessionStub([], { keepOpen: true }); first.session.sessionId = 'acp-session-1';
+        Object.assign(first.session.client, { readRewindMetadata: async () => null });
+        const old = opencodeRemoteLauncher({ ...first.session, runtimeGate: gate } as never);
+        await vi.waitFor(() => expect(first.rpcHandlers.has('switch')).toBe(true));
+        expect(gate.isBlocked()).toBe(true);
+        await first.rpcHandlers.get('switch')!({});
+        expect(await old).toBe('switch');
+        expect(() => gate.enterLocalRuntime(undefined)).toThrow('pending reconciliation');
+        const next = createSessionStub([], { keepOpen: true }); next.session.sessionId = 'acp-session-1';
+        const fresh = opencodeRemoteLauncher({ ...next.session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            next.session.queue.push('after handoff', createMode(), 'handoff');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+        } finally { next.session.queue.close(); await fresh; }
+    });
+
+    it('does not let a disposed launcher release a successor fence after a deferred REST read', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const first = createSessionStub([], { keepOpen: true }); first.session.sessionId = 'acp-session-1';
+        let connected: (() => void) | undefined; let hold = false; let resume!: () => void; let entered = false;
+        Object.assign(first.session.client, {
+            on: vi.fn((event: string, handler: () => void) => { if (event === 'connected') connected = handler; }),
+            readRewindMetadata: async () => {
+                if (hold) { entered = true; await new Promise<void>(resolve => { resume = resolve; }); }
+                return { metadata: { ...harness.clientMetadata }, version: 1 };
+            }
+        });
+        const old = opencodeRemoteLauncher({ ...first.session, runtimeGate: gate } as never);
+        await vi.waitFor(() => expect(first.rpcHandlers.has('switch')).toBe(true));
+        await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+        hold = true; connected!();
+        await vi.waitFor(() => expect(entered).toBe(true));
+        await first.rpcHandlers.get('switch')!({});
+        expect(await old).toBe('switch');
+        const next = createSessionStub([], { keepOpen: true }); next.session.sessionId = 'acp-session-1';
+        const fresh = opencodeRemoteLauncher({ ...next.session, runtimeGate: gate } as never);
+        let successor: symbol | undefined;
+        try {
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            successor = gate.acquireEntryFence();
+            resume(); await new Promise<void>(resolve => setImmediate(resolve));
+            expect(gate.isBlocked()).toBe(true);
+            gate.releaseEntryFence(successor); successor = undefined;
+        } finally { resume?.(); if (successor) gate.releaseEntryFence(successor); next.session.queue.close(); await fresh; }
+    });
+
+    it('keeps a live other-worker reservation fenced without retrying until a new event', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: [], cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            return Response.json({ data: { id: 'acp-session-1' }, paths: {} });
+        });
+        const gate = new OpenCodeRuntimeGate(); const marker = getProcessStartMarker(process.pid)!;
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let start: (() => void) | undefined; let connected: (() => void) | undefined; let reports = 0; let reads = 0;
+        Object.assign(session.client, { flush: async () => true,
+            on: vi.fn((event: string, handler: () => void) => {
+                if (event === 'connection-start') start = handler;
+                if (event === 'connected') connected = handler;
+            }),
+            readRewindMetadata: async () => { reads++; return { metadata: { ...harness.clientMetadata }, version: 1 }; },
+            reportOpenCodeRewind: async (report: OpenCodeRewindReport) => {
+                reports++; const rejected = { ...report.operation, phase: 'rejected' as const };
+                harness.clientMetadata = { ...harness.clientMetadata, opencodeRewind: rejected }; return rejected;
+            } });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('rewind-conversation')).toBe(true));
+            const operation: OpenCodeRewindOperation = { operationId: 'live-foreign', nativeSessionId: 'acp-session-1', nativeMessageId: 'u1',
+                workerId: 'other-worker', workerPid: process.pid, workerStartMarker: marker, requestedLocalId: 'one', cutoffSeq: 1,
+                sourceEpoch: 0, sourceMaxSeq: 1, reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase: 'reserved' };
+            harness.clientMetadata!.opencodeRewind = operation;
+            start!(); const previousReads = reads; connected!();
+            await vi.waitFor(() => expect(reads).toBeGreaterThan(previousReads));
+            await new Promise<void>(resolve => setTimeout(resolve, 30));
+            const stoppedAt = reads;
+            await new Promise<void>(resolve => setTimeout(resolve, 30));
+            expect(reads).toBe(stoppedAt); expect(reports).toBe(0); expect(gate.isBlocked()).toBe(true);
+            expect(() => gate.enterRuntime()).toThrow('pending reconciliation');
+            harness.clientMetadata!.opencodeRewind = { ...operation, operationId: 'same-worker-next', workerId: gate.workerId };
+            connected!();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            expect(reports).toBe(1);
+        } finally { session.queue.close(); await launcher; fetchSpy.mockRestore(); }
     });
 
     it.each([false, true])('drains a reconnect received while preparation is unresolved after execution settles (retry=%s)', async retry => {
@@ -992,7 +1565,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             await vi.waitFor(() => expect(harness.clientMetadata?.opencodeRewind).toMatchObject({ operationId: 'newer-two', phase: 'rejected' }));
             expect(reports.filter(item => item.id === 'stale-one')).toEqual([]);
             expect(reports.filter(item => item.id === 'newer-two' && item.phase === 'rejected')).toHaveLength(retry ? 2 : 1);
-            expect(gate.isBlocked()).toBe(false);
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
             const next = { ...first, operationId: 'next-three', reservationVersion: 3 };
             harness.clientMetadata!.opencodeRewind = next;
             await vi.waitFor(async () => {

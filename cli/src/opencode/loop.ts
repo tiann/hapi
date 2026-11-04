@@ -62,7 +62,7 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
         runtimeGate: opts.runtimeGate
     });
 
-    if (opts.resumeSessionId) {
+    if (opts.resumeSessionId && startingMode === 'local') {
         session.onSessionFound(opts.resumeSessionId);
     }
 

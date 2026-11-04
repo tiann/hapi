@@ -77,9 +77,9 @@ export async function runOpencode(opts: {
             reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
-    const runtimeGate = new OpenCodeRuntimeGate();
+    const runtimeGate = new OpenCodeRuntimeGate(startingMode === 'remote');
     const pendingRewind = session.getMetadata()?.opencodeRewind;
-    if (pendingRewind && pendingRewind.phase !== 'rejected') runtimeGate.block();
+    if (startingMode !== 'remote' && pendingRewind && pendingRewind.phase !== 'rejected') runtimeGate.block();
 
     setControlledByUser(session, startingMode);
 
