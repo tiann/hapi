@@ -814,6 +814,49 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: 'Expand 1' })).toBeInTheDocument()
     })
 
+    it('honors creation-date ordering within combined active and archived groups', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        localStorage.setItem('hapi-session-list-sort', 'created')
+        const sessions = [
+            makeSession({
+                id: 'active-old-created',
+                active: true,
+                createdAt: 100,
+                lastUserMessageAt: 300,
+                updatedAt: 300,
+                metadata: { path: '/work/active-old', name: 'Active old', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'active-new-created',
+                active: true,
+                createdAt: 200,
+                lastUserMessageAt: 50,
+                updatedAt: 50,
+                metadata: { path: '/work/active-new', name: 'Active new', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'archived-old-created',
+                createdAt: 110,
+                lastUserMessageAt: 310,
+                updatedAt: 310,
+                metadata: { path: '/work/archived-old', name: 'Archived old', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'archived-new-created',
+                createdAt: 210,
+                lastUserMessageAt: 60,
+                updatedAt: 60,
+                metadata: { path: '/work/archived-new', name: 'Archived new', flavor: 'codex' },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('/work/active-new')).toAppearBefore(screen.getByTitle('/work/active-old'))
+        expect(screen.getByTitle('/work/archived-new')).toAppearBefore(screen.getByTitle('/work/archived-old'))
+    })
+
     it('preserves combined project collapse state when a temporary search hides it', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')

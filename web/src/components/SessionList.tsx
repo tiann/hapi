@@ -1699,27 +1699,29 @@ export function SessionList(props: {
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && session.active)
+                machineFilteredSessions.filter((session) => !session.globalPinned && session.active),
+                hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
             return grouped
         },
-        [machineFilteredSessions, isCombinedPinLayout, searchScoreIndex, hasTextQuery]
+        [machineFilteredSessions, isCombinedPinLayout, searchScoreIndex, hasTextQuery, listView]
     )
     const combinedArchivedGroups = useMemo(
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active)
+                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active),
+                hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
             return grouped
         },
-        [machineFilteredSessions, isCombinedPinLayout, searchScoreIndex, hasTextQuery]
+        [machineFilteredSessions, isCombinedPinLayout, searchScoreIndex, hasTextQuery, listView]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
