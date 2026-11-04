@@ -100,11 +100,12 @@ vi.mock('@/hooks/useActiveSuggestions', () => ({
 }))
 vi.mock('@/hooks/queries/useCodexModels', () => ({
     useCodexModels: () => ({
-        models: [
+        models: mocks.codexModelsLoading ? [] : [
             {
                 id: 'gpt-5.6-sol',
                 displayName: 'GPT-5.6 Sol',
                 isDefault: true,
+                serviceTiers: ['fast'],
                 supportedReasoningEfforts: ['low', 'high', 'xhigh']
             },
             {
@@ -539,6 +540,80 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
         })
+    })
+
+    it('remembers fast mode after a successful Codex launch and restores it on the same machine', async () => {
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'fast-session' })
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const first = renderWithQuery(form)
+        const fast = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        expect(fast).toHaveValue('standard')
+        fireEvent.change(fast, { target: { value: 'fast' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'fast' })))
+        await waitFor(() => expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('fast'))
+        first.unmount()
+        renderWithQuery(form)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+    })
+
+    it('does not carry fast mode to an unsupported model', async () => {
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'gpt-5.6-sol', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', serviceTier: 'fast'
+        })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+        fireEvent.click(screen.getByTestId('model'))
+        await waitFor(() => expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull())
+        mocks.nextModelValue = 'gpt-5.6-sol'
+        fireEvent.click(screen.getByTestId('model'))
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('standard'))
+    })
+
+    it('preserves a remembered fast choice while the model catalog loads', async () => {
+        mocks.codexModelsLoading = true
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'gpt-5.6-sol', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', serviceTier: 'fast'
+        })
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+        expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull()
+        mocks.codexModelsLoading = false
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+    })
+
+    it('remembers an explicit standard choice and does not overwrite preferences on failed launch', async () => {
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'gpt-5.6-sol', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', serviceTier: 'fast'
+        })
+        mocks.spawnSession.mockResolvedValueOnce({ type: 'error', message: 'failed' })
+            .mockResolvedValueOnce({ type: 'success', sessionId: 'standard-session' })
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const first = renderWithQuery(form)
+        const fast = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        await waitFor(() => expect(fast).toHaveValue('fast'))
+        fireEvent.change(fast, { target: { value: 'standard' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledTimes(1))
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('fast')
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('standard'))
+        first.unmount()
+        renderWithQuery(form)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('standard'))
     })
 
     it('does not migrate a legacy YOLO value owned by a non-Codex agent', async () => {

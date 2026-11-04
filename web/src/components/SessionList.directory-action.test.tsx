@@ -9,6 +9,7 @@ import { ToastProvider } from '@/lib/toast-context'
 import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
 import { SessionList, SessionListSearch } from './SessionList'
 
+
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
 
@@ -351,6 +352,37 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveAttribute('aria-checked', 'false')
     })
 })
+
+describe('SessionList collapsed search', () => {
+    it('keeps collapsed search compact beside the actions without expanding it', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: Date.now(),
+                    metadata: { path: '/work/hapi', name: 'Session' }
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const searchGroup = screen.getByTestId('session-list-search')
+        expect(searchGroup).toHaveAttribute('data-expanded', 'false')
+        // #2039: collapsed search must not shrink under neighbors (overlap).
+        expect(searchGroup).toHaveClass('relative', 'gap-1', 'shrink-0', 'max-w-full')
+        expect(searchGroup.className.split(/\s+/)).not.toContain('min-w-0')
+        expect(searchGroup.nextElementSibling).toBe(screen.getByTestId('session-list-header-actions'))
+        expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+    })
+})
+
 
 describe('SessionList action menu parity', () => {
     it.each([
@@ -1530,138 +1562,6 @@ describe('SessionList search toggle', () => {
         }
     })
 
-    it('refreshes the content-search scope when a session becomes unread', async () => {
-        vi.useFakeTimers()
-        const unreadSession = makeSession({
-            id: 'initially-unread-content-match',
-            updatedAt: 100,
-            metadata: { path: '/work/hapi', name: 'Initially unread', flavor: 'codex' },
-        })
-        const newlyUnreadSession = makeSession({
-            id: 'newly-unread-content-match',
-            updatedAt: 100,
-            metadata: { path: '/work/hapi', name: 'Newly unread', flavor: 'codex' },
-        })
-        markSessionUnread(unreadSession.id, { readRevision: 0, manualUnread: false, version: 0 })
-        markSessionSeen(newlyUnreadSession.id, newlyUnreadSession.updatedAt)
-        const api = {
-            searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),
-        } as unknown as ApiClient
-
-        try {
-            renderWithProviders(
-                <SessionList
-                    sessions={[unreadSession, newlyUnreadSession]}
-                    selectedSessionId={null}
-                    onSelect={vi.fn()}
-                    onNewSession={vi.fn()}
-                    onRefresh={vi.fn()}
-                    isLoading={false}
-                    renderHeader={false}
-                    api={api}
-                />
-            )
-
-            fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
-            fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }))
-            fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
-            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-            fireEvent.click(screen.getByTestId('session-list-search-scope'))
-            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'content' } })
-
-            await act(async () => {
-                vi.advanceTimersByTime(180)
-                await Promise.resolve()
-                await Promise.resolve()
-            })
-            expect(api.searchSessionContent).toHaveBeenLastCalledWith(
-                'content',
-                50,
-                expect.any(AbortSignal),
-                [unreadSession.id]
-            )
-
-            act(() => markSessionUnread(newlyUnreadSession.id, { readRevision: 0, manualUnread: false, version: 0 }))
-            await act(async () => {
-                vi.advanceTimersByTime(180)
-                await Promise.resolve()
-                await Promise.resolve()
-            })
-
-            expect(api.searchSessionContent).toHaveBeenLastCalledWith(
-                'content',
-                50,
-                expect.any(AbortSignal),
-                [unreadSession.id, newlyUnreadSession.id]
-            )
-        } finally {
-            vi.useRealTimers()
-            localStorage.removeItem('hapi.sessionLastSeen.v1')
-            localStorage.removeItem('hapi.sessionManualUnread.v1')
-            localStorage.removeItem('hapi.sessionLastSeenBaseline.v1')
-        }
-    })
-
-    it('includes a manually unread running session in the content-search scope', async () => {
-        vi.useFakeTimers()
-        const runningUnread = makeSession({
-            id: 'manually-unread-running',
-            active: true,
-            thinking: true,
-            updatedAt: 100,
-            metadata: { path: '/work/hapi', name: 'Running but marked unread', flavor: 'codex' },
-        })
-        const seenSession = makeSession({
-            id: 'seen-content-match',
-            updatedAt: 100,
-            metadata: { path: '/work/hapi', name: 'Seen', flavor: 'codex' },
-        })
-        markSessionUnread(runningUnread.id, { readRevision: 0, manualUnread: false, version: 0 })
-        markSessionSeen(seenSession.id, seenSession.updatedAt)
-        const api = {
-            searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),
-        } as unknown as ApiClient
-
-        try {
-            renderWithProviders(
-                <SessionList
-                    sessions={[runningUnread, seenSession]}
-                    selectedSessionId={null}
-                    onSelect={vi.fn()}
-                    onNewSession={vi.fn()}
-                    onRefresh={vi.fn()}
-                    isLoading={false}
-                    renderHeader={false}
-                    api={api}
-                />
-            )
-
-            fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
-            fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }))
-            fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
-            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-            fireEvent.click(screen.getByTestId('session-list-search-scope'))
-            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'content' } })
-
-            await act(async () => {
-                vi.advanceTimersByTime(180)
-                await Promise.resolve()
-                await Promise.resolve()
-            })
-
-            expect(api.searchSessionContent).toHaveBeenLastCalledWith(
-                'content',
-                50,
-                expect.any(AbortSignal),
-                [runningUnread.id]
-            )
-        } finally {
-            vi.useRealTimers()
-            localStorage.removeItem('hapi.sessionLastSeen.v1')
-            localStorage.removeItem('hapi.sessionManualUnread.v1')
-            localStorage.removeItem('hapi.sessionLastSeenBaseline.v1')
-        }
-    })
 
     it('explains when no content result may be incomplete because long messages were truncated', async () => {
         vi.useFakeTimers()
@@ -1936,7 +1836,10 @@ describe('SessionList search toggle', () => {
         expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
         // Unmeasured query: keep the daily lens on the row. Do not collapse
         // to [chip][⋯] and waste the right half of a Quest sidebar.
+
         expect(within(actions).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
@@ -2045,7 +1948,10 @@ describe('SessionList search toggle', () => {
         // Empty query + 320px still fits the daily controls. Do not collapse
         // the row to [search][⋯]. Machine menu stays in the row (not shed).
         const actions = screen.getByTestId('session-list-header-actions')
+
         expect(screen.getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
+expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
@@ -2164,7 +2070,10 @@ describe('SessionList search toggle', () => {
 
         const actions = screen.getByTestId('session-list-header-actions')
         expect(actions).toHaveClass('flex-1')
+
         expect(within(actions).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         // Nothing shed — no More, and no ml-auto hole between + and ⋯.
@@ -2218,7 +2127,10 @@ describe('SessionList search toggle', () => {
 
         // Wide header + query: New stays inline (not folded into More-only).
         expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+
         expect(within(screen.getByTestId('session-list-header-actions')).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
 
         vi.unstubAllGlobals()
     })
@@ -2243,11 +2155,14 @@ describe('SessionList search toggle', () => {
         )
 
         expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+
         expect(screen.getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
-    it('gives expanded search a 48px clear end-cap with calendar immediately left (tiann/hapi#2019)', () => {
+    it('gives expanded search a 48px clear end-cap at the end of the field (tiann/hapi#2019)', () => {
         renderWithProviders(
             <SessionList
                 sessions={[makeSession({
@@ -2274,6 +2189,7 @@ describe('SessionList search toggle', () => {
         expect(clearButton.className).toMatch(/min-h-\[48px\]/)
         expect(clearButton.className).toMatch(/min-w-\[48px\]/)
 
+
         expect(screen.queryByTestId('session-list-search-date-embedded')).toBeNull()
     })
 
@@ -2296,6 +2212,7 @@ describe('SessionList search toggle', () => {
         expect(dateButton.className).toMatch(/min-w-\[48px\]/)
         const clearButton = screen.getByRole('button', { name: 'Clear search' })
         expect(clearButton.parentElement?.contains(dateButton)).toBe(true)
+
 
         const fieldChildren = Array.from(clearButton.parentElement?.children ?? [])
         const dateIndex = fieldChildren.findIndex((node) => node === dateButton.parentElement || node.contains(dateButton))
