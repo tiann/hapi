@@ -1045,6 +1045,7 @@ export default {
   'settings.chat.composerToolbar.item.settings': 'Session settings',
   'settings.chat.composerToolbar.item.expand': 'Expand message editor',
   'settings.chat.composerToolbar.item.model': 'Model',
+  'settings.chat.composerToolbar.item.fast': 'Fast mode',
   'settings.chat.composerToolbar.item.effort': 'Effort',
   'settings.chat.composerToolbar.item.terminal': 'Terminal',
   'settings.chat.composerToolbar.item.abort': 'Abort',
