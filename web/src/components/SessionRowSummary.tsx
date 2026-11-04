@@ -321,14 +321,7 @@ export function SessionRowSummary(props: {
                                     style={{ width: `${Math.round(jobFraction * 100)}%` }}
                                 />
                             </span>
-                        ) : (
-                            <span
-                                className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
-                                aria-hidden="true"
-                            >
-                                <span className="block h-full w-1/3 animate-pulse rounded-full bg-current opacity-70" />
-                            </span>
-                        )}
+                        ) : null}
                     </div>
                 ) : null}
                 {contentSnippet ? (
