@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
+import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
-
     filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
-
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
     getNextSessionVisibleCount,
@@ -550,12 +549,15 @@ describe('filterActiveSessionsOnly', () => {
     })
 })
 
-
 describe('filterUnreadSessionsOnly', () => {
     const lastSeen = (id: string): number => {
-        if (id === 'unread') return 1000
+        if (id === 'unread' || id === 'unread-a') return 1000
         return 10_000
     }
+    const isUnread = (session: SessionSummary) => sessionIsUnread(session, {
+        lastSeenAt: lastSeen(session.id),
+        manualUnreadAt: session.id === 'manual-thinking' ? 0 : null
+    })
 
     it('keeps only sessions newer than lastSeen; drops seen and selected-only quiet rows stay when selected', () => {
         const sessions = [
@@ -569,7 +571,7 @@ describe('filterUnreadSessionsOnly', () => {
                 metadata: { path: '/p' },
             }),
         ]
-        expect(filterUnreadSessionsOnly(sessions, null, lastSeen).map(s => s.id))
+        expect(filterUnreadSessionsOnly(sessions, isUnread).map(s => s.id))
             .toEqual(['unread'])
     })
 
@@ -578,7 +580,7 @@ describe('filterUnreadSessionsOnly', () => {
             makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
             makeSession({ id: 'selected-quiet', contentRevision: 1000, metadata: { path: '/p' } }),
         ]
-        expect(filterUnreadSessionsOnly(sessions, 'selected-quiet', lastSeen).map(s => s.id))
+        expect(filterUnreadSessionsOnly(sessions, isUnread, 'selected-quiet').map(s => s.id))
             .toEqual(['unread', 'selected-quiet'])
     })
 
@@ -597,8 +599,7 @@ describe('filterUnreadSessionsOnly', () => {
                 metadata: { path: '/b', machineId: 'machine-b' },
             }),
         ]
-        const lastSeenById = (id: string) => (id === 'unread-a' ? 0 : 10_000)
-        const unreadFiltered = filterUnreadSessionsOnly(sessions, null, lastSeenById)
+        const unreadFiltered = filterUnreadSessionsOnly(sessions, isUnread)
         const machineB = unreadFiltered.filter(
             session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === 'machine-b'
         )
@@ -613,10 +614,28 @@ describe('filterUnreadSessionsOnly', () => {
 
         expect(filterUnreadSessionsOnly(
             sessions,
-            null,
-            () => 5000,
-            () => 5000
+            isUnread
         ).map(s => s.id)).toEqual(['manual-thinking'])
+    })
+
+    it('keeps only unread sessions when nothing is open', () => {
+        const sessions = [
+            makeSession({ id: 'unread', metadata: { path: '/p' } }),
+            makeSession({ id: 'read', metadata: { path: '/p' } }),
+            makeSession({ id: 'open', metadata: { path: '/p' } })
+        ]
+        const byId = (s: { id: string }) => s.id === 'unread'
+        expect(filterUnreadSessionsOnly(sessions, byId).map(s => s.id)).toEqual(['unread'])
+    })
+
+    it('keeps the open session visible even when read', () => {
+        const sessions = [
+            makeSession({ id: 'unread', metadata: { path: '/p' } }),
+            makeSession({ id: 'read', metadata: { path: '/p' } }),
+            makeSession({ id: 'open', metadata: { path: '/p' } })
+        ]
+        const byId = (s: { id: string }) => s.id === 'unread'
+        expect(filterUnreadSessionsOnly(sessions, byId, 'open').map(s => s.id)).toEqual(['unread', 'open'])
     })
 })
 
@@ -641,8 +660,6 @@ describe('filterScratchlistSessionsOnly', () => {
             .toEqual(['with-draft', 'selected-quiet'])
     })
 })
-
-
 describe('getNextSessionVisibleCount', () => {
     it('reveals one batch of step size per call', () => {
         expect(getNextSessionVisibleCount(8, 8, 20)).toBe(16)

@@ -394,22 +394,13 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
     return sessions.filter(session => session.active || session.id === selectedSessionId)
 }
 
-
-// Transient unread lens: hide sessions the operator has already seen.
-// Keep the open session visible. Not Overseer / "needs attention" — just unread.
-export function filterUnreadSessionsOnly(
-    sessions: SessionSummary[],
-    selectedSessionId: string | null | undefined,
-    getLastSeenAt: (sessionId: string) => number,
-    getManualUnreadAt: (sessionId: string, readState?: SessionSummary['readState']) => number | null | undefined = () => undefined,
-): SessionSummary[] {
-    return sessions.filter(session =>
-        session.id === selectedSessionId
-        || sessionIsUnread(session, {
-            lastSeenAt: getLastSeenAt(session.id),
-            manualUnreadAt: getManualUnreadAt(session.id, session.readState)
-        })
-    )
+// "Unread only" view: same rule as above, the open session always stays visible.
+export function filterUnreadSessionsOnly<T extends Pick<SessionSummary, 'id'>>(
+    sessions: T[],
+    isUnread: (session: T) => boolean,
+    selectedSessionId?: string | null
+): T[] {
+    return sessions.filter(session => session.id === selectedSessionId || isUnread(session))
 }
 
 // Keep the open session visible while filtering so changing the lens never
@@ -424,7 +415,6 @@ export function filterScratchlistSessionsOnly(
         || scratchlistSessionIds.has(session.id)
     )
 }
-
 
 // Paginated session previews move one batch at a time in either direction.
 // Counts always stay within the configured preview floor and the group total.
@@ -1667,8 +1657,13 @@ export function SessionList(props: {
         [props.sessions, selectedSessionId]
     )
     const allSessions = useMemo(
-        () => filterSessionsByStatus(sidebarSessions, listView.status, selectedSessionId),
-        [sidebarSessions, selectedSessionId, listView.status]
+        () => {
+            const byStatus = filterSessionsByStatus(sidebarSessions, listView.status, selectedSessionId)
+            return listView.unreadOnly
+                ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
+                : byStatus
+        },
+        [sidebarSessions, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -1696,8 +1691,11 @@ export function SessionList(props: {
             if (contentSearchActive) {
                 const results = contentSearchResponse?.results.map((result) => result.session) ?? []
                 const prepared = prepareSidebarSessions(results, selectedSessionId)
-                const scoped = filterSessionsByStatus(prepared, listView.status, selectedSessionId)
-                return scoped.filter(session => sessionMatchesTimeRange(session, timeRange))
+                const byStatus = filterSessionsByStatus(prepared, listView.status, selectedSessionId)
+                const unreadFiltered = listView.unreadOnly
+                    ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
+                    : byStatus
+                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange))
             }
             if (!isFiltering) return allSessions
             const matched = hasTextQuery && searchScoreIndex
@@ -1714,7 +1712,7 @@ export function SessionList(props: {
             }
             return matched
         },
-        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, selectedSessionId, listView.status, timeScopedSessions, timeRange?.start, timeRange?.end, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -1793,12 +1791,10 @@ export function SessionList(props: {
     const contentSearchCandidateSessions = useMemo(() => {
         let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange))
         if (sessionFilters.unread) {
-            const lastSeenById = getSessionLastSeenSnapshot()
             filtered = filterUnreadSessionsOnly(
                 filtered,
-                selectedSessionId,
-                id => lastSeenById[id] ?? 0,
-                getSessionManualUnreadAt
+                isSessionUnread,
+                selectedSessionId
             )
         }
         if (sessionFilters.scratchlist) {
@@ -1884,12 +1880,10 @@ export function SessionList(props: {
     const sessionFilteredSessions = useMemo(() => {
         let filtered = visibleSessions
         if (sessionFilters.unread) {
-            const lastSeenById = getSessionLastSeenSnapshot()
             filtered = filterUnreadSessionsOnly(
                 filtered,
-                selectedSessionId,
-                id => lastSeenById[id] ?? 0,
-                getSessionManualUnreadAt
+                isSessionUnread,
+                selectedSessionId
             )
         }
         if (sessionFilters.scratchlist) {
@@ -2001,6 +1995,8 @@ export function SessionList(props: {
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
+        // Unread-only would otherwise fold unread rows into quiet collapsed groups.
+        if (listView.unreadOnly) return false
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
@@ -2884,9 +2880,7 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
-
-                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && !isScratchlistStatusLoading && !scratchlistStatusError && (isFiltering || activeMachineFilter !== null || listView.status !== 'all') && groups.length === 0 && runningSessionTotal === 0 && activeSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
-
+                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && !isScratchlistStatusLoading && !scratchlistStatusError && (isFiltering || activeMachineFilter !== null || listView.status !== 'all' || listView.unreadOnly) && groups.length === 0 && runningSessionTotal === 0 && activeSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {contentSearchActive
                             ? contentSearchReady

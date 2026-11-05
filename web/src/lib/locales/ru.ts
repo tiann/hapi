@@ -87,6 +87,7 @@ export default {
   'sessions.view.status.all': 'Все сессии',
   'sessions.view.status.active': 'Только активные',
   'sessions.view.status.archived': 'Только архивные',
+  'sessions.view.unreadOnly': 'Только непрочитанные',
   'sessions.view.reset': 'Сбросить',
   'sessions.toolbar.more': 'Другие действия списка сессий',
   'sessions.timeFilter.label': 'Фильтр сессий по последней активности',
