@@ -100,8 +100,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             ? Math.min(500, Math.max(1, Math.floor(parsedLimit)))
             : null
         const order = c.req.query('order')
+        // Peer discovery lists live sessions only, filtered before limit truncation.
+        const activeOnly = c.req.query('active') === 'true'
 
         let sessionRecords = engine.getSessionsByNamespace(namespace)
+            .filter((session) => !activeOnly || session.active)
             .sort((a, b) => {
                 // Peer discovery wants newest activity first before limit truncation.
                 if (order === 'updatedAt') {

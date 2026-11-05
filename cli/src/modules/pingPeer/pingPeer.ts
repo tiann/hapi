@@ -1,5 +1,5 @@
 /**
- * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages,
+ * Opt-in resume (wake) + wait-active + POST /api/sessions/:id/messages,
  * plus read-only inspectPeer (GET session + messages, never resume)
  * and setPeerPermissionMode (POST /api/sessions/:id/permission-mode).
  *
@@ -31,6 +31,7 @@ export type PingPeerErrorCode =
     | 'auth_failed'
     | 'not_found'
     | 'ambiguous'
+    | 'inactive'
     | 'resume_failed'
     | 'timeout'
     | 'send_failed'
@@ -70,6 +71,7 @@ export type PingPeerSessionSummary = {
         name?: string
         flavor?: string | null
         path?: string | null
+        machineId?: string | null
         lifecycleState?: string | null
         piSessionId?: string
         cursorSessionId?: string | null
@@ -85,6 +87,11 @@ export type PingPeerOptions = {
     sessionId?: string
     message: string
     deliveryMode?: PeerDeliveryMode
+    /**
+     * Resume an inactive target before sending. Default false: inactive
+     * targets are refused so stale/unrelated peers are not relaunched.
+     */
+    wake?: boolean
     waitActiveSecs?: number
     /**
      * Fresh spawn: poll until active instead of POST /resume on the first
@@ -132,6 +139,13 @@ export type ListPeerSessionsOptions = {
     limit?: number
     /** Hub sort before limit truncation. Peer discovery defaults to newest updatedAt. */
     order?: 'updatedAt'
+    /** Include inactive sessions (default false: hub filters to active before limit). */
+    includeInactive?: boolean
+}
+
+/** Peer list row: hub session summary plus the resolved machine label. */
+export type PeerSessionListEntry = PingPeerSessionSummary & {
+    machineLabel?: string
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -253,7 +267,7 @@ async function listSessions(
     apiUrl: string,
     jwt: string,
     http: AxiosInstance,
-    options: { limit?: number; order?: 'updatedAt' } = {}
+    options: { limit?: number; order?: 'updatedAt'; activeOnly?: boolean } = {}
 ): Promise<PingPeerSessionSummary[]> {
     const params: Record<string, string | number> = {}
     if (options.limit !== undefined) {
@@ -261,6 +275,9 @@ async function listSessions(
     }
     if (options.order !== undefined) {
         params.order = options.order
+    }
+    if (options.activeOnly) {
+        params.active = 'true'
     }
     const response = await http.get(
         `${apiUrl}/api/sessions`,
@@ -467,25 +484,81 @@ async function sendMessage(
     throw new PingPeerError('send_failed', `send failed: ${detail}`)
 }
 
+/**
+ * Best-effort machineId → hostname map from GET /api/machines (online
+ * machines only). Labels are decoration; failures leave rows unlabeled.
+ */
+async function fetchMachineLabels(
+    apiUrl: string,
+    jwt: string,
+    http: AxiosInstance
+): Promise<Map<string, string>> {
+    const labels = new Map<string, string>()
+    try {
+        const response = await http.get(`${apiUrl}/api/machines`, {
+            headers: authHeaders(jwt),
+            timeout: 10_000,
+            validateStatus: () => true
+        })
+        if (response.status < 200 || response.status >= 300) {
+            return labels
+        }
+        const machines = Array.isArray(response.data?.machines) ? response.data.machines : []
+        for (const machine of machines) {
+            if (!isObject(machine) || typeof machine.id !== 'string') continue
+            const metadata = isObject(machine.metadata) ? machine.metadata : null
+            const label = typeof metadata?.displayName === 'string' && metadata.displayName.trim()
+                ? metadata.displayName.trim()
+                : typeof metadata?.host === 'string' && metadata.host.trim()
+                    ? metadata.host.trim()
+                    : null
+            if (label) {
+                labels.set(machine.id, label)
+            }
+        }
+    } catch {
+        // Unlabeled rows still carry the machine id prefix.
+    }
+    return labels
+}
+
+function resolveMachineLabel(machineId: string | null | undefined, labels: Map<string, string>): string | undefined {
+    if (!machineId) return undefined
+    return labels.get(machineId) ?? machineId.slice(0, 8)
+}
+
 export async function listPeerSessions(
     options: ListPeerSessionsOptions = {}
-): Promise<PingPeerSessionSummary[]> {
+): Promise<PeerSessionListEntry[]> {
     assertPeerToolsEnabled()
     const apiUrl = resolveApiUrl(options.apiUrl)
     const accessToken = resolveAccessToken(options.accessToken)
     const http = options.http ?? axios
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    return listSessions(apiUrl, jwt, http, {
-        limit: options.limit ?? 200,
-        order: options.order ?? 'updatedAt'
-    })
+    const [sessions, machineLabels] = await Promise.all([
+        listSessions(apiUrl, jwt, http, {
+            limit: options.limit ?? 200,
+            order: options.order ?? 'updatedAt',
+            activeOnly: !options.includeInactive
+        }),
+        fetchMachineLabels(apiUrl, jwt, http)
+    ])
+    return sessions.map((session) => ({
+        ...session,
+        machineLabel: resolveMachineLabel(session.metadata?.machineId, machineLabels)
+    }))
 }
 
 export type FormatPeerSessionsListOptions = {
     /** Max rows to print (default 30). */
     maxRows?: number
-    /** Omit this session id (the caller) from the shortlist. */
+    /**
+     * Omit this session id (the caller) from the shortlist. When the caller
+     * row is present, peers on its machine / cwd are marked for conflict triage.
+     */
     excludeSessionId?: string
+    /** The list was fetched with inactive sessions included. */
+    includeInactive?: boolean
     /**
      * When the fetch was intentionally bounded, signal overflow without claiming
      * an exact omitted count from the sample.
@@ -525,27 +598,43 @@ export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string
         : collapsed
 }
 
+const PEER_LIST_FOOTER =
+    'Directory, not a recipient list: message only peers tied to your task; ' +
+    'inspect_peer an unfamiliar peer before messaging it, and never broadcast.'
+
 /**
  * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
  * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
  */
 export function formatPeerSessionsList(
-    sessions: PingPeerSessionSummary[],
+    sessions: PeerSessionListEntry[],
     options: FormatPeerSessionsListOptions = {}
 ): string {
     const maxRows = options.maxRows ?? 30
     const excludeId = options.excludeSessionId?.trim() ?? ''
+    const caller = excludeId ? sessions.find((session) => session.id === excludeId) : undefined
     const filtered = excludeId
         ? sessions.filter((session) => session.id !== excludeId)
         : sessions
     if (filtered.length === 0) {
-        return 'No peer sessions found on this hub/namespace.'
+        return options.includeInactive
+            ? 'No peer sessions found on this hub/namespace.'
+            : 'No active peer sessions found on this hub/namespace.'
     }
+    const callerMachineId = caller?.metadata?.machineId ?? null
+    const callerPath = caller?.metadata?.path ?? null
     const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
-        const flavor = session.metadata?.flavor ?? '?'
+        const meta = session.metadata
+        const flavor = meta?.flavor ?? '?'
         const name = resolvePeerSessionLabel(session)
-        return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
+        const state = session.active ? (session.thinking ? 'busy' : 'idle') : 'inactive'
+        const sameMachine = Boolean(callerMachineId) && meta?.machineId === callerMachineId
+        const machine = session.machineLabel ?? meta?.machineId?.slice(0, 8) ?? '?'
+        const sameCwd = sameMachine && Boolean(callerPath) && meta?.path === callerPath
+        const marks = [sameMachine ? 'same-machine' : null, sameCwd ? 'same-cwd' : null].filter(Boolean)
+        return `  ${session.id}  ${state}  flavor=${flavor}  machine=${machine}  cwd=${meta?.path ?? '?'}`
+            + `${marks.length > 0 ? `  [${marks.join(', ')}]` : ''}  ${name}`
     })
     const omitted = sorted.length - rows.length
     if (options.hasMore) {
@@ -553,12 +642,13 @@ export function formatPeerSessionsList(
     } else if (omitted > 0) {
         rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
     }
+    rows.push(PEER_LIST_FOOTER)
     return rows.join('\n')
 }
 
 function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
     if (!session.active) {
-        return 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it'
+        return 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it'
     }
     if (!isSteeringSupportedForSession(session.metadata)) {
         return 'Steering is only supported for Claude, Pi, Codex, and Cursor ACP sessions; no message sent'
@@ -618,7 +708,15 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
             return session
         }
         if (requestedDeliveryMode === 'steer') {
-            throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it')
+            throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it')
+        }
+        if (!options.wake) {
+            throw new PingPeerError(
+                'inactive',
+                `target ${matched.id} is inactive; no message sent. `
+                + 'Do not wake peers for FYI, status, or done notes. '
+                + 'Pass wake=true (CLI: --wake) only when the user asked or the handed-off work requires this peer to act.'
+            )
         }
         onProgress?.(progressMessage)
         await resumeSession(apiUrl, jwt, matched.id, http)
@@ -685,6 +783,8 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
             return 2
         case 'resume_failed':
             return 3
+        case 'inactive':
+            return 5
         case 'timeout':
         case 'send_failed':
         case 'apply_failed':
@@ -719,6 +819,8 @@ export type InspectPeerResult = {
     thinking: boolean
     flavor: string | null
     path: string | null
+    /** Hostname (or machine id prefix) the peer runs on. */
+    machine: string | null
     lifecycleState: string | null
     updatedAt: number | null
     messages: InspectPeerMessage[]
@@ -830,7 +932,10 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
     const matched = resolveSessionByPrefix(sessions, prefix)
     const live = await getSession(apiUrl, jwt, matched.id, http)
     const meta = live.metadata ?? matched.metadata ?? null
-    const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
+    const [messages, machineLabels] = await Promise.all([
+        fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http),
+        fetchMachineLabels(apiUrl, jwt, http)
+    ])
 
     return {
         sessionId: matched.id,
@@ -839,6 +944,7 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
         thinking: Boolean(live.thinking),
         flavor: typeof meta?.flavor === 'string' ? meta.flavor : null,
         path: typeof meta?.path === 'string' ? meta.path : null,
+        machine: resolveMachineLabel(meta?.machineId, machineLabels) ?? null,
         lifecycleState: typeof meta?.lifecycleState === 'string' ? meta.lifecycleState : null,
         updatedAt: typeof live.updatedAt === 'number'
             ? live.updatedAt
@@ -859,6 +965,7 @@ export function formatInspectPeerReport(result: InspectPeerResult): string {
         `active: ${result.active}`,
         `thinking: ${result.thinking}`,
         `lifecycle: ${result.lifecycleState ?? '(none)'}`,
+        `machine: ${result.machine ?? '(unknown)'}`,
         `cwd: ${result.path ?? '(unknown)'}`,
         `updatedAt: ${result.updatedAt ?? '(unknown)'}`,
         `messages (text snippets, newest page): ${result.messages.length}`
