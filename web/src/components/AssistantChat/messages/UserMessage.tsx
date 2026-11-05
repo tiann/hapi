@@ -34,6 +34,15 @@ export function HappyUserMessage() {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.localId ?? null
     })
+    const invokedAt = useAuiState((s) => (
+        s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.invokedAt)
+    const sourceMessageId = useAuiState((s) => (
+        s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.sourceMessageId)
+    const isTranscriptEcho = useAuiState((s) => (
+        s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.isTranscriptEcho === true)
     const attachments = useAuiState((s) => {
         if (s.message.role !== 'user') return undefined
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -105,7 +114,12 @@ export function HappyUserMessage() {
         )
     }
 
-    const hasText = text.length > 0
+    const importMarker = '\n\nNEW_USER_INSTRUCTION:\n\n'
+    const importIndex = ctx.metadata?.conversationBranch && localId?.startsWith('branch-')
+        ? text.indexOf(importMarker) : -1
+    const importedReference = importIndex >= 0 ? text.slice(0, importIndex) : null
+    const visibleText = importIndex >= 0 ? text.slice(importIndex + importMarker.length) : text
+    const hasText = visibleText.length > 0
     const hasAttachments = attachments && attachments.length > 0
 
     return (
@@ -118,7 +132,11 @@ export function HappyUserMessage() {
             <div className={getUserBubbleClassName(status)}>
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
-                        {hasText ? <UserBubbleContent text={text} /> : null}
+                        {hasText ? <UserBubbleContent text={visibleText} /> : null}
+                        {importedReference ? <details className="mt-2 text-xs">
+                            <summary className="cursor-pointer">{t('branch.importedReference')}</summary>
+                            <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words">{importedReference}</pre>
+                        </details> : null}
                         {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
                     </div>
                     {showStatus && (
@@ -140,6 +158,8 @@ export function HappyUserMessage() {
                 align="end"
                 copyText={hasText ? text : undefined}
                 messageElementId={elementId}
+                onBranch={ctx.onBranchConversation && !isTranscriptEcho && (localId || sourceMessageId) && invokedAt != null
+                    ? () => localId ? ctx.onBranchConversation?.(localId) : ctx.onBranchConversation?.(undefined, sourceMessageId) : undefined}
                 showFork={showFork}
                 allowForkWhileRunning={showHistoricalFork && ctx.metadata?.flavor === 'codex'}
                 showRewind={showRewind}
