@@ -158,6 +158,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
 
     if (metadata.name !== undefined) preserved.name = metadata.name
     if (metadata.summary !== undefined) preserved.summary = metadata.summary
+    if (metadata.acpManualTitle !== undefined) preserved.acpManualTitle = metadata.acpManualTitle
     if (metadata.forkTitleSeed !== undefined) preserved.forkTitleSeed = metadata.forkTitleSeed
     if (metadata.titleLocked !== undefined) preserved.titleLocked = metadata.titleLocked
     if (metadata.forkTitleGenerationAttemptedAt !== undefined) {
