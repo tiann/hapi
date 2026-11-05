@@ -223,6 +223,12 @@ export function SessionListViewMenu(props: {
                                     onSelect={() => props.onChange({ status: option.value })}
                                 />
                             ))}
+                            <MenuRow
+                                role="menuitemcheckbox"
+                                label={t('sessions.view.unreadOnly')}
+                                checked={props.view.unreadOnly}
+                                onSelect={() => props.onChange({ unreadOnly: !props.view.unreadOnly })}
+                            />
                         </div>
                         {customized ? (
                             <>

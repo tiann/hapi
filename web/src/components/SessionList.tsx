@@ -430,6 +430,15 @@ export function filterSessionsForListStatus(
     )
 }
 
+// "Unread only" view: same rule as above, the open session always stays visible.
+export function filterUnreadSessionsOnly<T extends Pick<SessionSummary, 'id'>>(
+    sessions: T[],
+    isUnread: (session: T) => boolean,
+    selectedSessionId?: string | null
+): T[] {
+    return sessions.filter(session => session.id === selectedSessionId || isUnread(session))
+}
+
 // Paginated session previews move one batch at a time in either direction.
 // Counts always stay within the configured preview floor and the group total.
 export function getNextSessionVisibleCount(current: number, step: number, total: number): number {
@@ -1537,8 +1546,14 @@ export function SessionList(props: {
         [props.sessions, selectedSessionId]
     )
     const allSessions = useMemo(
-        () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
-        [sidebarSessions, selectedSessionId, listView.status]
+        () => {
+            // Jobs-aware status filter (#1404), then optional Unread-only (#2294).
+            const byStatus = filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId)
+            return listView.unreadOnly
+                ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
+                : byStatus
+        },
+        [sidebarSessions, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -1556,7 +1571,10 @@ export function SessionList(props: {
             if (contentSearchActive) {
                 const results = contentSearchResponse?.results.map((result) => result.session) ?? []
                 const prepared = prepareSidebarSessions(results, selectedSessionId)
-                return filterSessionsForListStatus(prepared, listView.status, selectedSessionId)
+                const byStatus = filterSessionsForListStatus(prepared, listView.status, selectedSessionId)
+                return listView.unreadOnly
+                    ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
+                    : byStatus
             }
             if (!isFiltering) return allSessions
             const matched = hasTextQuery && searchScoreIndex
@@ -1573,7 +1591,7 @@ export function SessionList(props: {
             }
             return matched
         },
-        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, selectedSessionId, listView.status, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -1798,6 +1816,8 @@ export function SessionList(props: {
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
+        // Unread-only would otherwise fold unread rows into quiet collapsed groups.
+        if (listView.unreadOnly) return false
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
@@ -2612,7 +2632,7 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
-                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && (isFiltering || activeMachineFilter !== null || listView.status !== 'all') && groups.length === 0 && runningSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
+                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && (isFiltering || activeMachineFilter !== null || listView.status !== 'all' || listView.unreadOnly) && groups.length === 0 && runningSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {contentSearchActive
                             ? contentSearchReady
