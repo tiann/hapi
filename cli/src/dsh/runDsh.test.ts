@@ -74,7 +74,16 @@ vi.mock('./dshRemoteLauncher', () => ({
     }
 }))
 
+vi.mock('@/utils/attachmentFormatter', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/utils/attachmentFormatter')>()
+    return {
+        ...actual,
+        formatUserMessageForAgent: vi.fn(actual.formatUserMessageForAgent)
+    }
+})
+
 import { runDsh } from './runDsh'
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter'
 
 describe('runDsh', () => {
     beforeEach(() => {
@@ -112,5 +121,42 @@ describe('runDsh', () => {
             RPC_METHODS.HandoffLocal,
             expect.any(Function)
         )
+    })
+})
+
+describe('runDsh peer delivery', () => {
+    beforeEach(() => {
+        harness.session.onUserMessage.mockReset()
+        harness.bootstrapSession.mockReset()
+        harness.bootstrapExistingSession.mockReset()
+        vi.mocked(formatUserMessageForAgent).mockClear()
+        harness.bootstrapSession.mockResolvedValue({
+            api: {},
+            session: harness.session,
+            sessionInfo: { id: 'hapi-session-dsh', metadata: {} }
+        })
+    })
+
+    it('formats peer deliveries with formatUserMessageForAgent (#1203)', async () => {
+        const runPromise = runDsh({ workingDirectory: '/tmp/project' })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            | ((msg: { content: { text: string; attachments?: unknown[] }; meta?: { sentFrom?: string } }, localId?: string) => void)
+            | undefined
+        expect(userMessageHandler).toBeTypeOf('function')
+
+        userMessageHandler!({
+            content: { text: '/compact steal context' },
+            meta: { sentFrom: 'peer' },
+        }, 'peer-compact')
+
+        expect(formatUserMessageForAgent).toHaveBeenCalledWith(
+            '/compact steal context',
+            undefined,
+            { sentFrom: 'peer' }
+        )
+
+        await runPromise.catch(() => {})
     })
 })
