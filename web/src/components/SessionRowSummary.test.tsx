@@ -63,6 +63,7 @@ describe('SessionRowSummary background status', () => {
         ).container
         expect(thinking.querySelector('[data-testid="session-presence"]'))
             .toHaveClass('bg-[var(--app-badge-success-text)]', 'animate-pulse')
+        expect(thinking.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
         expect(screen.queryByText('Running', { exact: true })).not.toBeInTheDocument()
         cleanup()
 
@@ -71,17 +72,24 @@ describe('SessionRowSummary background status', () => {
                 <SessionRowSummary session={makeSummary({ backgroundTaskCount: 0 })} />
             </I18nProvider>
         ).container
-        expect(idle.querySelector('[data-testid="session-presence"]')).not.toHaveClass('animate-pulse')
+        const idleBadge = idle.querySelector('[data-testid="session-presence"]')
+        expect(idleBadge).toHaveAttribute('data-presence', 'waiting')
+        expect(idleBadge).not.toHaveClass('animate-pulse')
+        expect(idleBadge).toHaveClass('border-2', 'border-[var(--app-badge-success-text)]')
+        expect(idleBadge).not.toHaveClass('bg-[var(--app-badge-success-text)]')
     })
 
-    it('does not dim disconnected rows or show them a presence badge', () => {
+    it('does not dim disconnected rows and gives them a stopped badge instead of nothing', () => {
         const { container } = render(
             <I18nProvider>
                 <SessionRowSummary session={makeSummary({ active: false, backgroundTaskCount: 0 })} />
             </I18nProvider>
         )
         expect(container.querySelector('.opacity-50')).toBeNull()
-        expect(container.querySelector('[data-testid="session-presence"]')).toBeNull()
+        const badge = container.querySelector('[data-testid="session-presence"]')
+        expect(badge).toHaveAttribute('data-presence', 'stopped')
+        expect(badge).not.toHaveClass('animate-pulse')
+        expect(badge?.querySelector('svg')).not.toBeNull()
     })
 
     it('shows a detailed background tooltip on the agent icon in Extended mode', () => {
