@@ -107,6 +107,7 @@ export default {
   'sessions.view.status.all': 'All sessions',
   'sessions.view.status.active': 'Active only',
   'sessions.view.status.archived': 'Archived only',
+  'sessions.view.unreadOnly': 'Unread only',
   'sessions.view.reset': 'Reset to default',
   'sessions.toolbar.more': 'More session list actions',
   'sessions.markAllRead.button': 'Mark all as read ({count})',

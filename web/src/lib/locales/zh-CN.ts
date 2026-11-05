@@ -107,6 +107,7 @@ export default {
   'sessions.view.status.all': '全部会话',
   'sessions.view.status.active': '仅活跃',
   'sessions.view.status.archived': '仅已归档',
+  'sessions.view.unreadOnly': '仅未读',
   'sessions.view.reset': '恢复默认',
   'sessions.toolbar.more': '更多会话列表操作',
   'sessions.markAllRead.button': '全部标为已读（{count}）',

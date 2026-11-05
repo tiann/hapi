@@ -19,6 +19,37 @@ beforeEach(() => {
 afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('durable session read state', () => {
+    it('reads persisted state once per synchronous pass instead of once per row', async () => {
+        markSessionSeen('s', 2)
+        await Promise.resolve()
+        const parse = vi.spyOn(JSON, 'parse')
+        const getItem = vi.spyOn(Storage.prototype, 'getItem')
+        for (let i = 0; i < 500; i += 1) {
+            getSessionLastSeenAt('s')
+            getSessionManualUnreadAt('s')
+        }
+        expect(parse).not.toHaveBeenCalled()
+        expect(getItem).toHaveBeenCalledTimes(1)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+    })
+
+    it('observes writes from other tabs or code after the next microtask checkpoint', async () => {
+        markSessionSeen('s', 2)
+        localStorage.setItem('hapi.sessionReadState.v1:hub-a:alice', JSON.stringify({ s: { server: server(7) } }))
+        await Promise.resolve()
+        expect(getSessionLastSeenAt('s')).toBe(7)
+        localStorage.clear()
+        await Promise.resolve()
+        expect(getSessionLastSeenAt('s')).toBe(0)
+    })
+
+    it('does not keep an unsaved mutation when persistence fails', () => {
+        markSessionSeen('s', 2)
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+        markSessionSeen('s', 9)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+    })
+
     it('ignores legacy timestamps and metadata-only changes', () => {
         localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ s: Date.now() }))
         expect(getSessionLastSeenAt('s')).toBe(0)
