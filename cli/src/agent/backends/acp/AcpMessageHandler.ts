@@ -372,6 +372,22 @@ function normalizeAcpToolContent(content: unknown): string | object | null {
     return diffBlock ?? parts.join('');
 }
 
+/**
+ * Chooses the value reported as a tool result.
+ *
+ * rawOutput is preferred (Claude/Codex path). When absent, the ACP content
+ * array sent by agents such as Gemini and OpenCode is normalized. If content
+ * is not an array (normalizeAcpToolContent returns null), the original
+ * content value is used to avoid silent data loss.
+ */
+function resolveToolResultOutput(rawOutput: unknown, content: unknown): unknown {
+    if (rawOutput !== undefined) {
+        return rawOutput;
+    }
+    const normalized = normalizeAcpToolContent(content);
+    return normalized !== null ? normalized : content;
+}
+
 function normalizePlanEntries(entries: unknown): PlanItem[] {
     if (!Array.isArray(entries)) return [];
 
@@ -1063,17 +1079,7 @@ export class AcpMessageHandler {
                 }
             }
 
-            // Prefer rawOutput (Claude/Codex path). When absent, normalize the
-            // ACP content array sent by agents such as Gemini and OpenCode.
-            // If content is not an array (normalizeAcpToolContent returns null),
-            // fall back to the original content value to avoid silent data loss.
-            let output: unknown;
-            if (update.rawOutput !== undefined) {
-                output = update.rawOutput;
-            } else {
-                const normalized = normalizeAcpToolContent(update.content);
-                output = normalized !== null ? normalized : update.content;
-            }
+            const output = resolveToolResultOutput(update.rawOutput, update.content);
             this.onMessage({
                 type: 'tool_result',
                 id: toolCallId,
