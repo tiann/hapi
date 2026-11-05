@@ -95,9 +95,35 @@ describe('OpenCode v2 provider throughput', () => {
         });
     });
 
-    it('clamps a negative interval before summing instead of subtracting it from another step', async () => {
-        const result = await fetchOpencodeRoundSummary(request([user, step('negative', { created: 5, streamed: 4 }), step('valid')]));
-        expect(result?.summary).toMatchObject({ generationMs: 500, generationOutputTokens: 6 });
+    it.each([
+        { interval: 'zero', time: { created: 1_000, streamed: 1_000 }, invalidFirst: true },
+        { interval: 'zero', time: { created: 1_000, streamed: 1_000 }, invalidFirst: false },
+        { interval: 'reversed', time: { created: 1_000, streamed: 999 }, invalidFirst: true },
+        { interval: 'reversed', time: { created: 1_000, streamed: 999 }, invalidFirst: false }
+    ])('omits both generation fields for a mixed $interval interval (invalid first: $invalidFirst)', async ({ time, invalidFirst }) => {
+        const invalid = { ...step('invalid', time), cost: 0.01 };
+        const valid = { ...step('valid'), cost: 0.02 };
+        const result = await fetchOpencodeRoundSummary(request([user, ...(invalidFirst ? [invalid, valid] : [valid, invalid])]));
+        expect(result?.summary).not.toHaveProperty('generationMs');
+        expect(result?.summary).not.toHaveProperty('generationOutputTokens');
+        expect(result?.summary).toEqual({
+            usage: { inputTokens: 20, outputTokens: 6, cacheReadInputTokens: 10, cacheCreationInputTokens: 6 },
+            modelUsage: { 'fixture/model': { inputTokens: 20, outputTokens: 6, cacheReadInputTokens: 10, cacheCreationInputTokens: 6 } },
+            totalCostUsd: 0.03, numTurns: 2, durationMs: 100
+        });
+    });
+
+    it('ignores invalid compaction timing while preserving the positive assistant-only pair and billed totals', async () => {
+        const result = await fetchOpencodeRoundSummary(request([
+            user, { ...step('valid'), cost: 0.02 },
+            assistant('compact', { type: 'compaction', status: 'completed', cost: 0.01, time: { created: 10, streamed: 9 } })
+        ]));
+        expect(result?.summary).toEqual({
+            usage: { inputTokens: 20, outputTokens: 6, cacheReadInputTokens: 10, cacheCreationInputTokens: 6 },
+            modelUsage: { 'fixture/model': { inputTokens: 20, outputTokens: 6, cacheReadInputTokens: 10, cacheCreationInputTokens: 6 } },
+            totalCostUsd: 0.03, numTurns: 2, durationMs: 100,
+            generationMs: 500, generationOutputTokens: 3
+        });
     });
 
     it.each([

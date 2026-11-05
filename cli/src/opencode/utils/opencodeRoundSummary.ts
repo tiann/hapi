@@ -269,8 +269,8 @@ export async function fetchOpencodeRoundSummary(options: RoundFetchOptions & {
             const time = message.info.time;
             const created = isRecord(time) ? safeInteger(time.created) : null;
             const streamed = isRecord(time) ? safeInteger(time.streamed) : null;
-            if (created === null || streamed === null) hasCompleteGeneration = false;
-            else generationMs += Math.max(0, streamed - created);
+            if (created === null || streamed === null || streamed <= created) hasCompleteGeneration = false;
+            else generationMs += streamed - created;
             generationOutputTokens += parsed.usage.outputTokens;
         }
         numTurns++;
