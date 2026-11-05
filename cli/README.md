@@ -48,18 +48,22 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
 
-Peer messages default to `auto`: use the target's live state to steer an active
-Codex turn when steering is available; otherwise queue. Auto currently queues
-for all other agent flavors. Prefer
-auto for routine collaboration when queueing is an acceptable fallback.
+Peer messages default to `auto`: use the target's live capabilities and turn
+state to steer an active, eligible turn; otherwise queue. Inactive peers require explicit `wake: true`; awakened peers enter the ordinary queue. This applies to every steering-supported
+flavor: remote Claude, Pi, Codex, OpenCode, and Cursor ACP. Unsupported agents and
+legacy Cursor sessions queue instead. Prefer auto for routine collaboration
+when queueing is an acceptable fallback.
+
 Use explicit `queue` for non-urgent updates that can wait. Use `steer` for
 important, time-sensitive findings the peer needs to know now, not after its
 current turn: a correction that invalidates its assumptions, a blocker, or a
 result that changes its next action. State why it matters now and what the peer
-should adjust. Steer requires insertion into an active Claude (remote), Pi, Codex, or Cursor ACP
-turn; it does not abort that turn or guarantee an immediate response. MCP `ping_peer` accepts
-the same optional `deliveryMode: "auto" | "queue" | "steer"` field. Auto is
-resolved by the peer sender; ordinary web/native chat delivery is unchanged.
+should adjust.
+Explicit steer rejects unsupported agents, idle targets, and inactive targets
+before sending. It does not abort the current turn or guarantee an immediate
+response. MCP `ping_peer` accepts the same optional
+`deliveryMode: "auto" | "queue" | "steer"` field. Auto is a peer-sender policy;
+ordinary web/native chat delivery is unchanged.
 
 Peer messages never wake an inactive session by default: `ping_peer` refuses
 with `inactive` and sends nothing. Pass MCP `wake: true` (CLI `--wake`) only
@@ -75,20 +79,20 @@ hapi ping-peer <session-id> 'Run the next check' --delivery-mode queue
 hapi ping-peer <session-id> 'Use the corrected input path' --delivery-mode steer
 ```
 
-Queue success reports `accepted` with a `ping-peer-` localId, not confirmed
-delivery. Delivery is shown in the recipient chat only after its runtime
-acknowledges consumption. Steer messages retain the same peer identity prefix.
+Every submission retains one `ping-peer-` localId. Auto first stores an ordinary
+queued message, then tries the existing queued-message Steer action when the
+live target is eligible. A steer rejection or unconfirmed steer response retains
+that same accepted message without resending or retrying the action. The
+receipt and progress output say whether steering was not attempted, rejected by
+the Hub, or not confirmed. An
+`accepted` receipt proves Hub acceptance, not whether the message remains queued
+or has already been consumed. Actual runtime acknowledgements determine delivery.
 
-Steer rejects unsupported agents, idle targets, and inactive targets before
-sending. It reuses the queued-message Steer action: success reports `steered`,
-or `invoked` if the target consumed the message before the action arrived.
-Auto uses Codex's `steeringActive` state and control capabilities, not just
-`active` or `thinking`. If the turn changes after selection, auto uses the same
-safe error handling as explicit steer; it does not resend or silently retry.
-If steering fails after the message was accepted, the error includes its
-`localId`; it may still be queued or already consumed. Inspect the target
-before retrying; do not automatically resend the prompt. Steering does not
-abort the current turn.
+Steer success reports `steered`, or `invoked` when consumption won the race.
+Explicit steer still reports an error if steering cannot be confirmed after
+acceptance, including the original localId. Initial send failures or ACK loss
+are never converted into successful auto fallback. Inspect the target before
+retrying an unconfirmed send; do not automatically resend the prompt.
 
 The picker lists agents alphabetically by command name. Use Up/Down and Enter
 to choose; Esc or Ctrl-C cancels. It appears on every bare invocation, even

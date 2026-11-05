@@ -190,7 +190,14 @@ type SteeringSessionMetadata = {
     cursorSessionProtocol?: 'acp' | 'stream-json' | null
 }
 
+type SteeringSessionState = {
+    metadata?: SteeringSessionMetadata | null
+    thinking?: boolean
+    agentState?: { steeringActive?: boolean | null } | null
+}
+
 type SteeringCapability = {
+    activeTurnState: 'thinking' | 'steeringActive'
     supportsSession?: (metadata: SteeringSessionMetadata) => boolean
 }
 
@@ -215,18 +222,19 @@ export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'opencod
 
 type SteeringFlavor = typeof STEERING_SUPPORTED_FLAVORS[number]
 
-// Per-flavor steering support. Protocol restrictions live next to the flavor
-// they apply to instead of in a chain of flavor comparisons.
+// Keep protocol restrictions and the runtime's active-turn signal together so
+// peer senders and the waiting queue do not need their own flavor branches.
 const STEERING_CAPABILITIES = {
-    claude: {},
-    codex: {},
+    claude: { activeTurnState: 'steeringActive' },
+    codex: { activeTurnState: 'steeringActive' },
     cursor: {
+        activeTurnState: 'steeringActive',
         supportsSession: (metadata: SteeringSessionMetadata) =>
             metadata.cursorSessionProtocol !== 'stream-json'
             && (Boolean(metadata.cursorSessionProtocol) || !metadata.cursorSessionId)
     },
-    opencode: {},
-    pi: {}
+    opencode: { activeTurnState: 'steeringActive' },
+    pi: { activeTurnState: 'thinking' }
 } satisfies Record<SteeringFlavor, SteeringCapability>
 
 function getSteeringCapability(flavor?: string | null): SteeringCapability | undefined {
@@ -246,4 +254,15 @@ export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
 export function isSteeringSupportedForSession(metadata?: SteeringSessionMetadata | null): boolean {
     const capability = getSteeringCapability(metadata?.flavor)
     return capability !== undefined && (capability.supportsSession?.(metadata ?? {}) ?? true)
+}
+
+/**
+ * Whether the provider reports an active steerable turn. This does not imply
+ * that the session is active, remotely controlled, or will accept a native steer.
+ */
+export function hasActiveSteeringTurn(session: SteeringSessionState): boolean {
+    if (!isSteeringSupportedForSession(session.metadata)) return false
+    return getSteeringCapability(session.metadata?.flavor)?.activeTurnState === 'thinking'
+        ? session.thinking === true
+        : session.agentState?.steeringActive === true
 }

@@ -7,6 +7,7 @@ import {
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
     getPermissionModesForFlavor,
+    hasActiveSteeringTurn,
     isPermissionModeAllowedForFlavor,
     isSteeringSupportedForFlavor,
     isSteeringSupportedForSession,
@@ -190,6 +191,37 @@ describe('isSteeringSupportedForSession', () => {
     it('rejects non-steerable flavors', () => {
         expect(isSteeringSupportedForSession({ flavor: 'gemini' })).toBe(false)
         expect(isSteeringSupportedForSession(null)).toBe(false)
+    })
+})
+
+describe('hasActiveSteeringTurn', () => {
+    it.each(['claude', 'codex', 'cursor', 'opencode'])('uses steeringActive rather than thinking for %s', (flavor) => {
+        expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: false,
+            agentState: { steeringActive: true } })).toBe(true)
+        expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: true,
+            agentState: { steeringActive: false } })).toBe(false)
+        expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: true })).toBe(false)
+    })
+
+    it('uses the Pi runtime thinking signal', () => {
+        expect(hasActiveSteeringTurn({ metadata: { flavor: 'pi' }, thinking: true,
+            agentState: { steeringActive: false } })).toBe(true)
+        expect(hasActiveSteeringTurn({ metadata: { flavor: 'pi' }, thinking: false,
+            agentState: { steeringActive: true } })).toBe(false)
+    })
+
+    it.each([
+        null, undefined, { flavor: 'gemini' }, { flavor: 'unknown' },
+        { flavor: '__proto__' }, { flavor: 'constructor' },
+        { flavor: 'cursor', cursorSessionProtocol: 'stream-json' as const },
+        { flavor: 'cursor', cursorSessionId: 'legacy' },
+    ])('rejects unsupported metadata even when every turn signal is true: %j', (metadata) => {
+        expect(hasActiveSteeringTurn({ metadata, thinking: true,
+            agentState: { steeringActive: true } })).toBe(false)
+        expect(isSteeringSupportedForSession(metadata)).toBe(false)
+        if (metadata?.flavor !== 'cursor') {
+            expect(isSteeringSupportedForFlavor(metadata?.flavor)).toBe(false)
+        }
     })
 })
 
