@@ -469,8 +469,32 @@ html:has(.chat-scroll-y) #root {
 
 @media (hover: hover) and (pointer: fine) {
     .session-list-item:hover,
+    .session-list-row:hover > .session-list-item,
     .session-list-new-button:hover {
         background-color: var(--app-subtle-bg);
+    }
+}
+
+/* Row quick action (archive): replaces the time/progress cluster on hover,
+   and on keyboard focus (not a click or tap) so it stays reachable without a
+   mouse. Touch devices keep the long-press menu instead. */
+.session-row-quick-action {
+    display: none;
+}
+.session-list-row:has(:focus-visible) .session-row-quick-action,
+.session-list-row[data-quick-action-pending] .session-row-quick-action {
+    display: flex;
+}
+.session-list-row:has(:focus-visible) .session-row-trailing,
+.session-list-row[data-quick-action-pending] .session-row-trailing {
+    visibility: hidden;
+}
+@media (hover: hover) and (pointer: fine) {
+    .session-list-row:hover .session-row-quick-action {
+        display: flex;
+    }
+    .session-list-row:hover .session-row-trailing {
+        visibility: hidden;
     }
 }
 

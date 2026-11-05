@@ -9,7 +9,6 @@ import {
     filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
-    getSessionTimeRange,
     getNextSessionVisibleCount,
     getPullRefreshIndicatorRotation,
     getPreviousSessionVisibleCount,
@@ -21,7 +20,6 @@ import {
     normalizeSearch,
     prepareSidebarSessions,
     sessionMatchesQuery,
-    sessionMatchesTimeRange,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -434,23 +432,6 @@ describe('session list search helpers', () => {
     })
 })
 
-describe('session list time filter helpers', () => {
-    it('treats the selected end date as inclusive in local time', () => {
-        const range = getSessionTimeRange('2026-07-01', '2026-07-18')
-        expect(range).toEqual({
-            start: new Date(2026, 6, 1).getTime(),
-            end: new Date(2026, 6, 19).getTime()
-        })
-        expect(sessionMatchesTimeRange(makeSession({ id: 'inside', updatedAt: new Date(2026, 6, 18, 23, 59).getTime() }), range)).toBe(true)
-        expect(sessionMatchesTimeRange(makeSession({ id: 'outside', updatedAt: new Date(2026, 6, 19).getTime() }), range)).toBe(false)
-    })
-
-    it('does not filter until both dates are selected', () => {
-        expect(getSessionTimeRange('', '')).toBeNull()
-        expect(getSessionTimeRange('2026-07-01', '')).toBeNull()
-    })
-})
-
 describe('getVisibleSessionPreview', () => {
     it('keeps selected and pending sessions inside the collapsed preview without promoting them', () => {
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
@@ -467,6 +448,21 @@ describe('getVisibleSessionPreview', () => {
         })
 
         expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('keeps unread sessions inside the preview without promoting them', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, {
+            limit: 3,
+            isUnread: session => session.id === 's-5'
+        })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-5'])
     })
 
     it('does not let archived pending sessions displace active ones', () => {
@@ -552,71 +548,19 @@ describe('filterActiveSessionsOnly', () => {
 })
 
 describe('filterUnreadSessionsOnly', () => {
-    const lastSeen = (id: string): number => {
-        if (id === 'unread') return 1000
-        return 10_000
-    }
+    const sessions = [
+        makeSession({ id: 'unread', metadata: { path: '/p' } }),
+        makeSession({ id: 'read', metadata: { path: '/p' } }),
+        makeSession({ id: 'open', metadata: { path: '/p' } })
+    ]
+    const isUnread = (s: { id: string }) => s.id === 'unread'
 
-    it('keeps only sessions newer than lastSeen; drops seen and selected-only quiet rows stay when selected', () => {
-        const sessions = [
-            makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
-            makeSession({ id: 'seen', contentRevision: 1000, metadata: { path: '/p' } }),
-            makeSession({
-                id: 'permission-but-seen',
-                pendingRequestKinds: ['permission'],
-                pendingRequestsCount: 1,
-                contentRevision: 1000,
-                metadata: { path: '/p' },
-            }),
-        ]
-        expect(filterUnreadSessionsOnly(sessions, null, lastSeen).map(s => s.id))
-            .toEqual(['unread'])
+    it('keeps only unread sessions when nothing is open', () => {
+        expect(filterUnreadSessionsOnly(sessions, isUnread).map(s => s.id)).toEqual(['unread'])
     })
 
-    it('keeps the selected session visible even when it would otherwise filter out', () => {
-        const sessions = [
-            makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
-            makeSession({ id: 'selected-quiet', contentRevision: 1000, metadata: { path: '/p' } }),
-        ]
-        expect(filterUnreadSessionsOnly(sessions, 'selected-quiet', lastSeen).map(s => s.id))
-            .toEqual(['unread', 'selected-quiet'])
-    })
-
-    it('composes with machine filter as empty intersection (unread after machine scope stays selected)', () => {
-        // Mirrors SessionList pipeline: unread on visibleSessions, then machine filter.
-        // Machine B selected + only machine A unread → empty list, not "all unread".
-        const sessions = [
-            makeSession({
-                id: 'unread-a',
-                contentRevision: 5000,
-                metadata: { path: '/a', machineId: 'machine-a' },
-            }),
-            makeSession({
-                id: 'seen-b',
-                contentRevision: 1000,
-                metadata: { path: '/b', machineId: 'machine-b' },
-            }),
-        ]
-        const lastSeenById = (id: string) => (id === 'unread-a' ? 0 : 10_000)
-        const unreadFiltered = filterUnreadSessionsOnly(sessions, null, lastSeenById)
-        const machineB = unreadFiltered.filter(
-            session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === 'machine-b'
-        )
-        expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
-        expect(machineB).toEqual([])
-    })
-
-    it('keeps an explicitly unread generating session in the unread lens', () => {
-        const sessions = [
-            makeSession({ id: 'manual-thinking', active: true, thinking: true, contentRevision: 5000, metadata: { path: '/p' } })
-        ]
-
-        expect(filterUnreadSessionsOnly(
-            sessions,
-            null,
-            () => 5000,
-            () => 5000
-        ).map(s => s.id)).toEqual(['manual-thinking'])
+    it('keeps the open session visible even when read', () => {
+        expect(filterUnreadSessionsOnly(sessions, isUnread, 'open').map(s => s.id)).toEqual(['unread', 'open'])
     })
 })
 
@@ -773,5 +717,45 @@ describe('session list user-activity ordering', () => {
         const sessions = [session('old', 1_000, '/proj', { active: true, thinking: true, updatedAt: 90_000 }), session('new', 2_000, '/proj', { active: true, thinking: true, updatedAt: 1 })]
         expect(bucketRunningSessions(sessions, true).working.map(s => s.id)).toEqual(['new', 'old'])
         expect(bucketRunningSessions(sessions.map(s => ({ ...s, updatedAt: 200_000 })), true).working.map(s => s.id)).toEqual(['new', 'old'])
+    })
+})
+
+describe('session list sort and filter view', () => {
+    const session = (id: string, extra: Partial<SessionSummary> & { path?: string } = {}) => {
+        const { path = '/proj', ...rest } = extra
+        return makeSession({ id, createdAt: 1_000, lastUserMessageAt: 1_000, updatedAt: 1_000, metadata: { path }, ...rest })
+    }
+    const ids = (sessions: SessionSummary[], view: Parameters<typeof groupSessionsByDirectory>[1]) =>
+        groupSessionsByDirectory(sessions, view).flatMap(g => g.sessions.map(s => s.id))
+
+    it('orders by last message or creation time, never by agent output', () => {
+        const sessions = [
+            session('old-chatty', { createdAt: 1_000, lastUserMessageAt: 9_000, updatedAt: 9_000 }),
+            session('new-quiet', { createdAt: 5_000, lastUserMessageAt: 5_000, updatedAt: 5_000 }),
+            session('agent-busy', { createdAt: 2_000, lastUserMessageAt: 3_000, updatedAt: 20_000 })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: false })).toEqual(['old-chatty', 'new-quiet', 'agent-busy'])
+        expect(ids(sessions, { sort: 'created', activeFirst: false })).toEqual(['new-quiet', 'agent-busy', 'old-chatty'])
+    })
+
+    it('puts active sessions and projects ahead of archived ones when active-first is on', () => {
+        const sessions = [
+            session('archived-recent', { lastUserMessageAt: 9_000, path: '/a' }),
+            session('active-older', { lastUserMessageAt: 2_000, path: '/a', active: true }),
+            session('archived-project', { lastUserMessageAt: 8_000, path: '/b' }),
+            session('active-project', { lastUserMessageAt: 1_000, path: '/c', active: true })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: true }))
+            .toEqual(['active-older', 'archived-recent', 'active-project', 'archived-project'])
+        expect(ids(sessions, { sort: 'last-message', activeFirst: false }))
+            .toEqual(['archived-recent', 'active-older', 'archived-project', 'active-project'])
+    })
+
+    it('still keeps manual pins first when active-first is on', () => {
+        const sessions = [
+            session('active', { active: true }),
+            session('pinned-archived', { pinned: true })
+        ]
+        expect(ids(sessions, { sort: 'last-message', activeFirst: true })).toEqual(['pinned-archived', 'active'])
     })
 })

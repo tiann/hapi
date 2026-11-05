@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
-import { ShareTurnDialog } from './ShareTurnDialog'
+import { ShareTurnDialog, inlineBlobImageSources } from './ShareTurnDialog'
 import { stripCaptureOnlyControls, stripExportControls } from './ShareTurnDialog'
 
 const html2canvas = vi.hoisted(() => vi.fn())
@@ -117,6 +117,7 @@ function renderDialog(getGeneratedMediaBlob: (imageId: string) => Promise<Blob>,
 
 afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
 })
 
 describe('ShareTurnDialog generated-file lifecycle', () => {
@@ -153,5 +154,46 @@ describe('ShareTurnDialog generated-file lifecycle', () => {
 
         expect(createObjectUrl).not.toHaveBeenCalled()
         expect(anchorClick).not.toHaveBeenCalled()
+    })
+})
+describe('inlineBlobImageSources', () => {
+    it('replaces blob sources with data URLs and reuses duplicate conversions', async () => {
+        const root = document.createElement('div')
+        root.innerHTML = `
+            <img src="blob:http://localhost/generated-image" srcset="blob:http://localhost/generated-image 1x" alt="First generated image">
+            <img src="blob:http://localhost/generated-image" alt="Second generated image">
+            <img src="data:image/png;base64,existing" alt="Existing data image">
+        `
+        const fetchMock = vi.fn(async () => new Response(new Blob(['image'], { type: 'image/png' })))
+        vi.stubGlobal('fetch', fetchMock)
+        vi.stubGlobal('FileReader', class {
+            result: string | ArrayBuffer | null = null
+            onload: ((this: FileReader, event: ProgressEvent<FileReader>) => void) | null = null
+            onerror: ((this: FileReader, event: ProgressEvent<FileReader>) => void) | null = null
+
+            readAsDataURL() {
+                this.result = 'data:image/png;base64,aW1hZ2U='
+                this.onload?.call(this as unknown as FileReader, new ProgressEvent('load'))
+            }
+        })
+
+        await inlineBlobImageSources(root)
+
+        const images = Array.from(root.querySelectorAll('img'))
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(images[0].src).toBe('data:image/png;base64,aW1hZ2U=')
+        expect(images[0].hasAttribute('srcset')).toBe(false)
+        expect(images[1].src).toBe('data:image/png;base64,aW1hZ2U=')
+        expect(images[2].src).toBe('data:image/png;base64,existing')
+    })
+
+    it('keeps the original blob source when inlining fails', async () => {
+        const root = document.createElement('div')
+        root.innerHTML = '<img src="blob:http://localhost/generated-image" alt="Generated image">'
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })))
+
+        await inlineBlobImageSources(root)
+
+        expect(root.querySelector('img')?.src).toBe('blob:http://localhost/generated-image')
     })
 })
