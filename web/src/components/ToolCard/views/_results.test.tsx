@@ -51,6 +51,14 @@ describe('extractTextFromResult', () => {
         expect(extractTextFromResult({ output: 'ok' })).toBe('ok')
     })
 
+    it('extracts output text from an output plus metadata result', () => {
+        expect(extractTextFromResult({ output: 'ok', metadata: { status: 'completed', exit: 0 } })).toBe('ok')
+    })
+
+    it('returns no text for a metadata-only result', () => {
+        expect(extractTextFromResult({ metadata: { status: 'completed', exit: 0 } })).toBeNull()
+    })
+
     it('extracts from object with error field', () => {
         expect(extractTextFromResult({ error: 'not found' })).toBe('not found')
     })
