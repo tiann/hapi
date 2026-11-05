@@ -119,12 +119,14 @@ final class SessionSplitPresentationTests: XCTestCase {
         XCTAssertEqual(navigation.selectedSessionId, "a")
         navigation.detailPath.append(Page.files)
         try await settle { self.findView("detail-files", in: window) != nil }
+#if !targetEnvironment(macCatalyst)
         resize(window, host: host, width: 390, height: 844, compact: true)
         try await settle { split.isCollapsed }
         XCTAssertEqual(probe.detailSizeClass, .compact)
         XCTAssertEqual(navigation.selectedSessionId, "a")
         XCTAssertEqual(navigation.detailPath.count, 1)
         XCTAssertNotNil(findView("detail-files", in: window))
+#endif
 
         resize(window, host: host, width: wide.width, height: wide.height, compact: false)
         try await settle { !split.isCollapsed }
@@ -137,6 +139,9 @@ final class SessionSplitPresentationTests: XCTestCase {
     }
 
     func testCompactProgrammaticOpenAndBackAfterAFilePush() async throws {
+#if targetEnvironment(macCatalyst)
+        throw XCTSkip("Mac Catalyst does not expose the compact collapsed split covered by this test")
+#else
         try await requireSplitDevice()
         let navigation = SessionNavigationState()
         let probe = Probe()
@@ -164,6 +169,7 @@ final class SessionSplitPresentationTests: XCTestCase {
         navigation.remove("b")
         try await settle { self.findView("home.sessions", in: window) != nil }
         XCTAssertNil(navigation.selectedSessionId)
+#endif
     }
 
     private struct ChatHarness: View {
