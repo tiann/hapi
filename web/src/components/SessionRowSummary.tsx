@@ -1,7 +1,7 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
-import { InfoIcon, ScheduleIcon } from '@/components/icons'
+import { InfoIcon, ScheduleIcon, StoppedBadgeIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
 import { classifySessionAttention } from '@/lib/sessionAttention'
@@ -68,6 +68,13 @@ function getSessionTimeLabel(
     }
     return formatRelativeTime(session.updatedAt, t)
 }
+
+const PRESENCE_BADGE_CLASS = {
+    working: 'bg-[var(--app-badge-success-text)] animate-pulse',
+    background: 'bg-blue-400 animate-pulse',
+    waiting: 'border-2 border-[var(--app-badge-success-text)] bg-[var(--app-bg)]',
+    stopped: 'bg-[var(--app-bg)] text-[var(--app-hint)]',
+} as const
 
 /**
  * Presentational session row — same chrome as the sidebar SessionItem body
@@ -155,10 +162,19 @@ export function SessionRowSummary(props: {
     const importedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const timeLabel = getSessionTimeLabel(s, importedAt, t)
 
-    // Presence lives on the agent icon (pulsing while a turn or background
-    // work runs) instead of dimming disconnected rows or adding spinners.
+    // Presence lives on the agent icon and every state has its own mark, so no
+    // state is shown by the absence of one: solid = working (pulsing), ring =
+    // connected and waiting, power mark = stopped or archived. Blue is the
+    // existing background-work state.
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
+    const presence: 'working' | 'background' | 'waiting' | 'stopped' = !s.active
+        ? 'stopped'
+        : isRunning
+            ? 'working'
+            : isBackgroundOnly
+                ? 'background'
+                : 'waiting'
     // Unread is a semibold title plus accent time — no dot, so the presence
     // badge stays the row's only dot. The label stays for screen readers.
     const isUnread = attention?.kind === 'unread'
@@ -170,14 +186,13 @@ export function SessionRowSummary(props: {
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
             <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
-            {s.active ? (
-                <span
-                    data-testid="session-presence"
-                    className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--app-bg)] ${
-                        isBackgroundOnly ? 'bg-blue-400' : 'bg-[var(--app-badge-success-text)]'
-                    } ${isRunning || isBackgroundOnly ? 'animate-pulse' : ''}`}
-                />
-            ) : null}
+            <span
+                data-testid="session-presence"
+                data-presence={presence}
+                className={`absolute -bottom-0.5 -right-0.5 box-border flex h-2.5 w-2.5 items-center justify-center rounded-full ring-2 ring-[var(--app-bg)] ${PRESENCE_BADGE_CLASS[presence]}`}
+            >
+                {presence === 'stopped' ? <StoppedBadgeIcon className="h-2.5 w-2.5" /> : null}
+            </span>
         </span>
     )
 
