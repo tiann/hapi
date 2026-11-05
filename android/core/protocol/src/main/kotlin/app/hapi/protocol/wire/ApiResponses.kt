@@ -26,7 +26,6 @@ data class MessagesPage(
     val hasMore: Boolean,
     val readThroughRevision: Long? = null,
 )
-
 /** `GET /api/sessions/:id/messages` — messages in ascending display order. */
 @Serializable
 data class MessagesResponse(

@@ -131,8 +131,17 @@ describe('Pi publish ordering (real converters)', () => {
         text('after');
         h.emit({ type: 'message_end' });
         await h.flush();
+        // Each text segment publishes its live snapshot and then a terminal
+        // one. The terminal copy is deliberate: the hub skips live snapshots
+        // when building the content-search index, so without it a reply whose
+        // final text already arrived live would never be indexed (tiann/hapi#1554).
+        // Downstream both collapse into one block — the hub dedupes by render
+        // key and the web reducer merges blocks sharing a stream id.
+        //
+        // What this test guards is the ordering: assistant text on both sides
+        // of the inline image result, never reordered across it.
         expect(h.messages.map((message) => message.type === 'message' ? message.message : message.type))
-            .toEqual(['before', 'tool-call-result', 'generated-image', 'after']);
+            .toEqual(['before', 'before', 'tool-call-result', 'generated-image', 'after', 'after']);
     });
 
     it('retains queued assistant deltas when the prompt is rejected in the same chunk', async () => {
