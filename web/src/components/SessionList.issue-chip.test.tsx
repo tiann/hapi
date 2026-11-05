@@ -177,13 +177,20 @@ describe('SessionList issue-ref chip isolation', () => {
         expect(onSelect).toHaveBeenCalledWith('session-1', undefined, undefined)
     })
 
-    // Regression (bot review, hapi#2147): the chip and the hover-to-archive
-    // button (upstream #2264) are both shrink-0 siblings packed against the
-    // row's right edge, and the archive button is absolutely positioned over
-    // that same corner — without `session-row-trailing`, hovering/focusing to
-    // reveal archive left the chip's own hit target sitting underneath it,
-    // so a click meant for archive could land on the issue link instead.
-    it('hides in sync with the trailing cluster (via session-row-trailing) only when a quick-archive button exists', () => {
+    // Regression (bot review, hapi#2147, two passes): the chip and the
+    // hover-to-archive button (upstream #2264) are both shrink-0 siblings
+    // packed against the row's right edge, and the archive button is
+    // absolutely positioned over that same corner. A first fix applied
+    // `session-row-trailing` to the chip so it hid in sync with the archive
+    // button's hover/focus reveal — which stopped the overlap, but since the
+    // chip is a real link (not SessionRowSummary's own non-interactive
+    // trailing cluster that class was designed for), `visibility: hidden`
+    // also made it unfocusable/unclickable exactly when a mouse or keyboard
+    // user was approaching the row to use it. The real fix reserves space
+    // instead of hiding: the row's own right padding grows whenever a
+    // quick-archive button can appear, so the chip never needs to disappear
+    // at all.
+    it('always keeps the issue chip visible and unhidden, reserving row padding instead when a quick-archive button exists', () => {
         const active = makeSession({
             id: 'active-session',
             active: true,
@@ -224,12 +231,14 @@ describe('SessionList issue-ref chip isolation', () => {
             />
         )
 
-        const activeChip = screen.getByText('Active with issue').closest('[role="button"]')
-            ?.parentElement?.querySelector('[data-testid="issue-ref-chip"]')?.closest('span')
-        expect(activeChip?.className).toContain('session-row-trailing')
+        const activeRow = screen.getByText('Active with issue').closest('[role="button"]')?.parentElement
+        const activeChip = activeRow?.querySelector('[data-testid="issue-ref-chip"]')
+        expect(activeChip?.className).not.toContain('session-row-trailing')
+        expect(activeRow?.className).toContain('pr-10')
 
-        const idleChip = screen.getByText('Idle with issue').closest('[role="button"]')
-            ?.parentElement?.querySelector('[data-testid="issue-ref-chip"]')?.closest('span')
+        const idleRow = screen.getByText('Idle with issue').closest('[role="button"]')?.parentElement
+        const idleChip = idleRow?.querySelector('[data-testid="issue-ref-chip"]')
         expect(idleChip?.className).not.toContain('session-row-trailing')
+        expect(idleRow?.className).toContain('pr-2')
     })
 })

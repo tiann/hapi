@@ -1218,10 +1218,18 @@ const SessionItem = memo(function SessionItem(props: {
                 element too, not a separate wrapper — its own `:hover >
                 .session-list-item` rule becomes a no-op here, but the plain
                 `.session-list-item:hover` rule already covers it since the
-                quick-archive button is a descendant of this element. */}
+                quick-archive button is a descendant of this element.
+                Right padding grows to reserve the archive button's own
+                footprint (not the `session-row-trailing`/visibility:hidden
+                trick SessionRowSummary's own non-interactive trailing
+                cluster uses) whenever a quick-archive button can appear —
+                the issue/PR chips are real links, and hiding them on
+                hover/focus to avoid the overlap made them unreachable
+                exactly when a pointer or keyboard user was approaching the
+                row to use them (bot review, hapi#2147, second pass). */}
             <div
                 data-session-scroll-anchor
-                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 pr-2 transition-colors ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 transition-colors ${showQuickArchive ? 'pr-10' : 'pr-2'} ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                 data-quick-action-pending={quickArchivePending ? '' : undefined}
             >
                 <div
@@ -1258,21 +1266,13 @@ const SessionItem = memo(function SessionItem(props: {
                 {linkedIssue ? (
                     <IssueRefChip
                         ref={linkedIssue}
-                        // Shares the quick-archive button's footprint at the row's
-                        // right edge (both are shrink-0 flex siblings packed
-                        // against it) — `session-row-trailing` hides this in sync
-                        // with SessionRowSummary's own trailing cluster whenever
-                        // hover/focus reveals the (absolutely-positioned) archive
-                        // button over it, so a misclick there can't land on an
-                        // invisible-but-still-hittable chip underneath (bot
-                        // review, hapi#2147).
-                        className={`mt-0.5 shrink-0 ${showQuickArchive ? 'session-row-trailing' : ''}`}
+                        className="mt-0.5 shrink-0"
                         boardMatch={linkedIssueBoardMatch}
                         onOpenBoardItem={onOpenBoardItem}
                     />
                 ) : null}
                 {githubPrAwarenessEnabled && primaryPrRef ? (
-                    <div className={`flex shrink-0 items-center self-start py-2 pr-2 ${showQuickArchive ? 'session-row-trailing' : ''}`}>
+                    <div className="flex shrink-0 items-center self-start py-2 pr-2">
                         <SessionPrChip
                             refs={s.metadata?.externalRefs}
                             displayProfile={prChipDisplay}
