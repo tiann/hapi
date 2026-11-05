@@ -42,15 +42,15 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi dsh` - Start DeepSeek Harness through ACP. See `src/dsh/runDsh.ts`.
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
-- `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
+- `hapi ping-peer <session-id-prefix> <message>` - Message another session. Inactive targets are refused (exit 5) unless `--wake` resumes them first. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list [--all]` (active sessions with machine and cwd; `--all` includes inactive).
 - `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Optional `--machine ID|hostname` targets another runner (resolved via GET /api/machines); `--dir` must exist on the target. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`.
 - `hapi usage [--since 24h|7d|<ISO>|<ms>] [--until …] [--json]` - When agents were working across every machine on the hub, from `GET /api/activity`. `--json` prints one `hapi.activity.v1` report for other tools (time trackers); errors go to stderr with exit codes 2 (arguments), 3 (no token or refused), 4 (hub too old), 1 (other).
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
 
 Peer messages default to `auto`: use the target's live state to steer an active
-Codex turn when steering is available; otherwise queue, resuming an inactive
-session if needed. Auto currently queues for all other agent flavors. Prefer
+Codex turn when steering is available; otherwise queue. Auto currently queues
+for all other agent flavors. Prefer
 auto for routine collaboration when queueing is an acceptable fallback.
 Use explicit `queue` for non-urgent updates that can wait. Use `steer` for
 important, time-sensitive findings the peer needs to know now, not after its
@@ -60,6 +60,14 @@ should adjust. Steer requires insertion into an active Claude (remote), Pi, Code
 turn; it does not abort that turn or guarantee an immediate response. MCP `ping_peer` accepts
 the same optional `deliveryMode: "auto" | "queue" | "steer"` field. Auto is
 resolved by the peer sender; ordinary web/native chat delivery is unchanged.
+
+Peer messages never wake an inactive session by default: `ping_peer` refuses
+with `inactive` and sends nothing. Pass MCP `wake: true` (CLI `--wake`) only
+when the user asked or the handed-off work requires that peer to act. Agents
+should message only peers tied to their task (a cited session, their Parent,
+peers they spawned or were handed off to), `inspect_peer` an unfamiliar peer's
+machine, cwd, and recent work before messaging it, and never broadcast.
+`list_peers` returns active sessions only unless `includeInactive: true`.
 
 ```bash
 hapi ping-peer <session-id> 'The dependency is ready' --delivery-mode auto
