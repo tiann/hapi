@@ -158,12 +158,50 @@ describe('startHappyServer skill_lookup', () => {
                 arguments: { sessionIdPrefix: 'peer-id', message: 'hello', ...(deliveryMode ? { deliveryMode } : {}) }
             }) as ToolResult
             expect(result.isError).toBe(false)
-            expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode })
+            expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode, wake: false })
             expect(result.content?.[0]?.text).toBe(delivery === 'accepted'
                 ? 'Accepted for peer-id (Peer) localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it'
                 : `${delivery} to peer-id (Peer) localId=ping-peer-test`)
         } finally {
             ping.mockRestore()
+        }
+    })
+
+    it('forwards ping_peer wake only when explicitly requested', async () => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
+            sessionId: 'peer-id', name: 'Peer', resumed: true,
+            localId: 'ping-peer-test', delivery: 'accepted'
+        })
+        try {
+            const mcp = await connect(false)
+            const tools = await mcp.listTools()
+            const tool = tools.tools.find((entry) => entry.name === 'ping_peer')
+            expect(tool?.inputSchema.properties?.wake).toMatchObject({ type: 'boolean' })
+            expect(tool?.description).toContain('Never broadcast')
+            const result = await mcp.callTool({
+                name: 'ping_peer',
+                arguments: { sessionIdPrefix: 'peer-id', message: 'take over the build', wake: true }
+            }) as ToolResult
+            expect(result.isError).toBe(false)
+            expect(ping).toHaveBeenCalledWith({
+                sessionIdPrefix: 'peer-id', message: 'take over the build', deliveryMode: undefined, wake: true
+            })
+            expect(result.content?.[0]?.text).toContain('(resumed)')
+        } finally {
+            ping.mockRestore()
+        }
+    })
+
+    it('lists active peers by default and forwards includeInactive', async () => {
+        const list = vi.spyOn(peerMessages, 'listPeerSessions').mockResolvedValue([])
+        try {
+            const mcp = await connect(false)
+            await mcp.callTool({ name: 'list_peers', arguments: {} })
+            expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ includeInactive: false }))
+            await mcp.callTool({ name: 'list_peers', arguments: { includeInactive: true } })
+            expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ includeInactive: true }))
+        } finally {
+            list.mockRestore()
         }
     })
 
