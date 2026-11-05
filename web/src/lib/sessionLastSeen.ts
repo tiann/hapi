@@ -15,11 +15,45 @@ let running = false
 let retry: ReturnType<typeof setTimeout> | undefined
 const tailFollowers = new Map<string, number>()
 
+// The sidebar reads per-session state for every row on every render, and reading
+// (let alone parsing) the whole persisted store per row is O(rows x store size).
+// localStorage stays the source of truth: the parsed copy is compared with the raw
+// stored value on the first read after a microtask checkpoint and trusted for the
+// rest of that synchronous pass, so writes from other tabs or other code are
+// observed by the next read after the checkpoint.
+let cache: { key: string; raw: string | null; store: Store } | null = null
+let trusted = false
+function trustUntilNextCheckpoint(): void {
+    if (trusted) return
+    trusted = true
+    queueMicrotask(() => { trusted = false })
+}
 function readStore(key = scope): Store {
-    try { return JSON.parse(localStorage.getItem(PREFIX + key) ?? '{}') as Store } catch { return {} }
+    if (trusted && cache?.key === key) return cache.store
+    let raw: string | null
+    try { raw = localStorage.getItem(PREFIX + key) } catch { return {} }
+    if (cache?.key !== key || cache.raw !== raw) {
+        let store: Store
+        try { store = JSON.parse(raw ?? '{}') as Store } catch { store = {} }
+        cache = { key, raw, store }
+    }
+    trustUntilNextCheckpoint()
+    return cache.store
 }
 function save(store: Store, key = scope): boolean {
-    try { localStorage.setItem(PREFIX + key, JSON.stringify(store)); return true } catch { return false }
+    try {
+        const raw = JSON.stringify(store)
+        localStorage.setItem(PREFIX + key, raw)
+        cache = { key, raw, store }
+        trustUntilNextCheckpoint()
+        return true
+    } catch {
+        // Callers mutate the cached store before saving; drop it so the next
+        // read reflects what is actually persisted.
+        cache = null
+        trusted = false
+        return false
+    }
 }
 function notify(): void {
     changeVersion += 1
