@@ -76,7 +76,41 @@ function releaseNote(
  * guide and reusable authoring prompt.
  */
 export const RELEASE_NOTES = [
-    releaseNote('0.34.0', '2026-11-02',
+    releaseNote('0.34.3', '2026-11-05',
+        'Add an Unread-only option to the session list filter and avoid re-parsing session read state for every sidebar row when loading large lists.',
+        '为会话列表过滤器增加仅看未读选项，并在加载大列表时避免对每一侧栏行重复解析会话已读状态。',
+        [
+            group('Session list filters and performance', '会话列表过滤与性能', [
+                change('feature', 'Add an Unread-only checkbox to the session list filter, keeping the open session visible and preserving the default experience.', '在会话列表过滤中增加仅看未读勾选框，当前打开的会话始终保持可见，默认体验不变。'),
+                change('fix', 'Avoid re-parsing session read state for every sidebar row when loading large session lists.', '加载大列表时不再对每个侧栏行重复解析会话已读状态。'),
+            ]),
+        ]), releaseNote('0.34.2', '2026-11-05',
+        'Add a concise chat view, keep sidebar search and shared-export images reliable, and publish Android tool-card state on the main thread; bound and isolate Mac regression hangs.',
+        '新增简洁聊天视图，改善侧栏搜索与分享导出图片的可靠性，并让 Android 工具卡片状态在主线程发布；限制并隔离 Mac 回归测试超时。',
+        [
+            group('Web chat and sharing', 'Web 聊天与分享', [
+                change('feature', 'Add a concise chat view.', '新增简洁聊天视图。'),
+                change('fix', 'Keep the Codex Fast toggle legible in dark mode and preserve blob-backed images in shared exports.', '保持 Codex Fast 开关在暗色模式下清晰可读，并在分享导出中保留 blob 支撑的图片。'),
+                change('fix', 'Bound and isolate Mac regression test hangs.', '为 Mac 回归测试设置上限并隔离超时。'),
+            ]),
+            group('Android and diagnostics', 'Android 与诊断', [
+                change('fix', 'Publish tool-card async state on the main thread and wait for pairing fields to disable.', '在主线程发布工具卡片异步状态，并在配对字段禁用前等待。'),
+            ]),
+        ]), releaseNote('0.34.1', '2026-11-04',
+        'Add opt-in session message content search, sort and filter the session list, group inactive session mentions, and streamline session-list actions; add Codex model catalog options, Fast mode memory, and mid-turn OpenCode steering.',
+        '新增会话消息内容搜索（需开启）、会话列表排序与筛选、非活动会话 @ 提及分组，并精简列表操作；增加 Codex 模型目录选项、Fast 模式记忆和 OpenCode 回合中介入。',
+        [
+            group('Session search and list', '会话搜索与列表', [
+                change('feature', 'Add opt-in search for session message content.', '增加会话消息内容搜索（需开启）。'),
+                change('feature', 'Sort and filter the session list and group and collapse inactive session mentions.', '支持会话列表排序与筛选，并将非活动会话提及分组折叠。'),
+                change('feature', 'Archive a session from its row on hover and keep unread sessions always visible.', '支持从会话行悬停归档，并让未读会话始终可见。'),
+            ]),
+            group('Agent and platform', 'Agent 与平台', [
+                change('feature', 'Support explicit local model catalog configuration for Codex and remember and toggle Codex fast mode in the composer.', '支持为 Codex 配置显式本地模型目录，并记住在输入框中切换 Codex fast 模式。'),
+                change('feature', 'Support mid-turn steering for OpenCode and Mac Catalyst builds across iOS/macOS.', '支持 OpenCode 回合中介入，并让 iOS/macOS 通过 Mac Catalyst 构建。'),
+                change('fix', 'Silence Cursor post-done harness turns and align alive/steer tests with post-mid-turn-steering metadata.', '静默 Cursor 完成后的模板回合，并让 alive/steer 测试与回合中介入后的元数据对齐。'),
+            ]),
+        ]), releaseNote('0.34.0', '2026-11-02',
         'Add mid-turn Claude steering, restart-free effort controls, peer spawn remits, richer Android media and scheduling, and more reliable attachment and file-search flows; improve Windows archive recovery and DSH session restore.',
         '增加 Claude 回合中介入、无需重启的力度控制、对等会话派生参数、更丰富的 Android 媒体与定时发送能力，并改进附件和文件搜索流程；同时改进 Windows 归档恢复与 DSH 会话恢复。',
         [
