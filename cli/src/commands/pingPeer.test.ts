@@ -96,9 +96,9 @@ describe('handlePingPeerCommand receipts', () => {
     })
 
     it.each([
-        'steer not attempted: target was not active',
-        'steer rejected by hub: No active turn',
-        'steer not confirmed: Synthetic steer ACK lost'
+        'steer not attempted: target is idle',
+        'steer rejected by hub: Session not found',
+        'steer not confirmed; delivery unresolved: Steer outcome is being reconciled'
     ])('appends the auto steer note to an accepted receipt: %s', async (steerNote) => {
         vi.spyOn(tokenInit, 'initializeToken').mockResolvedValue(undefined)
         vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
@@ -111,6 +111,7 @@ describe('handlePingPeerCommand receipts', () => {
 
         expect(log).toHaveBeenCalledWith(expect.stringContaining(
             `consumes it (${steerNote})`))
+        expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/no message sent/i))
     })
 })
 

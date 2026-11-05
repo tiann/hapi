@@ -133,10 +133,15 @@ describe.each(flavors)('auto delivery to %s', (flavor) => {
     })
 
     it.each([
-        [{ status: 200, data: { status: 'failed', error: 'No active turn' } }, 'steer rejected by hub: No active turn'],
-        [{ status: 409, data: { error: 'Session became inactive' } }, 'steer rejected by hub: Session became inactive'],
-        [new Error('Synthetic steer ACK lost'), 'steer not confirmed: Synthetic steer ACK lost']
-    ] as const)('retains the one accepted row and says why when steer loses the race: %j', async (steer, steerNote) => {
+        [{ status: 200, data: { status: 'failed', error: 'Session not found', localId: null } }, 'steer rejected by hub: Session not found', 'stays queued'],
+        [{ status: 409, data: { error: 'Session became inactive' } }, 'steer rejected by hub: Session became inactive', 'stays queued'],
+        [{ status: 200, data: { status: 'failed', error: 'RPC timeout: steer-queued-message', localId: 'ping-peer-x' } },
+            'steer not confirmed; delivery unresolved: RPC timeout: steer-queued-message', 'delivery unresolved'],
+        [{ status: 200, data: { status: 'failed', error: 'Steer outcome is being reconciled', localId: 'ping-peer-x' } },
+            'steer not confirmed; delivery unresolved: Steer outcome is being reconciled', 'delivery unresolved'],
+        [{ status: 500, data: { error: 'Hub unavailable' } }, 'steer not confirmed; delivery unresolved: Hub unavailable', 'delivery unresolved'],
+        [new Error('Synthetic steer ACK lost'), 'steer not confirmed; delivery unresolved: Synthetic steer ACK lost', 'delivery unresolved']
+    ] as const)('retains the one accepted row and words the steer outcome by its evidence: %j', async (steer, steerNote, progressTail) => {
         const t = transport(target(flavor), { steer })
         const progress: string[] = []
         const result = await pingPeer({ ...t.input, deliveryMode: 'auto', onProgress: (m) => progress.push(m) })
@@ -145,7 +150,10 @@ describe.each(flavors)('auto delivery to %s', (flavor) => {
         expect(t.rows).toEqual([{ text: t.input.message, localId: result.localId }])
         expect(t.steers).toEqual([`http://hub.test/api/sessions/${sessionId}/messages/${result.localId}/steer`])
         expect(t.http.post.mock.calls).toHaveLength(3)
-        expect(progress).toContain(`${steerNote}; message stays queued as ${result.localId}`)
+        const line = progress.find((m) => m.startsWith(steerNote))
+        expect(line).toBeDefined()
+        expect(line).toContain(progressTail)
+        if (progressTail === 'delivery unresolved') expect(line).not.toContain('stays queued')
     })
 
     it.each([
@@ -214,5 +222,36 @@ describe('auto delivery to a legacy Cursor stream-json session', () => {
         expect(result.steerNote).toMatch(/^steer not attempted: /)
         expect(t.rows).toEqual([{ text: t.input.message, localId: result.localId }])
         expect(t.steers).toEqual([])
+    })
+})
+
+describe.each([
+    ['idle', { active: true, steering: false }, 'steer not attempted: target is idle'],
+    ['locally controlled', { active: true, steering: true, local: true }, 'steer not attempted: target is controlled locally'],
+] as const)('auto delivery to a %s target', (_label, shape, note) => {
+    it('accepts the message and explains the skipped steer without claiming nothing was sent', async () => {
+        const base = target('claude', shape.active, shape.steering)
+        const peer: PingPeerSessionSummary = 'local' in shape
+            ? { ...base, agentState: { ...base.agentState, controlledByUser: true } }
+            : base
+        const t = transport(peer)
+        const progress: string[] = []
+        const result = await pingPeer({ ...t.input, deliveryMode: 'auto', onProgress: (m) => progress.push(m) })
+        expect(result.delivery).toBe('accepted')
+        expect(result.steerNote).toBe(note)
+        expect(result.steerNote).not.toMatch(/no message sent/i)
+        expect(progress.join('\n')).not.toMatch(/no message sent/i)
+        expect(t.rows).toEqual([{ text: t.input.message, localId: result.localId }])
+        expect(t.steers).toEqual([])
+    })
+
+    it('still refuses an explicit steer with the pre-send wording', async () => {
+        const base = target('claude', shape.active, shape.steering)
+        const peer: PingPeerSessionSummary = 'local' in shape
+            ? { ...base, agentState: { ...base.agentState, controlledByUser: true } }
+            : base
+        const t = transport(peer)
+        await expect(pingPeer({ ...t.input, deliveryMode: 'steer' })).rejects.toThrow(/no message sent/)
+        expect(t.rows).toEqual([])
     })
 })

@@ -84,7 +84,7 @@ queued message, then tries the existing queued-message Steer action when the
 live target is eligible. A steer rejection or unconfirmed steer response retains
 that same accepted message without resending or retrying the action. The
 receipt and progress output say whether steering was not attempted, rejected by
-the Hub, or not confirmed. An
+the Hub, or not confirmed with delivery unresolved. An
 `accepted` receipt proves Hub acceptance, not whether the message remains queued
 or has already been consumed. Actual runtime acknowledgements determine delivery.
 

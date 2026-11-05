@@ -474,7 +474,14 @@ async function sendMessage(
                 if (steer.data?.status === 'invoked') return { delivery: 'invoked' }
             }
             const rejection: string = typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`
-            hubRejection = rejection
+            // Only a refusal before any native request is dispatched is definitive:
+            // an HTTP 4xx, or a Hub 'failed' reply without a localId. A 'failed' reply
+            // that carries a localId means the native steer was requested, and its
+            // timeout or "being reconciled" outcome leaves delivery unresolved.
+            const refusedBeforeDispatch = (steer.status >= 400 && steer.status < 500)
+                || (steer.status >= 200 && steer.status < 300
+                    && steer.data?.status === 'failed' && steer.data?.localId == null)
+            if (refusedBeforeDispatch) hubRejection = rejection
             throw new Error(rejection)
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error)
@@ -483,8 +490,10 @@ async function sendMessage(
             if (autoSteerFallback) {
                 const steerNote = hubRejection !== null
                     ? `steer rejected by hub: ${detail}`
-                    : `steer not confirmed: ${detail}`
-                onProgress?.(`${steerNote}; message stays queued as ${localId}`)
+                    : `steer not confirmed; delivery unresolved: ${detail}`
+                onProgress?.(hubRejection !== null
+                    ? `${steerNote}; message stays queued as ${localId}`
+                    : `${steerNote}; message accepted as ${localId}`)
                 return { delivery: 'accepted', steerNote }
             }
             throw new PingPeerError(
@@ -667,20 +676,35 @@ export function formatPeerSessionsList(
     return rows.join('\n')
 }
 
-function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
-    if (!session.active) {
-        return 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it'
-    }
-    if (!isSteeringSupportedForSession(session.metadata)) {
-        return 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions; no message sent'
-    }
-    if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) {
-        return 'Steering is only available for remote sessions; no message sent'
-    }
-    if (!hasActiveSteeringTurn(session)) {
-        return 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn'
-    }
+type SteeringIneligibility = 'inactive' | 'unsupported' | 'local' | 'idle'
+
+function getSteeringIneligibility(session: PingPeerSessionSummary): SteeringIneligibility | null {
+    if (!session.active) return 'inactive'
+    if (!isSteeringSupportedForSession(session.metadata)) return 'unsupported'
+    if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) return 'local'
+    if (!hasActiveSteeringTurn(session)) return 'idle'
     return null
+}
+
+// Explicit steer refuses before sending, so these texts say no message was sent.
+const EXPLICIT_STEER_REFUSAL: Record<SteeringIneligibility, string> = {
+    inactive: 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it',
+    unsupported: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions; no message sent',
+    local: 'Steering is only available for remote sessions; no message sent',
+    idle: 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn'
+}
+
+// Auto has already accepted the message, so its notes must not claim otherwise.
+const AUTO_NOT_ATTEMPTED: Record<SteeringIneligibility, string> = {
+    inactive: 'target is inactive',
+    unsupported: 'target does not support steering',
+    local: 'target is controlled locally',
+    idle: 'target is idle'
+}
+
+function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
+    const ineligibility = getSteeringIneligibility(session)
+    return ineligibility === null ? null : EXPLICIT_STEER_REFUSAL[ineligibility]
 }
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
@@ -771,6 +795,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     // Share supported-provider turn policy. Explicitly awakened/new peers queue
     // their message rather than opportunistically steering the resumed turn.
     const steeringError = getSteeringUnavailableReason(live)
+    const ineligibility = getSteeringIneligibility(live)
     const deliveryMode: MessageDeliveryMode = requestedDeliveryMode === 'auto'
         ? (matched.active && !resumed && steeringError === null ? 'steer' : 'queue')
         : requestedDeliveryMode
@@ -783,7 +808,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     const sent = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode, requestedDeliveryMode === 'auto', onProgress)
     // Auto queued without trying: say why, so a caller can tell it from a steer that failed.
     const steerNote = sent.steerNote ?? (requestedDeliveryMode === 'auto' && deliveryMode === 'queue'
-        ? `steer not attempted: ${resumed ? 'target was just resumed' : !matched.active ? 'target was not active' : steeringError ?? 'steering unavailable'}`
+        ? `steer not attempted: ${resumed ? 'target was just resumed' : !matched.active ? 'target was not active' : ineligibility ? AUTO_NOT_ATTEMPTED[ineligibility] : 'steering unavailable'}`
         : undefined)
     if (steerNote && sent.steerNote === undefined) onProgress?.(`${steerNote}; message queued`)
 
