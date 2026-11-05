@@ -50,6 +50,7 @@ export interface HapiMcpBridgeOptions {
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
     enableLinkPr?: boolean;
+    onChangeTitle?: (title: string) => void;
     /** Session project cwd for relative spawn_peer directories (Codex --cd aware). */
     workingDirectory?: string;
     skillLookup?: {
@@ -87,6 +88,7 @@ export async function buildHapiMcpBridge(
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
         enableLinkPr: options.enableLinkPr,
+        onChangeTitle: options.onChangeTitle,
         workingDirectory: options.workingDirectory ?? options.skillLookup?.workingDirectory,
         skillLookup: options.skillLookup
     });
