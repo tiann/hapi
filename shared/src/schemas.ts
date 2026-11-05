@@ -60,6 +60,10 @@ export const MetadataSchema = z.object({
     name: z.string().optional(),
     titleLocked: z.boolean().optional(),
     os: z.string().optional(),
+    // Set when the title was chosen via the hapi change_title MCP tool. ACP
+    // native session-title sync must not overwrite it, including after
+    // launcher recreation or session resume.
+    acpManualTitle: z.boolean().optional(),
     summary: MetadataSummarySchema.optional(),
     // Hub-owned marker: the automatic first-turn title fallback has been
     // attempted for this session. It prevents silent retries after failures.
@@ -352,6 +356,8 @@ export const DecryptedMessageSchema = z.object({
     // The agent was sent the steer but its final outcome could not be proven.
     // The row stays uninvoked and requires an explicit user resolution.
     deliveryState: z.literal('indeterminate').optional(),
+    // A live dispatch is still unconfirmed, but is not an invitation to resend.
+    deliveryPending: z.literal(true).optional(),
     // Live signal via messages-consumed (steered:true); not persisted by the hub.
     steered: z.boolean().optional()
 })
@@ -667,7 +673,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-indeterminate'),
-        localIds: z.array(z.string())
+        localIds: z.array(z.string()),
+        // Older clients conservatively retain the unresolved row.
+        dispatching: z.literal(true).optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('messages-requeued'),

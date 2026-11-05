@@ -390,6 +390,70 @@ describe('MessageService message pagination', () => {
         expect(third.id).toBeDefined()
     })
 
+    it('returns a bounded context around a searched message without scanning the full transcript into the response', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-context')
+        const messages = Array.from({ length: 105 }, (_, index) => {
+            const message = store.messages.addMessage(session.id, `message-${index}`, `local-${index}`)
+            store.messages.markMessagesInvoked(session.id, [`local-${index}`], (index + 1) * 1_000)
+            return message
+        })
+        const target = messages[54]!
+
+        const context = makeService(store).getMessageContext(session.id, target.id)
+
+        expect(context?.targetMessageId).toBe(target.id)
+        expect(context?.messages).toHaveLength(41)
+        expect(context?.messages[0]?.id).toBe(messages[34]!.id)
+        expect(context?.messages.at(-1)?.id).toBe(messages[74]!.id)
+        expect(context?.messages.map((message) => message.id)).toContain(target.id)
+        expect(context?.page).toMatchObject({
+            epoch: 0,
+            nextBeforeAt: 35_000,
+            nextBeforeSeq: messages[34]!.seq,
+            snapshotHeadAt: 105_000,
+            snapshotHeadSeq: messages[104]!.seq,
+            hasMore: true
+        })
+
+        const otherSession = makeSession(store, 'page-context-other')
+        expect(makeService(store).getMessageContext(otherSession.id, target.id)).toBeNull()
+    })
+
+    it('includes pending local messages without changing the context pagination cursor', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-context-pending')
+        const messages = Array.from({ length: 105 }, (_, index) => {
+            const message = store.messages.addMessage(session.id, `message-${index}`, `local-${index}`)
+            store.messages.markMessagesInvoked(session.id, [`local-${index}`], (index + 1) * 1_000)
+            return message
+        })
+        const target = messages[54]!
+        const immediate = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'pending immediate' } },
+            'pending-immediate'
+        )
+        const scheduled = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'pending scheduled' } },
+            'pending-scheduled',
+            Date.now() + 60_000
+        )
+
+        const context = makeService(store).getMessageContext(session.id, target.id)
+
+        expect(context?.messages.map((message) => message.id)).toEqual(expect.arrayContaining([
+            immediate.id,
+            scheduled.id,
+            target.id
+        ]))
+        expect(context?.page).toMatchObject({
+            nextBeforeAt: 35_000,
+            nextBeforeSeq: messages[34]!.seq
+        })
+    })
+
     it('breaks equal timestamp ties by seq', () => {
         const store = makeStore()
         const session = makeSession(store, 'page-tie')
@@ -1912,6 +1976,23 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
         expect(stillQueued.find((m) => m.localId === 'local-future')?.invokedAt).toBeNull()
     })
+})
+
+it('preserves live confirmation state when an idempotent send repeats the same durable input', async () => {
+    const store = makeStore()
+    const session = makeSession(store, 'duplicate-pending-input')
+    const events: SyncEvent[] = []
+    const service = new MessageService(store, {} as Server, { emit(event: SyncEvent) { events.push(event) } } as EventPublisher)
+    const message = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'correction' } }, 'same-local')
+    store.messages.setMessagesDeliveryState(session.id, ['same-local'], 'dispatching')
+    try {
+        await service.sendMessage(session.id, { text: 'correction', localId: 'same-local' })
+        const event = events.find(item => item.type === 'message-received')
+        if (!event || event.type !== 'message-received') throw new Error('missing message echo')
+        expect(event.message).toMatchObject({ id: message.id, localId: 'same-local', invokedAt: null, deliveryState: 'indeterminate', deliveryPending: true })
+        expect(store.messages.countMessages(session.id)).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('dispatching')
+    } finally { store.close() }
 })
 
 describe('observed read revision receipts', () => {
