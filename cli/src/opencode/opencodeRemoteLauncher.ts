@@ -265,6 +265,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private rewindConnectionStart: (() => void) | null = null;
     private entryFence: symbol | undefined;
     private entryEpoch = 0;
+    /** The in-memory checkpoint is newer than Hub's: a publication was withheld by the entry fence. */
+    private historyPublicationDeferred = false;
     private detachEntryHandoff: (() => void) | undefined;
     private drainReconnect: (() => void) | undefined;
     private rewindReconnectPending = false;
@@ -609,6 +611,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     const diverged = Boolean(metadata.conversationHistoryDiverged || this.conversationHistory.isDiverged());
                     if (diverged || this.runtimeGate.isBlocked()) delete capabilities.conversationHistory;
                     const publishSnapshot = !this.conversationHistory.isDisabled() && !this.runtimeGate.isBlocked();
+                    this.historyPublicationDeferred = !diverged && !this.conversationHistory.isDisabled() && !publishSnapshot
+                        && JSON.stringify(this.conversationHistory.getCheckpoint()) !== JSON.stringify(metadata.opencodeHistoryCheckpoint);
                     return {
                         ...metadata,
                         path: metadata?.path ?? session.path,
@@ -793,7 +797,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 historyDiverged = true;
                 await this.conversationHistory.disableFork();
             }
-            if (!historyDiverged && !this.runtimeGate.isRuntimeActive()) {
+            // A prompt admitted before the fence may have completed after the
+            // snapshots above were read. Its verified checkpoint is newer than
+            // Hub's and is published once the fence opens; restoring the stale
+            // snapshot would make that growth look unobserved.
+            if (!historyDiverged && !this.runtimeGate.isRuntimeActive() && !this.historyPublicationDeferred) {
                 this.conversationHistory.clearPromptIndexes();
                 this.conversationHistory.restoreCheckpoint(confirmed.metadata.opencodeHistoryCheckpoint);
                 this.conversationHistory.restorePromptIndexes(confirmed.metadata.conversationHistoryIndexes);

@@ -949,6 +949,74 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         } finally { finish?.(); session.queue.close(); await launcher; }
     });
 
+    it('keeps the checkpoint of a prompt that completes while reconnect verification is delayed', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
+        const rows: Array<{ id: string; type: string; text: string }> = [
+            { id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' }];
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1',
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: rows.map(row => row.id), userMessageIds: ['u1'], localMessageIds: [] },
+            conversationHistoryIndexes: { one: 0 }, capabilities: { conversationHistory: { rewindToMessage: true } } };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+            const url = String(input);
+            if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+            if (url.endsWith('/active')) return Response.json({ data: {} });
+            if (url.endsWith('/inbox')) return Response.json({ data: [] });
+            if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+            return Response.json({ data: { id: 'acp-session-1' } });
+        });
+        const gate = new OpenCodeRuntimeGate();
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
+        let dequeuedRelease: (() => void) | undefined;
+        session.queue.beforeDequeue = () => { dequeuedRelease = gate.enterRuntime(); };
+        Object.assign(session, { takeDequeuedRuntimeRelease: () => { const release = dequeuedRelease; dequeuedRelease = undefined; return release; } });
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        let promptRelease!: () => void; let reads = -1; let heldReadEntered = false; let releaseHeldRead!: () => void;
+        const promptHeld = new Promise<void>(resolve => { promptRelease = resolve; });
+        const heldRead = new Promise<void>(resolve => { releaseHeldRead = resolve; });
+        harness.promptImpl = () => promptHeld;
+        const readMetadata = session.client.readRewindMetadata.bind(session.client);
+        Object.assign(session.client, {
+            on: vi.fn((event: string, handler: () => void) => {
+                if (event === 'connection-start') start = handler;
+                if (event === 'connected') connected = handler;
+            }),
+            // The second read of an entry pass is the confirmation snapshot:
+            // hold it so the admitted prompt can finish while the fence is up.
+            readRewindMetadata: async () => {
+                if (reads >= 0 && ++reads === 2) { heldReadEntered = true; await heldRead; }
+                return readMetadata();
+            }
+        });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('fork-conversation')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            session.queue.push('two', createMode(), 'two');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(gate.isRuntimeActive()).toBe(true);
+            reads = 0; start!(); connected!();
+            await vi.waitFor(() => expect(heldReadEntered).toBe(true));
+            // The admitted prompt completes while reconnect still holds the fence.
+            rows.push({ id: 'u2', type: 'user', text: 'two' }, { id: 'a2', type: 'assistant', text: 'answer two' });
+            promptRelease();
+            await vi.waitFor(() => expect(gate.isRuntimeActive()).toBe(false));
+            expect(gate.isBlocked()).toBe(true);
+            releaseHeldRead();
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            await new Promise<void>(resolve => setTimeout(resolve, 50));
+            const metadata = harness.clientMetadata as Record<string, any>;
+            expect(metadata.conversationHistoryDiverged).toBeUndefined();
+            expect(metadata.opencodeHistoryCheckpoint?.userMessageIds).toEqual(['u1', 'u2']);
+            expect(metadata.conversationHistoryIndexes).toEqual({ one: 0, two: 1 });
+            expect(metadata.capabilities?.conversationHistory).toBeDefined();
+        } finally {
+            promptRelease(); releaseHeldRead(); harness.promptImpl = null;
+            gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore();
+        }
+    });
+
     it('holds real Hub pending recovery until an entry-time Stop and reset settle', async () => {
         harness.detectedVersion = 'v2'; harness.discoveredPort = 41234;
         harness.discoveredPassword = 'fixture-password'; harness.servePid = process.pid;
