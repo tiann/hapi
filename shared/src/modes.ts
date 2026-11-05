@@ -184,6 +184,16 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
     }))
 }
 
+type SteeringSessionMetadata = {
+    flavor?: string | null
+    cursorSessionId?: string | null
+    cursorSessionProtocol?: 'acp' | 'stream-json' | null
+}
+
+type SteeringCapability = {
+    supportsSession?: (metadata: SteeringSessionMetadata) => boolean
+}
+
 /**
  * Flavors that can deliver a queued message into an active turn on demand
  * (per-message "Steer" from the waiting queue), without waiting for full-turn end.
@@ -203,37 +213,37 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  */
 export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'opencode', 'pi'] as const
 
+type SteeringFlavor = typeof STEERING_SUPPORTED_FLAVORS[number]
+
+// Per-flavor steering support. Protocol restrictions live next to the flavor
+// they apply to instead of in a chain of flavor comparisons.
+const STEERING_CAPABILITIES = {
+    claude: {},
+    codex: {},
+    cursor: {
+        supportsSession: (metadata: SteeringSessionMetadata) =>
+            metadata.cursorSessionProtocol !== 'stream-json'
+            && (Boolean(metadata.cursorSessionProtocol) || !metadata.cursorSessionId)
+    },
+    opencode: {},
+    pi: {}
+} satisfies Record<SteeringFlavor, SteeringCapability>
+
+function getSteeringCapability(flavor?: string | null): SteeringCapability | undefined {
+    if (!flavor || !Object.hasOwn(STEERING_CAPABILITIES, flavor)) return undefined
+    return STEERING_CAPABILITIES[flavor as SteeringFlavor]
+}
+
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
-    return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
+    return getSteeringCapability(flavor) !== undefined
 }
 
 /**
- * Session-aware steer gate. Prefer this over {@link isSteeringSupportedForFlavor}
- * when metadata is available: legacy Cursor stream-json sessions advertise
- * flavor `cursor` but cannot steer.
- *
- * Matches CLI legacy detection: explicit `stream-json`, or a pre-ACP session
- * that has `cursorSessionId` without `cursorSessionProtocol: 'acp'`.
+ * Session-aware steer gate. Legacy Cursor stream-json sessions advertise
+ * flavor `cursor` but cannot steer, including pre-ACP sessions with only an id.
+ * Native admission and remote-control checks remain the caller's responsibility.
  */
-export function isSteeringSupportedForSession(metadata?: {
-    flavor?: string | null
-    cursorSessionId?: string | null
-    cursorSessionProtocol?: 'acp' | 'stream-json' | null
-} | null): boolean {
-    if (metadata?.flavor === 'claude'
-        || metadata?.flavor === 'codex'
-        || metadata?.flavor === 'opencode'
-        || metadata?.flavor === 'pi') {
-        return true
-    }
-    if (metadata?.flavor !== 'cursor') {
-        return false
-    }
-    if (metadata.cursorSessionProtocol === 'stream-json') {
-        return false
-    }
-    if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) {
-        return false
-    }
-    return true
+export function isSteeringSupportedForSession(metadata?: SteeringSessionMetadata | null): boolean {
+    const capability = getSteeringCapability(metadata?.flavor)
+    return capability !== undefined && (capability.supportsSession?.(metadata ?? {}) ?? true)
 }
