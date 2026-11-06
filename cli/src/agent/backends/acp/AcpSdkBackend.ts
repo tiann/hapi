@@ -186,6 +186,13 @@ export class AcpSdkBackend implements AgentBackend {
          * child in the background).
          */
         childSessionUpdates?: boolean;
+        /**
+         * Advertise `elicitation.form` so the agent may ask the user structured
+         * questions through `elicitation/create`. Opt-in because the handler
+         * for that request is flavor specific; without a handler the agent
+         * would wait on a request nobody answers.
+         */
+        elicitationForm?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -240,6 +247,7 @@ export class AcpSdkBackend implements AgentBackend {
                 clientCapabilities: {
                     fs: { readTextFile: false, writeTextFile: false },
                     terminal: false,
+                    ...(this.options.elicitationForm ? { elicitation: { form: {} } } : {}),
                     _meta: {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
                         // `model` + `fast` config options only when the client advertises
