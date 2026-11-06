@@ -28,6 +28,18 @@ function base64UrlToUint8Array(base64Url: string): Uint8Array {
  * VapidPkHashMismatch), so we compare and re-create them on the next load.
  */
 const PUSH_VAPID_KEY_STORAGE = 'hapi.push.vapidKey'
+const PUSH_DISABLED_STORAGE = 'hapi.push.disabled'
+
+export function pushNotificationsDisabled(): boolean {
+    try { return localStorage.getItem(PUSH_DISABLED_STORAGE) === 'true' } catch { return false }
+}
+
+function setPushNotificationsDisabled(disabled: boolean): void {
+    try {
+        if (disabled) localStorage.setItem(PUSH_DISABLED_STORAGE, 'true')
+        else localStorage.removeItem(PUSH_DISABLED_STORAGE)
+    } catch { /* Browser subscription remains the source of truth. */ }
+}
 
 function readStoredVapidKey(): string | null {
     try {
@@ -158,6 +170,7 @@ export function usePushNotifications(api: ApiClient | null) {
             // next load retries the replacement instead of reusing a
             // subscription the hub never learned about.
             writeStoredVapidKey(publicKey)
+            setPushNotificationsDisabled(false)
             setIsSubscribed(true)
             return true
         } catch (error) {
@@ -175,6 +188,7 @@ export function usePushNotifications(api: ApiClient | null) {
             const registration = await navigator.serviceWorker.ready
             const subscription = await registration.pushManager.getSubscription()
             if (!subscription) {
+                setPushNotificationsDisabled(true)
                 setIsSubscribed(false)
                 return true
             }
@@ -182,8 +196,9 @@ export function usePushNotifications(api: ApiClient | null) {
             const endpoint = subscription.endpoint
             const success = await subscription.unsubscribe()
             if (!success) return false
-            await api.unsubscribePushNotifications({ endpoint })
+            setPushNotificationsDisabled(true)
             setIsSubscribed(false)
+            await api.unsubscribePushNotifications({ endpoint })
             return true
         } catch (error) {
             console.error('[PushNotifications] Failed to unsubscribe:', error)
