@@ -117,9 +117,9 @@ HAPI supports push notifications to alert you when agents need attention.
 
 ### Enable Notifications
 
-1. Open HAPI - a permission popup appears automatically
-2. Tap **Allow** to enable notifications
-3. If you missed the popup, go to system settings to grant permission
+1. Open **Settings → General** and enable **Push notifications on this device**.
+2. Tap **Allow** in the browser permission prompt. On iPhone and iPad, first add HAPI to the Home Screen and open it there.
+3. If permission was blocked, allow notifications in the browser or device settings. You can turn off the subscription from the same HAPI setting.
 
 ### Notification Types
 

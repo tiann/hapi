@@ -4,7 +4,7 @@ import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { InfoIcon, ScheduleIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
-import { classifySessionAttention } from '@/lib/sessionAttention'
+import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
@@ -73,7 +73,7 @@ function getSessionTimeLabel(
  * Presentational session row — same chrome as the sidebar SessionItem body
  * (flavor icon with presence badge, title, request/schedule symbols, todos,
  * relative time, path). Visual language matches the native apps: no dimmed
- * rows or spinners; unread is a semibold title + accent time, not a dot.
+ * rows or spinners; unread sessions have a separate accent dot.
  * Used by the session list and by rich-composer mention chip tooltips.
  */
 export function SessionRowSummary(props: {
@@ -159,9 +159,10 @@ export function SessionRowSummary(props: {
     // work runs) instead of dimming disconnected rows or adding spinners.
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    // Unread is a semibold title plus accent time — no dot, so the presence
-    // badge stays the row's only dot. The label stays for screen readers.
-    const isUnread = attention?.kind === 'unread'
+    const isUnread = sessionIsUnread(s, {
+        lastSeenAt: getSessionLastSeenAt(s.id),
+        manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
+    })
     const requestKind = urgentAttention
         ? attention.kind as 'permission' | 'input'
         : s.active && (s.pendingRequestsCount ?? 0) > 0
@@ -202,9 +203,12 @@ export function SessionRowSummary(props: {
                             {sessionName}
                         </div>
                         {isUnread ? (
-                            <span id={nestedTooltips ? attentionId : undefined} className="sr-only">
-                                {attentionLabel}
-                            </span>
+                            <>
+                                <span data-testid="session-unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" />
+                                <span id={attention?.kind === 'unread' && nestedTooltips ? attentionId : undefined} className="sr-only">
+                                    {t('session.item.newActivity')}
+                                </span>
+                            </>
                         ) : null}
                         {requestKind && urgentAttention && nestedTooltips && attentionId ? (
                             <SessionAttentionIndicator
