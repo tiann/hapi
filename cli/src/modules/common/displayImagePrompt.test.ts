@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest'
+import { HAPI_MCP_BRIDGE_PROMPT } from './hapiMcpBridgePrompt'
 import {
     DISPLAY_IMAGE_PROMPT_CLAUDE,
     DISPLAY_IMAGE_PROMPT_CODEX,
     DISPLAY_IMAGE_PROMPT_CURSOR,
-    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
+    DISPLAY_MEDIA_PROMPT_CLAUDE,
+    DISPLAY_MEDIA_PROMPT_CODEX,
+    DISPLAY_MEDIA_PROMPT_CURSOR,
+    DISPLAY_TOOLS_PROMPT_HAPI_MCP,
+    DISPLAY_VIDEO_PROMPT_CLAUDE,
+    DISPLAY_VIDEO_PROMPT_CODEX,
+    DISPLAY_VIDEO_PROMPT_CURSOR,
 } from './displayImagePrompt'
 
 const displayImagePrompts = [
     DISPLAY_IMAGE_PROMPT_CLAUDE,
     DISPLAY_IMAGE_PROMPT_CODEX,
-    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
     DISPLAY_IMAGE_PROMPT_CURSOR,
 ]
 
@@ -27,7 +33,55 @@ describe('display_image prompt semantics', () => {
     it('keeps each agent flavor instruction pointed at the corresponding tool alias', () => {
         expect(DISPLAY_IMAGE_PROMPT_CLAUDE).toContain('mcp__hapi__display_image')
         expect(DISPLAY_IMAGE_PROMPT_CODEX).toContain('functions.hapi__display_image')
-        expect(DISPLAY_IMAGE_PROMPT_HAPI_MCP).toContain('hapi_display_image')
         expect(DISPLAY_IMAGE_PROMPT_CURSOR).toContain('"display_image"')
+    })
+})
+
+const BLOCK_HEADER = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.'
+
+function countOccurrences(text: string, needle: string): number {
+    return text.split(needle).length - 1
+}
+
+describe('HAPI display tools block (OpenCode)', () => {
+    it('names all three tools once and explains the direct and Code Mode calls', () => {
+        expect(countOccurrences(DISPLAY_TOOLS_PROMPT_HAPI_MCP, BLOCK_HEADER)).toBe(1)
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('hapi_<tool>')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('tools.hapi.<tool>')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('`await tools.hapi.<tool>({ path })`')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('`execute`')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('Do not guess other names')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP.indexOf('hapi_<tool>')).toBeLessThan(DISPLAY_TOOLS_PROMPT_HAPI_MCP.indexOf('tools.hapi.<tool>'))
+    })
+
+    it('says display_image only shows the image to the user', () => {
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('display_image only shows the image to the user; it does not let you see or analyze it.')
+    })
+
+    it('does not advertise aliases that OpenCode may not expose', () => {
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).not.toContain('mcp__hapi__')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).not.toContain('equivalent alias')
+    })
+
+    it('is part of the bridge prompt exactly once', () => {
+        expect(countOccurrences(HAPI_MCP_BRIDGE_PROMPT, BLOCK_HEADER)).toBe(1)
+    })
+})
+
+describe('display prompts for other agents', () => {
+    it('keep their own tool names and never mention Code Mode', () => {
+        const others = [
+            DISPLAY_IMAGE_PROMPT_CLAUDE, DISPLAY_VIDEO_PROMPT_CLAUDE, DISPLAY_MEDIA_PROMPT_CLAUDE,
+            DISPLAY_IMAGE_PROMPT_CODEX, DISPLAY_VIDEO_PROMPT_CODEX, DISPLAY_MEDIA_PROMPT_CODEX,
+            DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR,
+        ]
+        for (const prompt of others) {
+            expect(prompt).not.toContain('Code Mode')
+            expect(prompt).not.toContain('tools.hapi.')
+            expect(prompt).not.toContain('`execute`')
+        }
+        expect(DISPLAY_VIDEO_PROMPT_CLAUDE).toContain('mcp__hapi__display_video')
+        expect(DISPLAY_MEDIA_PROMPT_CODEX).toContain('functions.hapi__display_media')
+        expect(DISPLAY_MEDIA_PROMPT_CURSOR).toContain('"display_media"')
     })
 })
