@@ -755,6 +755,8 @@ export default {
   'queuedMessages.editCurrentDraftKept': '队列消息已取消，已保留当前草稿和定时设置。',
   'queuedMessages.steer': '立即插入当前回合',
   'queuedMessages.steerFailed': '插入失败，消息仍在队列中',
+  'queuedMessages.steerRequesting': '正在请求发送…',
+  'queuedMessages.deliveryPending': '等待代理确认接收',
   'queuedMessages.steerOutcomeUnknown': '发送结果未知，请明确重试或取消',
   'queuedMessages.compactionPending': '正在压缩上下文，等待消息接收确认',
   'queuedMessages.retryOutcome': '重试不确定的消息发送',
