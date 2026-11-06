@@ -584,6 +584,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             backend,
             () => session.getPermissionMode() as PermissionMode | undefined
         );
+        // Archive and SIGTERM end the process through the runner lifecycle. A
+        // question form the user never answered would otherwise leave OpenCode
+        // waiting and the request pending in the session state.
+        session.setKillHandler(() => this.permissionHandler?.cancelAll('Session terminated'));
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode);
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
