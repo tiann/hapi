@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 
 function isPushSupported(): boolean {
@@ -29,6 +29,11 @@ function base64UrlToUint8Array(base64Url: string): Uint8Array {
  */
 const PUSH_VAPID_KEY_STORAGE = 'hapi.push.vapidKey'
 const PUSH_DISABLED_STORAGE = 'hapi.push.disabled'
+const PUSH_SUBSCRIPTION_CHANGED = 'hapi.push.subscriptionChanged'
+
+function notifySubscriptionChanged(): void {
+    window.dispatchEvent(new Event(PUSH_SUBSCRIPTION_CHANGED))
+}
 
 export function pushNotificationsDisabled(): boolean {
     try { return localStorage.getItem(PUSH_DISABLED_STORAGE) === 'true' } catch { return false }
@@ -61,8 +66,10 @@ export function usePushNotifications(api: ApiClient | null) {
     const [isSupported, setIsSupported] = useState(false)
     const [permission, setPermission] = useState<NotificationPermission>('default')
     const [isSubscribed, setIsSubscribed] = useState(false)
+    const refreshVersion = useRef(0)
 
     const refreshSubscription = useCallback(async () => {
+        const version = ++refreshVersion.current
         if (!isPushSupported()) {
             setIsSupported(false)
             setIsSubscribed(false)
@@ -89,11 +96,19 @@ export function usePushNotifications(api: ApiClient | null) {
                 // the doubt rather than showing a false "off" state.
             }
         }
-        setIsSubscribed(Boolean(subscription) && keyMatches)
+        if (version === refreshVersion.current) {
+            setIsSubscribed(Boolean(subscription) && keyMatches)
+        }
     }, [api])
 
     useEffect(() => {
+        const onChange = () => { void refreshSubscription() }
+        window.addEventListener(PUSH_SUBSCRIPTION_CHANGED, onChange)
         void refreshSubscription()
+        return () => {
+            window.removeEventListener(PUSH_SUBSCRIPTION_CHANGED, onChange)
+            refreshVersion.current += 1
+        }
     }, [refreshSubscription])
 
     const requestPermission = useCallback(async (): Promise<boolean> => {
@@ -176,6 +191,8 @@ export function usePushNotifications(api: ApiClient | null) {
         } catch (error) {
             console.error('[PushNotifications] Failed to subscribe:', error)
             return false
+        } finally {
+            notifySubscriptionChanged()
         }
     }, [api])
 
@@ -203,6 +220,8 @@ export function usePushNotifications(api: ApiClient | null) {
         } catch (error) {
             console.error('[PushNotifications] Failed to unsubscribe:', error)
             return false
+        } finally {
+            notifySubscriptionChanged()
         }
     }, [api])
 
