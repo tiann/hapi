@@ -46,7 +46,7 @@ describe('ExternalRefSchema', () => {
             estateCode: 'babysit.green'
         })
         expect(parsed.success).toBe(true)
-        if (parsed.success) {
+        if (parsed.success && parsed.data.kind === 'github_pr') {
             expect(parsed.data.merge).toBe('clean')
             expect(parsed.data.estateCode).toBe('babysit.green')
         }
@@ -430,8 +430,8 @@ describe('upsertGithubPrIntoExternalRefs', () => {
         expect(next).toEqual(expect.arrayContaining([github, ghes]))
         // Cached health must not bleed across hosts.
         const ghesStored = next.find((ref) => ref.url.includes('acme.ghe.com'))
-        expect(ghesStored?.checks).toBe('fail')
-        expect(ghesStored?.statusCheckedAt).toBe(200)
+        expect(ghesStored && 'checks' in ghesStored ? ghesStored.checks : undefined).toBe('fail')
+        expect(ghesStored && 'statusCheckedAt' in ghesStored ? ghesStored.statusCheckedAt : undefined).toBe(200)
     })
 
     // Review finding (hapi#2147): host identity was derived via `.hostname`,
@@ -460,8 +460,8 @@ describe('upsertGithubPrIntoExternalRefs', () => {
         expect(next).toHaveLength(2)
         expect(next).toEqual(expect.arrayContaining([port8443, port9443]))
         const port9443Stored = next.find((ref) => ref.url.includes(':9443'))
-        expect(port9443Stored?.checks).toBe('fail')
-        expect(port9443Stored?.statusCheckedAt).toBe(200)
+        expect(port9443Stored && 'checks' in port9443Stored ? port9443Stored.checks : undefined).toBe('fail')
+        expect(port9443Stored && 'statusCheckedAt' in port9443Stored ? port9443Stored.statusCheckedAt : undefined).toBe(200)
     })
 })
 

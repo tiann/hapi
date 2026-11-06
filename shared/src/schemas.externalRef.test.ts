@@ -134,7 +134,7 @@ describe('parseIssueUrl', () => {
 
 describe('upsertExternalRef', () => {
     function makeRef(overrides: Partial<ExternalRef> = {}): ExternalRef {
-        return { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1, ...overrides }
+        return { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1, ...overrides } as ExternalRef
     }
 
     it('appends a ref for a new repo+number', () => {
@@ -180,7 +180,7 @@ describe('upsertExternalRef', () => {
 
 describe('mergeExternalRefs', () => {
     function makeRef(overrides: Partial<ExternalRef> = {}): ExternalRef {
-        return { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1, ...overrides }
+        return { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1, ...overrides } as ExternalRef
     }
 
     it('keeps everything from base plus anything incoming-only', () => {
@@ -205,7 +205,7 @@ describe('mergeExternalRefs', () => {
     })
 
     it('merges github_pr refs too, not just github_issue', () => {
-        const prRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/100', repo: 'heavygee/hapi', number: 100 }
+        const prRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/100', repo: 'heavygee/hapi', number: 100, role: 'primary' }
         const result = mergeExternalRefs([], [prRef])
         expect(result).toEqual([prRef])
     })
@@ -213,7 +213,7 @@ describe('mergeExternalRefs', () => {
 
 describe('reconcileExternalRefs', () => {
     function makeRef(overrides: Partial<ExternalRef> = {}): ExternalRef {
-        return { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1, ...overrides }
+        return { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1, ...overrides } as ExternalRef
     }
 
     it('keeps everything from prior plus anything next-only', () => {
@@ -235,14 +235,14 @@ describe('reconcileExternalRefs', () => {
         // extra fields directly in storage; a routine CLI metadata write
         // built before that update landed must not roll it back just
         // because array length/identity alone looked unchanged.
-        const freshPrRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, linkedAt: 5, status: 'merged' } as ExternalRef
-        const stalePrRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, linkedAt: 5, status: 'open' } as ExternalRef
+        const freshPrRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', linkedAt: 5, openState: 'merged' }
+        const stalePrRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', linkedAt: 5, openState: 'open' }
         expect(reconcileExternalRefs([freshPrRef], [stalePrRef])).toEqual([freshPrRef])
     })
 
     it('defaults to prior when neither side has a comparable linkedAt', () => {
-        const priorRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9 } as ExternalRef
-        const nextRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, status: 'merged' } as ExternalRef
+        const priorRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary' }
+        const nextRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', openState: 'merged' }
         expect(reconcileExternalRefs([priorRef], [nextRef])).toEqual([priorRef])
     })
 
@@ -256,14 +256,17 @@ describe('reconcileExternalRefs', () => {
         // test), but wrong here: this is the refresh ARRIVING as `next`
         // through the normal write path, and discarding it left the cached
         // chip status stuck on stale data forever.
-        const staleRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, linkedAt: 5, status: 'open', statusCheckedAt: 100 } as ExternalRef
-        const freshRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, linkedAt: 5, status: 'merged', statusCheckedAt: 200 } as ExternalRef
+        const staleRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', linkedAt: 5, openState: 'open', statusCheckedAt: 100 }
+        const freshRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', linkedAt: 5, openState: 'merged', statusCheckedAt: 200 }
         expect(reconcileExternalRefs([staleRef], [freshRef])).toEqual([freshRef])
     })
 
+    // statusCheckedAt is a github_pr-only tiebreaker field (see
+    // refFreshnessKey's comment in schemas.ts) — github_issue has no
+    // equivalent, so this scenario only makes sense for github_pr refs.
     it('still prefers a higher linkedAt over a higher statusCheckedAt — linkedAt is the primary clock', () => {
-        const priorRef = { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/9', repo: 'heavygee/hapi', number: 9, linkedAt: 10, statusCheckedAt: 500 } as ExternalRef
-        const nextRef = { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/9', repo: 'heavygee/hapi', number: 9, linkedAt: 5, statusCheckedAt: 999 } as ExternalRef
+        const priorRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', linkedAt: 10, statusCheckedAt: 500 }
+        const nextRef: ExternalRef = { kind: 'github_pr', url: 'https://github.com/heavygee/hapi/pull/9', repo: 'heavygee/hapi', number: 9, role: 'primary', linkedAt: 5, statusCheckedAt: 999 }
         expect(reconcileExternalRefs([priorRef], [nextRef])).toEqual([priorRef])
     })
 })

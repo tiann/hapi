@@ -14,7 +14,7 @@ describe('resolvePrChipDisplay', () => {
         const withSnapshot = {
             ...ref,
             openState: 'open' as const,
-            checks: 'passing' as const,
+            checks: 'pass' as const,
             merge: 'clean' as const
         }
 
@@ -34,7 +34,7 @@ describe('resolvePrChipDisplay', () => {
                 linkedAt: 1
             }),
             openState: 'open' as const,
-            checks: 'passing' as const,
+            checks: 'pass' as const,
             merge: 'clean' as const,
             statusCheckedAt: now - 60_000
         }
