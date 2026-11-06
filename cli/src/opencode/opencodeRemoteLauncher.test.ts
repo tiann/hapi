@@ -2607,6 +2607,24 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await launcherPromise;
     });
 
+    it('surfaces a question OpenCode could not show as a failed tool result with its message', async () => {
+        const { session, agentMessages } = createSessionStub([{ message: 'first', mode: createMode() }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        while (!harness.events.includes('prompt:start')) await new Promise<void>(resolve => setImmediate(resolve));
+        const unshown = "The question couldn't be shown to the user in this client. Continue without an answer.";
+
+        harness.promptOnMessage!({ type: 'tool_call', id: 'call-question', name: 'question', status: 'failed', input: { questions: [] } });
+        harness.promptOnMessage!({ type: 'tool_result', id: 'call-question', status: 'failed', output: { error: unshown } });
+
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call', callId: 'call-question', name: 'AskUserQuestion', status: 'failed'
+        }));
+        expect(agentMessages).toContainEqual({
+            type: 'tool-call-result', callId: 'call-question', output: { error: unshown }, is_error: true
+        });
+        await launcherPromise;
+    });
+
     describe('pending question forms are cancelled', () => {
         it('when the turn ends', async () => {
             const { session } = createSessionStub([{ message: 'first', mode: createMode() }]);
