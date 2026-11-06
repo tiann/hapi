@@ -269,6 +269,7 @@ function createAbortSession(queue: MessageQueue2<CopilotTestMode>) {
             },
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
+            getMetadata: () => ({}),
             updateMetadata: vi.fn(),
             emitMessagesConsumed: vi.fn(),
         },
