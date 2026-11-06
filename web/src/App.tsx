@@ -13,7 +13,7 @@ import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
 import { useSyncingState } from '@/hooks/useSyncingState'
-import { usePushNotifications } from '@/hooks/usePushNotifications'
+import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
@@ -194,7 +194,7 @@ function AppInner() {
         isLoading: appBadgeSessionsLoading,
         hasError: Boolean(appBadgeSessionsError),
     })
-    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
+    const { isSupported: isPushSupported, permission: pushPermission, subscribe } = usePushNotifications(api)
 
     useEffect(() => {
         if (baseUrlRef.current === baseUrl) {
@@ -236,20 +236,13 @@ function AppInner() {
         pushPromptedRef.current = true
 
         const run = async () => {
-            if (pushPermission === 'granted') {
+            if (pushPermission === 'granted' && !pushNotificationsDisabled()) {
                 await subscribe()
-                return
-            }
-            if (pushPermission === 'default') {
-                const granted = await requestPermission()
-                if (granted) {
-                    await subscribe()
-                }
             }
         }
 
         void run()
-    }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
+    }, [api, isPushSupported, pushPermission, subscribe, token])
 
     const handleSseConnect = useCallback((info: { resumed: boolean }) => {
         // Clear disconnected state on successful connection

@@ -12,6 +12,7 @@ import type { ResolvedPeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { CompanionPairing } from '@/components/settings/CompanionPairing'
+import { PushNotificationsControl } from '@/components/settings/PushNotificationsControl'
 import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { useFeatures, usePatchFeatures } from '@/hooks/queries/useFeatures'
 import { isOwnerNamespace } from '@/lib/namespace'
@@ -79,6 +80,9 @@ export default function SettingsGeneralPage() {
         <SettingsPageContent description={t('settings.general.description')}>
             <SettingsSection title={t('settings.language.label')}>
                 <SettingsChoiceGroup hideLabel label={t('settings.language.label')} value={locale} options={locales} onChange={setLocale} />
+            </SettingsSection>
+            <SettingsSection title={t('settings.notifications.title')}>
+                <PushNotificationsControl />
             </SettingsSection>
             {isOwner ? (
                 <SettingsSection title={t('settings.general.githubPrAwareness')}>
