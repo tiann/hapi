@@ -1,5 +1,5 @@
 import { asString, isObject } from '@hapi/protocol';
-import type { FormElicitationContent } from '@/agent/types';
+import type { AgentMessage, FormElicitationContent } from '@/agent/types';
 
 /**
  * OpenCode (v2) asks `question` tool calls through ACP `elicitation/create`.
@@ -160,5 +160,19 @@ export function normalizeQuestionToolInput(input: unknown): unknown {
             const { multiple, ...rest } = question;
             return { ...rest, multiSelect: multiple === true };
         })
+    };
+}
+
+/**
+ * Presents OpenCode's native `question` tool call as `AskUserQuestion`, so the
+ * request raised for it (same tool call id) and the tool card agree on one
+ * tool name and one input shape.
+ */
+export function presentQuestionToolCall(message: AgentMessage): AgentMessage {
+    if (message.type !== 'tool_call' || message.name !== OPENCODE_QUESTION_TOOL_NAME) return message;
+    return {
+        ...message,
+        name: QUESTION_DISPLAY_TOOL_NAME,
+        input: normalizeQuestionToolInput(message.input)
     };
 }

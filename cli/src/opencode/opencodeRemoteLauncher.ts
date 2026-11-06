@@ -48,6 +48,7 @@ import {
     type OpencodeRetryStatus
 } from './utils/opencodeEventStream';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
+import { presentQuestionToolCall } from './utils/opencodeQuestion';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
@@ -2092,7 +2093,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private handleAgentMessage(message: AgentMessage): void {
+    private handleAgentMessage(rawMessage: AgentMessage): void {
+        const message = presentQuestionToolCall(rawMessage);
         // v1 ACP strips the native summary/parent metadata (and old versions
         // strip message IDs too). The native transcript owns these text streams.
         if (this.nativeTranscript && this.majorVersion === 'v1' && (message.type === 'text' || message.type === 'reasoning')) return;

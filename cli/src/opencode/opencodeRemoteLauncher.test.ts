@@ -2570,6 +2570,36 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await launcherPromise;
         addMessage.mockRestore();
     });
+
+    it('forwards the native question tool as AskUserQuestion with the multiSelect flag the web reads', async () => {
+        const { session, agentMessages } = createSessionStub([{ message: 'first', mode: createMode() }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        while (!harness.events.includes('prompt:start')) await new Promise<void>(resolve => setImmediate(resolve));
+
+        harness.promptOnMessage!({
+            type: 'tool_call',
+            id: 'call-question',
+            name: 'question',
+            status: 'in_progress',
+            input: { questions: [{ header: '승인', question: '진행할까요?', options: [{ label: '승인', description: 'ok' }], multiple: true }] }
+        });
+        harness.promptOnMessage!({
+            type: 'tool_call',
+            id: 'call-other',
+            name: 'bash',
+            status: 'in_progress',
+            input: { command: 'ls' }
+        });
+
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            callId: 'call-question',
+            name: 'AskUserQuestion',
+            input: { questions: [{ header: '승인', question: '진행할까요?', options: [{ label: '승인', description: 'ok' }], multiSelect: true }] }
+        }));
+        expect(agentMessages).toContainEqual(expect.objectContaining({ type: 'tool-call', callId: 'call-other', name: 'bash' }));
+        await launcherPromise;
+    });
 });
 
 describe('selectAbortStatusMessage', () => {
