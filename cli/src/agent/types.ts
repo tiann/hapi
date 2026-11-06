@@ -80,6 +80,23 @@ export type PermissionResponse =
     | { outcome: 'selected'; optionId: string }
     | { outcome: 'cancelled' };
 
+/** Agent-initiated `elicitation/create` in form mode (structured user input). */
+export type FormElicitationRequest = {
+    sessionId: string;
+    /** Tool call that triggered the form, when the agent links one. */
+    toolCallId?: string;
+    message: string;
+    /** JSON-Schema-like object schema; shape is owned by the agent. */
+    requestedSchema: unknown;
+};
+
+export type FormElicitationContent = Record<string, string | number | boolean | string[]>;
+
+/** `cancel` covers every non-answer: dismissed, aborted, or unavailable. */
+export type FormElicitationResponse =
+    | { action: 'accept'; content: FormElicitationContent }
+    | { action: 'cancel' };
+
 export type AgentSessionModelDescriptor = {
     modelId: string;
     name?: string;
@@ -109,6 +126,12 @@ export interface AgentBackend {
     cancelPrompt(sessionId: string): Promise<void>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;
     onPermissionRequest(handler: (request: PermissionRequest) => void): void;
+    /**
+     * Register the handler for agent form elicitations. The returned promise
+     * stays pending until the user answers; backends settle it with `cancel`
+     * on abort and disconnect.
+     */
+    onFormElicitation?(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void;
     disconnect(): Promise<void>;
 }
 
