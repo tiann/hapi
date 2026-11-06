@@ -1853,6 +1853,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const header = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.';
         expect(JSON.stringify(harness.promptContents[0]).split(header)).toHaveLength(2);
         expect(JSON.stringify(harness.promptContents[0])).toContain('tools.hapi.<tool>');
+        expect(JSON.stringify(harness.promptContents[0])).toContain('do not display those again unless the user asks');
         expect(JSON.stringify(harness.promptContents[1])).not.toContain(header);
     });
 

@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { ensureOpencodeConfig } from './opencodeConfig'
 import { getOpencodeNativeToolInstruction, getTitleInstruction, TITLE_INSTRUCTION } from './systemPrompt'
 
+const SCOPE_BULLET = "- Use them for files you created, or found on the user's behalf, that the user has not been shown. Files the user attached, pasted, or pointed you to are already visible to them, so do not display those again unless the user asks."
+
 const BLOCK_HEADER = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.'
 
 function expectDisplayToolsBlockOnce(text: string): void {
@@ -13,6 +15,7 @@ function expectDisplayToolsBlockOnce(text: string): void {
         expect(text).toContain(tool)
     }
     expect(text).toContain('`await tools.hapi.<tool>({ path })`')
+    expect(text.split(SCOPE_BULLET)).toHaveLength(2)
     expect(text).toContain('`execute`')
 }
 

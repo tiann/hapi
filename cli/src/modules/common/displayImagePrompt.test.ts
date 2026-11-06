@@ -37,6 +37,8 @@ describe('display_image prompt semantics', () => {
     })
 })
 
+const SCOPE_BULLET = "- Use them for files you created, or found on the user's behalf, that the user has not been shown. Files the user attached, pasted, or pointed you to are already visible to them, so do not display those again unless the user asks."
+
 const BLOCK_HEADER = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.'
 
 function countOccurrences(text: string, needle: string): number {
@@ -52,6 +54,15 @@ describe('HAPI display tools block (OpenCode)', () => {
         expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('`execute`')
         expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('Do not guess other names')
         expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP.indexOf('hapi_<tool>')).toBeLessThan(DISPLAY_TOOLS_PROMPT_HAPI_MCP.indexOf('tools.hapi.<tool>'))
+    })
+
+    it('limits the tools to files the user has not been shown, unless the user asks', () => {
+        expect(countOccurrences(DISPLAY_TOOLS_PROMPT_HAPI_MCP, SCOPE_BULLET)).toBe(1)
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).toContain('unless the user asks')
+        expect(DISPLAY_TOOLS_PROMPT_HAPI_MCP).not.toContain('never')
+        const bullets = DISPLAY_TOOLS_PROMPT_HAPI_MCP.split('\n')
+        expect(bullets[1]).toBe(SCOPE_BULLET)
+        expect(countOccurrences(HAPI_MCP_BRIDGE_PROMPT, SCOPE_BULLET)).toBe(1)
     })
 
     it('says display_image only shows the image to the user', () => {
@@ -79,6 +90,7 @@ describe('display prompts for other agents', () => {
             expect(prompt).not.toContain('Code Mode')
             expect(prompt).not.toContain('tools.hapi.')
             expect(prompt).not.toContain('`execute`')
+            expect(prompt).not.toContain('already visible to them')
         }
         expect(DISPLAY_VIDEO_PROMPT_CLAUDE).toContain('mcp__hapi__display_video')
         expect(DISPLAY_MEDIA_PROMPT_CODEX).toContain('functions.hapi__display_media')

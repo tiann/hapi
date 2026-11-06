@@ -50,6 +50,7 @@ export const DISPLAY_MEDIA_PROMPT_CURSOR = trimIdent(`
  */
 export const DISPLAY_TOOLS_PROMPT_HAPI_MCP = trimIdent(`
     HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.
+    - Use them for files you created, or found on the user's behalf, that the user has not been shown. Files the user attached, pasted, or pointed you to are already visible to them, so do not display those again unless the user asks.
     - To call one: if hapi_<tool> is in your tool list, call it directly. Otherwise, if your Code Mode catalog lists tools.hapi.<tool>, call \`await tools.hapi.<tool>({ path })\` inside the \`execute\` tool. Do not guess other names.
     - display_image only shows the image to the user; it does not let you see or analyze it.
 `);
