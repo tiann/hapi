@@ -362,17 +362,24 @@ describe('SyncEngine wake requeue on machine-updated (#1489)', () => {
                 null,
                 'default'
             )
-            // Simulate expiry / offline before reconnect.
-            ;(store as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } })
-                .db.prepare('UPDATE machines SET active = 0, active_at = ? WHERE id = ?')
-                .run(Date.now() - 60_000, machine.id)
             const machines = (engine as unknown as {
                 machineCache: {
                     refreshMachine: (id: string) => { active?: boolean; runnerStateVersion: number } | null
-                    getMachine: (id: string) => { active?: boolean; runnerStateVersion: number } | undefined
+                    getMachine: (id: string) => {
+                        active?: boolean
+                        activeAt?: number
+                        runnerStateVersion: number
+                    } | undefined
+                    expireInactive: (now?: number) => void
                 }
             }).machineCache
-            machines.refreshMachine(machine.id)
+            // Production offline is memory-only (expireInactive); SQLite stays
+            // active=1 until the next runner-state write. Mirror that so the
+            // refreshMachine activeAt merge matches reconnect.
+            const cached = machines.getMachine(machine.id)!
+            cached.active = true
+            cached.activeAt = Date.now() - 60_000
+            machines.expireInactive(Date.now())
             expect(machines.getMachine(machine.id)?.active).toBe(false)
 
             let requeues = 0
