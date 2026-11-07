@@ -71,9 +71,9 @@ export async function setup() {
         writeFileSync(stubClaudePath, '#!/bin/sh\nexec sleep 300\n', { mode: 0o755 })
     }
 
-    // Use a minimal env whitelist to prevent shell credentials (DB_PATH,
-    // TELEGRAM_BOT_TOKEN, ELEVENLABS_API_KEY, etc.) from leaking into the
-    // test hub and triggering real notifications or opening a production DB.
+    // Minimal env whitelist so production credentials never reach the test hub.
+    // The hub child also carries HAPI_TEST_MARKER so reapTestOwnedProcesses can
+    // find leaked hub PIDs even when the parent ChildProcess handle is lost.
     const hubEnv: NodeJS.ProcessEnv = {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
@@ -87,6 +87,7 @@ export async function setup() {
         CLI_API_TOKEN: token,
         TELEGRAM_NOTIFICATION: 'false',
         SERVERCHAN_NOTIFICATION: 'false',
+        [TEST_OWNED_MARKER_KEY]: tmpHome,
     }
 
     // Write config so setupFile.ts can inject env vars into each test worker
@@ -126,11 +127,11 @@ export async function teardown() {
     await stopHubProcess()
     try { rmSync(TEST_CONFIG_FILE) } catch {}
 
-    // Final audit: test children carry `HAPI_TEST_MARKER=<tmpHome>` in their
-    // environment (see integrationEnv.ts). Anything still alive after the
-    // suites ran is a test-owned leak — reap it, then fail the run with
-    // PID/command diagnostics if something could not be reaped. The temp home
-    // is always removed so a leak cannot also accumulate DB rows on disk.
+    // Final audit: the test hub and CLI workers carry `HAPI_TEST_MARKER=<tmpHome>`
+    // (see integrationEnv.ts). Anything still alive after the suites ran is a
+    // test-owned leak — reap it, then fail the run with PID/command diagnostics
+    // if something could not be reaped. The temp home is always removed so a
+    // leak cannot also accumulate DB rows on disk.
     let auditError: Error | null = null
     if (tmpHome && process.platform !== 'win32') {
         try {
