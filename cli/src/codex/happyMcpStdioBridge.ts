@@ -20,7 +20,10 @@ import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from '@/modules/common/displayImagePrompt';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
+  LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
+  LIST_PEERS_TOOL_DESCRIPTION,
   PEER_DELIVERY_MODE_DESCRIPTION,
+  PEER_WAKE_PARAM_DESCRIPTION,
   PING_PEER_TOOL_DESCRIPTION,
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
   SPAWN_PEER_TOOL_DESCRIPTION,
@@ -219,6 +222,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
       deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
+      wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('ping_peer')) {
@@ -332,13 +336,14 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       limit: z.number().int().min(1).max(100).optional().describe(
         'Max sessions to return (default 30, max 100). Newest updatedAt first.'
       ),
+      includeInactive: z.boolean().optional().describe(LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('list_peers')) {
       server.registerTool<any, any>(
         'list_peers',
         {
-          description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id, or spawn_peer to create a new peer with a remit.',
+          description: LIST_PEERS_TOOL_DESCRIPTION,
           title: 'List Peer Sessions',
           inputSchema: listPeersInputSchema,
         },
