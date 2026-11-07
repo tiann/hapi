@@ -9,9 +9,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -93,14 +98,25 @@ fun CodexReviewBlockView(block: CodexReviewBlock, modifier: Modifier = Modifier)
                 } else {
                     stringResource(R.string.chat_review_findings_many, review.findings.size)
                 }
-                Text(
-                    text = (if (findingsOpen) "▾ " else "▸ ") + findingsLabel,
-                    style = MaterialTheme.typography.labelLarge,
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { findingsOpen = !findingsOpen }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = if (findingsOpen) Icons.Default.KeyboardArrowDown
+                        else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = colors.hint,
+                    )
+                    Text(
+                        text = findingsLabel,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
                 if (findingsOpen) {
                     Column(
                         modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),

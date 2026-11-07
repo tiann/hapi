@@ -30,11 +30,11 @@ fun ToolGroupBlockView(block: ToolGroupBlock, basePath: String?, modifier: Modif
         listOfNotNull(block.activityTitle, groupSummaryText(block).takeIf { it.isNotEmpty() }).joinToString(" · ").take(240)
     }
     Surface(
-        shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxWidth(),
     ) {
         ToolSummaryRow(
-            app.hapi.companion.feature.chat.ToolCardPresentation("🔧", title, summary.takeIf { it.isNotEmpty() }),
+            app.hapi.companion.feature.chat.ToolCardPresentation(app.hapi.companion.feature.chat.ToolGlyph.WRENCH, title, summary.takeIf { it.isNotEmpty() }),
             when {
                 block.summary.errorCount > 0 -> app.hapi.protocol.chat.ToolState.ERROR
                 block.summary.runningCount > 0 -> app.hapi.protocol.chat.ToolState.RUNNING

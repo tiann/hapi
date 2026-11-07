@@ -67,6 +67,7 @@ import androidx.core.content.FileProvider
 import android.webkit.MimeTypeMap
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatMedia
+import app.hapi.companion.ui.components.HapiImageGlyph
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.GeneratedImageBlock
 import coil.compose.AsyncImage
@@ -162,12 +163,22 @@ private fun GeneratedImageCardContent(block: GeneratedImageBlock, modifier: Modi
 
     if (loader == null || url == null) {
         GeneratedMediaCard(block, modifier) {
-            Text(
-                text = "🖼 ${block.fileName}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.hapi.hint,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(vertical = 4.dp),
-            )
+            ) {
+                Icon(
+                    imageVector = HapiImageGlyph,
+                    contentDescription = null,
+                    modifier = Modifier.padding(end = 4.dp).size(16.dp),
+                    tint = MaterialTheme.hapi.hint,
+                )
+                Text(
+                    text = block.fileName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.hapi.hint,
+                )
+            }
         }
         return
     }

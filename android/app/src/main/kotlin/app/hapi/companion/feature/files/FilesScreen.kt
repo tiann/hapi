@@ -48,6 +48,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
+import app.hapi.companion.ui.components.FolderGlyph
+import app.hapi.companion.ui.components.GitBranchGlyph
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.git.GitFileStatus
 import app.hapi.protocol.wire.FileSearchItem

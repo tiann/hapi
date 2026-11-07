@@ -1,12 +1,6 @@
 package app.hapi.companion.feature.files
 
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.addPathNodes
-import androidx.compose.ui.unit.dp
 import app.hapi.protocol.git.GitFileChange
 import java.text.DateFormat
 import java.util.Date
@@ -14,8 +8,8 @@ import java.util.Locale
 import kotlin.math.roundToLong
 
 // Shared bits of the files feature UI: metadata formatting (web
-// `file-metadata.ts`), status-badge palette, and the folder glyph the chat
-// top bar and Browse tab share (the material core icon set has no folder).
+// `file-metadata.ts`) and the status-badge palette. The folder/git-branch
+// glyphs moved to ui/components/HapiGlyphs.kt (single strokeIcon home).
 
 /** `1.2 KB` / `640 B`; null when size is unknown (web `formatFileSize`). */
 internal fun formatFileSize(bytes: Long?): String? {
@@ -62,37 +56,4 @@ internal fun statusColor(status: GitFileChange, dark: Boolean): Color = when (st
     GitFileChange.RENAMED -> if (dark) Color(0xFFDBAB0A) else Color(0xFF9A6700)
     GitFileChange.UNTRACKED -> if (dark) Color(0xFF8E8E93) else Color(0xFF6B7280)
     GitFileChange.MODIFIED -> if (dark) Color(0xFF539BF5) else Color(0xFF0969DA)
-}
-
-private fun strokeIcon(name: String, pathData: String, strokeWidth: Float = 1.8f): ImageVector =
-    ImageVector.Builder(
-        name = name,
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        addPath(
-            pathData = addPathNodes(pathData),
-            fill = null,
-            // Any opaque stroke works: Icon() recolors via ColorFilter tint.
-            stroke = SolidColor(Color.Black),
-            strokeLineWidth = strokeWidth,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round,
-        )
-    }.build()
-
-/** Folder outline (the web `FolderIcon` path). */
-internal val FolderGlyph: ImageVector by lazy {
-    strokeIcon("HapiFolder", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", 1.6f)
-}
-
-/** Git branch glyph for the Changes header (the web `GitBranchIcon` paths). */
-internal val GitBranchGlyph: ImageVector by lazy {
-    strokeIcon(
-        "HapiGitBranch",
-        "M6 3 L6 15 M6 15 a3 3 0 1 0 0.0001 0 M18 3 a3 3 0 1 0 0.0001 0 M18 9 a9 9 0 0 1 -9 9",
-        2f,
-    )
 }
