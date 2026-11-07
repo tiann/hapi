@@ -3037,18 +3037,27 @@ export class SyncEngine {
 
     /** Avoid yielding on ordinary consolidations that have no shared-fork dependency. */
     private prepareSessionForDeletionIfNeeded(sessionId: string, options?: { allowLifecycleGuard?: boolean }): Promise<void> | undefined {
-        const hasChild = this.sessionCache.getSessions().some((session) => (
-            session.metadata?.forkedFrom === sessionId
-            && session.metadata?.flavor === 'codex'
+        const session = this.sessionCache.getSession(sessionId)
+        const hasOwnForkDependency = typeof session?.metadata?.forkedFrom === 'string'
+            && session.metadata.flavor === 'codex'
             && session.metadata.capabilities?.concurrentClients === true
+            && session.metadata.sharedForkAttachmentsHydrated !== true
+        const hasChild = this.sessionCache.getSessions().some((candidate) => (
+            candidate.metadata?.forkedFrom === sessionId
+            && candidate.metadata?.flavor === 'codex'
+            && candidate.metadata.capabilities?.concurrentClients === true
         ))
-        if (!hasChild
+        if (!hasOwnForkDependency
+            && !hasChild
             && !this.sharedForkAttachmentHydrations.has(sessionId)
             && !this.sharedForkAttachmentHydrationsBySource.has(sessionId)
             && !this.sharedForkAttachmentFailures.has(sessionId)) {
             return undefined
         }
-        return this.prepareSessionForDeletion(sessionId, options)
+        return this.prepareSessionForDeletion(sessionId, {
+            ...options,
+            requireTargetHydration: hasOwnForkDependency,
+        })
     }
 
     /** Wait for a hydration targeting a child before deleting that child. */

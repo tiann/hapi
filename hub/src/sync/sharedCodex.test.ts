@@ -778,6 +778,85 @@ describe('shared Codex hub binding', () => {
         }
     })
 
+    it('hydrates a restarted fork child before automatic consolidation', async () => {
+        const f = fixture()
+        let restarted: SyncEngine | undefined
+        try {
+            const ancestor = f.create('automatic-restart-ancestor')
+            const source = f.create('automatic-restart-source', {
+                forkedFrom: ancestor.id,
+                forkedThroughMessageLocalId: 'automatic-restart-tip'
+            }, false)
+            const target = f.create('automatic-restart-target', {}, false)
+            const attachment = await f.store.attachments.create({
+                namespace: 'default',
+                sessionId: ancestor.id,
+                filename: 'automatic-restart.txt',
+                mimeType: 'text/plain',
+                original: Buffer.from('automatic restart original')
+            })
+            f.store.messages.addMessage(ancestor.id, {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'automatic restart prompt',
+                    attachments: [{
+                        id: 'automatic-restart-attachment',
+                        filename: attachment.filename,
+                        mimeType: attachment.mimeType,
+                        size: attachment.size,
+                        attachmentId: attachment.id
+                    }]
+                }
+            }, 'automatic-restart-tip')
+            f.store.messages.markMessagesInvoked(ancestor.id, ['automatic-restart-tip'], Date.now())
+            f.store.messages.addMessage(source.id, {
+                role: 'user',
+                content: { type: 'text', text: 'automatic restart prompt' }
+            }, 'automatic-restart-source-tip')
+
+            // Restart before the child's own inherited attachment hydration
+            // has been scheduled, matching the no-alive/no-ready window.
+            f.engine.stop()
+            restarted = new SyncEngine(f.store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            for (const sessionId of [ancestor.id, source.id, target.id]) {
+                const cached = restarted.getSession(sessionId)
+                if (cached) cached.active = false
+            }
+
+            const cache = (restarted as unknown as {
+                sessionCache: { mergeSessions(oldId: string, newId: string, namespace: string): Promise<void> }
+            }).sessionCache
+            await cache.mergeSessions(source.id, target.id, 'default')
+            expect(f.store.sessions.getSessionByNamespace(source.id, 'default')).toBeNull()
+
+            const targetMessage = f.store.messages.getAllMessages(target.id)
+                .find((message) => message.localId === 'automatic-restart-tip')
+            const targetAttachmentId = ((targetMessage?.content as {
+                content?: { attachments?: Array<{ attachmentId?: string }> }
+            } | undefined)?.content?.attachments?.[0]?.attachmentId)
+            expect(targetAttachmentId).toBeDefined()
+            expect(targetAttachmentId).not.toBe(attachment.id)
+            expect((await f.store.attachments.readForSessionAsync(
+                targetAttachmentId!,
+                'default',
+                target.id
+            ))?.data).toEqual(Buffer.from('automatic restart original'))
+
+            const cachedAncestor = restarted.getSession(ancestor.id)
+            if (cachedAncestor) cachedAncestor.active = false
+            await restarted.deleteSession(ancestor.id)
+            expect((await f.store.attachments.readForSessionAsync(
+                targetAttachmentId!,
+                'default',
+                target.id
+            ))?.data).toEqual(Buffer.from('automatic restart original'))
+        } finally {
+            restarted?.stop()
+            f.cleanup()
+        }
+    })
+
     it('rebuilds restart-safe fork hydration protection before deleting a source', async () => {
         const f = fixture()
         try {
