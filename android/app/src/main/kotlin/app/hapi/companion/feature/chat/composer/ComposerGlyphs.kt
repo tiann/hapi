@@ -64,3 +64,11 @@ internal val ScheduleGlyph: ImageVector by lazy {
             "M12 8.5 L12 12 L14.7 14",
     )
 }
+
+/** Sticky note with a folded corner — the scratchlist composer-mode toggle. */
+internal val NoteGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiNote",
+        "M5 4.5 h8.5 L19 10 v9.5 h-14 z M13 4.5 v6 h6",
+    )
+}

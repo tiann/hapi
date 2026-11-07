@@ -125,6 +125,7 @@ internal fun ChatScreen(
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
     val pendingSchedule by viewModel.pendingSchedule.collectAsState()
+    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -274,7 +275,7 @@ internal fun ChatScreen(
         if (granted) launchCamera() else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    val interactions = remember(state.flavor, state.permissionOverrides, codexPlanActions, viewModel) {
+    val interactions = remember(state.flavor, state.permissionOverrides, codexPlanActions, state.historyGate, viewModel) {
         ChatInteractions(
             flavor = state.flavor,
             permissionOverrides = state.permissionOverrides,
@@ -283,6 +284,10 @@ internal fun ChatScreen(
             codexPlanActions = codexPlanActions,
             implementCodexPlan = viewModel::implementCodexPlan,
             continueCodexPlan = viewModel::continueCodexPlan,
+            historyGate = state.historyGate,
+            requestForkCurrent = viewModel::requestForkCurrent,
+            requestForkAtMessage = viewModel::requestForkAtMessage,
+            requestRewind = viewModel::requestRewind,
         )
     }
 
@@ -304,7 +309,6 @@ internal fun ChatScreen(
                     IconButton(onClick = { configSheetOpen = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
-                    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
                         onOpenFiles = onOpenFiles,
@@ -377,6 +381,12 @@ internal fun ChatScreen(
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
+                        scratchlistCount = scratchlistCount,
+                        onToggleScratchlist = if (viewModel.scratchlistEnabled) {
+                            { viewModel.setScratchlistMode(!composerState.routesToScratchlist) }
+                        } else {
+                            null
+                        },
                     )
                 }
             }
@@ -475,6 +485,23 @@ internal fun ChatScreen(
                 onDismiss = { messageInfoBlock = null },
             )
         }
+    }
+
+    val conversationHistory by viewModel.conversationHistory.collectAsState()
+    conversationHistory.dialog?.let { action ->
+        HistoryActionConfirmDialog(
+            action = action,
+            pending = conversationHistory.opPending,
+            onConfirm = viewModel::confirmHistoryAction,
+            onDismiss = viewModel::dismissHistoryDialog,
+        )
+    }
+    if (conversationHistory.rewindFallbackLocalId != null) {
+        RewindFallbackDialog(
+            pending = conversationHistory.opPending,
+            onConfirm = viewModel::confirmRewindFallback,
+            onDismiss = viewModel::dismissRewindFallback,
+        )
     }
 }
 
@@ -692,7 +719,13 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.DraftParked -> context.getString(R.string.chat_notice_draft_parked)
     ChatNotice.ScratchlistFull -> context.getString(R.string.chat_notice_scratchlist_full)
     ChatNotice.ScratchlistParkFailed -> context.getString(R.string.chat_notice_park_failed)
+    ChatNotice.ScratchlistPromoteStagingFailed ->
+        context.getString(R.string.chat_notice_scratchlist_stage_failed)
+    ChatNotice.ScratchlistRehydratePartial ->
+        context.getString(R.string.chat_notice_scratchlist_rehydrate_failed)
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
+    ChatNotice.PromotedAttachmentsLoading ->
+        context.getString(R.string.chat_notice_promoted_attachments_loading)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
     ChatNotice.QueuedEditScheduleDropped -> context.getString(R.string.chat_notice_edit_schedule_dropped)
@@ -710,4 +743,7 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
     is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
+    is ChatNotice.ForkFailed -> notice.detail ?: context.getString(R.string.chat_notice_fork_failed)
+    is ChatNotice.RewindFailed -> notice.detail ?: context.getString(R.string.chat_notice_rewind_failed)
+    ChatNotice.RewindDiverged -> context.getString(R.string.chat_notice_rewind_diverged)
 }
