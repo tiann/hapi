@@ -37,6 +37,7 @@ import { resolveImageMimeType } from '@/lib/file-markdown-preview'
 import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
+import { MarkdownTable } from '@/components/assistant-ui/MarkdownTable'
 import { DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB, useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
 import { ChatMarkdownImage } from '@/components/assistant-ui/markdown-image'
 import {
@@ -491,6 +492,7 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & {
     fileSearch?: MarkdownFileSearch
 }) {
     const { filePath, sessionId, fileSearch = { origin: 'chat' }, ...anchorProps } = props
+    const markdownHref = getMarkdownSourceHref(anchorProps, anchorProps.href)
     const navigate = useNavigate()
     const rel = anchorProps.target === '_blank' ? (anchorProps.rel ?? 'noreferrer') : anchorProps.rel
     const fileRouteSearch = { path: encodeBase64(filePath), ...fileSearch }
@@ -517,6 +519,7 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & {
         <a
             {...anchorProps}
             href={href}
+            data-hapi-markdown-href={markdownHref}
             rel={rel}
             onClick={handleClick}
             className={cn('aui-md-a font-medium text-[var(--app-link)] underline decoration-[color:var(--app-link-muted)] underline-offset-3', anchorProps.className)}
@@ -528,6 +531,7 @@ function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessio
     const { targetSessionId, ...anchorProps } = props
     const navigate = useNavigate()
     const rel = anchorProps.target === '_blank' ? (anchorProps.rel ?? 'noreferrer') : anchorProps.rel
+    const markdownHref = getMarkdownSourceHref(anchorProps, anchorProps.href)
     // Preserve Vite BASE_URL for copy / open-in-new-tab (SPA click uses navigate).
     const href = buildSessionReferencePath(props.targetSessionId)
 
@@ -548,6 +552,7 @@ function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessio
         <a
             {...anchorProps}
             href={href}
+            data-hapi-markdown-href={markdownHref}
             rel={rel}
             onClick={handleClick}
             className={cn('aui-md-a font-medium text-[var(--app-link)] underline decoration-[color:var(--app-link-muted)] underline-offset-3', props.className)}
@@ -574,12 +579,18 @@ function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessio
  *   which uses useNavigate for SPA routing.
  * - Session citation paths (`/sessions/<id>`): SessionPathAnchor SPA navigation.
  */
-function InertMarkdownHref(props: { href: string; children?: ReactNode; className?: string }) {
+function getMarkdownSourceHref(props: object, fallback: string | undefined): string | undefined {
+    const sourceHref = (props as Record<string, unknown>)['data-hapi-markdown-href']
+    return typeof sourceHref === 'string' ? sourceHref : fallback
+}
+
+function InertMarkdownHref(props: { href: string; markdownHref?: string; children?: ReactNode; className?: string }) {
     // Plain/muted — intentionally not an <a>, so middle-click / copy-link can't
     // invent a dead SPA route either.
     return (
         <span
             title={props.href}
+            data-hapi-markdown-href={props.markdownHref ?? props.href}
             className={cn('aui-md-a-inert text-[var(--app-hint)]', props.className)}
         >
             {props.children}
@@ -633,6 +644,7 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     }
 
     const { onClick, href, ...rest } = props
+    const markdownHref = getMarkdownSourceHref(rest, href)
 
     // Windows candidate (or raw / %5C-normalized drive path): classify with workspace
     // before painting FilePathAnchor or treating `C:` as a custom URI scheme.
@@ -641,7 +653,7 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     const isCandidateHref = href ? normalizedScheme(href) === 'hapi-file-candidate' : false
     if (isCandidateHref && (!candidatePath || !/^[A-Za-z]:[\\/]/.test(candidatePath))) {
         return (
-            <InertMarkdownHref href={href ?? ''} className={props.className}>
+            <InertMarkdownHref href={href ?? ''} markdownHref={markdownHref} className={props.className}>
                 {props.children}
             </InertMarkdownHref>
         )
@@ -668,12 +680,12 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         })
         if (decision.action === 'file') {
             if (!chat) {
-                return <InertMarkdownHref href={href ?? windowsPathFromHref ?? ''} className={props.className}>{props.children}</InertMarkdownHref>
+                return <InertMarkdownHref href={href ?? windowsPathFromHref ?? ''} markdownHref={markdownHref} className={props.className}>{props.children}</InertMarkdownHref>
             }
             return <FilePathAnchor {...props} filePath={decision.path} sessionId={chat.sessionId} />
         }
         if (decision.action === 'inert') {
-            return <InertMarkdownHref href={href ?? windowsPathFromHref ?? ''} className={props.className}>{props.children}</InertMarkdownHref>
+            return <InertMarkdownHref href={href ?? windowsPathFromHref ?? ''} markdownHref={markdownHref} className={props.className}>{props.children}</InertMarkdownHref>
         }
         // action === 'navigate' → fall through (only for non-Windows scheme-less SPA)
     }
@@ -737,6 +749,7 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         <a
             {...rest}
             href={domHref}
+            data-hapi-markdown-href={markdownHref}
             target={target}
             rel={effectiveRel}
             onClick={handleClick}
@@ -775,16 +788,6 @@ function ListItem(props: ComponentPropsWithoutRef<'li'>) {
 
 function Hr(props: ComponentPropsWithoutRef<'hr'>) {
     return <hr {...props} className={cn('aui-md-hr my-4 border-[var(--app-divider)]', props.className)} />
-}
-
-function Table(props: ComponentPropsWithoutRef<'table'>) {
-    const { className, ...rest } = props
-
-    return (
-        <div className="aui-md-table-wrapper my-3 max-w-full overflow-x-auto rounded-xl bg-[var(--app-md-table-bg)]">
-            <table {...rest} className={cn('aui-md-table w-full border-collapse text-sm', className)} />
-        </div>
-    )
 }
 
 function Thead(props: ComponentPropsWithoutRef<'thead'>) {
@@ -865,7 +868,14 @@ function SessionFileImage(props: ComponentPropsWithoutRef<'img'> & { sessionId: 
     const src = query.data?.success && query.data.content && mimeType
         ? `data:${mimeType};base64,${query.data.content}`
         : undefined
-    return <img {...imgProps} src={src} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
+    return (
+        <img
+            {...imgProps}
+            src={src}
+            data-hapi-markdown-src={typeof imgProps.src === 'string' ? imgProps.src : path}
+            className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)}
+        />
+    )
 }
 
 function Image(props: ComponentPropsWithoutRef<'img'>) {
@@ -907,7 +917,7 @@ export const defaultComponents: DefaultComponentsMap = memoizeMarkdownComponents
     ol: OrderedList,
     li: ListItem,
     hr: Hr,
-    table: Table,
+    table: MarkdownTable,
     thead: Thead,
     tbody: Tbody,
     tr: Tr,

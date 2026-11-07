@@ -28,6 +28,9 @@ type MarkdownNode = {
     url?: string
     title?: string | null
     children?: MarkdownNode[]
+    data?: {
+        hProperties?: Record<string, unknown>
+    }
 }
 
 function createFileHref(path: string): string {
@@ -233,6 +236,13 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
     // backslashes survive mdast→hast URI normalization.
     if (isWindowsAbsolutePath(target)) {
         if (!hasKnownFileExtension(target)) return
+        node.data = {
+            ...node.data,
+            hProperties: {
+                ...node.data?.hProperties,
+                'data-hapi-markdown-href': url,
+            },
+        }
         node.url = createFileCandidateHref(target)
         return
     }
@@ -241,6 +251,13 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
 
     if (!shouldLinkPath(target)) return
 
+    node.data = {
+        ...node.data,
+        hProperties: {
+            ...node.data?.hProperties,
+            'data-hapi-markdown-href': url,
+        },
+    }
     node.url = createFileHref(target)
 }
 
