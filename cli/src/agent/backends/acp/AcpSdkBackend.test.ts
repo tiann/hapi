@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import agySteeredTurn from './__fixtures__/agy-steered-turn.json';
 import type { AgentMessage } from '@/agent/types';
+import { logger } from '@/ui/logger';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
 import { buildAcpStdioSpawnOptions } from './AcpStdioTransport';
@@ -1463,6 +1464,35 @@ describe('AcpSdkBackend', () => {
                 prompt: [{ type: 'text', text: 'pivot now' }]
             }
         }]);
+    });
+
+    it('logs why a soft-steer prompt failed', async () => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
+                sendNotification: () => void;
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+        };
+        backendInternal.isProcessingMessage = true;
+        const failure = Object.assign(new Error('waiting for a permission answer'), { code: -32603 });
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({ dispatched: Promise.resolve(), completed: Promise.reject(failure) }),
+            sendNotification: () => {},
+            close: async () => {}
+        };
+
+        await expect(backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]).completed)
+            .rejects.toBe(failure);
+
+        expect(warn).toHaveBeenCalledWith('[ACP] soft-steer session/prompt failed', {
+            message: 'waiting for a permission answer',
+            code: -32603
+        });
+        warn.mockRestore();
     });
 
     it('beginSoftSteerPrompt settles answered before it drains late output', async () => {

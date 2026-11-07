@@ -549,7 +549,10 @@ export class AcpStdioTransport {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            pending.reject(Object.assign(new Error(response.error.message), {
+                code: response.error.code,
+                ...(response.error.data !== undefined ? { data: response.error.data } : {})
+            }));
             return;
         }
 

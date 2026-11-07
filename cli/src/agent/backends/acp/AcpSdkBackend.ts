@@ -908,7 +908,11 @@ export class AcpSdkBackend implements AgentBackend {
         })();
 
         void completed.catch((error) => {
-            logger.warn('[ACP] soft-steer session/prompt failed', error);
+            // An Error logs as `{}`.
+            logger.warn('[ACP] soft-steer session/prompt failed', {
+                message: error instanceof Error ? error.message : String(error),
+                code: (error as { code?: unknown } | null)?.code
+            });
         });
 
         const answered = request.completed.then(() => {}, () => {});

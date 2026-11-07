@@ -220,6 +220,23 @@ describe('AcpStdioTransport plain-text stdout', () => {
         await transport.close();
     });
 
+    test('keeps the JSON-RPC error code on a rejected request', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agy', args: ['acp'] });
+        const pending = transport.sendRequest('session/prompt');
+
+        emitStdout(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            error: { code: -32603, message: 'the running prompt is waiting for a permission or question answer' }
+        })}\n`);
+
+        await expect(pending).rejects.toMatchObject({
+            message: 'the running prompt is waiting for a permission or question answer',
+            code: -32603
+        });
+        await transport.close();
+    });
+
     test('ignores non-object JSON lines without killing the session', async () => {
         const transport = await AcpStdioTransport.create({ command: 'gemini' });
         const pending = transport.sendRequest('initialize');
