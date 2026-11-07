@@ -2648,7 +2648,13 @@ export function SessionList(props: {
                                         node: (
                                             <SessionListFilterMenu
                                                 value={sessionFilters}
-                                                onChange={setSessionFilters}
+                                                onChange={(next) => {
+                                                    setSessionFilters(next)
+                                                    // Keep the two unread controls in sync: the transient
+                                                    // filter lens and the persisted view preference are
+                                                    // the same user intent ("show only unread").
+                                                    if (next.unread !== sessionFilters.unread) setListView({ unreadOnly: next.unread })
+                                                }}
                                                 customStart={customStart}
                                                 customEnd={customEnd}
                                                 sessionActivityDates={sessionActivityDates}
@@ -2669,7 +2675,10 @@ export function SessionList(props: {
                                     node: (
                                         <SessionListViewMenu
                                             view={listView}
-                                            onChange={setListView}
+                                            onChange={(next) => {
+                                                setListView(next)
+                                                if (next.unreadOnly !== listView.unreadOnly) setSessionFilters((prev) => ({ ...prev, unread: next.unreadOnly ?? false }))
+                                            }}
                                             onReset={() => setListView(DEFAULT_SESSION_LIST_VIEW)}
                                         />
                                     )
@@ -2762,7 +2771,10 @@ export function SessionList(props: {
                                                     value={activeMachineFilter}
                                                     onChange={setMachineFilter}
                                                     sessionFilter={sessionFilters}
-                                                    onSessionFilterChange={setSessionFilters}
+                                                    onSessionFilterChange={(next) => {
+                                                        setSessionFilters(next)
+                                                        if (next.unread !== sessionFilters.unread) setListView({ unreadOnly: next.unread })
+                                                    }}
                                                     customStart={customStart}
                                                     customEnd={customEnd}
                                                     sessionActivityDates={sessionActivityDates}
