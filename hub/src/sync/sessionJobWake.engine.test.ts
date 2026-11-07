@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test'
 import type { AttachedJobUpsert } from '@hapi/protocol'
+import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
 import { SyncEngine } from './syncEngine'
 
@@ -346,5 +347,58 @@ describe('SyncEngine job terminal wake scheduling (#1489)', () => {
         expect(sendCalls).toHaveLength(0)
         expect(store.sessionJobs.get(session.id, 'batch')?.runId).toBe('run-b')
         store.close()
+    })
+})
+
+describe('SyncEngine wake requeue on machine-updated (#1489)', () => {
+    it('requeues when runner state marks machine online before first heartbeat', () => {
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const machine = engine.getOrCreateMachine(
+                'wake-reconnect-machine',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.0.0' },
+                null,
+                'default'
+            )
+            // Simulate expiry / offline before reconnect.
+            ;(store as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } })
+                .db.prepare('UPDATE machines SET active = 0, active_at = ? WHERE id = ?')
+                .run(Date.now() - 60_000, machine.id)
+            engine.machineCache.refreshMachine(machine.id)
+            expect(engine.machineCache.getMachine(machine.id)?.active).toBe(false)
+
+            let requeues = 0
+            const original = engine.requeuePendingJobTerminalWakes.bind(engine)
+            engine.requeuePendingJobTerminalWakes = () => {
+                requeues += 1
+                original()
+            }
+
+            const version = engine.machineCache.getMachine(machine.id)!.runnerStateVersion
+            const updated = store.machines.updateMachineRunnerState(
+                machine.id,
+                { status: 'running', pid: 1 },
+                version,
+                'default'
+            )
+            expect(updated.result).toBe('success')
+
+            engine.handleRealtimeEvent({ type: 'machine-updated', machineId: machine.id })
+            expect(engine.machineCache.getMachine(machine.id)?.active).toBe(true)
+            expect(requeues).toBe(1)
+
+            // Already online — subsequent state refreshes must not requeue again.
+            engine.handleRealtimeEvent({ type: 'machine-updated', machineId: machine.id })
+            expect(requeues).toBe(1)
+
+            // Heartbeat after state-online must also not double-fire offline→online.
+            engine.handleMachineAlive({ machineId: machine.id, time: Date.now() })
+            expect(requeues).toBe(1)
+        } finally {
+            engine.stop()
+            store.close()
+        }
     })
 })

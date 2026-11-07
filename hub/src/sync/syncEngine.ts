@@ -719,7 +719,15 @@ export class SyncEngine {
         }
 
         if (event.type === 'machine-updated' && event.machineId) {
-            this.machineCache.refreshMachine(event.machineId)
+            // Connect publishes machine-update-state (active=1 in SQLite) before the
+            // first heartbeat. Requeue here so wake recovery is not skipped when
+            // handleMachineAlive later sees wasActive already true.
+            const wasActive = this.machineCache.getMachine(event.machineId)?.active === true
+            const refreshed = this.machineCache.refreshMachine(event.machineId)
+            const nowActive = refreshed?.active === true
+            if (!wasActive && nowActive) {
+                this.requeuePendingJobTerminalWakes()
+            }
             return
         }
 
