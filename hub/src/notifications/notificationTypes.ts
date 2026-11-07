@@ -12,6 +12,7 @@ export type NotificationChannel = {
     sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendTaskNotification: (session: Session, notification: TaskNotification, ctx?: NotificationSendContext) => Promise<void>
     sendSessionCompletion?: (session: Session, reason: SessionEndReason) => Promise<void>
+    sendSessionError?: (session: Session, reason: SessionEndReason) => Promise<void>
 }
 
 export type NotificationHubOptions = {

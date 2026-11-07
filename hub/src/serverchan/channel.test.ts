@@ -99,6 +99,32 @@ describe('ServerChanChannel', () => {
         }
     })
 
+    it('sends session error notifications', async () => {
+        const fetchMock = mock(async () => new Response('ok', { status: 200 }))
+        const originalFetch = globalThis.fetch
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        try {
+            const channel = new ServerChanChannel('SCT_TEST', 'https://hapi.example.com')
+            await channel.sendSessionError(createSession({
+                id: 'session-error',
+                metadata: {
+                    path: 'F:\\develop\\code\\usdt',
+                    host: 'DESKTOP',
+                    name: 'USDT review'
+                }
+            }), 'error' satisfies SessionEndReason)
+
+            expect(fetchMock).toHaveBeenCalledTimes(1)
+            const call = fetchMock.mock.calls[0] as unknown[] | undefined
+            const init = call?.[1] as RequestInit | undefined
+            expect((init?.body as URLSearchParams).get('title')).toBe('HAPI Session error')
+            expect((init?.body as URLSearchParams).get('desp')).toContain('会话异常结束。')
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
     it('suppresses every notification when the namespace has a visible connection', async () => {
         const fetchMock = mock(async () => new Response('ok', { status: 200 }))
         const originalFetch = globalThis.fetch
@@ -120,6 +146,7 @@ describe('ServerChanChannel', () => {
                 status: 'failed',
                 summary: 'Subtask failed'
             })
+            await channel.sendSessionError(createSession(), 'error' satisfies SessionEndReason)
             await channel.sendSessionCompletion(createSession(), 'completed' satisfies SessionEndReason)
 
             expect(fetchMock).not.toHaveBeenCalled()
