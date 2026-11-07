@@ -61,7 +61,7 @@ data class AuthTerminal(
 )
 
 /** Process-wide Preferences DataStore (hub roster + future app settings). */
-private val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
+internal val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
 
 /**
  * Process-singleton graph, hand-rolled (no Hilt by design — see plan track B).
