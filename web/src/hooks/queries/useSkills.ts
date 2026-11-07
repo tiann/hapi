@@ -5,6 +5,7 @@ import type { SkillSummary } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { queryKeys } from '@/lib/query-keys'
 import { getRecentSkills } from '@/lib/recent-skills'
+import { normalizeSkillAutocompleteQuery } from '@/lib/autocomplete'
 
 function levenshteinDistance(a: string, b: string): number {
     if (a.length === 0) return b.length
@@ -49,7 +50,8 @@ export function useSkills(
         // Skills change only when the user edits files on the machine, so
         // polling them on a timer just burns relay bandwidth on an answer
         // that is almost always identical. getSuggestions() refetches when
-        // the user actually types "$", which is the moment freshness matters.
+        // the user actually types a skill prefix, which is the moment
+        // freshness matters.
         staleTime: 5 * 60_000,
         refetchOnWindowFocus: true,
         gcTime: 30 * 60 * 1000,
@@ -64,17 +66,18 @@ export function useSkills(
     }, [query.data])
 
     const getSuggestions = useCallback(async (queryText: string): Promise<Suggestion[]> => {
+        const normalizedQuery = normalizeSkillAutocompleteQuery(queryText)
         // Fire-and-forget for the same reason as useSlashCommands: the RPC can
         // stall behind a wedged CLI, and the menu must not block on it.
-        if (queryText === '$') {
+        if (normalizedQuery === '$') {
             void query.refetch()
         }
         const currentSkills = skills
         const recent = getRecentSkills()
         const getRecency = (name: string) => recent[name] ?? 0
-        const searchTerm = queryText.startsWith('$')
-            ? queryText.slice(1).toLowerCase()
-            : queryText.toLowerCase()
+        const searchTerm = normalizedQuery.startsWith('$')
+            ? normalizedQuery.slice(1).toLowerCase()
+            : normalizedQuery.toLowerCase()
 
         if (!searchTerm) {
             return [...currentSkills]

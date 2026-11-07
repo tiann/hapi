@@ -1,4 +1,5 @@
 import { findActiveWord } from '@/utils/findActiveWord'
+import { DEFAULT_AUTOCOMPLETE_PREFIXES } from '@/lib/autocomplete'
 
 interface Selection {
     start: number
@@ -18,7 +19,7 @@ export function applySuggestion(
     content: string,
     selection: Selection,
     suggestion: string,
-    prefixes: string[] = ['@', '/'],
+    prefixes: string[] = [...DEFAULT_AUTOCOMPLETE_PREFIXES],
     addSpace: boolean = true
 ): { text: string; cursorPosition: number } {
     // Find the active word at the current position
