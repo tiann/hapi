@@ -40,6 +40,11 @@ export class MessageQueue2<T> {
     private closed = false;
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
     onBatchConsumed: ((localIds: string[]) => void) | null = null;
+    /** Optional durable owner handoff. Throws before queue mutation or ACK. */
+    beforeBatchConsumed: ((batch: {
+        message: string; mode: T; isolate: boolean;
+        items: Array<{ message: string; localId?: string; internal?: boolean }>
+    }) => void) | null = null;
     modeHasher: (mode: T) => string;
     private readonly reservations = new Map<string, QueueReservation<T>>();
     private readonly consumedReservations = new Set<string>();
@@ -626,6 +631,17 @@ export class MessageQueue2<T> {
         }
 
         const firstItem = this.queue[0];
+        if (this.beforeBatchConsumed) {
+            const preview: Array<{ message: string; localId?: string; internal?: boolean }> = [];
+            for (const item of this.queue) {
+                if (preview.length > 0 && (firstItem.isolate || item.isolate || item.modeHash !== firstItem.modeHash)) break;
+                preview.push({ message: item.message, localId: item.localId, internal: item.internal });
+            }
+            this.beforeBatchConsumed({
+                message: preview.map(item => item.message).join('\n'), mode: firstItem.mode,
+                isolate: firstItem.isolate ?? false, items: preview
+            });
+        }
         const sameModeMessages: string[] = [];
         const consumedLocalIds: string[] = [];
         // Per-item breakdown of this batch, preserved alongside the joined

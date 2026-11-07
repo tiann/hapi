@@ -79,7 +79,7 @@ async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<void
     }
 }
 
-async function startRemote(firstMessage = 'Run the tests') {
+async function startRemote(firstMessage = 'Run the tests', extra: Partial<Parameters<typeof import('./claudeRemote').claudeRemote>[0]> = {}) {
     const fake = createFakeClaude();
     const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(fake.query as unknown as typeof claudeSdk.query);
     const { claudeRemote } = await import('./claudeRemote');
@@ -109,7 +109,8 @@ async function startRemote(firstMessage = 'Run the tests') {
         onSessionFound: () => {},
         onThinkingChange: (value) => thinking.push(value),
         onMessage: (message) => relayed.push(message),
-        onSteerTargetChange: (target) => targets.push(target)
+        onSteerTargetChange: (target) => targets.push(target),
+        ...extra
     });
     await waitFor(() => fake.stdin.length === 1);
     return {
@@ -130,6 +131,47 @@ describe('claudeRemote steering', () => {
     afterEach(() => {
         restore?.();
         restore = null;
+    });
+
+    it('does not let an outstanding steer bypass native rewind rejection', async () => {
+        const remote = await startRemote('rewound Q', {
+            sessionId: 'native-session',
+            claudeArgs: ['--resume-session-at', 'kept-boundary'],
+            rewindProof: () => false,
+        });
+        restore = remote.restore;
+        const delivery = remote.currentTarget()!.steer('steered R');
+        expect(delivery).not.toBeNull();
+        const rejected = expect(remote.run).rejects.toThrow('Resume rejected by --resume');
+        remote.fake.emit({ type: 'result', subtype: 'error_during_execution', errors: ['Resume rejected by --resume-session-at'] } as unknown as SDKMessage);
+        await rejected;
+        expect(await delivery!.delivered).toBe(false);
+        expect(remote.onResultAccepted).not.toHaveBeenCalled();
+        expect(remote.onReady).not.toHaveBeenCalled();
+    });
+
+    it('awaits completed-Q bookkeeping before processing the steer follow-up', async () => {
+        let release!: () => void;
+        const barrier = new Promise<void>(resolve => { release = resolve; });
+        const accepted = vi.fn(() => barrier);
+        const remote = await startRemote('Q', { onResultAccepted: accepted });
+        restore = remote.restore;
+        const delivery = remote.currentTarget()!.steer('R')!;
+        await waitFor(() => remote.fake.stdin.length === 2);
+        remote.fake.result();
+        remote.fake.replay(remote.fake.stdin[1]!);
+        await waitFor(() => accepted.mock.calls.length === 1);
+        let delivered = false;
+        void delivery.delivered.then(() => { delivered = true; });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        expect(delivered).toBe(false);
+        expect(remote.onReady).not.toHaveBeenCalled();
+        release();
+        expect(await delivery.delivered).toBe(true);
+        remote.fake.result();
+        remote.fake.close();
+        await remote.run;
+        expect(accepted).toHaveBeenCalledTimes(1);
     });
 
     it('injects a steered message into the running turn and acks it by its echo', async () => {

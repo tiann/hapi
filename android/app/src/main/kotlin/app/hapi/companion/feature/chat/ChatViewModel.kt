@@ -164,6 +164,7 @@ data class ChatUiState(
     val messagesVersion: Long = 0,
     val requiresLatestReset: Boolean = false,
     val processSteps: Map<String, Int> = emptyMap(),
+    val rewindPending: Boolean = false,
     val readThroughRevision: Long? = null,
     val renderedReadState: SessionReadState? = null,
     /** Summed usage metadata per response group, keyed by first-block id. */
@@ -254,6 +255,7 @@ sealed interface ChatNotice {
     data object ScratchlistFull : ChatNotice
     data object ScratchlistParkFailed : ChatNotice
     data object AttachmentsUploading : ChatNotice
+    data object RewindPending : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
     data object QueuedEditScheduleDropped : ChatNotice
@@ -1264,7 +1266,12 @@ class ChatViewModel(
             return
         }
         val text = composerDraft.value.text.trim()
-        val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
+        if (uiState.value.rewindPending && (text == "/clear" || text == "/new")) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindPending))
+            return
+        }
+        val pendingSchedule = mutablePendingSchedule.value
+        val scheduledAt = ScheduleSend.resolvePendingSchedule(pendingSchedule, now())
         // Mutual exclusion, checked BEFORE the draft clears or the tray
         // consumes: a scheduled send cannot carry attachments on the wire,
         // and the pre-consume order keeps both recoverable — the chips stay
@@ -1289,6 +1296,13 @@ class ChatViewModel(
         sendInFlight.value = true
         scope.launch {
             try {
+                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                    sessionStore.sessionDetail(sessionId).first()?.metadata?.claudeRewind?.isPending == true) {
+                    replaceComposerTextRaw(text)
+                    setPendingSchedule(pendingSchedule)
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindPending))
+                    return@launch
+                }
                 drafts?.let { runCatching { it.clear(sessionId) } }
                 // A scheduled /clear|/new goes out as a queued message like any
                 // other scheduled text (web gates the shortcut the same way).
@@ -2233,6 +2247,7 @@ class ChatViewModel(
             loadFailed = isEmpty && syncSettled &&
                 (window.warning != null || inputs.detailLoadFailed),
             warning = window.warning,
+            rewindPending = inputs.detail?.metadata?.claudeRewind?.isPending == true,
             tailRevision = window.tailRevision,
             historyVersion = window.historyVersion,
             messagesVersion = window.messagesVersion,

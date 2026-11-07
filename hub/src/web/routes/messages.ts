@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { ClaudeRewindPendingError } from '../../sync/messageService'
 import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema } from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -155,14 +156,21 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
-        await engine.sendMessage(sessionId, {
-            text: parsed.data.text,
-            localId: parsed.data.localId,
-            attachments: parsed.data.attachments,
-            sentFrom: 'webapp',
-            scheduledAt: parsed.data.scheduledAt,
-            deliveryMode: parsed.data.deliveryMode
-        })
+        try {
+            await engine.sendMessage(sessionId, {
+                text: parsed.data.text,
+                localId: parsed.data.localId,
+                attachments: parsed.data.attachments,
+                sentFrom: 'webapp',
+                scheduledAt: parsed.data.scheduledAt,
+                deliveryMode: parsed.data.deliveryMode
+            })
+        } catch (error) {
+            if (error instanceof ClaudeRewindPendingError) {
+                return c.json({ error: error.message, code: 'claude_rewind_pending' }, 409)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 

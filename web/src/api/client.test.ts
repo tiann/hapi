@@ -84,6 +84,14 @@ describe('ApiClient error mapping', () => {
         }
     })
 
+    it.each([200, 202])('preserves the rewind REST body on HTTP %s without inventing a success wrapper', async (status) => {
+        const payload = { session: { id: 'session-1' }, ...(status === 202 ? { pending: true } : {}) }
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(payload), { status }))
+        await expect(new ApiClient('test-token').rewindConversation('session-1', 'local-1')).resolves.toEqual(payload)
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/api/sessions/session-1/rewind'),
+            expect.objectContaining({ method: 'POST', body: JSON.stringify({ messageLocalId: 'local-1' }) }))
+    })
+
     it('preserves the structured ambiguous-boundary code for Rewind fallbacks', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(

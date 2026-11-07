@@ -10,6 +10,7 @@ import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMessagesRoutes } from './messages'
+import { ClaudeRewindPendingError } from '../../sync/messageService'
 
 type GetMessagesPage = SyncEngine['getMessagesPage']
 type GetMessageContext = SyncEngine['getMessageContext']
@@ -89,6 +90,17 @@ function createApp(opts: {
 
     return { app, sentMessages, queuedStateCalls }
 }
+
+describe('pending rewind message submission', () => {
+    it('returns a structured 409 when the durable send guard rejects a destructive command', async () => {
+        const { app } = createApp({ sendMessage: async () => { throw new ClaudeRewindPendingError() } })
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '/clear' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toMatchObject({ code: 'claude_rewind_pending' })
+    })
+})
 
 describe('GET /api/sessions/:id/messages', () => {
     it('uses latest mode by default and returns the full page metadata', async () => {

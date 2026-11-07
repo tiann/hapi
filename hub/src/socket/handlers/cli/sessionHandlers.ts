@@ -1,6 +1,7 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
 import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
@@ -71,18 +72,26 @@ const updateStateSchema = z.object({
 const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
+    'claudeRewind',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'promptTitle'
 ] as const
 
-function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
+function preserveHubOwnedMetadata(incoming: unknown, current: unknown, failurePhase?: 'unknown' | 'rejected'): unknown {
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
     const next = { ...(incoming as Record<string, unknown>) }
     const existing = current && typeof current === 'object' && !Array.isArray(current)
         ? current as Record<string, unknown>
         : {}
-    for (const key of HUB_OWNED_METADATA_KEYS) {
+    // Unknown blocks reconciliation, including ordinary sparse CLI writes.
+    // Rejected allows native reset/new-turn locators to be published again.
+    const keys = [...HUB_OWNED_METADATA_KEYS,
+        ...(failurePhase ? ['conversationHistoryDiverged'] : []),
+        ...(failurePhase === 'unknown' ? ['conversationHistoryPoints', 'conversationHistoryIndexes',
+            'conversationHistoryTurns', 'conversationHistoryEntryIds'] : [])
+    ]
+    for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(existing, key)) next[key] = existing[key]
         else delete next[key]
     }
@@ -90,6 +99,7 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
 }
 
 export type SessionHandlersDeps = {
+    onClaudeRewindApplied?: (sid: string, metadata: unknown, expectedVersion: number) => ReturnType<Store['sessions']['updateSessionMetadata']>
     store: Store
     resolveSessionAccess: ResolveSessionAccess
     emitAccessError: EmitAccessError
@@ -295,12 +305,44 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const result = store.sessions.updateSessionMetadata(
-            sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
-            expectedVersion,
-            sessionAccess.value.namespace
-        )
+        // Refresh stale CLI snapshots before interpreting a carried operation.
+        // A lost committed ACK can likewise refresh, then replay applied safely.
+        if (expectedVersion !== sessionAccess.value.metadataVersion) {
+            cb({ result: 'version-mismatch', version: sessionAccess.value.metadataVersion, metadata: sessionAccess.value.metadata })
+            return
+        }
+
+        const incoming = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+            ? metadata as Record<string, unknown> : undefined
+        const report = incoming?.claudeRewind as { phase?: string } | null | undefined
+        const currentRewind = (sessionAccess.value.metadata as Metadata | null)?.claudeRewind
+        if (currentRewind && !incoming) {
+            // Legacy nullable metadata must not erase a Hub-owned operation or
+            // its unknown/divergence barrier through an ordinary replacement.
+            cb({ result: 'error' })
+            return
+        }
+        // Ordinary CLI writes spread their current metadata, including the
+        // Hub-owned rewind marker. An unchanged failure marker is not fresh
+        // native proof (and may refer to the session before a later /clear).
+        // Applied always remains a proof submission, including a lost-ACK retry
+        // against a committed marker, which must re-ACK without truncating.
+        const changedReport = incoming && Object.prototype.hasOwnProperty.call(incoming, 'claudeRewind')
+            && !isDeepStrictEqual(report, currentRewind)
+        const operationReport = report?.phase === 'applied' || changedReport
+        const failurePhase = currentRewind?.phase === 'unknown' || currentRewind?.phase === 'rejected'
+            ? currentRewind.phase : undefined
+        const result = operationReport
+            ? deps.onClaudeRewindApplied?.(sid, {
+                ...(preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata) as object),
+                claudeRewind: report
+            }, expectedVersion) ?? { result: 'error' as const }
+            : store.sessions.updateSessionMetadata(
+                sid,
+                preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata, failurePhase),
+                expectedVersion,
+                sessionAccess.value.namespace
+            )
         if (result.result === 'success') {
             cb({ result: 'success', version: result.version, metadata: result.value })
         } else if (result.result === 'version-mismatch') {
@@ -426,53 +468,69 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
+    const handleMessagesConsumed: ClientToServerEvents['messages-consumed'] = (data, callback) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
+            callback?.({ ok: false })
             return
         }
         const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
-        if (localIds.length === 0) {
+        if (localIds.length === 0 || (callback && (localIds.length !== data.localIds.length || localIds.some(id => id.length === 0)))) {
+            callback?.({ ok: false })
             return
         }
-        const sessionAccess = resolveSessionAccess(data.sid)
-        if (!sessionAccess.ok) {
-            emitAccessError('session', data.sid, sessionAccess.reason)
-            return
-        }
-        const invokedAt = Date.now()
-        let sessionUpdatedAt: number
+        let response: { ok: boolean; missingLocalIds?: string[] } = { ok: false }
         try {
-            sessionUpdatedAt = store.recordMessagesConsumed(
-                data.sid,
-                localIds,
-                invokedAt,
-                sessionAccess.value.namespace
-            )
-        } catch (err) {
-            console.error('recordMessagesConsumed failed', err)
-            return
-        }
+            const sessionAccess = resolveSessionAccess(data.sid)
+            if (!sessionAccess.ok) {
+                emitAccessError('session', data.sid, sessionAccess.reason)
+            } else {
+                const invokedAt = Date.now()
+                const record = () => store.recordMessagesConsumed(
+                    data.sid,
+                    localIds,
+                    invokedAt,
+                    sessionAccess.value.namespace
+                )
+                const transition = callback ? store.runInTransaction(() => {
+                    // The access resolver may be memoized. Missing IDs are an
+                    // authoritative absence proof only for a live authorized row.
+                    if (!store.sessions.getSessionByNamespace(data.sid, sessionAccess.value.namespace)) {
+                        throw new Error('Session unavailable for consumption confirmation')
+                    }
+                    const present = new Set(store.messages.getAllMessages(data.sid).map(message => message.localId))
+                    const missingLocalIds = localIds.filter(id => !present.has(id))
+                    return missingLocalIds.length > 0 ? { missingLocalIds } : { sessionUpdatedAt: record() }
+                }) : { sessionUpdatedAt: record() }
+                if ('missingLocalIds' in transition) {
+                    response = { ok: false, missingLocalIds: transition.missingLocalIds }
+                } else {
+                    let activityNotified = true
+                    try {
+                        onSessionActivity?.(data.sid, transition.sessionUpdatedAt)
+                    } catch (err) {
+                        activityNotified = false
+                        console.error('onSessionActivity failed', err)
+                    }
 
-        try {
-            onSessionActivity?.(data.sid, sessionUpdatedAt)
+                    // Only drop the queued-thinking grace when the CLI explicitly
+                    // opts in (synchronous handlers that send no thinking keepalive).
+                    if (data.clearQueuedThinkingGrace === true) {
+                        onMessagesConsumed?.(data.sid)
+                    }
+                    // Legacy fire-and-forget unknown-ID batches remain unchanged.
+                    // An ownership ACK additionally requires every row to exist.
+                    onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
+                    response = { ok: activityNotified }
+                }
+            }
         } catch (err) {
-            console.error('onSessionActivity failed', err)
+            console.error('messages-consumed failed', err)
         }
-
-        // Only drop the queued-thinking grace when the CLI explicitly opts in
-        // (synchronous handlers like slash commands that will never send
-        // their own `thinking=true` keepalive). Normal queue drains still
-        // need the grace so the spinner doesn't flicker between the queue
-        // shift and `backend.prompt` start.
-        if (data.clearQueuedThinkingGrace === true) {
-            onMessagesConsumed?.(data.sid)
-        }
-        // Emit only after the DB transaction succeeds. This is an ACK-level
-        // batch contract, so preserve its original timestamp even when IDs are
-        // heterogeneous, replayed, or unknown. `steered` is a live-only signal
-        // (never persisted) that marks mid-turn delivery for the web badge.
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
-    })
+        // The optional wire ACK follows both the durable transaction and all
+        // engine notifications. Legacy emitters need not provide a callback.
+        callback?.(response)
+    }
+    socket.on('messages-consumed', handleMessagesConsumed)
 
     socket.on('messages-indeterminate', (data: { sid: string; localIds: string[] }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {

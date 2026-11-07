@@ -143,6 +143,7 @@ function createApp(session: Session, opts?: {
     const sessionExists = opts?.sessionExists !== false
     const archiveSessionMock = opts?.archiveSession ?? (async () => {})
     const engine = {
+        getSession: () => session,
         resolveSessionAccess: () => sessionExists
             ? { ok: true, sessionId: session.id, session }
             : { ok: false, reason: 'not-found' },
@@ -1898,8 +1899,24 @@ describe('sessions routes', () => {
         })
 
         expect(response.status).toBe(200)
-        expect(await response.json()).toEqual({ success: true })
+        expect(await response.json()).toEqual({ session })
         expect(calls).toEqual([{ sessionId: 'session-1', messageLocalId: 'local-2' }])
+    })
+
+    it('returns 202 and the session for a durable pending rewind', async () => {
+        const session = createSession({ metadata: {
+            path: '/tmp/project', host: 'localhost', flavor: 'claude',
+            capabilities: { conversationHistory: { rewindToMessage: true } }
+        } })
+        const { app } = createApp(session, {
+            rewindConversation: async () => ({ type: 'success', pending: true })
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'local-2' })
+        })
+        expect(response.status).toBe(202)
+        expect(await response.json()).toMatchObject({ pending: true, session: { id: session.id } })
     })
 
     it('returns a structured ambiguous-boundary code for deterministic rewind rejection', async () => {

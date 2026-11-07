@@ -19,6 +19,7 @@ export default {
   'message.rewind.confirmTitle': 'Откат диалога',
   'message.rewind.confirmDescription': 'Откатить эту сессию к этому месту?\nИстория диалога после этого момента будет удалена безвозвратно. Файлы изменены не будут.',
   'message.rewind.confirming': 'Откат…',
+  'message.rewind.pending': 'Откат завершится, когда вы отправите следующее сообщение',
   'message.rewind.fallbackTitle': 'Откат недоступен',
   'message.rewind.fallbackDescription': 'HAPI не изменил эту сессию, поскольку её нативная граница Codex неоднозначна.\nСоздать новую сессию до этого места? Текущая сессия не будет изменена.',
   'message.rewind.fallbackFork': 'Форк здесь',

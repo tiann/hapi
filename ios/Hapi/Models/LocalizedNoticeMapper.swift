@@ -40,6 +40,7 @@ enum LocalizedNoticeMapper {
         "Scheduled sends can be at most 7 days ahead",
         "Failed to fork conversation",
         "Failed to rewind conversation",
+        "Rewind will complete when you send your next message",
         "Draft parked to scratchlist",
         "Scratchlist is full (200 entries)",
         "Couldn't park the draft — check the hub connection",

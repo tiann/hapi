@@ -282,8 +282,9 @@ export class MessageStore {
             localId?: string | null
             createdAt?: number
             invokedAt?: number | null
-        }> = []
+        }> = [],
+        cutoffSeq?: number
     ): { deleted: number; inserted: number; epoch: number } {
-        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement)
+        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement, cutoffSeq)
     }
 }

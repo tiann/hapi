@@ -1321,6 +1321,86 @@ struct ChatInteractorTests {
         #expect(await harness.performer.bodies("POST", pathSuffix: "/rewind").first == #"{"messageLocalId":"l1"}"#)
     }
 
+    @Test func pendingRewindWaitsForMatchingCommitWithoutTailSyncAndAllowsInput() async throws {
+        let harness = try await ChatInteractionHarness(detail: historyDetail())
+        var responseSession = historyDetail()
+        responseSession.metadata?.claudeRewind = ClaudeRewind(
+            operationId: "op-1", phase: "pending", requestedLocalId: "l1", cutoffSeq: 1
+        )
+        let sessionJSON = String(decoding: try HapiJSON.encoder.encode(responseSession), as: UTF8.self)
+        await harness.performer.script("POST", "/api/sessions/sess-1/rewind", status: 202,
+                                      json: "{\"session\":\(sessionJSON),\"pending\":true}")
+        #expect(await eventually {
+            (harness.interactor.windowState?.syncGeneration ?? 0) > 0
+                && harness.interactor.windowState?.isSyncingTail == false
+        })
+        let before = await harness.performer.count("GET", pathSuffix: "/messages")
+        harness.interactor.rewindConversation(toMessageLocalId: "l1")
+        #expect(await eventually { harness.events.contains(.notice(ChatInteractor.rewindPendingInstruction)) })
+        #expect(harness.interactor.historyActionPending)
+        #expect(await harness.performer.count("GET", pathSuffix: "/messages") == before)
+        #expect(!harness.interactor.canForkCurrentConversation)
+
+        harness.store.updateDetailLocal(chatSessionID) { detail in
+            detail.metadata?.claudeRewind = ClaudeRewind(operationId: "different", phase: "committed", requestedLocalId: "l1", cutoffSeq: 1)
+        }
+        #expect(harness.interactor.rewindPending)
+        for phase in ["requested", "pending", "applied", "unknown"] {
+            harness.store.updateDetailLocal(chatSessionID) { detail in
+                detail.metadata?.claudeRewind = ClaudeRewind(operationId: "op-1", phase: phase, requestedLocalId: "l1", cutoffSeq: 1)
+            }
+            #expect(harness.interactor.historyActionPending)
+        }
+        for command in ["/clear", "/new"] {
+            harness.interactor.setComposerText(command)
+            harness.interactor.sendMessage()
+            #expect(harness.interactor.composerText == command)
+        }
+        #expect(await harness.performer.count("POST", pathSuffix: "/clear") == 0)
+        harness.interactor.setComposerText("continue")
+        await harness.performer.serve("POST", "/api/sessions/sess-1/messages", json: #"{"ok":true}"#)
+        harness.interactor.sendMessage()
+        #expect(await eventually { await harness.performer.count("POST", pathSuffix: "/messages") == 1 })
+
+        harness.store.updateDetailLocal(chatSessionID) { detail in
+            detail.metadata?.claudeRewind?.phase = "committed"
+        }
+        #expect(await eventually { !harness.interactor.historyActionPending })
+        // A later operation from another client must not resurrect the old latch.
+        await Task.yield()
+        harness.store.updateDetailLocal(chatSessionID) { detail in
+            detail.metadata?.claudeRewind = ClaudeRewind(operationId: "op-2", phase: "rejected", requestedLocalId: "l1", cutoffSeq: 1)
+        }
+        #expect(!harness.interactor.historyActionPending)
+    }
+
+    @Test func restoredRewindMetadataLocksHistoryForEveryUnsettledPhase() async throws {
+        for phase in ["requested", "pending", "applied", "unknown", "committed", "rejected"] {
+            var detail = historyDetail()
+            detail.metadata?.claudeRewind = ClaudeRewind(operationId: "restored", phase: phase, requestedLocalId: "l1", cutoffSeq: 1)
+            let harness = try await ChatInteractionHarness(detail: detail, activate: false)
+            let pending = !["committed", "rejected"].contains(phase)
+            #expect(harness.interactor.rewindPending == pending)
+            #expect(harness.interactor.canForkCurrentConversation == !pending)
+            #expect(harness.interactor.historyActions(forMessageLocalId: "l1").rewind == !pending)
+        }
+    }
+
+    @Test func completedRewindStillTailSyncsAndDoesNotLatchPending() async throws {
+        let harness = try await ChatInteractionHarness(detail: historyDetail())
+        #expect(await eventually {
+            (harness.interactor.windowState?.syncGeneration ?? 0) > 0
+                && harness.interactor.windowState?.isSyncingTail == false
+        })
+        let before = await harness.performer.count("GET", pathSuffix: "/messages")
+        let sessionJSON = String(decoding: try HapiJSON.encoder.encode(historyDetail()), as: UTF8.self)
+        await harness.performer.serve("POST", "/api/sessions/sess-1/rewind", json: "{\"session\":\(sessionJSON)}")
+        harness.interactor.rewindConversation(toMessageLocalId: "l1")
+        #expect(await eventually { await harness.performer.count("GET", pathSuffix: "/messages") > before })
+        #expect(await eventually { !harness.interactor.historyActionPending })
+        #expect(!harness.interactor.rewindPending)
+    }
+
     // MARK: Scheduled send
 
     @Test func presetScheduleResolvesAtSendAndQueuesWithoutSteer() async throws {

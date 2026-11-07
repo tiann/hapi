@@ -93,7 +93,17 @@ struct ChatView: View {
             reconnectNotice
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            warningBanner
+            VStack(spacing: 0) {
+                if model.interactor.rewindPending {
+                    Text("Rewind will complete when you send your next message")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(12)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                }
+                warningBanner
+            }
         }
         // Toast overlays the thread; applying it before the bottom inset
         // anchors it just above the composer instead of on top of it.

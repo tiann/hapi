@@ -19,6 +19,7 @@ export default {
   'message.rewind.confirmTitle': 'Rewind conversation',
   'message.rewind.confirmDescription': 'Rewind this session to this point? Later conversation history will be permanently removed. Files will not be changed.',
   'message.rewind.confirming': 'Rewinding…',
+  'message.rewind.pending': 'Rewind will complete when you send your next message',
   'message.rewind.fallbackTitle': 'Rewind unavailable',
   'message.rewind.fallbackDescription': 'HAPI did not change this session because its native Codex boundary is ambiguous.\nCreate a new session before this point instead? The current session will not be changed.',
   'message.rewind.fallbackFork': 'Fork here',

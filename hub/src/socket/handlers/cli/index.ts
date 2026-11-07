@@ -53,6 +53,7 @@ export type CliHandlersDeps = {
     onAgentProgress?: (sessionId: string, at: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
+    onClaudeRewindApplied?: import('./sessionHandlers').SessionHandlersDeps['onClaudeRewindApplied']
 }
 
 // resolveSessionAccess runs on EVERY cli socket event (message stream deltas,
@@ -182,7 +183,8 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         onSessionActivity,
         onAgentProgress,
         onSweepImmediateQueued,
-        onMessagesConsumed
+        onMessagesConsumed,
+        onClaudeRewindApplied: deps.onClaudeRewindApplied
     })
     registerMachineHandlers(socket, {
         store,

@@ -80,6 +80,8 @@ export async function claudeRemote(opts: {
     onPermissionModeRejected?: (mode: PermissionMode, reason: string) => void,
     /** Session modes used to spawn Claude before the first fork child prompt. */
     bootstrapMode?: EnhancedMode,
+    onQueryStarted?: (mode: EnhancedMode) => void,
+    onInputSubmitted?: (nativePromptUuid: string) => void,
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
@@ -92,13 +94,19 @@ export async function claudeRemote(opts: {
     onMessage: (message: SDKMessage) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
     onFirstResult?: (initialMessage: string) => void,
+    onCompletionEvent?: (message: string) => void,
+    onSessionReset?: () => void,
+    /**
+     * Rewind acceptance probe: returns true when the native transcript shows
+     * a post-respawn entry re-parented onto the given keep-boundary uuid.
+     */
+    rewindProof?: (resumeSessionAt: string) => boolean,
+    onRewindBranchApplied?: () => Promise<void>,
     /**
      * The delivered input finished at the SDK boundary although onReady is
      * still deferred (compact summary lookup, or a steer follow-up turn).
      */
-    onResultAccepted?: () => void,
-    onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void,
+    onResultAccepted?: () => void | Promise<void>,
     /** Open while a plain (non-command) turn runs; null otherwise. */
     onSteerTargetChange?: (target: ClaudeSteerTarget | null) => void
 }) {
@@ -151,6 +159,28 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
+    // One-shot rewind flags (set by the RewindConversation handler) pass through
+    // claudeArgs; filterCatalogAffectingClaudeArgs strips them from additionalArgs,
+    // so they must be parsed here into first-class SDK options.
+    let resumeSessionAt: string | undefined;
+    const resumeDropsTurn: string[] = [];
+    if (opts.claudeArgs) {
+        for (let i = 0; i < opts.claudeArgs.length; i++) {
+            if (opts.claudeArgs[i] === '--resume-session-at' && i + 1 < opts.claudeArgs.length) {
+                resumeSessionAt = opts.claudeArgs[++i];
+            } else if (opts.claudeArgs[i] === '--resume-drops-turn' && i + 1 < opts.claudeArgs.length) {
+                resumeDropsTurn.push(opts.claudeArgs[++i]);
+            }
+        }
+    }
+    // A rewind restart must spawn Claude immediately (no user prompt yet):
+    // the native truncation only materializes once the new process starts with
+    // the resume flags, and the launcher waits for that before reporting
+    // success to the hub. Like --fork-session, start query() without waiting
+    // for an initial child prompt; stream-json input stays open for later turns.
+    let awaitingRewindInit = resumeSessionAt !== undefined;
+    if (awaitingRewindInit && !startFrom) throw new Error('Pending rewind native session is unavailable');
+
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
     const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
@@ -172,6 +202,7 @@ export async function claudeRemote(opts: {
     const pushUserMessage = (content: string, uuid: string = randomUUID()) => {
         pushedUuids.add(uuid);
         messages.push({ type: 'user', uuid, message: { role: 'user', content } });
+        return uuid;
     };
     // Steered messages Claude has not echoed yet. A result while any is
     // pending is not the end of the turn: Claude runs a follow-up turn for it.
@@ -317,7 +348,8 @@ export async function claudeRemote(opts: {
         }
 
         mode = next.mode;
-        pushUserMessage(next.message);
+        const nativePromptUuid = pushUserMessage(next.message);
+        opts.onInputSubmitted?.(nativePromptUuid);
         setSteerable(specialCommand.type === null);
         return next;
     };
@@ -330,6 +362,8 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         forkSession,
+        resumeSessionAt,
+        resumeDropsTurn: resumeDropsTurn.length > 0 ? resumeDropsTurn : undefined,
         mcpServers: opts.mcpServers,
         permissionMode: nativePermissionMode(bootstrapMode.permissionMode),
         model: bootstrapMode.model,
@@ -354,7 +388,7 @@ export async function claudeRemote(opts: {
         replayUserMessages: true,
     }
 
-    if (!awaitingForkInit) {
+    if (!awaitingForkInit && !awaitingRewindInit) {
         const first = await applyInitialTurn();
         if (!first) {
             return;
@@ -389,6 +423,7 @@ export async function claudeRemote(opts: {
     };
 
     // Start the loop
+    opts.onQueryStarted?.(mode);
     let response: ReturnType<typeof query>;
     try {
         response = query({
@@ -507,7 +542,8 @@ export async function claudeRemote(opts: {
                 }
                 mode = next.mode;
                 specialCommand = nextSpecialCommand;
-                pushUserMessage(next.message);
+                const nativePromptUuid = pushUserMessage(next.message);
+                opts.onInputSubmitted?.(nativePromptUuid);
                 setSteerable(nextSpecialCommand.type === null);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
@@ -529,7 +565,51 @@ export async function claudeRemote(opts: {
         })();
     };
 
-    updateThinking(true);
+    // Silence, elapsed time and system/init are not truncation evidence.
+    // Without a native write bound to this attempt the RPC fails closed.
+    const rewindProof = opts.rewindProof;
+    let rewindTimersCleared = false;
+    let rewindProofPoll: ReturnType<typeof setInterval> | null = null;
+    const clearRewindTimers = () => {
+        if (rewindTimersCleared) return;
+        rewindTimersCleared = true;
+        if (rewindProofPoll) {
+            clearInterval(rewindProofPoll);
+            rewindProofPoll = null;
+        }
+    };
+    let branchCommit: Promise<void> | null = null;
+    const commitRewindBranch = async () => {
+        if (!awaitingRewindInit) return;
+        if (branchCommit) return branchCommit;
+        if (!resumeSessionAt || !rewindProof?.(resumeSessionAt)) throw new Error('Native rewind branch proof missing');
+        branchCommit = (async () => {
+            await opts.onRewindBranchApplied?.();
+            clearRewindTimers();
+            awaitingRewindInit = false;
+            // Branch selection is not turn completion. Do not change thinking,
+            // call onReady, or consume another queued input here.
+        })();
+        try { await branchCommit } finally { branchCommit = null; }
+    };
+    const REWIND_PROOF_POLL_MS = 500;
+    if (awaitingRewindInit && resumeSessionAt && rewindProof) {
+        // Input delivery is independent of truncation acknowledgment. A real
+        // follow-up turn may establish the durable branch after an unconfirmed
+        // RPC; merely arming this waiter never reports success to the hub.
+        scheduleNextMessage();
+        // Lazy positive proof: the next user turn's snapshot re-parented onto
+        // the keep boundary. Resolves ack(true) early when it appears.
+        rewindProofPoll = setInterval(() => {
+            if (!rewindProof(resumeSessionAt) || branchCommit) return;
+            void commitRewindBranch().catch(error => {
+                logger.debug(`[claudeRemote] rewind proof poll failed: ${error instanceof Error ? error.message : String(error)}`);
+            });
+        }, REWIND_PROOF_POLL_MS);
+        updateThinking(false);
+    } else {
+        updateThinking(true);
+    }
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
@@ -713,6 +793,13 @@ export async function claudeRemote(opts: {
                     }
                     initial = first;
                 }
+
+                // Rewind restart: no child prompt was fed, so nothing is running.
+                // Clear the boot-time thinking state and report ready — otherwise
+                // the session looks permanently "generating" until the next turn.
+                if (awaitingRewindInit && resumeSessionAt && rewindProof?.(resumeSessionAt)) {
+                    await commitRewindBranch();
+                }
             }
 
             // Capture the /compact outcome. Only a reported failure is recorded:
@@ -744,6 +831,17 @@ export async function claudeRemote(opts: {
             // Handle result messages
             if (message.type === 'result') {
                 resultSeq += 1;
+                // A steer follow-up must not turn an unproven or rejected
+                // rewind result into acceptance by skipping this boundary.
+                if (awaitingRewindInit) {
+                    const errors = (message as { errors?: unknown[] }).errors;
+                    const rejectText = Array.isArray(errors) ? errors.map(String).join(' | ') : '';
+                    if (rejectText) {
+                        clearRewindTimers();
+                        throw new Error(rejectText);
+                    }
+                    await commitRewindBranch();
+                }
                 if (resultSeq === 1 && specialCommand.type === null && initial) {
                     opts.onFirstResult?.(initial.message);
                 }
@@ -754,7 +852,7 @@ export async function claudeRemote(opts: {
                     logger.debug(`${debugPrefix} result #${resultSeq} received with ${pendingSteers.size} pending steer(s); turn continues`);
                     // The delivered prompt is complete; a later stream failure
                     // must recover only the outstanding steer, not replay it.
-                    opts.onResultAccepted?.();
+                    await opts.onResultAccepted?.();
                     continue;
                 }
 
@@ -780,7 +878,7 @@ export async function claudeRemote(opts: {
                     // bar with it, since the next real usage only arrives
                     // with the next model response.
                     compactState.active = null;
-                    opts.onResultAccepted?.();
+                    await opts.onResultAccepted?.();
 
                     compactCompletion = (async () => {
                         let compactSummary = await lookupCompactSummary(
@@ -858,6 +956,7 @@ export async function claudeRemote(opts: {
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
         opts.setPermissionModeListener?.(null);
+        clearRewindTimers();
         opts.setEffortApplier?.(null);
         updateThinking(false);
     }

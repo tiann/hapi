@@ -613,7 +613,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 hydrateFailed: result.hydrateFailed === true
             }, result.hydrateFailed ? 500 : 409)
         }
-        return c.json({ success: true as const })
+        if (result.pending) {
+            return c.json({ session: engine.getSession(sessionResult.sessionId), pending: true as const }, 202)
+        }
+        return c.json({ session: engine.getSession(sessionResult.sessionId) })
     })
 
     app.post('/sessions/:id/archive', async (c) => {

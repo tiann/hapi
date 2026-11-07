@@ -233,7 +233,11 @@ private class RecordingChatApi : ChatSessionApi {
         configCalls.value = configCalls.value + "abort:$sessionId"
     }
 
-    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
+    val clearCalls = mutableListOf<String>()
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse {
+        clearCalls += sessionId
+        error("Unexpected clear")
+    }
 
     val planCalls = MutableStateFlow<List<Pair<String, String>>>(emptyList())
     var planGate: CompletableDeferred<Unit>? = null
@@ -488,6 +492,36 @@ private class InteractionHarness(
 // ------------------------------------------------------------------ tests --
 
 class ChatViewModelInteractionTest {
+
+    @Test fun `pending rewind blocks clear and new but allows a regular turn`() = runTest {
+        val base = detail()
+        val harness = InteractionHarness(this, base.copy(metadata = base.metadata!!.copy(
+            capabilities = SessionCapabilities(concurrentClients = true),
+            claudeRewind = app.hapi.protocol.wire.ClaudeRewind("op-1", "pending", "l1", 42),
+        )))
+        val vm = harness.viewModel
+        vm.start()
+        vm.uiState.first { it.rewindPending }
+        for (command in listOf("/clear", "/new")) {
+            vm.setComposerText(command)
+            vm.sendMessage()
+            testScheduler.runCurrent()
+            assertEquals(command, vm.composer.value.text)
+            assertTrue(harness.api.sendCalls.value.isEmpty())
+            assertTrue(harness.api.clearCalls.isEmpty())
+        }
+        vm.setComposerText("continue")
+        vm.sendMessage()
+        assertEquals("continue", harness.api.sendCalls.first { it.isNotEmpty() }.single().second.text)
+        for (phase in listOf("requested", "pending", "applied", "unknown", "committed", "rejected")) {
+            harness.sessionStore.setDetail(base.copy(metadata = base.metadata!!.copy(
+                claudeRewind = app.hapi.protocol.wire.ClaudeRewind("op-1", phase, "l1", 42),
+            )))
+            val expected = phase !in listOf("committed", "rejected")
+            vm.uiState.first { it.rewindPending == expected }
+            assertEquals(expected, vm.uiState.value.rewindPending)
+        }
+    }
 
     private fun planDetail(): Session = detail(
         flavor = "codex", agentState = AgentState(codexPlanProposalId = "plan-1"),

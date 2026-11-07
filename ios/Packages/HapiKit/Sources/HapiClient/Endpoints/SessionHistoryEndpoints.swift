@@ -38,11 +38,11 @@ extension APIClient {
     /// `POST /api/sessions/:id/rewind` — drop the conversation from
     /// `messageLocalId` on. A 409 `ambiguous_native_boundary_fork_safe`
     /// means only a fork can preserve the point.
-    public func rewindConversation(sessionId: String, messageLocalId: String) async throws {
+    public func rewindConversation(sessionId: String, messageLocalId: String) async throws -> RewindConversationResponse {
         struct RewindRequest: Encodable {
             let messageLocalId: String
         }
-        try await requestVoid(
+        return try await request(
             .post,
             "/api/sessions/\(encodePathComponent(sessionId))/rewind",
             body: RewindRequest(messageLocalId: messageLocalId)

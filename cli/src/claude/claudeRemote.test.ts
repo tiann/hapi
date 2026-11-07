@@ -81,6 +81,39 @@ async function waitFor(condition: () => boolean, timeoutMs = 300, intervalMs = 1
 }
 
 describe('claudeRemote async message handling', () => {
+    it.each([
+        { permissionMode: 'default' as const, model: 'haiku', effort: 'low' },
+        { permissionMode: 'plan' as const, model: 'sonnet', effort: 'high' },
+    ])('binds eager rewind query options to the reported launch mode: $model/$effort', async (launchMode) => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const order: string[] = [];
+        const onQueryStarted = vi.fn(() => { order.push('launch mode'); });
+        queryMock.mockImplementationOnce(() => {
+            order.push('query');
+            return createAsyncStream([]);
+        });
+        try {
+            await claudeRemote({
+                sessionId: 'pending-native-session', path: process.cwd(),
+                mcpServers: {}, claudeEnvVars: {},
+                claudeArgs: ['--resume-session-at', 'kept-boundary'],
+                bootstrapMode: launchMode, onQueryStarted,
+                allowedTools: [], hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => null, onReady: () => {},
+                isAborted: () => false, onSessionFound: () => {}, onMessage: () => {},
+            });
+            expect(onQueryStarted).toHaveBeenCalledWith(launchMode);
+            expect(order).toEqual(['launch mode', 'query']);
+            expect(queryMock.mock.calls[0][0].options).toMatchObject({
+                resume: 'pending-native-session', resumeSessionAt: 'kept-boundary',
+                model: launchMode.model, effort: launchMode.effort,
+                permissionMode: launchMode.permissionMode,
+            });
+        } finally { queryMock.mockReset(); querySpy.mockRestore(); }
+    });
+
     beforeEach(() => {
         findLatestCompactSummaryMock.mockReset();
         findLatestCompactSummaryMock.mockImplementation(async () => null);
@@ -1693,6 +1726,122 @@ describe('claudeRemote rejected permission mode', () => {
             { type: 'result', subtype: 'success' } as unknown as SDKMessage
         ], 'auto', async () => {});
         expect(rejected).toHaveBeenCalledWith('default', expect.stringContaining('auto'));
+    });
+});
+
+describe('claudeRemote rewind acceptance proof', () => {
+    beforeEach(() => {
+        findLatestCompactSummaryMock.mockReset();
+        findLatestCompactSummaryMock.mockImplementation(async () => null);
+    });
+
+    function makeRewindOpts(overrides: Partial<Record<string, unknown>> = {}) {
+        return {
+            sessionId: 'rewind-session' as string | null,
+            path: process.cwd(),
+            mcpServers: {},
+            claudeEnvVars: {},
+            // The rewind respawn path parses --resume-session-at out of claudeArgs
+            // and starts query() without an initial child prompt.
+            claudeArgs: ['--resume-session-at', 'keep-boundary-uuid', '--resume-drops-turn', 'drop-uuid'],
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => null,
+            onReady: vi.fn(),
+            isAborted: () => false,
+            onSessionFound: vi.fn(),
+            onMessage: vi.fn(),
+            rewindProof: vi.fn(() => false),
+            onRewindBranchApplied: vi.fn(async () => {}),
+            ...overrides
+        };
+    }
+
+    it('does not fire onReady from a fixed timer while the native proof is absent', { timeout: 15_000 }, async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const opts = makeRewindOpts();
+        queryMock.mockReturnValueOnce((async function* () {
+            // Attempt stays alive (stream open) but no proof is written yet.
+            await new Promise((resolve) => setTimeout(resolve, 3500));
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await claudeRemote(opts as never);
+            // Regression: the removed 4s/8s guess timers must not ack/ready here.
+            expect(opts.onReady).not.toHaveBeenCalled();
+            expect(opts.rewindProof).toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
+    it('rejects a native rejection arriving after the former success timer', { timeout: 15_000 }, async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const opts = makeRewindOpts();
+        queryMock.mockReturnValueOnce((async function* () {
+            yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
+            await new Promise((resolve) => setTimeout(resolve, 3500));
+            yield {
+                type: 'result', subtype: 'error_during_execution',
+                errors: ['Resume rejected by --resume-session-at: invalid boundary']
+            } as unknown as SDKMessage;
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await expect(claudeRemote(opts as never)).rejects.toThrow('Resume rejected');
+            expect(opts.onReady).not.toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
+    it('commits branch proof without completing the turn or consuming a second input', { timeout: 15_000 }, async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        let proofReady = false;
+        const opts = makeRewindOpts({
+            rewindProof: vi.fn(() => proofReady),
+            nextMessage: vi.fn(async () => null)
+        });
+        queryMock.mockReturnValueOnce((async function* () {
+            yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            proofReady = true;
+            await new Promise((resolve) => setTimeout(resolve, 2200));
+            yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await claudeRemote(opts as never);
+            expect(opts.rewindProof).toHaveBeenCalled();
+            expect(opts.onRewindBranchApplied).toHaveBeenCalledTimes(1);
+            expect(opts.onReady).not.toHaveBeenCalled();
+            expect(opts.nextMessage).toHaveBeenCalledTimes(1);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
+    it('completes exactly once at the real result after branch commit', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const events: string[] = [];
+        const opts = makeRewindOpts({
+            rewindProof: () => true,
+            onRewindBranchApplied: async () => { events.push('hub-committed') },
+            onReady: vi.fn(async () => { events.push('turn-ready') })
+        });
+        queryMock.mockReturnValueOnce((async function* () {
+            yield { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await claudeRemote(opts as never);
+            expect(events).toEqual(['hub-committed', 'turn-ready']);
+            expect(opts.onReady).toHaveBeenCalledTimes(1);
+        } finally { queryMock.mockReset(); querySpy.mockRestore(); }
     });
 });
 

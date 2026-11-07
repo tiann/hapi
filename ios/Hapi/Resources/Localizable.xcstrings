@@ -8597,6 +8597,23 @@
         }
       }
     },
+    "Rewind will complete when you send your next message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送下一条消息时将完成回退"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откат завершится, когда вы отправите следующее сообщение"
+          }
+        }
+      }
+    },
     "Rewind Unavailable" : {
       "extractionState" : "manual",
       "localizations" : {

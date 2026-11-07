@@ -26,6 +26,13 @@ import { EventPublisher } from './eventPublisher'
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
 
+export class ClaudeRewindPendingError extends Error {
+    constructor() {
+        super('Cannot run conversation commands while Claude rewind is pending; send a regular message first')
+        this.name = 'ClaudeRewindPendingError'
+    }
+}
+
 // Search jumps only need a compact render window around the hit. Keeping this
 // bounded to 41 rows avoids transferring large historical attachments and
 // tool payloads that are unrelated to the selected message; normal scrolling
@@ -921,6 +928,12 @@ export class MessageService {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata as Metadata | null | undefined
+        const rewindPhase = metadata?.claudeRewind?.phase
+        if (rewindPhase && ['requested', 'pending', 'applied', 'unknown'].includes(rewindPhase)
+            && /^\/(?:clear|new|compact)(?:\s|$)/i.test(payload.text.trim())) {
+            throw new ClaudeRewindPendingError()
+        }
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a

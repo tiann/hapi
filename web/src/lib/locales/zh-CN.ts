@@ -19,6 +19,7 @@ export default {
   'message.rewind.confirmTitle': '回退对话',
   'message.rewind.confirmDescription': '将此会话回退到此处？之后的对话历史将永久移除。文件不会被修改。',
   'message.rewind.confirming': '回退中…',
+  'message.rewind.pending': '发送下一条消息时将完成回退',
   'message.rewind.fallbackTitle': '暂时无法回退',
   'message.rewind.fallbackDescription': '由于 Codex 原生对话边界存在歧义，HAPI 没有修改当前会话。\n是否改为在此处创建新会话？当前会话不会被修改。',
   'message.rewind.fallbackFork': '在此处分叉',

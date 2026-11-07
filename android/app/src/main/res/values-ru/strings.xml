@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_rewind_pending">Откат завершится, когда вы отправите следующее сообщение</string>
     <string name="app_name">HAPI</string>
 
     <!-- Markdown / code / diff rendering (B-M2d1) -->

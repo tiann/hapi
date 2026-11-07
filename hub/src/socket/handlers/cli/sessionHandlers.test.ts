@@ -1,9 +1,9 @@
-import { describe, expect, it, mock } from 'bun:test'
+import { describe, expect, it, mock, spyOn } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { CliSocketWithData } from '../../socketTypes'
-import { registerSessionHandlers } from './sessionHandlers'
+import { registerSessionHandlers, type SessionHandlersDeps } from './sessionHandlers'
 
 class FakeSocket {
     readonly roomEvents: Array<{ room: string; event: string; data: unknown }> = []
@@ -26,6 +26,166 @@ class FakeSocket {
         this.handlers.get(event)?.(data, ack)
     }
 }
+
+function consumedFixture(overrides: Partial<SessionHandlersDeps> = {}) {
+    const store = new Store(':memory:')
+    const session = store.sessions.getOrCreateSession('consumed-ack', {}, null, 'owner')
+    store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'Q' } }, 'queued-q')
+    const socket = new FakeSocket()
+    const notifications: string[] = []
+    const deps: SessionHandlersDeps = {
+        store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSessionByNamespace(session.id, 'owner')! }),
+        emitAccessError() {},
+        onSessionActivity: () => { notifications.push('activity') },
+        onMessagesConsumed: () => { notifications.push('grace') },
+        onWebappEvent: event => { if (event.type === 'messages-consumed') notifications.push('consumed') },
+        ...overrides
+    }
+    registerSessionHandlers(socket as unknown as CliSocketWithData, deps)
+    return { store, session, socket, notifications }
+}
+
+describe('messages-consumed optional durable ACK', () => {
+    it('does not acknowledge ownership of missing/cancelled rows while preserving legacy fire-and-forget handling', () => {
+        const { store, session, socket, notifications } = consumedFixture()
+        try {
+            let ack: unknown
+            const data = { sid: session.id, localIds: ['queued-q', 'cancelled-or-missing'] }
+            socket.trigger('messages-consumed', data, response => { ack = response })
+            expect(ack).toEqual({ ok: false, missingLocalIds: ['cancelled-or-missing'] })
+            expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).toBeNull()
+            expect(notifications).toHaveLength(0)
+            socket.trigger('messages-consumed', data)
+            expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).not.toBeNull()
+        } finally { store.close() }
+    })
+
+    it('reports only the exact missing subset and leaves every present queued or invoked row unchanged', () => {
+        const { store, session, socket, notifications } = consumedFixture()
+        try {
+            store.messages.addMessage(session.id, { role: 'user' }, 'already-invoked')
+            store.messages.markMessagesInvoked(session.id, ['already-invoked'], 123)
+            const before = store.messages.getAllMessages(session.id)
+            const updatedAt = store.sessions.getSession(session.id)!.updatedAt
+            let ack: unknown
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['missing-b', 'queued-q', 'already-invoked', 'missing-a'] }, response => { ack = response })
+            expect(ack).toEqual({ ok: false, missingLocalIds: ['missing-b', 'missing-a'] })
+            expect(store.messages.getAllMessages(session.id)).toEqual(before)
+            expect(store.sessions.getSession(session.id)!.updatedAt).toBe(updatedAt)
+            expect(notifications).toHaveLength(0)
+        } finally { store.close() }
+    })
+
+    it('returns unknown rather than absence proof if the authorized session was deleted', () => {
+        let stale: StoredSession
+        const { store, session, socket, notifications } = consumedFixture({ resolveSessionAccess: () => ({ ok: true, value: stale }) })
+        stale = session
+        const errors = spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            store.sessions.deleteSession(session.id, 'owner')
+            let ack: unknown
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q', 'missing'] }, response => { ack = response })
+            expect(ack).toEqual({ ok: false })
+            expect(notifications).toHaveLength(0)
+        } finally { errors.mockRestore(); store.close() }
+    })
+
+    it('ACKs only after persistence and engine notifications; duplicate ACKs preserve the original invocation', () => {
+        const { store, session, socket, notifications } = consumedFixture()
+        try {
+            let originalInvokedAt: number | null = null
+            let acks = 0
+            for (let i = 0; i < 2; i++) {
+                socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q'], clearQueuedThinkingGrace: true }, response => {
+                    expect(response).toEqual({ ok: true })
+                    const row = store.messages.getAllMessages(session.id)[0]!
+                    expect(row.invokedAt).not.toBeNull()
+                    if (originalInvokedAt === null) originalInvokedAt = row.invokedAt
+                    else expect(row.invokedAt).toBe(originalInvokedAt)
+                    expect(store.sessions.getSession(session.id)!.updatedAt).toBeGreaterThanOrEqual(row.invokedAt!)
+                    expect(notifications.slice(-3)).toEqual(['activity', 'grace', 'consumed'])
+                    expect(notifications.length).toBe((i + 1) * 3)
+                    acks++
+                })
+            }
+            expect(acks).toBe(2)
+            expect(store.messages.getUninvokedLocalMessages(session.id)).toHaveLength(0)
+        } finally { store.close() }
+    })
+
+    it('returns false for invalid payloads and empty IDs without mutating or notifying', () => {
+        const { store, session, socket, notifications } = consumedFixture()
+        try {
+            for (const data of [null, {}, { sid: session.id, localIds: 'queued-q' },
+                { sid: session.id, localIds: [] }, { sid: session.id, localIds: [''] }, { sid: session.id, localIds: ['queued-q', 42] }]) {
+                let acks = 0
+                socket.trigger('messages-consumed', data, response => { expect(response).toEqual({ ok: false }); acks++ })
+                expect(acks).toBe(1)
+            }
+            expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).toBeNull()
+            expect(notifications).toHaveLength(0)
+        } finally { store.close() }
+    })
+
+    it('never ACKs success for a different namespace or a namespace mismatch rejected by the store', () => {
+        for (const accessDenied of [true, false]) {
+            const accessError = mock()
+            const errors = spyOn(console, 'error').mockImplementation(() => {})
+            const { store, session, socket, notifications } = consumedFixture({
+                resolveSessionAccess: () => accessDenied
+                    ? { ok: false, reason: 'access-denied' }
+                    : { ok: true, value: { id: 'consumed-ack', namespace: 'other' } as StoredSession },
+                emitAccessError: accessError
+            })
+            try {
+                let acks = 0
+                socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q', 'missing-private-row'] }, response => {
+                    expect(response).toEqual({ ok: false }); acks++
+                })
+                expect(acks).toBe(1)
+                expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).toBeNull()
+                expect(notifications).toHaveLength(0)
+                expect(accessError.mock.calls.length).toBe(accessDenied ? 1 : 0)
+            } finally { errors.mockRestore(); store.close() }
+        }
+    })
+
+    it('returns false and rolls back invocation when the durable store transition throws', () => {
+        const { store, session, socket, notifications } = consumedFixture()
+        const errors = spyOn(console, 'error').mockImplementation(() => {})
+        const touch = spyOn(store.sessions, 'touchSessionUpdatedAt').mockImplementation(() => { throw new Error('injected DB failure') })
+        try {
+            let ack: unknown
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q'] }, response => { ack = response })
+            expect(ack).toEqual({ ok: false })
+            expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).toBeNull()
+            expect(notifications).toHaveLength(0)
+        } finally { touch.mockRestore(); errors.mockRestore(); store.close() }
+    })
+
+    it.each(['activity', 'grace', 'web'] as const)('returns false on %s notification exceptions and permits a replay-safe retry', kind => {
+        const errors = spyOn(console, 'error').mockImplementation(() => {})
+        let fail = true
+        const notify = () => { if (fail) throw new Error('injected engine notification failure') }
+        const { store, session, socket } = consumedFixture({
+            ...(kind === 'activity' ? { onSessionActivity: notify } : {}),
+            ...(kind === 'grace' ? { onMessagesConsumed: notify } : {}),
+            ...(kind === 'web' ? { onWebappEvent: notify } : {})
+        })
+        try {
+            let ack: unknown
+            const send = () => socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q'], clearQueuedThinkingGrace: true }, response => { ack = response })
+            send()
+            expect(ack).toEqual({ ok: false })
+            const invokedAt = store.messages.getAllMessages(session.id)[0]!.invokedAt
+            expect(invokedAt).not.toBeNull()
+            fail = false
+            send()
+            expect(ack).toEqual({ ok: true })
+            expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).toBe(invokedAt)
+        } finally { errors.mockRestore(); store.close() }
+    })
+})
 
 it('does not rebroadcast stored messages and retains repeated consumption acknowledgements', () => {
     const store = new Store(':memory:')

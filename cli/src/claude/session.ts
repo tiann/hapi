@@ -7,6 +7,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { RewindDelivery } from './rewindIntent';
 
 type LocalLaunchFailure = {
     message: string;
@@ -31,6 +32,33 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     localTurnStartedAt = 0;
     private nativeSkillNames = new Set<string>();
     private permissionModeListener: ((mode: PermissionMode) => void) | null = null;
+    /**
+     * Set by the remote launcher while it is running. Invoking it aborts the
+     * current SDK attempt so the main loop respawns Claude with fresh args
+     * (used by rewind, which requires a process restart). Cleared on cleanup.
+     */
+    requestRemoteRestart: (() => Promise<void>) | null = null;
+    /**
+     * Set by the remote launcher when a user turn completes natively (result
+     * reached). Reports the hub localIds of the completed batch so rewind
+     * locators are only recorded for turns that really happened.
+     */
+    onUserTurnCompleted: ((localIds: string[], nativePromptUuid?: string) => void | Promise<void>) | null = null;
+    /** Invoked when the native session id is dropped (/clear); rewind tracking must reset. */
+    onNativeSessionReset: (() => void) | null = null;
+    /**
+     * Evidence probe for rewind acceptance, set by runClaude before the
+     * restart: returns true only when the native transcript contains a
+     * post-respawn entry re-parented onto the requested keep boundary.
+     * claudeRemote polls it instead of guessing from a timer.
+     */
+    rewindProof: ((resumeSessionAt: string) => boolean) | null = null;
+    onRewindBranchApplied: (() => Promise<void>) | null = null;
+    onRewindFailure: ((error: string, unchanged: boolean) => Promise<void>) | null = null;
+    prepareHistoryAttempt: (() => Promise<void>) | null = null;
+    stageRewindInput: ((localIds: string[], text: string, delivery: RewindDelivery) => Promise<boolean>) | null = null;
+    isRewindInputAccepted: ((localIds: string[], text: string) => boolean) | null = null;
+    recoveredRewindInput: RewindDelivery | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -131,6 +159,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      */
     clearSessionId = (): void => {
         this.sessionId = null;
+        this.onNativeSessionReset?.();
         logger.debug('[Session] Session ID cleared');
     };
 
@@ -164,6 +193,18 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                 }
             } else if (this.claudeArgs[i] === '--fork-session') {
                 logger.debug('[Session] Consumed --fork-session flag');
+            } else if (
+                (this.claudeArgs[i] === '--resume-session-at' || this.claudeArgs[i] === '--resume-drops-turn')
+                && i + 1 < this.claudeArgs.length
+            ) {
+                if (this.rewindProof) {
+                    // Init does not durably select the branch. Retain the
+                    // boundary across attempts until a real turn commits it.
+                    filteredArgs.push(this.claudeArgs[i], this.claudeArgs[++i]);
+                    continue;
+                }
+                logger.debug(`[Session] Consumed ${this.claudeArgs[i]} flag`);
+                i++; // Skip the uuid value
             } else {
                 filteredArgs.push(this.claudeArgs[i]);
             }

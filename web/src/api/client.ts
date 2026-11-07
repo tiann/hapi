@@ -766,8 +766,8 @@ export class ApiClient {
         )
     }
 
-    async rewindConversation(sessionId: string, messageLocalId: string): Promise<{ success: true }> {
-        return await this.request<{ success: true }>(
+    async rewindConversation(sessionId: string, messageLocalId: string): Promise<SessionResponse & { pending?: true }> {
+        return await this.request<SessionResponse & { pending?: true }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
             {
                 method: 'POST',

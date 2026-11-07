@@ -6,6 +6,7 @@ export type {
     BackgroundTask,
     DecryptedMessage,
     Metadata,
+    ClaudeRewind,
     Machine,
     MachineHealth,
     MachineMetadata,
