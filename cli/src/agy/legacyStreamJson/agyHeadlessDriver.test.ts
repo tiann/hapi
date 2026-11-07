@@ -361,6 +361,33 @@ describe('AgyHeadlessDriver', () => {
         expect(spawnedArgs[0]).not.toContain('--dangerously-skip-permissions');
     });
 
+    it.each([
+        ['acceptEdits', 'accept-edits'],
+        ['plan', 'plan'],
+    ] as const)('starts agy with --mode for the %s permission mode', async (permissionMode, agyMode) => {
+        const { session, queue } = createSession();
+        const spawnedArgs: string[][] = [];
+        const driver = new AgyHeadlessDriver({
+            session,
+            spawnAgy: (args) => {
+                spawnedArgs.push(args);
+                return fakeAgyProcess(FULL_TURN);
+            },
+        });
+
+        queue.push('hello', { permissionMode }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(spawnedArgs.length).toBe(1);
+        const at = spawnedArgs[0]!.indexOf('--mode');
+        expect(spawnedArgs[0]![at + 1]).toBe(agyMode);
+        expect(spawnedArgs[0]).not.toContain('--dangerously-skip-permissions');
+    });
+
     it('acks the delivery when the turn completes even without a user_input step', async () => {
         const { session, queue, client } = createSession();
         // No user_input step in the stream — but the result envelope proves the

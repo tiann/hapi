@@ -23,6 +23,10 @@ type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
 /** `always-proceed` stays in agy's default mode; HAPI answers its requests. */
 export function agyAcpModeForPermission(mode: PermissionMode | undefined): string {
     switch (mode) {
+        case 'acceptEdits':
+            return 'accept-edits';
+        case 'plan':
+            return 'plan';
         case 'request-review':
         case 'always-proceed':
         case undefined:

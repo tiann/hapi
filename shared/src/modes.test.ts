@@ -42,6 +42,15 @@ describe('getPermissionModesForFlavor', () => {
         ])
     })
 
+    test('returns the agy ACP session modes plus HAPI auto-approval', () => {
+        expect(getPermissionModesForFlavor('agy')).toEqual([
+            'request-review',
+            'acceptEdits',
+            'plan',
+            'always-proceed'
+        ])
+    })
+
     test("returns no HAPI mode selector for DSH's server-owned permission policy", () => {
         expect(getPermissionModesForFlavor('dsh')).toEqual([])
     })

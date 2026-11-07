@@ -287,12 +287,14 @@ describe('AgyAcpRemoteLauncher', () => {
         queue.push('one', flashLow, 'a');
         queue.push('two', { ...flashLow, permissionMode: 'always-proceed' }, 'b');
         queue.push('three', { ...flashLow, effort: 'high' }, 'c');
+        queue.push('four', { ...flashLow, effort: 'high', permissionMode: 'plan' }, 'd');
+        queue.push('five', { ...flashLow, effort: 'high', permissionMode: 'acceptEdits' }, 'e');
         queue.close();
 
         await launch(session, [backend]).run;
 
-        expect(backend.prompts).toHaveLength(3);
-        expect(backend.setModeCalls).toEqual(['default', 'default', 'default']);
+        expect(backend.prompts).toHaveLength(5);
+        expect(backend.setModeCalls).toEqual(['default', 'default', 'default', 'plan', 'accept-edits']);
         expect(backend.setModelCalls).toEqual(['gemini-3.8-flash-low', 'gemini-3.8-flash-high']);
     });
 
@@ -628,6 +630,8 @@ describe('agy ACP helpers', () => {
     it('maps HAPI permission modes to agy ACP modes', () => {
         expect(agyAcpModeForPermission('request-review')).toBe('default');
         expect(agyAcpModeForPermission('always-proceed')).toBe('default');
+        expect(agyAcpModeForPermission('acceptEdits')).toBe('accept-edits');
+        expect(agyAcpModeForPermission('plan')).toBe('plan');
         expect(agyAcpModeForPermission(undefined)).toBe('default');
     });
 

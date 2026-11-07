@@ -20,7 +20,7 @@ agent's integration; their supported syntax varies by agent.
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
-| Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `always-proceed` | ✓ |
+| Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `plan` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
@@ -327,8 +327,12 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   started it. If the agy process dies, the next message restarts it and
   resumes the conversation; a prompt agy never started is restored to the
   composer. Stop sends `session/cancel`, which also ends open tool calls.
-  `request-review` follows agy's own permission settings and shows its
-  approval requests in HAPI; `always-proceed` approves them automatically.
+  Permission modes map to agy's session modes: `request-review` is agy's
+  `default` mode, which follows agy's own permission settings and, on ACP,
+  shows its approval requests in HAPI; `acceptEdits` and `plan` are agy's
+  `accept-edits` and `plan` modes; `always-proceed` approves every request
+  automatically. On ACP, mode changes apply to the next message without
+  restarting agy.
   Conversation titles come from agy, and each turn reports its token usage.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP

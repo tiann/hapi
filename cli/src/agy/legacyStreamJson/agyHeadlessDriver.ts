@@ -380,6 +380,9 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             args = buildAgyHeadlessArgs({
                 model: sessionModel,
                 permissionMode: mode.permissionMode,
+                // A change restarts the process, like other launch settings.
+                mode: mode.permissionMode === 'acceptEdits' ? 'accept-edits'
+                    : mode.permissionMode === 'plan' ? 'plan' : undefined,
                 effort: (AGY_EFFORT_LEVELS as readonly unknown[]).includes(sessionEffort)
                     ? sessionEffort as AgyEffortLevel : undefined,
             });

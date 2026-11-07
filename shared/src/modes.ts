@@ -19,7 +19,7 @@ export const CREATABLE_AGENT_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.fil
     (flavor) => flavor !== 'gemini'
 )
 
-export const AGY_PERMISSION_MODES = ['request-review', 'always-proceed'] as const
+export const AGY_PERMISSION_MODES = ['request-review', 'acceptEdits', 'plan', 'always-proceed'] as const
 export type AgyPermissionMode = typeof AGY_PERMISSION_MODES[number]
 
 export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'] as const
