@@ -296,6 +296,25 @@ describe('startHappyServer skill_lookup', () => {
         }
     })
 
+    it('forwards inspect_peer through MCP and returns the formatted report', async () => {
+        const inspect = vi.spyOn(peerMessages, 'inspectPeer').mockResolvedValue({} as Awaited<ReturnType<typeof peerMessages.inspectPeer>>)
+        const format = vi.spyOn(peerMessages, 'formatInspectPeerReport').mockReturnValue('INSPECT REPORT')
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'inspect_peer',
+                arguments: { sessionIdPrefix: 'peer-id', messageLimit: 12 },
+            }) as ToolResult
+            expect(inspect).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', messageLimit: 12 })
+            expect(format).toHaveBeenCalledOnce()
+            expect(result.isError).toBe(false)
+            expect(result.content?.[0]?.text).toBe('INSPECT REPORT')
+        } finally {
+            inspect.mockRestore()
+            format.mockRestore()
+        }
+    })
+
     it('lists active peers by default and forwards includeInactive', async () => {
         const list = vi.spyOn(peerMessages, 'listPeerSessions').mockResolvedValue([])
         try {
@@ -702,13 +721,13 @@ describe('startHappyServer peer tools kill switch', () => {
         }
     })
 
-    async function startServer(): Promise<{ url: string; toolNames: string[] }> {
+    async function startServer(options: Parameters<typeof startHappyServer>[1] = {}): Promise<{ url: string; toolNames: string[] }> {
         const sessionClient = {
             updateMetadata: vi.fn(),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
-        const server = await startHappyServer(sessionClient, {})
+        const server = await startHappyServer(sessionClient, options)
         stopServer = server.stop
         client = new Client(
             { name: 'hapi-peer-tools-test', version: '1.0.0' },
@@ -718,6 +737,25 @@ describe('startHappyServer peer tools kill switch', () => {
         return { url: server.url, toolNames: server.toolNames }
     }
 
+
+    it('supports a peer-only explicit tool allowlist', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const { toolNames } = await startServer({
+            enableChangeTitle: false,
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+        })
+        expect(toolNames).toEqual(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'])
+        const tools = await client!.listTools()
+        expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
+    })
+
+    it('does not let the allowlist bypass HAPI_DISABLE_PEER_TOOLS', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        await expect(startServer({
+            enableChangeTitle: false,
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+        })).rejects.toThrow('startHappyServer requires at least one enabled tool')
+    })
     it('registers peer tools by default', async () => {
         delete process.env.HAPI_DISABLE_PEER_TOOLS
         const { toolNames } = await startServer()
