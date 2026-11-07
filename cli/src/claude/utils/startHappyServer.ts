@@ -26,7 +26,10 @@ import { SESSION_NAME_MAX_LENGTH, toSessionSummaryMetadata } from '@hapi/protoco
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
+    LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
+    LIST_PEERS_TOOL_DESCRIPTION,
     PEER_DELIVERY_MODE_DESCRIPTION,
+    PEER_WAKE_PARAM_DESCRIPTION,
     PING_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
     SPAWN_PEER_TOOL_DESCRIPTION,
@@ -45,6 +48,7 @@ type StartHappyServerOptions = {
      */
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    onChangeTitle?: (title: string) => void;
     /**
      * Session project cwd for resolving relative `spawn_peer` directories.
      * Prefer the launcher's effective cwd (including Codex `--cd` overrides).
@@ -102,7 +106,8 @@ function createHapiMcpServer(
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
     skillLookup: StartHappyServerOptions['skillLookup'],
-    workingDirectory: string | undefined
+    workingDirectory: string | undefined,
+    onChangeTitle?: StartHappyServerOptions['onChangeTitle']
 ): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
@@ -129,6 +134,15 @@ function createHapiMcpServer(
             // The ACK carries the Hub's preserved title and lock.
             if (client.getMetadata()?.titleLocked) {
                 return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
+            }
+            if (onChangeTitle) {
+                onChangeTitle(normalizeSessionDisplayTitle(title)!);
+                if (!await client.flushMetadata()) {
+                    return { success: false, error: 'Title update could not be confirmed by the Hub.' };
+                }
+                if (client.getMetadata()?.titleLocked) {
+                    return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
+                }
             }
             return { success: true };
         } catch (error) {
@@ -168,6 +182,7 @@ function createHapiMcpServer(
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
         deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
+        wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
     });
 
     const spawnPeerInputSchema: z.ZodTypeAny = z.object({
@@ -212,6 +227,7 @@ function createHapiMcpServer(
         limit: z.number().int().min(1).max(100).optional().describe(
             'Max sessions to return (default 30, max 100). Newest updatedAt first.'
         ),
+        includeInactive: z.boolean().optional().describe(LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION),
     });
 
     async function displayInlineMedia(
@@ -383,20 +399,21 @@ function createHapiMcpServer(
             description: PING_PEER_TOOL_DESCRIPTION,
             title: 'Ping Peer Session',
             inputSchema: pingPeerInputSchema,
-        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode }) => {
+        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode; wake?: boolean }) => {
             logger.debug('[hapiMCP] ping_peer:', args.sessionIdPrefix);
             try {
                 const result = await pingPeer({
                     sessionIdPrefix: args.sessionIdPrefix,
                     message: args.message,
                     deliveryMode: args.deliveryMode,
+                    wake: args.wake === true,
                 });
                 return {
                     content: [
                         {
                             type: 'text' as const,
                             text: result.delivery === 'accepted'
-                                ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+                                ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}`
                                 : `${result.delivery} to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId}`,
                         },
                     ],
@@ -530,25 +547,28 @@ function createHapiMcpServer(
         });
 
         mcp.registerTool<any, any>('list_peers', {
-            description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id, or spawn_peer to create a new peer with a remit.',
+            description: LIST_PEERS_TOOL_DESCRIPTION,
             title: 'List Peer Sessions',
             inputSchema: listPeersInputSchema,
-        }, async (args: { limit?: number }) => {
+        }, async (args: { limit?: number; includeInactive?: boolean }) => {
             logger.debug('[hapiMCP] list_peers');
             try {
                 const limit = args.limit ?? 30;
+                const includeInactive = args.includeInactive === true;
                 const sessions = await listPeerSessions({
                     limit: peerListFetchLimit(limit, { excludeCaller: true }),
+                    includeInactive,
                 });
-                const peers = sessions.filter((session) => session.id !== client.sessionId);
-                const hasMore = peers.length > limit;
+                const peerCount = sessions.filter((session) => session.id !== client.sessionId).length;
                 return {
                     content: [
                         {
                             type: 'text' as const,
-                            text: formatPeerSessionsList(peers, {
+                            text: formatPeerSessionsList(sessions, {
                                 maxRows: limit,
-                                hasMore,
+                                hasMore: peerCount > limit,
+                                excludeSessionId: client.sessionId,
+                                includeInactive,
                             }),
                         },
                     ],
@@ -645,7 +665,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             emitTitleSummary,
             enableChangeTitle,
             options.skillLookup,
-            options.workingDirectory
+            options.workingDirectory,
+            options.onChangeTitle
         );
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),

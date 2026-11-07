@@ -164,7 +164,7 @@ describe('SessionRowSummary background status', () => {
         expectUnread()
     })
 
-    it('marks unread without a dot while the presence badge keeps pulsing', () => {
+    it('shows the unread dot separately from the pulsing presence badge', () => {
         const session = makeSummary({
             id: 'selected-thinking-unread',
             thinking: true,
@@ -186,9 +186,9 @@ describe('SessionRowSummary background status', () => {
 
         expectUnread()
         const dots = container.querySelectorAll('.rounded-full')
-        expect(dots).toHaveLength(1)
-        expect(dots[0]).toHaveAttribute('data-testid', 'session-presence')
-        expect(dots[0]).toHaveClass('animate-pulse')
+        expect(dots).toHaveLength(2)
+        expect(container.querySelector('[data-testid="session-unread"]')).toBeInTheDocument()
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('animate-pulse')
     })
 
     it('shows unseen output from a running session', () => {
@@ -203,6 +203,15 @@ describe('SessionRowSummary background status', () => {
 
         expectUnread()
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('bg-blue-400', 'animate-pulse')
+    })
+
+    it('shows and clears the unread dot in standard session rows', () => {
+        const session = makeSummary({ id: 'standard-unread', backgroundTaskCount: 0, contentRevision: 5 })
+        const view = render(<I18nProvider><SessionRowSummary session={session} showDetailedStatus={false} lastSeenVersion={0} /></I18nProvider>)
+        expect(screen.getByTestId('session-unread')).toBeInTheDocument()
+        markSessionSeen(session.id, 5)
+        view.rerender(<I18nProvider><SessionRowSummary session={session} showDetailedStatus={false} lastSeenVersion={1} /></I18nProvider>)
+        expect(screen.queryByTestId('session-unread')).toBeNull()
     })
 
     it('shows pending requests as an amber symbol, not a dot', () => {

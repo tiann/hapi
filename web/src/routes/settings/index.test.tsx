@@ -101,6 +101,10 @@ vi.mock('@/hooks/usePinInProgressSessions', () => ({
     usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
 }))
 
+vi.mock('@/hooks/useKeepUnreadSessionsVisible', () => ({
+    useKeepUnreadSessionsVisible: () => ({ keepUnreadSessionsVisible: true, setKeepUnreadSessionsVisible: vi.fn() }),
+}))
+
 vi.mock('@/hooks/useAppBadgePreference', () => ({
     useAppBadgePreference: () => ({ appBadgeEnabled: false, setAppBadgeEnabled }),
 }))

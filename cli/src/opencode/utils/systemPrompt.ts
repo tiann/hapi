@@ -9,11 +9,6 @@ import { trimIdent } from '@/utils/trimIdent';
 import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { HAPI_MCP_BRIDGE_PROMPT } from '@/modules/common/hapiMcpBridgePrompt';
-import {
-    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
-    DISPLAY_MEDIA_PROMPT_HAPI_MCP,
-    DISPLAY_VIDEO_PROMPT_HAPI_MCP,
-} from '@/modules/common/displayImagePrompt';
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
@@ -36,13 +31,11 @@ export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 /**
- * Tool instructions for native ACP sessions. Title updates come from ACP, so
- * advertise only the MCP tools that remain available to the model.
+ * Instruction prepended to native ACP session prompts. change_title rides the
+ * same MCP bridge; manual titles take precedence over native ACP title sync.
  */
 export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
-    ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
-    ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
-    ${DISPLAY_MEDIA_PROMPT_HAPI_MCP}
+    ${HAPI_MCP_BRIDGE_PROMPT}
     ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
