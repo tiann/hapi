@@ -7,20 +7,30 @@ import { needsStreamJson, parseAgyVersion, probeAgyVersion } from './agyVersion'
 const harness = vi.hoisted(() => ({
     agyCommand: 'agy',
     acpLaunches: 0,
+    acpError: null as Error | null,
     streamJsonLaunches: 0,
     warn: vi.fn(),
 }))
 
 vi.mock('@/agent/agentLaunchCommand', () => ({ getAgentLaunchCommand: () => harness.agyCommand }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: harness.warn } }))
-vi.mock('../agyAcpRemoteLauncher', () => ({
-    agyAcpRemoteLauncher: async () => { harness.acpLaunches += 1; return 'exit' },
-}))
+vi.mock('../agyAcpRemoteLauncher', () => {
+    class AgyAcpStartError extends Error {}
+    return {
+        AgyAcpStartError,
+        agyAcpRemoteLauncher: async () => {
+            harness.acpLaunches += 1
+            if (harness.acpError) throw harness.acpError
+            return 'exit'
+        },
+    }
+})
 vi.mock('./agyHeadlessDriver', () => ({
     agyHeadlessDriver: async () => { harness.streamJsonLaunches += 1; return 'exit' },
 }))
 
 import { agyRemoteLauncher } from '../agyRemoteLauncher'
+import { AgyAcpStartError } from '../agyAcpRemoteLauncher'
 
 describe('needsStreamJson', () => {
     it.each([
@@ -87,6 +97,7 @@ describe('agyRemoteLauncher transport selection', () => {
     beforeEach(() => {
         dir = mkdtempSync(join(tmpdir(), 'agy-version-'))
         harness.acpLaunches = 0
+        harness.acpError = null
         harness.streamJsonLaunches = 0
         harness.warn.mockClear()
     })
@@ -122,6 +133,40 @@ describe('agyRemoteLauncher transport selection', () => {
             type: 'message',
             message: 'Antigravity runs without agy acp (agy 1.4.12 predates agy acp (1.5.0)); Steer is not available.'
         }])
+    })
+
+    it('falls back to stream-json when agy acp fails to start', async () => {
+        fakeAgy('echo 1.5.2')
+        harness.acpError = new AgyAcpStartError('Failed to start agy acp (requires Antigravity CLI 1.5.0 or newer): boom')
+        const { session, state } = fakeSession({})
+
+        await agyRemoteLauncher(session as never)
+
+        expect(harness.acpLaunches).toBe(1)
+        expect(harness.streamJsonLaunches).toBe(1)
+        expect(state.events).toEqual([{
+            type: 'message',
+            message: 'Antigravity runs without agy acp (agy acp failed to start: Failed to start agy acp (requires Antigravity CLI 1.5.0 or newer): boom); Steer is not available.'
+        }])
+    })
+
+    it('does not fall back for errors after agy acp started', async () => {
+        fakeAgy('echo 1.5.2')
+        harness.acpError = new Error('connection lost')
+        const { session } = fakeSession({})
+
+        await expect(agyRemoteLauncher(session as never)).rejects.toThrow('connection lost')
+        expect(harness.streamJsonLaunches).toBe(0)
+    })
+
+    it('reads the version from stdout, not from notices on stderr', async () => {
+        fakeAgy('echo "update 1.5.3 available" >&2; echo 1.4.12')
+        const { session } = fakeSession({})
+
+        await agyRemoteLauncher(session as never)
+
+        expect(harness.streamJsonLaunches).toBe(1)
+        expect(harness.acpLaunches).toBe(0)
     })
 
     it('falls back to stream-json and says why when the version check fails', async () => {

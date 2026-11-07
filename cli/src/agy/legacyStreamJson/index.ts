@@ -1,9 +1,9 @@
 /**
- * Stream-json transport, for agy releases without `agy acp` (< 1.5.0) and an
- * agy whose version cannot be read.
+ * Stream-json transport, for agy releases without `agy acp` (< 1.5.0), an agy
+ * whose version cannot be read, and an `agy acp` that fails to start.
  *
  * Removal: when agy < 1.5.0 is no longer supported, delete this directory and
- * its branch in ../agyRemoteLauncher.ts. Nothing else imports from here.
+ * its branches in ../agyRemoteLauncher.ts. Nothing else imports from here.
  * Rendering of stored agy transcripts in the web and native apps does not
  * depend on this directory.
  */
@@ -37,4 +37,8 @@ export async function selectLegacyStreamJsonAgy(probe?: AgyVersionProbe): Promis
         return null;
     }
     return (session) => runStreamJsonAgy(session, choice.reason);
+}
+
+export async function runStreamJsonAgyAfterAcpFailure(session: AgySession, error: Error): Promise<'switch' | 'exit'> {
+    return runStreamJsonAgy(session, `agy acp failed to start: ${error.message}`);
 }

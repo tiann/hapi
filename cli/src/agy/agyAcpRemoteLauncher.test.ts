@@ -278,6 +278,22 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(backend.disconnected).toBe(true);
     });
 
+    it('tells the user why agy could not start', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.initialize = async () => { throw new Error('unknown command "acp"'); };
+        queue.push('hello', REVIEW, 'a');
+
+        await expect(launch(session, [backend]).run).rejects.toThrow('requires Antigravity CLI 1.5.0 or newer');
+
+        expect(sessionEvents(client)).toContainEqual({
+            type: 'error',
+            message: 'Failed to start agy acp (requires Antigravity CLI 1.5.0 or newer): unknown command "acp"'
+        });
+        expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+        queue.close();
+    });
+
     it('resumes the stored conversation without replay', async () => {
         const { session, queue } = makeSession('agy-conv-old');
         const backend = new FakeAgyBackend();
@@ -977,6 +993,22 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         queue.close();
         await run;
         expect(created).toHaveLength(1);
+    });
+
+    it('does not report a start failure or fall back when the session is killed while agy starts', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let failStart!: (error: Error) => void;
+        backend.initializeGate = new Promise((_resolve, reject) => { failStart = reject; });
+        backend.onDisconnect = () => failStart(new Error('ACP transport closed'));
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.calls).toEqual(['initialize']));
+
+        await session.kill();
+        queue.close();
+
+        await expect(run).resolves.toBe('exit');
+        expect(sessionEvents(client).filter((event) => (event as { type: string }).type === 'error')).toEqual([]);
     });
 
     it('refuses a steer that arrives after Stop and stops offering Steer at once', async () => {

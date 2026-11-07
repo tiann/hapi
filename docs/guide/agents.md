@@ -317,8 +317,9 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
   (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the
-  session starts; older agy releases, or an agy whose version cannot be read,
-  keep the previous persistent stream-json integration (no approval prompts in
+  session starts; older agy releases, an agy whose version cannot be read,
+  and an `agy acp` that fails to start keep the previous persistent
+  stream-json integration (no approval prompts in
   HAPI: tools without an allow-rule in agy's `settings.json` are auto-denied).
 
   On ACP, one `agy acp` process serves the whole session. The agy conversation
