@@ -366,8 +366,14 @@ describe('SyncEngine wake requeue on machine-updated (#1489)', () => {
             ;(store as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } })
                 .db.prepare('UPDATE machines SET active = 0, active_at = ? WHERE id = ?')
                 .run(Date.now() - 60_000, machine.id)
-            engine.machineCache.refreshMachine(machine.id)
-            expect(engine.machineCache.getMachine(machine.id)?.active).toBe(false)
+            const machines = (engine as unknown as {
+                machineCache: {
+                    refreshMachine: (id: string) => { active?: boolean; runnerStateVersion: number } | null
+                    getMachine: (id: string) => { active?: boolean; runnerStateVersion: number } | undefined
+                }
+            }).machineCache
+            machines.refreshMachine(machine.id)
+            expect(machines.getMachine(machine.id)?.active).toBe(false)
 
             let requeues = 0
             const original = engine.requeuePendingJobTerminalWakes.bind(engine)
@@ -376,7 +382,7 @@ describe('SyncEngine wake requeue on machine-updated (#1489)', () => {
                 original()
             }
 
-            const version = engine.machineCache.getMachine(machine.id)!.runnerStateVersion
+            const version = machines.getMachine(machine.id)!.runnerStateVersion
             const updated = store.machines.updateMachineRunnerState(
                 machine.id,
                 { status: 'running', pid: 1 },
@@ -386,7 +392,7 @@ describe('SyncEngine wake requeue on machine-updated (#1489)', () => {
             expect(updated.result).toBe('success')
 
             engine.handleRealtimeEvent({ type: 'machine-updated', machineId: machine.id })
-            expect(engine.machineCache.getMachine(machine.id)?.active).toBe(true)
+            expect(machines.getMachine(machine.id)?.active).toBe(true)
             expect(requeues).toBe(1)
 
             // Already online — subsequent state refreshes must not requeue again.
