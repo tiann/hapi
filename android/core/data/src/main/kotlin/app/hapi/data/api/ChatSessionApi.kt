@@ -9,6 +9,7 @@ import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SlashCommandsResponse
+import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.UploadFileResponse
 
@@ -109,4 +110,10 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
         query: String,
         limit: Int? = null,
     ): FileSearchResponse
+
+    /**
+     * `GET /api/sessions/:id/skills` (RPC-wrapped: check `success`) — the
+     * composer's `$` skills autocomplete source.
+     */
+    suspend fun getSkills(sessionId: String): SkillsResponse
 }

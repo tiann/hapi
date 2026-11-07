@@ -123,7 +123,12 @@ class LastSeenStore(
             val server = SessionReadState.merge(current.server[sessionId], serverState) ?: SessionReadState()
             val seen = maxOf(current.lastSeen[sessionId] ?: 0, server.readRevision)
             val pending = current.pending[sessionId]
-            val manualUnread = server.manualUnread && pending?.request?.expectedVersion != server.version
+            // A queued manual-unread (or an acked one) survives a stale read;
+            // only a real viewing action at the current version replaces it.
+            val manualUnread = when {
+                pending != null && pending.request.expectedVersion == server.version -> pending.request.type == "unread"
+                else -> server.manualUnread
+            }
             if (seen >= revision && !manualUnread) return@commit current
             val request = SessionReadStateRequest(type = "read", readRevision = maxOf(seen, revision), expectedVersion = serverState?.version ?: server.version)
             current.copy(
@@ -133,6 +138,42 @@ class LastSeenStore(
             )
         }
         sync()
+    }
+
+    /**
+     * `markSessionUnread` (web `sessionLastSeen.ts`): queue an explicit-unread
+     * intent against the observed server state. The queued request marks the
+     * row unread immediately — before the server acknowledges — and replaces
+     * any queued read, exactly like the reference's enqueue.
+     */
+    suspend fun markUnread(sessionId: String, serverState: SessionReadState? = null) {
+        if (closed || namespace == null || sessionId.isEmpty()) return
+        commit { current ->
+            val server = SessionReadState.merge(current.server[sessionId], serverState) ?: SessionReadState()
+            val request = SessionReadStateRequest(type = "unread", expectedVersion = server.version)
+            current.copy(
+                server = current.server + (sessionId to server),
+                pending = current.pending + (sessionId to PendingRead(UUID.randomUUID().toString(), request)),
+            )
+        }
+        sync()
+    }
+
+    /**
+     * `markAllSessionsSeen`: stamp every supplied unread session as seen and
+     * drop its manual mark. Returns how many were unread, counted like the
+     * reference's iterate-and-mark (a repeated id is already seen when it
+     * comes around again).
+     */
+    suspend fun markAllSeen(sessions: Iterable<SessionSummary>): Int {
+        var count = 0
+        for (summary in sessions) {
+            if (summary.id.isEmpty()) continue
+            if (!isUnread(summary, _state.value)) continue
+            markSeen(summary.id, summary.contentRevision ?: 0, summary.readState)
+            count += 1
+        }
+        return count
     }
 
     private fun sync(): Unit = synchronized(syncLock) {
@@ -177,8 +218,22 @@ class LastSeenStore(
         fun isUnread(summary: SessionSummary, state: LastSeenState): Boolean {
             val server = SessionReadState.merge(state.server[summary.id], summary.readState) ?: SessionReadState()
             val pending = state.pending[summary.id]
-            val manual = server.manualUnread && pending?.request?.expectedVersion != server.version
+            // A queued request at the current server version is the operator's
+            // newest choice: an unread intent reads unread before the ack, a
+            // read intent hides the server's manual mark once viewed.
+            val manual = when {
+                pending != null && pending.request.expectedVersion == server.version -> pending.request.type == "unread"
+                else -> server.manualUnread
+            }
             return manual || (summary.contentRevision ?: 0) > maxOf(server.readRevision, state.lastSeen[summary.id] ?: 0)
         }
+
+        /**
+         * `getUnreadSessionCount`: unread sessions among [sessions] (bulk
+         * lens/toolbar counting). Repeated ids collapse to one entry, like
+         * the reference's id-keyed map.
+         */
+        fun unreadSessionCount(sessions: Iterable<SessionSummary>, state: LastSeenState): Int =
+            sessions.associateBy { it.id }.values.count { isUnread(it, state) }
     }
 }

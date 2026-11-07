@@ -12,7 +12,9 @@ import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.MentionSuggestion
 import app.hapi.companion.feature.chat.composer.Mentions
 import app.hapi.companion.feature.chat.composer.PendingSchedule
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.chat.composer.ScheduleSend
+import app.hapi.companion.feature.chat.composer.SkillSuggestions
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -67,6 +69,7 @@ import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionReadState
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
@@ -381,6 +384,8 @@ class ChatViewModel(
     private val drafts: ChatDrafts? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
+    /** null ⇒ `$`-menu ranking falls back to name order — tests/previews. */
+    private val recentSkills: RecentSkills? = null,
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -554,6 +559,15 @@ class ChatViewModel(
     }
 
     private val slashFetch = MutableStateFlow<SlashFetch>(SlashFetch.Idle)
+
+    private sealed interface SkillFetch {
+        data object Idle : SkillFetch
+        data object Loading : SkillFetch
+        data class Loaded(val skills: List<SkillSummary>) : SkillFetch
+        data object Failed : SkillFetch
+    }
+
+    private val skillFetch = MutableStateFlow<SkillFetch>(SkillFetch.Idle)
     private val sessionOpPending = MutableStateFlow(false)
 
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
@@ -719,13 +733,20 @@ class ChatViewModel(
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
-     * Entry count for the top-bar scratchlist badge (B-M4d); stays 0 without
-     * a wired store. The store refetches on [start] (open) and on the
-     * `scratchlistUpdatedAt` SSE trigger.
+     * Skills dropdown rows (web `getSkillSuggestions`): non-empty only while
+     * the composer text is a lone `$token`. Source: `GET /skills` (fetched
+     * lazily on the first `$`), ranked with the recency timestamps when a
+     * [RecentSkills] store is wired.
      */
-    val scratchlistCount: StateFlow<Int> =
-        (scratchlist?.state(sessionId)?.map { it.entries.size } ?: flowOf(0))
-            .stateIn(scope, SharingStarted.Eagerly, 0)
+    val skillSuggestions: StateFlow<List<SkillSummary>> = combine(
+        composerDraft,
+        skillFetch,
+        recentSkills?.timestamps ?: flowOf(emptyMap()),
+    ) { draft, fetch, recent ->
+        val query = SkillSuggestions.queryOf(draft.text) ?: return@combine emptyList()
+        val skills = (fetch as? SkillFetch.Loaded)?.skills ?: return@combine emptyList()
+        SkillSuggestions.filter(skills, query, recent)
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /** Whether a scratchlist store is wired — gates the badge and park affordances. */
     val scratchlistEnabled: Boolean = scratchlist != null
@@ -1000,13 +1021,18 @@ class ChatViewModel(
         if (importingShare.value) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
-        // wedged CLI cannot be hammered while the user types a command.
+        // wedged CLI cannot be hammered while the user types a command. The
+        // `$` skills menu mirrors the same once-per-screen fetch.
+        val previousText = composerDraft.value.text
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
-            SlashCommands.queryOf(composerDraft.value.text) == null
+            SlashCommands.queryOf(previousText) == null
+        val enteredSkillMode = SkillSuggestions.queryOf(text) != null &&
+            SkillSuggestions.queryOf(previousText) == null
         if (text != composerDraft.value.text) {
             composerDraft.value = ComposerDraft(text, caret, caret)
         }
         if (enteredSlashMode) loadSlashCommands()
+        if (enteredSkillMode) loadSkills()
         draftJob?.cancel()
         val store = drafts ?: return
         draftJob = scope.launch {
@@ -1220,6 +1246,19 @@ class ChatViewModel(
     }
 
     /**
+     * Skills dropdown tap: insert `$name ` and record the use for the
+     * recency ranking (web `markSkillUsed`). Persistence failures are
+     * silent — ranking quality degrades, nothing user-visible breaks.
+     */
+    fun selectSkill(skill: SkillSummary) {
+        setComposerText("$${skill.name} ")
+        val store = recentSkills ?: return
+        scope.launch {
+            runCatching { store.markUsed(skill.name, now()) }
+        }
+    }
+
+    /**
      * `GET /slash-commands` once per screen (near-static list; a failed fetch
      * retries on the next `/`). RPC failure is silent — the metadata names
      * still populate the menu, like the web's builtin fallback.
@@ -1236,6 +1275,27 @@ class ChatViewModel(
                 throw cancellation
             } catch (_: Exception) {
                 SlashFetch.Failed
+            }
+        }
+    }
+
+    /**
+     * `GET /skills` once per screen (near-static list; a failed fetch retries
+     * on the next `$`) — mirrors [loadSlashCommands]. RPC failure is silent:
+     * the menu stays empty, the `$` text still sends as-is.
+     */
+    private fun loadSkills() {
+        if (skillFetch.value is SkillFetch.Loading || skillFetch.value is SkillFetch.Loaded) return
+        skillFetch.value = SkillFetch.Loading
+        scope.launch {
+            skillFetch.value = try {
+                val response = api.getSkills(sessionId)
+                val skills = response.skills
+                if (response.success && skills != null) SkillFetch.Loaded(skills) else SkillFetch.Failed
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                SkillFetch.Failed
             }
         }
     }
@@ -2108,7 +2168,13 @@ class ChatViewModel(
         if (draftReady.isCompleted) return
         try {
             val draft = drafts?.load(sessionId)
-            if (composerDraft.value.text.isEmpty() && draft != null) replaceComposerTextRaw(draft)
+            if (composerDraft.value.text.isEmpty() && draft != null) {
+                replaceComposerTextRaw(draft)
+                // A restored `$token` draft reopens the skills menu without a
+                // fresh keystroke — the raw assignment bypasses
+                // setComposerText's entered-skill-mode detection, so fetch here.
+                if (SkillSuggestions.queryOf(draft) != null) loadSkills()
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

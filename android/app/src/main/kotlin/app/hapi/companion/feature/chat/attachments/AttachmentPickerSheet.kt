@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -15,11 +17,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
+import app.hapi.companion.ui.components.HapiCameraGlyph
+import app.hapi.companion.ui.components.HapiDocGlyph
+import app.hapi.companion.ui.components.HapiImageGlyph
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 
@@ -44,15 +49,15 @@ fun AttachmentPickerSheet(
                 color = MaterialTheme.hapi.hint,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
             )
-            PickerRow(glyph = "🖼", label = stringResource(R.string.chat_picker_photos), onClick = { onDismiss(); onPickPhotos() })
-            PickerRow(glyph = "📷", label = stringResource(R.string.chat_picker_camera), onClick = { onDismiss(); onTakePhoto() })
-            PickerRow(glyph = "📄", label = stringResource(R.string.chat_picker_files), onClick = { onDismiss(); onPickFiles() })
+            PickerRow(icon = HapiImageGlyph, label = stringResource(R.string.chat_picker_photos), onClick = { onDismiss(); onPickPhotos() })
+            PickerRow(icon = HapiCameraGlyph, label = stringResource(R.string.chat_picker_camera), onClick = { onDismiss(); onTakePhoto() })
+            PickerRow(icon = HapiDocGlyph, label = stringResource(R.string.chat_picker_files), onClick = { onDismiss(); onPickFiles() })
         }
     }
 }
 
 @Composable
-private fun PickerRow(glyph: String, label: String, onClick: () -> Unit) {
+private fun PickerRow(icon: ImageVector, label: String, onClick: () -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -60,7 +65,12 @@ private fun PickerRow(glyph: String, label: String, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 14.dp),
     ) {
-        Text(text = glyph, fontSize = 20.sp)
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp),
+        )
         Spacer(modifier = Modifier.width(16.dp))
         Text(text = label, style = MaterialTheme.typography.bodyLarge)
     }
@@ -72,9 +82,9 @@ private fun AttachmentPickerRowsPreview() {
     HapiTheme {
         Surface {
             Column {
-                PickerRow(glyph = "🖼", label = "Photo library", onClick = {})
-                PickerRow(glyph = "📷", label = "Camera", onClick = {})
-                PickerRow(glyph = "📄", label = "Files", onClick = {})
+                PickerRow(icon = HapiImageGlyph, label = "Photo library", onClick = {})
+                PickerRow(icon = HapiCameraGlyph, label = "Camera", onClick = {})
+                PickerRow(icon = HapiDocGlyph, label = "Files", onClick = {})
             }
         }
     }
