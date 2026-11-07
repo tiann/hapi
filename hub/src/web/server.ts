@@ -9,7 +9,6 @@ import { getConfiguration } from '../configuration'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import { getProviderEnvironment } from '../config/providerCredentials'
-import { readTitleProviderConfig } from '../sync/titleSuggestion'
 import { createQwenProxyWebSocketHandler } from './qwenProxyHandler'
 import { decodeVoiceSystemPromptParam } from '../voiceSystemPromptParam'
 import type { SyncEngine } from '../sync/syncEngine'
@@ -256,7 +255,7 @@ function createWebApp(options: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {
             workGraph: true,
-            titleSuggestion: readTitleProviderConfig() !== null
+            titleSuggestion: configuration.titleProviderConfig !== null
         }
     }))
 

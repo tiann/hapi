@@ -260,11 +260,11 @@ export function useSessionActions(
     })
 
     const summaryMutation = useMutation({
-        mutationFn: async ({ text, titleLocked }: { text: string; titleLocked?: boolean }) => {
+        mutationFn: async ({ text, clearName, titleLocked }: { text: string; clearName?: boolean; titleLocked?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.updateSessionSummary(sessionId, text, titleLocked)
+            await api.updateSessionSummary(sessionId, text, { clearName, titleLocked })
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -306,7 +306,7 @@ export function useSessionActions(
         setServiceTier: serviceTierMutation.mutateAsync,
         renameSession: (name: string | undefined, titleLocked?: boolean) => renameMutation.mutateAsync({ name, titleLocked }),
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
-        updateSessionSummary: (text: string, titleLocked?: boolean) => summaryMutation.mutateAsync({ text, titleLocked }),
+        updateSessionSummary: (text: string, titleLocked?: boolean) => summaryMutation.mutateAsync({ text, clearName: true, titleLocked }),
         setPinMode: pinMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
