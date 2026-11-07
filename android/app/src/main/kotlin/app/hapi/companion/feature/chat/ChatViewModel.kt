@@ -48,6 +48,7 @@ import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
 import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildVisibleChatBlocks
+import app.hapi.protocol.chat.findLatestCompletedBoundaryKey
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.chat.reduceChatBlocks
@@ -170,6 +171,12 @@ data class ChatUiState(
     val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
     /** Context-remaining readout for the composer strip; null until usage arrives. */
     val contextUsage: ContextUsageIndicator? = null,
+    /**
+     * Conversation-history action availability shared by every message row
+     * (fork current / fork at message / rewind). Default = off — inspection
+     * hosts and pre-detail states render no actions.
+     */
+    val historyGate: ChatHistoryGate = ChatHistoryGate(),
 )
 
 /** Composer bar state (M3a). */
@@ -274,7 +281,34 @@ sealed interface ChatNotice {
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
     data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
+    data class ForkFailed(val detail: String?) : ChatNotice
+    data class RewindFailed(val detail: String?) : ChatNotice
+
+    /** Rewind 500 `hydrateFailed` — the session's history diverged; outcome unknown. */
+    data object RewindDiverged : ChatNotice
 }
+
+/**
+ * The pending conversation-history action awaiting confirmation (its dialog
+ * is [ChatViewModel.conversationHistory]); `messageLocalId` targets the
+ * boundary for at-message fork and rewind.
+ */
+sealed interface PendingHistoryAction {
+    data object ForkCurrent : PendingHistoryAction
+    data class ForkAtMessage(val messageLocalId: String) : PendingHistoryAction
+    data class Rewind(val messageLocalId: String) : PendingHistoryAction
+}
+
+/** Dialog-state projection for the history actions (confirm/fallback dialogs). */
+data class ConversationHistoryUi(
+    val dialog: PendingHistoryAction? = null,
+    val opPending: Boolean = false,
+    /**
+     * Non-null while the rewind "fork here" fallback dialog is open — the
+     * 409 `ambiguous_native_boundary_fork_safe` boundary local id.
+     */
+    val rewindFallbackLocalId: String? = null,
+)
 
 /** A permission decision the UI can request (bodies mirror `PermissionFooter.tsx`). */
 sealed interface PermissionAction {
@@ -576,6 +610,7 @@ class ChatViewModel(
         val machines: List<Machine>,
         val detailLoadFailed: Boolean,
         val permissionOverrides: Map<String, PermissionRowOverride>,
+        val historyActionPending: Boolean,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -589,6 +624,7 @@ class ChatViewModel(
                 machineStore.machines,
                 detailLoadFailed,
                 permissionOverrides,
+                historyActionPending,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -647,6 +683,31 @@ class ChatViewModel(
     ) { detail, summary, models, _ ->
         buildConfigUi(detail, summary, models)
     }.stateIn(scope, SharingStarted.Eagerly, buildConfigUi(null, null, CodexModels.Idle))
+
+    // ------------------------------------------------- conversation history --
+
+    /** Confirm dialog target; null = no dialog. */
+    private val historyDialog = MutableStateFlow<PendingHistoryAction?>(null)
+
+    /** A fork/rewind RPC is in flight (locks the menus + dialog buttons). */
+    private val historyActionPending = MutableStateFlow(false)
+
+    /** Rewind fallback ("fork here") dialog: the boundary local id, or null. */
+    private val rewindFallbackLocalId = MutableStateFlow<String?>(null)
+
+    /**
+     * Dialog-state projection for the chat screen: the pending confirm
+     * dialog, its in-flight flag, and the rewind fallback dialog. Deliberately
+     * outside the 100 ms-sampled transcript pipeline — dialog transitions
+     * must be immediate.
+     */
+    val conversationHistory: StateFlow<ConversationHistoryUi> = combine(
+        historyDialog,
+        historyActionPending,
+        rewindFallbackLocalId,
+    ) { dialog, pending, fallback ->
+        ConversationHistoryUi(dialog = dialog, opPending = pending, rewindFallbackLocalId = fallback)
+    }.stateIn(scope, SharingStarted.Eagerly, ConversationHistoryUi())
 
     /**
      * Slash-command dropdown rows (B-M3ce): non-empty only while the composer
@@ -1555,6 +1616,140 @@ class ChatViewModel(
         }
     }
 
+    // ------------------------------------------------- history fork/rewind --
+
+    /**
+     * Opens the fork-current confirm dialog. Guarded the way the menu is:
+     * no dialog while a history action is in flight, the agent is thinking,
+     * or the session is inactive / terminal-controlled.
+     */
+    @MainThread
+    fun requestForkCurrent() {
+        if (!historyRequestsAllowed()) return
+        historyDialog.value = PendingHistoryAction.ForkCurrent
+    }
+
+    /** Opens the fork-at-message confirm dialog for [messageLocalId]. */
+    @MainThread
+    fun requestForkAtMessage(messageLocalId: String) {
+        if (!historyRequestsAllowed()) return
+        historyDialog.value = PendingHistoryAction.ForkAtMessage(messageLocalId)
+    }
+
+    /** Opens the rewind confirm dialog for [messageLocalId]. */
+    @MainThread
+    fun requestRewind(messageLocalId: String) {
+        if (!historyRequestsAllowed()) return
+        historyDialog.value = PendingHistoryAction.Rewind(messageLocalId)
+    }
+
+    /** Dialog dismiss (back gesture / tap-outside); refused mid-flight. */
+    @MainThread
+    fun dismissHistoryDialog() {
+        if (!historyActionPending.value) historyDialog.value = null
+    }
+
+    /**
+     * Confirms the open dialog: `POST /fork` (navigate to the child session
+     * via [ChatEvent.SessionSuperseded] — the parent is untouched, no window
+     * seed) or `POST /rewind` (authoritative tail resync + jump to latest;
+     * the hub also invalidates the window over SSE).
+     */
+    fun confirmHistoryAction() {
+        val action = historyDialog.value ?: return
+        if (!historyActionPending.compareAndSet(expect = false, update = true)) return
+        scope.launch {
+            when (action) {
+                is PendingHistoryAction.ForkCurrent -> runHistoryFork(messageLocalId = null)
+                is PendingHistoryAction.ForkAtMessage -> runHistoryFork(action.messageLocalId)
+                is PendingHistoryAction.Rewind -> runHistoryRewind(action.messageLocalId)
+            }
+        }
+    }
+
+    /** Closes the rewind fallback ("fork here") dialog without acting. */
+    @MainThread
+    fun dismissRewindFallback() {
+        rewindFallbackLocalId.value = null
+    }
+
+    /**
+     * Confirms the rewind fallback: fork at the boundary the hub reported as
+     * fork-safe (`ambiguous_native_boundary_fork_safe`) instead of rewinding.
+     */
+    fun confirmRewindFallback() {
+        val messageLocalId = rewindFallbackLocalId.value ?: return
+        if (!historyActionPending.compareAndSet(expect = false, update = true)) return
+        scope.launch { runHistoryFork(messageLocalId) }
+    }
+
+    private fun historyRequestsAllowed(): Boolean {
+        if (historyActionPending.value) return false
+        val detail = currentDetail() ?: return false
+        return detail.active && !detail.thinking && !terminalControlled(detail)
+    }
+
+    /**
+     * `POST /fork` — on success the child session opens via
+     * [ChatEvent.SessionSuperseded] (no window seed: the child loads its own
+     * authoritative transcript; drafts stay with the parent, which still
+     * exists). Failure closes the dialog and surfaces a typed notice.
+     */
+    private suspend fun runHistoryFork(messageLocalId: String?) {
+        try {
+            val response = withContext(workerContext) {
+                api.forkConversation(sessionId, messageLocalId)
+            }
+            historyDialog.value = null
+            rewindFallbackLocalId.value = null
+            _events.tryEmit(ChatEvent.SessionSuperseded(response.sessionId))
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            historyDialog.value = null
+            rewindFallbackLocalId.value = null
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ForkFailed(formatHistoryActionError(error))))
+        } finally {
+            historyActionPending.value = false
+        }
+    }
+
+    /**
+     * `POST /rewind` — on success force an authoritative tail resync (the
+     * hub truncates server-side and also emits `messages-invalidated` over
+     * SSE; the forced resync covers a racing/dropped event — web `onRefresh`)
+     * and jump to the tail. 409 `ambiguous_native_boundary_fork_safe` opens
+     * the "fork here" fallback dialog; a 500 `hydrateFailed` marks the
+     * session diverged and surfaces a distinct notice.
+     */
+    private suspend fun runHistoryRewind(messageLocalId: String) {
+        try {
+            withContext(workerContext) { api.rewindConversation(sessionId, messageLocalId) }
+            historyDialog.value = null
+            val store = windowStore.value
+            if (store != null) {
+                withContext(workerContext) {
+                    runCatching { store.syncTail(ensureAfterCurrent = true, allowingHistoryReset = true) }
+                }
+            }
+            if (started) uiScope.launch { jumpToLatest() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            historyDialog.value = null
+            when {
+                error is ApiError && error.code == REWIND_FALLBACK_CODE ->
+                    rewindFallbackLocalId.value = messageLocalId
+                rewindHydrateFailed(error) ->
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindDiverged))
+                else ->
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindFailed(formatHistoryActionError(error))))
+            }
+        } finally {
+            historyActionPending.value = false
+        }
+    }
+
     // ----------------------------------------------------------- queued bar --
 
     /**
@@ -2127,6 +2322,7 @@ class ChatViewModel(
             machines = values[3] as List<Machine>,
             detailLoadFailed = values[4] as Boolean,
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
+            historyActionPending = values[6] as Boolean,
         )
     }
 
@@ -2240,6 +2436,43 @@ class ChatViewModel(
             readThroughRevision = window.readThroughRevision,
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
             contextUsage = contextUsage,
+            historyGate = buildHistoryGate(inputs, visibleBlocks),
+        )
+    }
+
+    /**
+     * Session-level fork/rewind availability (web `MessageActions` gating):
+     * capabilities from the session detail, per-message boundary flags from
+     * `metadata.conversationHistoryPoints`, and the latest completed
+     * boundary computed over the visible blocks. Locked while thinking or
+     * while a history RPC is in flight (`actionsLocked`); unavailable for
+     * inactive, terminal-controlled, or history-diverged sessions. All-off
+     * when the flavor reports no conversation-history capabilities.
+     */
+    private fun buildHistoryGate(inputs: PipelineInputs, visibleBlocks: List<VisibleChatBlock>): ChatHistoryGate {
+        val detail = inputs.detail ?: return ChatHistoryGate()
+        val metadata = detail.metadata ?: return ChatHistoryGate()
+        val capabilities = metadata.capabilities?.conversationHistory
+        val forkCurrent = capabilities?.forkCurrent == true
+        val forkAtMessage = capabilities?.forkAtMessage == true
+        val rewindToMessage = capabilities?.rewindToMessage == true
+        if (!forkCurrent && !forkAtMessage && !rewindToMessage) {
+            return ChatHistoryGate()
+        }
+        return ChatHistoryGate(
+            forkCurrent = forkCurrent,
+            forkAtMessage = forkAtMessage,
+            rewindToMessage = rewindToMessage,
+            historyPoints = metadata.conversationHistoryPoints ?: emptyMap(),
+            latestBoundaryKey = findLatestCompletedBoundaryKey(
+                blocks = visibleBlocks,
+                isRunning = detail.thinking,
+                activeTurnStartedAt = detail.activeTurnStartedAt,
+            ),
+            available = detail.active &&
+                !terminalControlled(detail) &&
+                metadata.conversationHistoryDiverged != true,
+            locked = detail.thinking || inputs.historyActionPending,
         )
     }
 

@@ -22,6 +22,14 @@ data class ChatInteractions(
     val codexPlanActions: CodexPlanActions = CodexPlanActions(),
     val implementCodexPlan: (planId: String) -> Unit = {},
     val continueCodexPlan: (planId: String) -> Unit = {},
+    /**
+     * Conversation-history availability shared by message rows (fork/rewind);
+     * the all-off default renders no actions — inspection hosts and previews.
+     */
+    val historyGate: ChatHistoryGate = ChatHistoryGate(),
+    val requestForkCurrent: () -> Unit = {},
+    val requestForkAtMessage: (messageLocalId: String) -> Unit = {},
+    val requestRewind: (messageLocalId: String) -> Unit = {},
 )
 
 /** Dynamic local: override churn invalidates readers only, not the whole tree. */
