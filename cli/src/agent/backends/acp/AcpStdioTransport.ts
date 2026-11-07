@@ -249,6 +249,10 @@ export class AcpStdioTransport {
         this.notificationHandler = handler;
     }
 
+    isAlive(): boolean {
+        return !this.closed && !this.exited;
+    }
+
     /** PID of the spawned ACP agent process, when known. */
     getProcessPid(): number | null {
         return typeof this.process.pid === 'number' ? this.process.pid : this.childPid;

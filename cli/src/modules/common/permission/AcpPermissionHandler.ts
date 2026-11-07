@@ -6,6 +6,7 @@ import { logger } from '@/ui/logger'
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
+    type AutoApprovalRuleSet,
     type PendingPermissionRequest,
     type PermissionCompletion
 } from './BasePermissionHandler'
@@ -49,7 +50,17 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => PermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionMode | undefined,
+        private readonly options: {
+            // Agents that title requests with free text (agy: the command
+            // line) turn off the HAPI tool-name hints, which could match it.
+            autoApprovalRules?: AutoApprovalRuleSet
+            // A long-lived agent process outlives mode switches, so automatic
+            // approvals must not leave standing grants behind.
+            autoApproveOnce?: boolean
+            // Questions need the user's answer in every mode.
+            requiresUser?: (request: PermissionRequest) => boolean
+        } = {}
     ) {
         super(session)
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request))
@@ -62,13 +73,19 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             rawInput: request.rawInput
         })
         const toolInput = deriveToolInput(request)
-        const autoDecision = this.resolveAutoApprovalDecision(
-            this.getPermissionMode(),
-            toolName,
-            request.toolCallId
-        )
+        const autoDecision = this.options.requiresUser?.(request)
+            ? null
+            : this.resolveAutoApprovalDecision(
+                this.getPermissionMode(),
+                toolName,
+                request.toolCallId,
+                this.options.autoApprovalRules
+            )
         if (autoDecision) {
-            void this.autoApprove(request, toolName, toolInput, autoDecision)
+            const decision = this.options.autoApproveOnce && autoDecision === 'approved_for_session'
+                ? 'approved'
+                : autoDecision
+            void this.autoApprove(request, toolName, toolInput, decision)
             return
         }
 

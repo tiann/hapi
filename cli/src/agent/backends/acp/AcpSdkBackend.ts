@@ -1031,6 +1031,10 @@ export class AcpSdkBackend implements AgentBackend {
         return this.promptGeneration;
     }
 
+    isTransportAlive(): boolean {
+        return this.transport?.isAlive() ?? false;
+    }
+
     /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
     getProcessPid(): number | null {
         return this.transport ? this.transport.getProcessPid() : null;

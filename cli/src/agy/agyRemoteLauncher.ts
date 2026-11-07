@@ -1,7 +1,9 @@
 import type { AgySession } from './session';
-import { runLegacyStreamJsonAgy } from './legacyStreamJson';
+import { agyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
+import { selectLegacyStreamJsonAgy } from './legacyStreamJson';
 
-/** Runs the remote agy session on the transport this agy release supports. */
 export async function agyRemoteLauncher(session: AgySession): Promise<'switch' | 'exit'> {
-    return runLegacyStreamJsonAgy(session);
+    const legacy = await selectLegacyStreamJsonAgy();
+    if (legacy) return legacy(session);
+    return agyAcpRemoteLauncher(session);
 }

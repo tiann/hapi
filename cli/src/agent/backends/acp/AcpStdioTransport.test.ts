@@ -187,6 +187,16 @@ describe('AcpStdioTransport plain-text stdout', () => {
         spawnState.stdoutDataHandlers = [];
     });
 
+    test('reports itself dead once the agent process exits', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agy', args: ['acp'] });
+        expect(transport.isAlive()).toBe(true);
+
+        for (const handler of spawnState.exitHandlers) handler(null, 'SIGKILL');
+
+        expect(transport.isAlive()).toBe(false);
+        await transport.close();
+    });
+
     test('ignores Cursor worktree banner and keeps JSON-RPC session alive', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const notifications: Array<{ method: string; params: unknown }> = [];
