@@ -57,7 +57,7 @@ Treat this like `ping_peer` / `inspect_peer`: it is first-class HAPI tooling, no
 
 Prefer `"$HAPI_SESSION_ID"` only when it matches the operator chat URL uuid. Remote Cursor runner: pass `/sessions/<id>` explicitly (see "Which session id").
 
-#### Alive-only / indeterminate (classic marquee bar — no %)
+#### Alive-only / indeterminate (subtle striped bar — no %)
 
 Plain `job run` **without** `--done` / `--total` / `--remaining`:
 
@@ -68,7 +68,7 @@ hapi job run "$HAPI_SESSION_ID" beets \
   -- ./beets-import.sh
 ```
 
-List shows `running · elapsed` plus a **classic indeterminate / marquee** progress bar: a track with a sliding segment that means "in progress" and claims **zero percent**. Not spinner-only, not an empty track, not a fake partial fill. Use this when you do not have a continuous count writer.
+List shows `running · elapsed` plus a **subtle indeterminate** progress bar: a real track with soft diagonal stripes that drift slowly (HTML5 `<progress>` indeterminate vibe, quiet contrast). Means "still moving," claims **zero percent**. Not spinner-only, not an empty track, not a fake partial fill, and not a loud chunk marquee. Use this when you do not have a continuous count writer.
 
 #### Fraction / display bar (0→100%)
 
@@ -190,9 +190,9 @@ This does **not** treat heartbeats as thinking. Default remains off until dogfoo
 |---------------|--------------|---------------------|
 | Countable leftover | `--remaining N` + `--total M` (+ optional `--unit`) | `150 units left · 2d 4h` + bar fill when `total` is set |
 | Countable fraction | `--done N --total M` | `91% · 1637/1787 units · 2d 4h` + bar fill |
-| Stage only / unknown size | `--label` + `--detail` + heartbeats | `running · 2d 4h` + classic indeterminate / marquee bar (sliding segment, no %) |
+| Stage only / unknown size | `--label` + `--detail` + heartbeats | `running · 2d 4h` + subtle indeterminate striped bar (no %) |
 
-**Determinate fill:** left→right width moves only when `total` is set **and** something keeps sending `--done`/`--total` or `--remaining`/`--total` (update/feeder), not when those flags appear only on `job run` launch. **Indeterminate marquee:** when there is no honest fraction (`total` missing), the same track slot shows a sliding segment with **no** claimed percent — not spinner-only and not an empty track. `--remaining` alone (without `total`) updates the text label and keeps the marquee; it is not a percent.
+**Determinate fill:** left→right width moves only when `total` is set **and** something keeps sending `--done`/`--total` or `--remaining`/`--total` (update/feeder), not when those flags appear only on `job run` launch. **Indeterminate stripes:** when there is no honest fraction (`total` missing), the same track slot shows soft diagonal stripes that drift slowly with **no** claimed percent — not spinner-only, not an empty track, and not a loud sliding chunk. `--remaining` alone (without `total`) updates the text label and keeps the striped bar; it is not a percent.
 
 **Elapsed** is always derived from hub `startedAt` (wall clock). It is **not** an ETA and there is no time-remaining field - operators get "how long has this been going" plus whatever honest count/detail you report, without a fake completion estimate.
 

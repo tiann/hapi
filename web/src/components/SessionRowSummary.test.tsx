@@ -263,7 +263,7 @@ describe('SessionRowSummary attached job progress', () => {
         vi.useRealTimers()
     })
 
-    it('renders a classic indeterminate marquee (no %) when fraction is unknown', () => {
+    it('renders a subtle indeterminate striped bar (no %) when fraction is unknown', () => {
         const { container } = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -290,13 +290,14 @@ describe('SessionRowSummary attached job progress', () => {
         expect(bar).toHaveAttribute('data-progress', 'indeterminate')
         expect(bar).toHaveAttribute('role', 'progressbar')
         expect(bar).not.toHaveAttribute('aria-valuenow')
-        // Classic marquee segment — not spinner-only, not empty track, not fake inline %.
-        expect(bar.querySelector('.animate-attached-job-marquee')).not.toBeNull()
+        // Soft drifting stripes on a track — not spinner-only, not empty, not fake inline %, not loud chunk marquee.
+        expect(bar.querySelector('.animate-attached-job-indeterminate')).not.toBeNull()
+        expect(bar.querySelector('.animate-attached-job-marquee')).toBeNull()
         expect(container.querySelector('[class*="w-1/3"]')).toBeNull()
         expect(container.querySelector('[style*="width"]')).toBeNull()
     })
 
-    it('renders label-only unknown jobs with marquee + running · elapsed (shape B)', () => {
+    it('renders label-only unknown jobs with striped indeterminate bar + running · elapsed (shape B)', () => {
         render(
             <I18nProvider>
                 <SessionRowSummary
@@ -320,7 +321,7 @@ describe('SessionRowSummary attached job progress', () => {
         expect(screen.getByText(/running · 2m/)).toBeInTheDocument()
         const bar = screen.getByTestId('attached-job-progress-bar')
         expect(bar).toHaveAttribute('data-progress', 'indeterminate')
-        expect(bar.querySelector('.animate-attached-job-marquee')).not.toBeNull()
+        expect(bar.querySelector('.animate-attached-job-indeterminate')).not.toBeNull()
         expect(bar).not.toHaveAttribute('aria-valuenow')
     })
 
@@ -353,7 +354,7 @@ describe('SessionRowSummary attached job progress', () => {
         const fill = container.querySelector('[style*="width"]') as HTMLElement | null
         expect(fill).not.toBeNull()
         expect(fill!.style.width).toBe('50%')
-        expect(bar.querySelector('.animate-attached-job-marquee')).toBeNull()
+        expect(bar.querySelector('.animate-attached-job-indeterminate')).toBeNull()
     })
 })
 

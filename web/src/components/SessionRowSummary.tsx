@@ -336,13 +336,13 @@ export function SessionRowSummary(props: {
                             <span
                                 data-testid="attached-job-progress-bar"
                                 data-progress="indeterminate"
-                                className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
+                                className="relative ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
                                 role="progressbar"
                                 aria-label={attachedJob.label}
                             >
                                 {/* No aria-valuenow: unknown amount (ARIA indeterminate). No inline width%. */}
                                 <span
-                                    className="block h-full rounded-full bg-current animate-attached-job-marquee"
+                                    className="animate-attached-job-indeterminate"
                                     aria-hidden="true"
                                 />
                             </span>

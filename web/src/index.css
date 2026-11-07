@@ -863,27 +863,38 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
 }
 
 /*
- * Session-attached job: classic indeterminate / marquee progress (no %).
- * Sliding segment on a track — not spinner-only, not empty track, not fake fill.
- * Prefer transform animation; under reduced motion, slow the sweep (do not drop the bar).
+ * Session-attached job: subtle indeterminate progress (no %).
+ * Inspired by the HTML5 <progress> indeterminate look
+ * (https://css-tricks.com/html5-progress-element/) — diagonal stripes that
+ * drift slowly. Quiet contrast + slow background-position, not a loud chunk
+ * marquee and not a frozen empty track.
  */
-@keyframes attached-job-marquee {
-  from {
-    transform: translateX(-100%);
-  }
+@keyframes attached-job-indeterminate-stripes {
   to {
-    transform: translateX(250%);
+    background-position: -12px 0;
   }
 }
 
-.animate-attached-job-marquee {
-  width: 40%;
-  animation: attached-job-marquee 1.4s ease-in-out infinite;
+.animate-attached-job-indeterminate {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* Soft base + faint cutout stripes (currentColor so it matches job chrome). */
+  background-color: color-mix(in srgb, currentColor 38%, transparent);
+  background-image: linear-gradient(
+    -45deg,
+    transparent 33%,
+    color-mix(in srgb, var(--app-bg) 45%, transparent) 33%,
+    color-mix(in srgb, var(--app-bg) 45%, transparent) 66%,
+    transparent 66%
+  );
+  background-size: 8px 8px;
+  animation: attached-job-indeterminate-stripes 5s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-attached-job-marquee {
-    animation-duration: 8s;
+  .animate-attached-job-indeterminate {
+    animation: none;
   }
 }
 

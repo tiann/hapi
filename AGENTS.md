@@ -49,7 +49,7 @@ Agent contract (idle agents cannot heartbeat — bare set + nohup freezes the ba
 1. **Required for process-shaped work:** Shell `hapi job run <session-id> <key> --label … -- <cmd>` (auto-heartbeat + exit status). Use `"$HAPI_SESSION_ID"` only when it matches the operator chat row (`/sessions/<id>` in the web URL).
 2. MCP `session_job` **refuses `action=set`**. Use it only for `update` / `clear` / `list` on a job the supervisor already created.
 3. Manual CLI `set` only with a self-heartbeating wrapper (`update` ≥~10m); never MCP set + nohup.
-4. Prefer honest `--remaining`+`--total` or `--done`/`--total` for a determinate fill; omit counts if unknown — list shows a classic indeterminate / marquee bar (no %). Never invent a percent.
+4. Prefer honest `--remaining`+`--total` or `--done`/`--total` for a determinate fill; omit counts if unknown — list shows a subtle indeterminate striped bar (no %). Never invent a percent.
 5. Elapsed wall clock is always shown from `startedAt` (not an ETA).
 
 Full guide: [docs/guide/session-jobs.md](docs/guide/session-jobs.md). CLI: `hapi job --help`.
