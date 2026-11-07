@@ -49,6 +49,7 @@ import {
     type OpencodeRetryStatus
 } from './utils/opencodeEventStream';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
+import { presentQuestionToolCall } from './utils/opencodeQuestion';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
@@ -612,6 +613,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             backend,
             () => session.getPermissionMode() as PermissionMode | undefined
         );
+        // Archive and SIGTERM end the process through the runner lifecycle. A
+        // question form the user never answered would otherwise leave OpenCode
+        // waiting and the request pending in the session state.
+        session.setKillHandler(() => this.permissionHandler?.cancelAll('Session terminated'));
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode);
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
@@ -2195,7 +2200,8 @@ ${messageText}`;
         }
     }
 
-    private handleAgentMessage(message: AgentMessage): void {
+    private handleAgentMessage(rawMessage: AgentMessage): void {
+        const message = presentQuestionToolCall(rawMessage);
         // v1 ACP strips the native summary/parent metadata (and old versions
         // strip message IDs too). The native transcript owns these text streams.
         if (this.nativeTranscript && this.majorVersion === 'v1' && (message.type === 'text' || message.type === 'reasoning')) return;
