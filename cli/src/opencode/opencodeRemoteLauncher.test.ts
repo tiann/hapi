@@ -862,7 +862,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         let releaseActive: (() => void) | undefined;
         try {
             await vi.waitFor(() => expect(rpcHandlers.get('rewind-conversation')).toBeTypeOf('function'));
-            expect(gate.isBlocked()).toBe(false);
+            // The initial entry fence opens only after the first reconciliation
+            // settles, which can trail the handler registration.
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
             if (runtime === 'active') releaseActive = gate.enterRuntime();
             const operation: OpenCodeRewindOperation = await hub.call('reserve', { localId: 'two' });
             await hub.call('answer', { operationId: operation.operationId });
@@ -876,7 +878,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             }
             await vi.waitFor(async () => expect((await hub.call('snapshot')).session.metadata.opencodeRewind)
                 .toMatchObject({ operationId: operation.operationId, phase: 'rejected' }));
-            expect(reports).toBe(1); expect(mutations).toBe(0); expect(gate.isBlocked()).toBe(false);
+            expect(reports).toBe(1); expect(mutations).toBe(0);
+            // Hub records the rejection before the entry reconciliation finishes
+            // its final verification and releases the fence.
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
         } finally { releaseActive?.(); gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore(); await hub.close(); }
     });
 
