@@ -51,6 +51,8 @@ import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 import app.hapi.protocol.wire.SqliteStorageUsageResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
+import app.hapi.protocol.wire.RealtimeTranscriptionTokenRequest
+import app.hapi.protocol.wire.RealtimeTranscriptionTokenResponse
 import app.hapi.protocol.wire.TranscriptionProvidersResponse
 import app.hapi.protocol.wire.TranscriptionResponse
 import app.hapi.protocol.wire.UnregisterDeviceRequest
@@ -833,6 +835,20 @@ class HapiApi internal constructor(
             .build()
         return request("POST", url("api", "voice", "transcription").build(), body)
     }
+
+    /**
+     * `POST /api/voice/transcription/realtime-token` — short-lived credential
+     * for a streaming transcription websocket (deepgram on Android, slice C-③).
+     */
+    suspend fun fetchRealtimeTranscriptionToken(
+        provider: String,
+        language: String? = null,
+    ): RealtimeTranscriptionTokenResponse =
+        request(
+            "POST",
+            url("api", "voice", "transcription", "realtime-token").build(),
+            RealtimeTranscriptionTokenRequest(provider, language).toJsonBody(),
+        )
 
     private companion object {
         fun requireHttpsBaseUrl(raw: String): HttpUrl = HubUrls.normalize(raw)

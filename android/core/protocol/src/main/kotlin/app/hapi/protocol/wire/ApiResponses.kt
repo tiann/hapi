@@ -347,3 +347,18 @@ data class TranscriptionProviderInfo(
     /** Subset of `standard` / `realtime`; native dictation uses `standard`. */
     val modes: List<String>,
 )
+
+/**
+ * `POST /api/voice/transcription/realtime-token` body (web client.ts
+ * `fetchRealtimeTranscriptionToken`): a short-lived credential for the
+ * provider's streaming websocket. Slice C-③.
+ */
+@Serializable
+data class RealtimeTranscriptionTokenRequest(
+    val provider: String,
+    val language: String? = null,
+)
+
+/** Response of the realtime-token endpoint. */
+@Serializable
+data class RealtimeTranscriptionTokenResponse(val token: String)

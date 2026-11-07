@@ -211,6 +211,20 @@ fun ChatComposer(
                             onCancel = onDictationCancel,
                             modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
                         )
+                        if (recording.partial.isNotEmpty()) {
+                            // Streaming (interim) preview — web shows the live
+                            // partialTranscript above the input (slice C-③).
+                            Text(
+                                text = recording.partial,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                            )
+                        }
                     }
                     BasicTextField(
                         value = field,
