@@ -6,8 +6,14 @@ import { SyncEngine } from './syncEngine'
 function stubEngine(store: Store): SyncEngine {
     // Minimal construction: SyncEngine needs many deps; use the same pattern
     // as other store-heavy tests by casting a partial.
+    // Object.create skips field initializers — seed wake-retry state explicitly.
     const engine = Object.create(SyncEngine.prototype) as SyncEngine
     ;(engine as unknown as { store: Store }).store = store
+    ;(engine as unknown as { jobTerminalWakeRetryTimers: Map<string, ReturnType<typeof setTimeout>> })
+        .jobTerminalWakeRetryTimers = new Map()
+    ;(engine as unknown as { jobTerminalWakeRetryAttempts: Map<string, number> })
+        .jobTerminalWakeRetryAttempts = new Map()
+    ;(engine as unknown as { jobWakeRetryBaseMs: number }).jobWakeRetryBaseMs = 1_000
     const sessions = new Map<string, { id: string; namespace: string; active: boolean; metadata?: { flavor?: string; piSessionId?: string } }>()
     ;(engine as unknown as {
         sessionCache: {
@@ -90,6 +96,63 @@ describe('SyncEngine job terminal wake scheduling (#1489)', () => {
         })
         await new Promise((r) => setTimeout(r, 50))
         expect(sendCalls).toHaveLength(1)
+
+        store.close()
+    })
+
+    it('releases claim on no_machine_online and retries after recovery', async () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('wake-retry', { path: '/tmp', flavor: 'cursor' }, null, 'default')
+
+        const engine = stubEngine(store)
+        ;(engine as unknown as { jobWakeRetryBaseMs: number }).jobWakeRetryBaseMs = 20
+        const sessions = (engine as unknown as { _sessions: Map<string, { id: string; namespace: string; active: boolean }> })._sessions
+        sessions.set(session.id, { id: session.id, namespace: 'default', active: false })
+
+        let resumeCalls = 0
+        const sendCalls: string[] = []
+        ;(engine as unknown as {
+            resumeSession: (id: string, ns: string) => Promise<
+                | { type: 'success'; sessionId: string }
+                | { type: 'error'; code: string; message: string }
+            >
+        }).resumeSession = async (id) => {
+            resumeCalls += 1
+            if (resumeCalls === 1) {
+                return { type: 'error', code: 'no_machine_online', message: 'No machine online' }
+            }
+            sessions.set(id, { id, namespace: 'default', active: true })
+            return { type: 'success', sessionId: id }
+        }
+        ;(engine as unknown as {
+            sendMessage: (id: string, payload: { text: string; localId?: string | null }) => Promise<void>
+        }).sendMessage = async (_id, payload) => {
+            sendCalls.push(payload.localId ?? '')
+        }
+
+        engine.upsertSessionJob(session.id, 'batch', {
+            label: 'batch',
+            status: 'running',
+            runId: 'run-offline',
+            wakeOnTerminal: true,
+        })
+        engine.patchSessionJob(session.id, 'batch', {
+            status: 'completed',
+            expectedRunId: 'run-offline',
+        })
+
+        for (let i = 0; i < 40 && store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId; i++) {
+            await new Promise((r) => setTimeout(r, 10))
+        }
+        expect(store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId).toBeUndefined()
+        expect(sendCalls).toHaveLength(0)
+
+        for (let i = 0; i < 80 && sendCalls.length === 0; i++) {
+            await new Promise((r) => setTimeout(r, 20))
+        }
+        expect(resumeCalls).toBeGreaterThanOrEqual(2)
+        expect(sendCalls).toEqual(['hapi-job-wake:batch:run-offline'])
+        expect(store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId).toBe('run-offline')
 
         store.close()
     })

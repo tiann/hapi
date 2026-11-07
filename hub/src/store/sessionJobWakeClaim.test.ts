@@ -73,4 +73,29 @@ describe('session job terminal wake claim (#1489)', () => {
         expect(store.sessionJobs.claimTerminalWake(session.id, 'x')).toBeNull()
         store.close()
     })
+
+    it('release clears provisional claim so delivery can retry', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        store.sessionJobs.upsert(session.id, 'beets', {
+            label: 'beets',
+            status: 'completed',
+            runId: 'run-retry',
+            wakeOnTerminal: true,
+        })
+        const claimed = store.sessionJobs.claimTerminalWake(session.id, 'beets')
+        expect(claimed?.wakeEmittedRunId).toBe('run-retry')
+        expect(store.sessionJobs.claimTerminalWake(session.id, 'beets')).toBeNull()
+
+        expect(store.sessionJobs.releaseTerminalWake(session.id, 'beets', 'run-retry')).toBe(true)
+        expect(store.sessionJobs.get(session.id, 'beets')?.wakeEmittedRunId).toBeUndefined()
+
+        const reclaimed = store.sessionJobs.claimTerminalWake(session.id, 'beets')
+        expect(reclaimed?.wakeEmittedRunId).toBe('run-retry')
+
+        // Stale release id must not wipe a newer claim.
+        expect(store.sessionJobs.releaseTerminalWake(session.id, 'beets', 'run-other')).toBe(false)
+        expect(store.sessionJobs.get(session.id, 'beets')?.wakeEmittedRunId).toBe('run-retry')
+        store.close()
+    })
 })

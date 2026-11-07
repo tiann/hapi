@@ -10,6 +10,7 @@ import {
     listSessionJobs,
     patchSessionJob,
     claimSessionJobTerminalWake,
+    releaseSessionJobTerminalWake,
     toAttachedJob,
     transferSessionJobs,
     upsertSessionJob,
@@ -61,9 +62,14 @@ export class SessionJobsStore {
         return patchSessionJob(this.db, sessionId, jobKey, patch, now)
     }
 
-    /** One-shot claim for #1489 terminal wake. */
+    /** One-shot provisional claim for #1489 terminal wake. */
     claimTerminalWake(sessionId: string, jobKey: string): StoredSessionJob | null {
         return claimSessionJobTerminalWake(this.db, sessionId, jobKey)
+    }
+
+    /** Release a provisional wake claim after a recoverable delivery failure. */
+    releaseTerminalWake(sessionId: string, jobKey: string, expectedClaimId: string): boolean {
+        return releaseSessionJobTerminalWake(this.db, sessionId, jobKey, expectedClaimId)
     }
 
     delete(

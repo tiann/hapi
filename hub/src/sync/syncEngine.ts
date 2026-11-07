@@ -232,6 +232,12 @@ export class SyncEngine {
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Pending #1489 wake retries after recoverable pre-delivery failures. */
+    private readonly jobTerminalWakeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    private readonly jobTerminalWakeRetryAttempts = new Map<string, number>()
+    /** Base delay for wake retries; tests may lower this. */
+    private jobWakeRetryBaseMs = 1_000
+    private static readonly JOB_WAKE_RETRY_MAX_ATTEMPTS = 8
     /**
      * Single-flight + last-good caches for session enumerations. The backing
      * RPCs can queue for tens of seconds behind a busy engine (mid-turn or
@@ -1121,10 +1127,48 @@ export class SyncEngine {
         }
     }
 
+    private jobTerminalWakeRetryKey(sessionId: string, jobKey: string): string {
+        return `${sessionId}\0${jobKey}`
+    }
+
+    private clearJobTerminalWakeRetry(sessionId: string, jobKey: string): void {
+        const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
+        const timer = this.jobTerminalWakeRetryTimers.get(key)
+        if (timer) {
+            clearTimeout(timer)
+            this.jobTerminalWakeRetryTimers.delete(key)
+        }
+        this.jobTerminalWakeRetryAttempts.delete(key)
+    }
+
+    /**
+     * After a recoverable pre-delivery failure, drop the provisional claim and
+     * retry once a runner may be back. Caps attempts so a permanently offline
+     * machine does not spin forever.
+     */
+    private scheduleJobTerminalWakeRetry(sessionId: string, jobKey: string): void {
+        const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
+        const attempt = (this.jobTerminalWakeRetryAttempts.get(key) ?? 0) + 1
+        if (attempt > SyncEngine.JOB_WAKE_RETRY_MAX_ATTEMPTS) {
+            console.warn('[session-job-wake] retry budget exhausted', { sessionId, jobKey, attempt })
+            this.clearJobTerminalWakeRetry(sessionId, jobKey)
+            return
+        }
+        this.jobTerminalWakeRetryAttempts.set(key, attempt)
+        const existing = this.jobTerminalWakeRetryTimers.get(key)
+        if (existing) clearTimeout(existing)
+        const delayMs = Math.min(30_000, this.jobWakeRetryBaseMs * (2 ** (attempt - 1)))
+        const timer = setTimeout(() => {
+            this.jobTerminalWakeRetryTimers.delete(key)
+            this.maybeScheduleJobTerminalWake(sessionId, jobKey)
+        }, delayMs)
+        this.jobTerminalWakeRetryTimers.set(key, timer)
+    }
+
     /**
      * After a durable job write: claim one-shot terminal wake and fire-and-forget
      * resume→send (same ordering as pingPeer). Heartbeats never reach here with
-     * a new terminal claim.
+     * a new terminal claim. Claim is provisional until send persists.
      */
     private maybeScheduleJobTerminalWake(sessionId: string, jobKey: string): void {
         const claimed = this.store.sessionJobs.claimTerminalWake(sessionId, jobKey)
@@ -1144,92 +1188,106 @@ export class SyncEngine {
     /**
      * Resume inactive owner (if needed), wait for active, then POST a user message.
      * Injectable seams live on sessionJobWake helpers for unit tests.
+     * Pre-delivery failures release the provisional claim and schedule a retry.
      */
     private async deliverJobTerminalWake(
         sessionId: string,
         job: import('../store/types').StoredSessionJob
     ): Promise<void> {
-        const session = this.sessionCache.getSession(sessionId)
-        if (!session) {
-            console.warn('[session-job-wake] session missing after claim', { sessionId, jobKey: job.key })
-            return
-        }
-        const namespace = session.namespace
-        let targetId = sessionId
-
-        if (!session.active) {
-            const resume = await this.resumeSession(sessionId, namespace)
-            if (resume.type !== 'success') {
-                console.warn('[session-job-wake] resume failed', {
-                    sessionId,
-                    jobKey: job.key,
-                    code: resume.code,
-                    message: resume.message,
-                })
-                return
-            }
-            targetId = resume.sessionId
-            const becameActive = await waitUntilSessionActive({
-                getActive: () => this.sessionCache.getSession(targetId)?.active === true,
-                sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-                now: Date.now,
-                timeoutMs: 30_000,
-                pollMs: 250,
-            })
-            if (!becameActive) {
-                console.warn('[session-job-wake] session did not become active', {
-                    sessionId: targetId,
-                    jobKey: job.key,
-                })
-                return
-            }
+        const claimId = job.runId ?? `norun:${job.startedAt}`
+        const releaseAndRetry = (info: Record<string, unknown>): void => {
+            console.warn('[session-job-wake] delivery deferred', { sessionId, jobKey: job.key, ...info })
+            this.store.sessionJobs.releaseTerminalWake(sessionId, job.key, claimId)
+            this.scheduleJobTerminalWakeRetry(sessionId, job.key)
         }
 
-        // Pi can be active before piSessionId lands (#1143) — wait briefly.
-        const live = this.sessionCache.getSession(targetId)
-        if (live?.metadata?.flavor === 'pi') {
-            const piReady = await waitUntilSessionActive({
-                getActive: () => {
-                    const s = this.sessionCache.getSession(targetId)
-                    const id = s?.metadata?.piSessionId
-                    return typeof id === 'string' && id.length > 0
-                },
-                sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-                now: Date.now,
-                timeoutMs: 30_000,
-                pollMs: 250,
-            })
-            if (!piReady) {
-                console.warn('[session-job-wake] piSessionId missing; refusing send', {
-                    sessionId: targetId,
-                    jobKey: job.key,
-                })
+        try {
+            const session = this.sessionCache.getSession(sessionId)
+            if (!session) {
+                releaseAndRetry({ reason: 'session_missing' })
                 return
             }
-            // Re-check active after pi wait (mid-wait flips).
-            if (this.sessionCache.getSession(targetId)?.active !== true) {
-                const resume = await this.resumeSession(targetId, namespace)
+            const namespace = session.namespace
+            let targetId = sessionId
+
+            if (!session.active) {
+                const resume = await this.resumeSession(sessionId, namespace)
                 if (resume.type !== 'success') {
-                    console.warn('[session-job-wake] re-resume failed', {
-                        sessionId: targetId,
-                        jobKey: job.key,
+                    releaseAndRetry({
+                        reason: 'resume_failed',
                         code: resume.code,
+                        message: resume.message,
                     })
                     return
                 }
                 targetId = resume.sessionId
+                const becameActive = await waitUntilSessionActive({
+                    getActive: () => this.sessionCache.getSession(targetId)?.active === true,
+                    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    now: Date.now,
+                    timeoutMs: 30_000,
+                    pollMs: 250,
+                })
+                if (!becameActive) {
+                    releaseAndRetry({ reason: 'not_active', sessionId: targetId })
+                    return
+                }
             }
-        }
 
-        const text = buildJobTerminalWakePrompt({
-            key: job.key,
-            label: job.label,
-            status: job.status,
-            ...(job.detail !== undefined ? { detail: job.detail } : {}),
-            ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
-            ...(job.runId !== undefined ? { runId: job.runId } : {}),
-        })
-        await this.sendMessage(targetId, { text, sentFrom: 'webapp' })
+            // Pi can be active before piSessionId lands (#1143) — wait briefly.
+            const live = this.sessionCache.getSession(targetId)
+            if (live?.metadata?.flavor === 'pi') {
+                const piReady = await waitUntilSessionActive({
+                    getActive: () => {
+                        const s = this.sessionCache.getSession(targetId)
+                        const id = s?.metadata?.piSessionId
+                        return typeof id === 'string' && id.length > 0
+                    },
+                    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    now: Date.now,
+                    timeoutMs: 30_000,
+                    pollMs: 250,
+                })
+                if (!piReady) {
+                    releaseAndRetry({ reason: 'pi_session_id_missing', sessionId: targetId })
+                    return
+                }
+                // Re-check active after pi wait (mid-wait flips).
+                if (this.sessionCache.getSession(targetId)?.active !== true) {
+                    const resume = await this.resumeSession(targetId, namespace)
+                    if (resume.type !== 'success') {
+                        releaseAndRetry({
+                            reason: 're_resume_failed',
+                            sessionId: targetId,
+                            code: resume.code,
+                        })
+                        return
+                    }
+                    targetId = resume.sessionId
+                }
+            }
+
+            const text = buildJobTerminalWakePrompt({
+                key: job.key,
+                label: job.label,
+                status: job.status,
+                ...(job.detail !== undefined ? { detail: job.detail } : {}),
+                ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
+                ...(job.runId !== undefined ? { runId: job.runId } : {}),
+            })
+            // Run-scoped localId so a rare double-send after persist dedupes.
+            await this.sendMessage(targetId, {
+                text,
+                sentFrom: 'webapp',
+                localId: `hapi-job-wake:${job.key}:${claimId}`,
+            })
+            this.clearJobTerminalWakeRetry(sessionId, job.key)
+        } catch (error) {
+            releaseAndRetry({
+                reason: 'exception',
+                error: error instanceof Error ? error.message : String(error),
+            })
+        }
     }
 
     deleteSessionJob(

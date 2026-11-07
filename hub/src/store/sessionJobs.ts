@@ -307,10 +307,18 @@ export function patchSessionJob(
     return { outcome: 'patched', job }
 }
 
+/** Run-scoped claim id for one-shot terminal wake (#1489). */
+export function sessionJobTerminalWakeClaimId(job: StoredSessionJob): string {
+    return job.runId ?? `norun:${job.startedAt}`
+}
+
 /**
  * Atomically claim a one-shot terminal wake for this run (#1489).
  * Returns the job when this caller owns the wake; null if already claimed,
  * opt-in is off, status is non-terminal, or the row is missing.
+ *
+ * Claim is provisional: delivery must call {@link releaseSessionJobTerminalWake}
+ * on definite pre-delivery failures so a later retry can reclaim.
  */
 export function claimSessionJobTerminalWake(
     db: Database,
@@ -321,7 +329,7 @@ export function claimSessionJobTerminalWake(
     if (!existing) return null
     if (!existing.wakeOnTerminal) return null
     if (existing.status !== 'completed' && existing.status !== 'failed') return null
-    const claimId = existing.runId ?? `norun:${existing.startedAt}`
+    const claimId = sessionJobTerminalWakeClaimId(existing)
     if (existing.wakeEmittedRunId === claimId) return null
 
     const result = db.prepare(
@@ -337,6 +345,25 @@ export function claimSessionJobTerminalWake(
 
     if (result.changes === 0) return null
     return getSessionJob(db, sessionId, jobKey)
+}
+
+/**
+ * Drop a provisional wake claim so delivery can retry after recovery
+ * (runner offline, resume timeout, send failure). Only clears when the
+ * stored claim still matches `expectedClaimId` — a newer run's claim is left alone.
+ */
+export function releaseSessionJobTerminalWake(
+    db: Database,
+    sessionId: string,
+    jobKey: string,
+    expectedClaimId: string
+): boolean {
+    const result = db.prepare(
+        `UPDATE session_jobs SET wake_emitted_run_id = NULL
+         WHERE session_id = ? AND job_key = ?
+           AND wake_emitted_run_id = ?`
+    ).run(sessionId, jobKey, expectedClaimId)
+    return result.changes > 0
 }
 
 export type DeleteSessionJobResult =
