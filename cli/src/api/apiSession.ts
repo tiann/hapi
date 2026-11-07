@@ -5,6 +5,7 @@ import { io, type Socket } from 'socket.io-client'
 import axios from 'axios'
 import type { ZodType } from 'zod'
 import { logger } from '@/ui/logger'
+import { AttachmentCompatibility } from '@/modules/common/attachmentCompatibility'
 import { backoff } from '@/utils/time'
 import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
@@ -245,6 +246,7 @@ export class ApiSessionClient extends EventEmitter {
     hubArchived = false
     private readonly token: string
     readonly sessionId: string
+    private attachmentCompatibility = new AttachmentCompatibility()
     private metadata: Metadata | null
     private metadataVersion: number
     private agentState: AgentState | null
@@ -986,6 +988,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
+        this.attachmentCompatibility.enqueue(body, this.metadata?.path, media => this.sendAgentMessage(media))
         let content: MessageContent
         // Preserve transcript time for agent output and genuine local input.
         // Replaying a historical user row must not promote the session as if
@@ -1109,6 +1112,7 @@ export class ApiSessionClient extends EventEmitter {
             // Tag the agent response with the model that produced it (per-turn),
             // enriched by the scanner from the conversation DB.
             data = { type: 'agy_message', content: entry.content ?? '', model: entry.model }
+            this.attachmentCompatibility.enqueue(data, this.metadata?.path, media => this.sendAgentMessage(media))
         }
         this.socket.emit('message', {
             sid: this.sessionId,
@@ -1157,6 +1161,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     sendAgentMessage(body: unknown, localId?: string): void {
+        this.attachmentCompatibility.enqueue(body, this.metadata?.path, media => this.sendAgentMessage(media))
         const content = {
             role: 'agent',
             content: {
@@ -1617,6 +1622,10 @@ export class ApiSessionClient extends EventEmitter {
     async flush(options?: { timeoutMs?: number }): Promise<boolean> {
         const deadlineMs = Date.now() + (options?.timeoutMs ?? 5_000)
         const remainingMs = () => Math.max(0, deadlineMs - Date.now())
+
+        if (!await this.waitForPromise(this.attachmentCompatibility.flush(), remainingMs())) {
+            return false
+        }
 
         const materializationTask = this.materializationTask
         if (materializationTask) {
