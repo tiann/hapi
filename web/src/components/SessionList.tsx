@@ -89,6 +89,9 @@ import { DEFAULT_SESSION_LIST_VIEW, useSessionListView, type SessionListView } f
 import { SessionListViewMenu } from '@/components/SessionListViewMenu'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
+import { useSessionProjectOrder, sortSessionGroupsBySessionCount } from '@/hooks/useSessionProjectOrder'
+import { useSessionProjectSortMode } from '@/hooks/useSessionProjectSortMode'
 import {
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
@@ -385,6 +388,12 @@ export function getPreviousSessionVisibleCount(current: number, step: number): n
     return Math.max(normalizedStep, current - normalizedStep)
 }
 
+function getSessionProjectKey(session: SessionSummary): string {
+    const directory = getSessionProjectPath(session.metadata) ?? 'Other'
+    const machineId = session.metadata?.machineId ?? null
+    return `${machineId ?? UNKNOWN_MACHINE_ID}::${directory}`
+}
+
 // Without a view this is the long-standing order: by the user's last message,
 // so agent output and liveness never reorder the list.
 const LEGACY_LIST_ORDER: Pick<SessionListView, 'sort' | 'activeFirst'> = { sort: 'last-message', activeFirst: false }
@@ -394,12 +403,13 @@ export function groupSessionsByDirectory(
     order: Pick<SessionListView, 'sort' | 'activeFirst'> = LEGACY_LIST_ORDER
 ): SessionGroup[] {
     const compare = createSessionComparator(order)
+
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
         const path = getSessionProjectPath(session.metadata) ?? 'Other'
         const machineId = session.metadata?.machineId ?? null
-        const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
+        const key = getSessionProjectKey(session)
         if (!groups.has(key)) {
             groups.set(key, {
                 directory: path,
@@ -1390,7 +1400,13 @@ export function SessionList(props: {
     // completely and the preview limit may hide them.
     const previewIsUnread = keepUnreadSessionsVisible ? isSessionUnread : undefined
     const { pinInProgressSessions } = usePinInProgressSessions()
+    const { pinInProgressSessionsMode } = usePinInProgressSessionsMode()
+    const { sessionProjectSortMode } = useSessionProjectSortMode()
+    const effectivePinInProgress = pinInProgressSessions
+    const shouldSortProjectsByCount = sessionProjectSortMode === 'count'
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
+    const isCombinedPinLayout = effectivePinInProgress
+        && pinInProgressSessionsMode === 'combined'
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchMode, setSearchMode] = useState<'metadata' | 'content'>('metadata')
@@ -1550,10 +1566,32 @@ export function SessionList(props: {
         }
         return truncated
     }, [contentSearchResponse])
-    const allGroups = useMemo(
-        () => groupSessionsByDirectory(allSessions),
-        [allSessions]
+    const unfilteredGroups = useMemo(
+        () => groupSessionsByDirectory(sidebarSessions),
+        [sidebarSessions]
     )
+    const projectKeys = useMemo(
+        () => {
+            const seen = new Set<string>()
+            const keys: string[] = []
+            for (const session of sidebarSessions) {
+                const key = getSessionProjectKey(session)
+                if (!seen.has(key)) {
+                    seen.add(key)
+                    keys.push(key)
+                }
+            }
+            return keys
+        },
+        [sidebarSessions]
+    )
+    const projectOrder = useSessionProjectOrder(projectKeys)
+    const allGroups = useMemo(() => {
+        const grouped = groupSessionsByDirectory(allSessions)
+        return shouldSortProjectsByCount
+            ? sortSessionGroupsBySessionCount(grouped, projectOrder)
+            : grouped
+    }, [allSessions, projectOrder, shouldSortProjectsByCount])
     const machineFilters = useMemo(
         () => groupByMachine(allGroups, resolveMachineLabel),
         [allGroups, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
@@ -1671,6 +1709,14 @@ export function SessionList(props: {
             ),
         [visibleSessions, activeMachineFilter]
     )
+    const projectSessionCounts = useMemo(() => {
+        const counts = new Map<string, number>()
+        for (const session of machineFilteredSessions) {
+            const key = getSessionProjectKey(session)
+            counts.set(key, (counts.get(key) ?? 0) + 1)
+        }
+        return counts
+    }, [machineFilteredSessions])
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
         if (searchScoreIndex && hasTextQuery) {
@@ -1705,29 +1751,77 @@ export function SessionList(props: {
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
-            return grouped
+            return shouldSortProjectsByCount
+                ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+                : grouped
         },
-        [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery, listView]
+        [machineFilteredSessions, effectivePinInProgress, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
+    )
+    const combinedActiveGroups = useMemo(
+        () => {
+            if (!isCombinedPinLayout) return []
+            const grouped = groupSessionsByDirectory(
+                machineFilteredSessions.filter((session) => !session.globalPinned && session.active),
+                hasTextQuery ? undefined : listView
+            )
+            if (searchScoreIndex && hasTextQuery) {
+                return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
+            }
+            return shouldSortProjectsByCount
+                ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+                : grouped
+        },
+        [machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
+    )
+    const combinedArchivedGroups = useMemo(
+        () => {
+            if (!isCombinedPinLayout) return []
+            const grouped = groupSessionsByDirectory(
+                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active),
+                hasTextQuery ? undefined : listView
+            )
+            if (searchScoreIndex && hasTextQuery) {
+                return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
+            }
+            return shouldSortProjectsByCount
+                ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+                : grouped
+        },
+        [machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
+
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
     // stay available (no rows to group, but the project itself is live).
-    // Based on the same machineFilteredSessions set as `groups` so the machine
-    // filter stays consistent.
-    const allDirectoryGroups = useMemo(
-        () => groupSessionsByDirectory(
+    // Based on the same machineFilteredSessions set as `groups` so machine /
+    // unread filters stay consistent.
+    const allDirectoryGroups = useMemo(() => {
+        const grouped = groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned),
-            listView
-        ),
-        [machineFilteredSessions, listView]
-    )
+            hasTextQuery ? undefined : listView
+        )
+        return shouldSortProjectsByCount
+            ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+            : grouped
+    }, [machineFilteredSessions, projectOrder, projectSessionCounts, shouldSortProjectsByCount, hasTextQuery, listView])
+
     const actionOnlyGroups = useMemo(() => {
         if (!pinInProgressSessions) {
             return []
         }
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
-    }, [groups, allDirectoryGroups, pinInProgressSessions])
+    }, [groups, allDirectoryGroups, effectivePinInProgress])
+    const countSortedDirectoryGroups = useMemo(
+        () => shouldSortProjectsByCount && !hasTextQuery
+            ? sortSessionGroupsBySessionCount([...groups, ...actionOnlyGroups], projectOrder, projectSessionCounts)
+            : [],
+        [actionOnlyGroups, groups, hasTextQuery, projectOrder, projectSessionCounts, shouldSortProjectsByCount]
+    )
+    const normalDirectoryKeys = useMemo(
+        () => new Set(groups.map((group) => group.key)),
+        [groups]
+    )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
@@ -1738,10 +1832,14 @@ export function SessionList(props: {
     const [activeSectionCollapsed, setActiveSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
-    const isGroupCollapsed = (group: SessionGroup): boolean => {
+    const isGroupCollapsed = (
+        group: SessionGroup,
+        stateKey = group.key,
+        expandedByDefault = false
+    ): boolean => {
         const override = isFiltering
-            ? filterCollapseOverrides.get(group.key)
-            : collapseOverrides.get(group.key)
+            ? filterCollapseOverrides.get(stateKey)
+            : collapseOverrides.get(stateKey)
         if (override !== undefined) return override
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
@@ -1754,7 +1852,7 @@ export function SessionList(props: {
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
-        return !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
+        return !expandedByDefault && !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
@@ -1975,12 +2073,17 @@ export function SessionList(props: {
         />
     )
 
-    const renderDirectoryGroup = (group: SessionGroup) => {
-        const isCollapsed = isGroupCollapsed(group)
+    const renderDirectoryGroup = (
+        group: SessionGroup,
+        options: { showAllSessions?: boolean; stateKey?: string; expandedByDefault?: boolean } = {}
+    ) => {
+        const showAllSessions = options.showAllSessions ?? false
+        const stateKey = options.stateKey ?? group.key
+        const isCollapsed = isGroupCollapsed(group, stateKey, options.expandedByDefault)
         // A collapsed group still shows its unread rows, so new output in a
         // quiet project is never folded out of sight.
         const collapsedUnreadSessions = isCollapsed && keepUnreadSessionsVisible ? group.sessions.filter(isSessionUnread) : []
-        const visibleGroupSessions = getVisibleGroupSessions(group)
+        const visibleGroupSessions = showAllSessions ? group.sessions : getVisibleGroupSessions(group)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -2002,10 +2105,10 @@ export function SessionList(props: {
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
-            <div key={group.key} data-session-scroll-anchor>
+            <div key={stateKey} data-session-scroll-anchor>
                 <div
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
-                    onClick={() => toggleGroup(group.key, isCollapsed)}
+                    onClick={() => toggleGroup(stateKey, isCollapsed)}
                     title={group.directory}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
@@ -2060,7 +2163,7 @@ export function SessionList(props: {
                                 {renderGroupSessionItem(s)}
                             </div>
                         ))}
-                        {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                        {!showAllSessions && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
                             <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
                                 {canShowFewerSessions ? (
                                     <button
@@ -2090,24 +2193,30 @@ export function SessionList(props: {
         )
     }
 
-    // Auto-expand group containing the selected session only when
-    // the selected-session/group pair changes. Without this guard, every live
-    // session-list refresh (for example tool-call updates from a running selected
-    // session) reopens a path the user just collapsed.
+    const visibleDirectoryGroups = useMemo(
+        () => isCombinedPinLayout
+            ? [
+                ...combinedActiveGroups.map((group) => ({ group, stateKey: `${group.key}::active` })),
+                ...combinedArchivedGroups.map((group) => ({ group, stateKey: `${group.key}::archived` })),
+            ]
+            : groups.map((group) => ({ group, stateKey: group.key })),
+        [combinedActiveGroups, combinedArchivedGroups, groups, isCombinedPinLayout]
+    )
+
+    // Auto-expand the directory containing the selected session only when the
+    // selected-session/group pair changes. Without this guard, every live
+    // session-list refresh (for example tool-call updates from a running
+    // selected session) reopens a path the user just collapsed.
     useEffect(() => {
         if (!selectedSessionId) {
             autoExpandedSelectedSessionKeyRef.current = null
             return
         }
 
-        // Pinned "in progress" sessions are not rendered inside directory
-        // groups, so only auto-expand when the selected session actually lives
-        // in a visible group. Using `allGroups` here would expand the group
-        // below whenever a running session is opened.
-        const group = groups.find(g =>
-            g.sessions.some(s => s.id === selectedSessionId)
+        const visibleGroup = visibleDirectoryGroups.find(({ group }) =>
+            group.sessions.some(s => s.id === selectedSessionId)
         )
-        if (!group) {
+        if (!visibleGroup) {
             // The selected session is not rendered inside any directory group
             // (e.g. it moved to the pinned "in progress" section). Drop the
             // guard so it auto-expands again when it transitions back into a
@@ -2118,13 +2227,13 @@ export function SessionList(props: {
             return
         }
 
-        const autoExpandKey = `${selectedSessionId}::${group.key}`
+        const autoExpandKey = `${selectedSessionId}::${visibleGroup.stateKey}`
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
         const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, isFiltering])
+        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, { key: visibleGroup.stateKey }))
+    }, [selectedSessionId, visibleDirectoryGroups, isFiltering])
 
     // Clean up stale collapse overrides
     useEffect(() => {
@@ -2136,6 +2245,13 @@ export function SessionList(props: {
                 knownKeys.add(g.key)
                 knownKeys.add(`sessions::${g.key}`)
             }
+            // Keep both Combined-mode states for projects hidden by search,
+            // machine, unread, or active-only filters. Those filters should not
+            // reset a user's explicit collapse choice.
+            for (const g of unfilteredGroups) {
+                knownKeys.add(`${g.key}::active`)
+                knownKeys.add(`${g.key}::archived`)
+            }
             let changed = false
             for (const key of next.keys()) {
                 if (!knownKeys.has(key)) {
@@ -2145,7 +2261,7 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
-    }, [allGroups])
+    }, [allGroups, unfilteredGroups])
 
     // Clean up reveal caps for groups that no longer exist.
     useEffect(() => {
@@ -2632,27 +2748,57 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
-                {renderPinnedSection({
-                    sectionKey: 'running-section',
-                    titleKey: 'sessions.runningSection',
-                    collapsed: runningSectionCollapsed,
-                    onToggle: () => setRunningSectionCollapsed((value) => !value),
-                    pulse: true,
-                    count: runningSessionTotal,
-                    bucketKeys: ['working', 'pending'],
-                })}
-                {renderPinnedSection({
-                    sectionKey: 'active-section',
-                    titleKey: 'sessions.activeSection',
-                    collapsed: activeSectionCollapsed,
-                    onToggle: () => setActiveSectionCollapsed((value) => !value),
-                    pulse: false,
-                    count: activeSessionTotal,
-                    bucketKeys: ['active', 'idle'],
-                })}
-                {groups.map(renderDirectoryGroup)}
-                {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
-            </SessionListScrollAnchor>
+                {isCombinedPinLayout ? (
+                    <>
+                        {combinedActiveGroups.map((group) => renderDirectoryGroup(group, {
+                            showAllSessions: true,
+                            stateKey: `${group.key}::active`,
+                        }))}
+                        {combinedActiveGroups.length > 0 && combinedArchivedGroups.length > 0 ? (
+                            <div
+                                role="separator"
+                                aria-label={t('sessions.archivedSection')}
+                                className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                            />
+                        ) : null}
+                        {combinedArchivedGroups.map((group) => renderDirectoryGroup(group, {
+                            stateKey: `${group.key}::archived`,
+                            expandedByDefault: true,
+                        }))}
+                    </>
+                ) : (
+                    <>
+                        {renderPinnedSection({
+                            sectionKey: 'running-section',
+                            titleKey: 'sessions.runningSection',
+                            collapsed: runningSectionCollapsed,
+                            onToggle: () => setRunningSectionCollapsed((value) => !value),
+                            pulse: true,
+                            count: runningSessionTotal,
+                            bucketKeys: ['working', 'pending'],
+                        })}
+                        {renderPinnedSection({
+                            sectionKey: 'active-section',
+                            titleKey: 'sessions.activeSection',
+                            collapsed: activeSectionCollapsed,
+                            onToggle: () => setActiveSectionCollapsed((value) => !value),
+                            pulse: false,
+                            count: activeSessionTotal,
+                            bucketKeys: ['active', 'idle'],
+                        })}
+                        {shouldSortProjectsByCount && !hasTextQuery
+                            ? countSortedDirectoryGroups.map((group) => normalDirectoryKeys.has(group.key)
+                                ? renderDirectoryGroup(group)
+                                : renderActionOnlyGroupHeader(group))
+                            : (
+                                <>
+                                    {groups.map((group) => renderDirectoryGroup(group))}
+                                    {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                                </>
+                            )}
+                    </>
+                )}
+                </SessionListScrollAnchor>
             </div>
             </div>
             <ConfirmDialog
