@@ -170,6 +170,45 @@ describe('DshRemoteLauncher', () => {
         }
     })
 
+    it('keeps the loop running with its queued input when the native Stop teardown is rejected', async () => {
+        const session = createSessionWithBatches([['first', {}]], null, false)
+        const launcher = new DshRemoteLauncher(session as never)
+        // A loop left on the aborted dequeue signal never yields; trip the spin.
+        const realWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue)
+        let abortedWaits = 0
+        vi.spyOn(session.queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal')
+            return realWait(signal)
+        })
+        let finishPrompt!: () => void
+        const promptGate = new Promise<void>(resolve => { finishPrompt = resolve })
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await promptGate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('after-stop', {}, 'pending-original')
+            harness.backend!.cancelPrompt.mockImplementation(async () => { finishPrompt() })
+            harness.cancelAll.mockImplementation(async reason => {
+                if (reason === 'User aborted') throw new Error('cancelAll boom')
+            })
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls.find(c => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            await expect(aborted).rejects.toThrow('cancelAll boom')
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+            expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'after-stop' }])
+            expect(abortedWaits).toBeLessThan(5)
+        } finally {
+            session.queue.close()
+            finishPrompt?.()
+            await Promise.allSettled([done, aborted])
+        }
+    })
+
     it('does not dispatch queued input when process cleanup kills the launcher', async () => {
         harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
         const session = createSessionWithBatches([['first', {}]], null, false)

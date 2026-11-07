@@ -47,7 +47,6 @@ export abstract class RemoteLauncherBase {
     protected ptyAbortController: AbortController | null = null;
     private inkInstance: ReturnType<typeof render> | null = null;
     private abortInFlight: Promise<void> | null = null;
-    private abortFailure: Error | null = null;
 
     protected constructor(logPath?: string) {
         this.logPath = logPath;
@@ -187,7 +186,8 @@ export abstract class RemoteLauncherBase {
     protected setupAbortHandlers(
         rpcHandlerManager: RpcHandlerManagerLike,
         handlers: RemoteLauncherAbortHandlers,
-        onAbortEntry?: () => void
+        onAbortEntry?: () => void,
+        onAbortRejected?: () => void
     ): void {
         rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
             // Serialize Abort teardowns and hold the loop's next dequeue until
@@ -213,13 +213,13 @@ export abstract class RemoteLauncherBase {
             try {
                 await handlers.onAbort();
             } catch (error) {
-                // A cancelPrompt/cancelAll rejection means the Abort did NOT
-                // replace the controller: the current signal is already aborted
-                // and the loop must fail closed (no spin, no dispatch/ACK of
-                // pending items). Box the failure so waitForAbortBarrier throws
-                // it to the run loop; it also reaches the Abort RPC caller.
-                this.abortFailure = error instanceof Error ? error : new Error(String(error));
-                throw this.abortFailure;
+                // A rejected cancel leaves the dequeue signal that onAbortEntry
+                // already aborted in place, because the flavor replaces it only at
+                // the end of a successful teardown. Restore it so the loop keeps
+                // running exactly as it does without the barrier, and let only the
+                // Abort RPC caller see the rejection.
+                onAbortRejected?.();
+                throw error;
             } finally {
                 release();
                 // Clear only when this barrier is still the latest — a newer
@@ -235,20 +235,10 @@ export abstract class RemoteLauncherBase {
         });
     }
 
-    /**
-     * Wait until no Abort teardown is in flight. Throws the boxed cancellation
-     * failure (if one occurred) so the run loop fails closed instead of
-     * dequeuing with a stale aborted signal and spinning.
-     */
+    /** Wait until no Abort teardown is in flight. */
     protected async waitForAbortBarrier(): Promise<void> {
-        if (this.abortFailure) {
-            throw this.abortFailure;
-        }
         while (this.abortInFlight) {
             await this.abortInFlight;
-        }
-        if (this.abortFailure) {
-            throw this.abortFailure;
         }
     }
 

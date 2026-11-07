@@ -620,7 +620,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // handleAbort's `leavingRemote` doc comment.
             onAbort: () => this.handleAbort(false),
             onSwitch: () => this.handleSwitchRequest()
-        }, () => this.abortController.abort());
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         this.installSteerHandler(session, acpSessionId);
         if (isV2 && this.v2RestInfo) {

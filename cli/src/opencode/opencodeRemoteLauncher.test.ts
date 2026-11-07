@@ -3199,6 +3199,34 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         }
     });
 
+    it.each(['v1', 'v2'] as const)('%s keeps the loop running with its queued input when the native Stop is rejected', async version => {
+        harness.detectedVersion = version;
+        let rejectAbort!: () => void;
+        harness.cancelPromptImpl = () => new Promise<void>((_resolve, reject) => { rejectAbort = () => reject(new Error('cancel failed')); });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        // A loop left on the aborted dequeue signal never yields; trip the spin.
+        const realWait = stub.session.queue.waitForMessagesAndGetAsString.bind(stub.session.queue);
+        let abortedWaits = 0;
+        vi.spyOn(stub.session.queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal');
+            return realWait(signal);
+        });
+        let aborting: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('queued before Stop', createMode(), 'before');
+            aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            const rejection = expect(aborting).rejects.toThrow('cancel failed');
+            await vi.waitFor(() => expect(rejectAbort).toBeTypeOf('function'));
+            releasePrompt(); rejectAbort(); await rejection;
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            expect(harness.promptContents.slice(1)).toEqual([[{ type: 'text', text: 'queued before Stop' }]]);
+            expect(abortedWaits).toBeLessThan(5);
+        } finally {
+            rejectAbort?.(); harness.cancelPromptImpl = null; await aborting?.catch(() => {});
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
     it.each(['v1', 'v2'] as const)('%s clears unsent queued input on terminal switch after native cancellation', async version => {
         harness.detectedVersion = version;
         let releaseAbort!: () => void;

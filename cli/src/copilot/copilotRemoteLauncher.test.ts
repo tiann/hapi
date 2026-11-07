@@ -364,7 +364,9 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
             expect(consumed).not.toHaveBeenCalled();
             expect(abortHarness.prompts).toHaveLength(active ? 1 : 0);
             expect(queue.pendingLocalIds()).toEqual([]);
-            expect(await launched).toEqual(failing ? new Error('cancelAll boom') : reason);
+            // A rejected Stop reaches only its RPC caller (checked above); the
+            // terminal request still ends the launcher with its own reason.
+            expect(await launched).toEqual(reason);
         } finally {
             gates.forEach(gate => gate.release());
             abortHarness.setCancelAllHook(null);
@@ -599,10 +601,18 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
         await launcherPromise;
     });
 
-    it('fails the loop closed and surfaces the error when cancelAll rejects during teardown', async () => {
+    it('keeps the loop running and surfaces the error to the Abort caller when cancelAll rejects during teardown', async () => {
         abortHarness.setCancelAllRejects(true);
         const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
         queue.push('active', { permissionMode: 'default' }, 'id-active');
+        // A loop left on the aborted dequeue signal never yields; trip the spin
+        // instead of hanging the test.
+        const realWait = queue.waitForMessagesAndGetAsString.bind(queue);
+        let abortedWaits = 0;
+        vi.spyOn(queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal');
+            return realWait(signal);
+        });
         const { session, rpcHandlers } = createAbortSession(queue);
         const launcher = new CopilotRemoteLauncher(session as never, {});
         const launcherPromise = launcher.launch();
@@ -613,11 +623,16 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
 
         const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
         await expect(abort()).rejects.toThrow('cancelAll boom');
+        abortHarness.setCancelAllRejects(false);
 
-        // The run loop must fail closed: launcher rejects, pending A/B are
-        // never dispatched or ACKed, no spin.
-        await expect(launcherPromise).rejects.toThrow('cancelAll boom');
-        expect(abortHarness.prompts).toHaveLength(1);
-        expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+        // A rejected cancel behaves as it does without the Abort barrier: the loop
+        // survives, the queued input is preserved and delivered as one batch.
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+        expect(abortHarness.prompts[1][0].text).toBe('A\nB');
+        expect(abortedWaits).toBeLessThan(5);
+
+        abortHarness.settleActivePrompt();
+        queue.close();
+        await expect(launcherPromise).resolves.toBe('exit');
     });
 });

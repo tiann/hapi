@@ -232,7 +232,9 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        }, () => this.abortController.abort())
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController() })
 
         while (!this.shouldExit) {
             await this.waitForAbortBarrier();

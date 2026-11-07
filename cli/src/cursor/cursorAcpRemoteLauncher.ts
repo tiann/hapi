@@ -449,7 +449,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        }, () => this.abortController.abort());
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         // Soft steer = Cursor GUI "Send" (next-opportune / soft inject): fire a
         // concurrent session/prompt without canceling the in-flight turn. Abort
