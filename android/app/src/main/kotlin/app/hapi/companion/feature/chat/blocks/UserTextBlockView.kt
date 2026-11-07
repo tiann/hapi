@@ -27,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -81,6 +83,21 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
                             ) {
                                 attachments.forEach { AttachmentView(it) }
                             }
+                        }
+                        // Live-only steered marker (web: hint-colored 10px span
+                        // inside the bubble, below content/attachments; the
+                        // title tooltip maps to a semantics contentDescription).
+                        if (block.steered) {
+                            val steeredHint = stringResource(R.string.chat_steered_badge_hint)
+                            Text(
+                                text = stringResource(R.string.chat_steered_badge),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .align(Alignment.End)
+                                    .padding(top = 2.dp)
+                                    .semantics { contentDescription = steeredHint },
+                            )
                         }
                     }
                 }
@@ -198,6 +215,20 @@ private fun UserTextBlockPreview() {
                     status = "failed",
                     originalText = null,
                     meta = null,
+                ),
+            )
+            UserTextBlockView(
+                UserTextBlock(
+                    id = "u3",
+                    localId = null,
+                    createdAt = 0,
+                    invokedAt = null,
+                    text = "Bend this turn while it runs",
+                    attachments = null,
+                    status = "sent",
+                    originalText = null,
+                    meta = null,
+                    steered = true,
                 ),
             )
             }

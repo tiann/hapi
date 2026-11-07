@@ -52,14 +52,19 @@ object MessageMerge {
         }
         for (message in incoming) {
             val current = byId[message.id]
+            var next = message
             // JS `existing.invokedAt != null && msg.invokedAt == null` — keep a
             // locally-known invocation stamp when the incoming copy has none
             // (explicit null or absent).
-            byId[message.id] = if (current != null && current.invokedAtOrNull != null && message.invokedAtOrNull == null) {
-                message.withInvokedAt(current.invokedAtOrNull!!)
-            } else {
-                message
+            if (current != null && current.invokedAtOrNull != null && message.invokedAtOrNull == null) {
+                next = next.withInvokedAt(current.invokedAtOrNull!!)
             }
+            // The 'steered' marker is live-only (the hub never persists it), so
+            // a later server copy of the same row must not wipe it.
+            if (current != null && current.steered && !message.steered) {
+                next = next.copy(steered = true)
+            }
+            byId[message.id] = next
         }
 
         var merged: List<WindowMessage> = byId.values.toList()
@@ -74,6 +79,7 @@ object MessageMerge {
         if (incomingStoredLocalIds.isNotEmpty()) {
             val optimisticStatusByLocalId = HashMap<String, MessageStatus>()
             val optimisticInvokedAtByLocalId = HashMap<String, Long?>()
+            val optimisticSteeredByLocalId = HashSet<String>()
             for (message in merged) {
                 val localId = message.localId ?: continue
                 if (!message.isOptimistic || localId !in incomingStoredLocalIds) continue
@@ -81,12 +87,17 @@ object MessageMerge {
                 if (message.wire.invokedAt is OptionalField.Present) {
                     optimisticInvokedAtByLocalId[localId] = message.invokedAtOrNull
                 }
+                if (message.steered) optimisticSteeredByLocalId.add(localId)
             }
             merged = merged.filter { message ->
                 val localId = message.localId
                 localId == null || localId !in incomingStoredLocalIds || !message.isOptimistic
             }
-            if (optimisticStatusByLocalId.isNotEmpty() || optimisticInvokedAtByLocalId.isNotEmpty()) {
+            if (
+                optimisticStatusByLocalId.isNotEmpty() ||
+                optimisticInvokedAtByLocalId.isNotEmpty() ||
+                optimisticSteeredByLocalId.isNotEmpty()
+            ) {
                 merged = merged.map { message ->
                     val localId = message.localId ?: return@map message
                     var updated = message
@@ -99,6 +110,12 @@ object MessageMerge {
                         if (optimisticInvokedAt != null) {
                             updated = updated.withInvokedAt(optimisticInvokedAt)
                         }
+                    }
+                    // Steered is live-only: carry it from the optimistic row onto
+                    // the replacing server echo — otherwise the ↳ Steered badge
+                    // vanishes the moment the echo lands.
+                    if (localId in optimisticSteeredByLocalId && !message.steered) {
+                        updated = updated.copy(steered = true)
                     }
                     updated
                 }

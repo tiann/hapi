@@ -103,9 +103,10 @@ object HrefPolicy {
     /**
      * JS `decodeURIComponent` equivalent: strict `%HH` decoding (no `+` -> space),
      * null on malformed escapes so the caller keeps the previous value, mirroring
-     * the web's try/catch-break loop.
+     * the web's try/catch-break loop. Internal: [SessionPathLinks] reuses this
+     * strict port for session-id decoding.
      */
-    private fun percentDecodeOrNull(value: String): String? {
+    internal fun percentDecodeOrNull(value: String): String? {
         if ('%' !in value) return value
         val bytes = ByteArrayOutputStream(value.length)
         var i = 0
