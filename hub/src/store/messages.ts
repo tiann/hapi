@@ -369,6 +369,96 @@ export function copyMessagesToSession(
     })()
 }
 
+/**
+ * Hydrate messages into a shared fork without duplicating native projections.
+ * A shared child may already have the same localId as a text-only projection;
+ * update that row in place, otherwise insert the copied message.
+ */
+export function mergeCopiedMessagesToSession(
+    db: Database,
+    sessionId: string,
+    messages: CopyStoredMessageInput[]
+): number {
+    if (messages.length === 0) return 0
+
+    return db.transaction(() => {
+        let nextSeq = getMaxSeq(db, sessionId) + 1
+        const existing = db.prepare(
+            'SELECT id, seq, created_at, invoked_at FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+        )
+        const update = db.prepare(`
+            UPDATE messages
+            SET content = ?
+            WHERE id = ?
+        `)
+        const insert = db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+            )
+        `)
+        let changed = 0
+
+        for (const message of messages) {
+            const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now()
+            const localId = message.localId ?? null
+            const encoded = encodeMessageContent(message.content)
+            if (localId) {
+                const row = existing.get(sessionId, localId) as {
+                    id: string
+                    seq: number
+                    created_at: number
+                    invoked_at: number | null
+                } | undefined
+                if (row) {
+                    update.run(
+                        encoded,
+                        row.id
+                    )
+                    indexMessageContent(db, {
+                        id: row.id,
+                        sessionId,
+                        content: message.content,
+                        seq: row.seq,
+                        createdAt: row.created_at,
+                        invokedAt: row.invoked_at
+                    })
+                    changed += 1
+                    continue
+                }
+            }
+
+            const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
+            const id = randomUUID()
+            insert.run({
+                id,
+                session_id: sessionId,
+                content: encoded,
+                created_at: createdAt,
+                seq: nextSeq,
+                local_id: localId,
+                invoked_at: invokedAt ?? null,
+                scheduled_at: message.scheduledAt ?? null,
+                delivery_state: message.deliveryState ?? 'queued'
+            })
+            indexMessageContent(db, {
+                id,
+                sessionId,
+                content: message.content,
+                seq: nextSeq,
+                createdAt,
+                invokedAt: invokedAt ?? null
+            })
+            nextSeq += 1
+            changed += 1
+        }
+
+        if (changed > 0) bumpMessageEpoch(db, sessionId)
+        return changed
+    })()
+}
+
 export function getMessages(
     db: Database,
     sessionId: string,
@@ -625,6 +715,12 @@ export function getUninvokedLocalMessages(
         `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL${deliverableClause} ORDER BY seq ASC`
     ).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
+}
+
+export function updateMessageContent(db: Database, messageId: string, content: unknown): boolean {
+    return db.prepare(
+        'UPDATE messages SET content = ? WHERE id = ?'
+    ).run(encodeMessageContent(truncateOversizedMessageContent(content)), messageId).changes > 0
 }
 
 export type LocalMessageState = {
@@ -1191,7 +1287,7 @@ export function moveUninvokedMessages(db: Database, fromSessionId: string, toSes
     })()
 }
 
-export function mergeSessionMessages(
+export function mergeSessionMessagesInTransaction(
     db: Database,
     fromSessionId: string,
     toSessionId: string
@@ -1203,79 +1299,85 @@ export function mergeSessionMessages(
     const oldMaxSeq = getMaxSeq(db, fromSessionId)
     const newMaxSeq = getMaxSeq(db, toSessionId)
 
-    try {
-        db.exec('BEGIN')
-
-        if (newMaxSeq > 0 && oldMaxSeq > 0) {
-            prepareCached(db,
-                'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
-            ).run(oldMaxSeq, toSessionId)
-        }
-
-        const collisions = prepareCached(db, `
-            SELECT local_id FROM messages
-            WHERE session_id = ? AND local_id IS NOT NULL
-            INTERSECT
-            SELECT local_id FROM messages
-            WHERE session_id = ? AND local_id IS NOT NULL
-        `).all(toSessionId, fromSessionId) as Array<{ local_id: string }>
-
-        if (collisions.length > 0) {
-            const localIds = collisions.map((row) => row.local_id)
-            const placeholders = localIds.map(() => '?').join(', ')
-            // Force-invoke the older copy: clearing local_id severs its ack path
-            // (markMessagesInvoked matches by local_id), so leaving invoked_at
-            // NULL would strand the row in the queued floating bar forever.
-            // Use COALESCE so an already-invoked row keeps its server timestamp.
-            prepareCached(db,
-                `UPDATE messages
-                 SET local_id = NULL,
-                     invoked_at = COALESCE(invoked_at, created_at)
-                 WHERE session_id = ? AND local_id IN (${placeholders})`
-            ).run(fromSessionId, ...localIds)
-        }
-
-        // Revisions belong to a session, unlike stable message IDs. Translate
-        // only unread source outputs above the destination head; already-read
-        // history is a baseline and must not light up the destination.
-        const source = prepareCached(db, 'SELECT content_revision, read_revision, manual_unread FROM sessions WHERE id = ?')
-            .get(fromSessionId) as { content_revision: number; read_revision: number; manual_unread: number }
-        const target = prepareCached(db, 'SELECT content_revision FROM sessions WHERE id = ?')
-            .get(toSessionId) as { content_revision: number }
-        prepareCached(db, `UPDATE messages SET content_revision = CASE WHEN content_revision > ?
-            THEN ? + content_revision - ? ELSE 0 END WHERE session_id = ?`)
-            .run(source.read_revision, target.content_revision, source.read_revision, fromSessionId)
-        const additional = Math.max(0, source.content_revision - source.read_revision)
-        prepareCached(db, `UPDATE sessions SET content_revision = content_revision + ?,
-            manual_unread = MAX(manual_unread, ?),
-            read_state_version = read_state_version + CASE WHEN manual_unread < ? THEN 1 ELSE 0 END WHERE id = ?`)
-            .run(additional, source.manual_unread, source.manual_unread, toSessionId)
-        const result = prepareCached(db,
-            'UPDATE messages SET session_id = ? WHERE session_id = ?'
-        ).run(toSessionId, fromSessionId)
-        // History moves can keep the source session alive. Retire its old
-        // unread state as well, so a second merge cannot count it again.
-        prepareCached(db, `UPDATE sessions SET read_revision = content_revision, manual_unread = 0,
-            read_state_version = read_state_version + 1 WHERE id = ?
-            AND (read_revision < content_revision OR manual_unread = 1)`).run(fromSessionId)
-
-        if (result.changes > 0) {
-            rebuildMessageContentSearchForSessions(db, [fromSessionId, toSessionId], true)
-            prepareCached(db, `
-                UPDATE sessions SET last_user_message_at = MAX(COALESCE(last_user_message_at, 0),
-                    (SELECT last_user_message_at FROM sessions WHERE id = ?))
-                WHERE id = ? AND (SELECT last_user_message_at FROM sessions WHERE id = ?) IS NOT NULL
-            `).run(fromSessionId, toSessionId, fromSessionId)
-            bumpMessageEpoch(db, fromSessionId)
-            bumpMessageEpoch(db, toSessionId)
-        }
-
-        db.exec('COMMIT')
-        return { moved: result.changes, oldMaxSeq, newMaxSeq }
-    } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
+    if (newMaxSeq > 0 && oldMaxSeq > 0) {
+        prepareCached(db,
+            'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
+        ).run(oldMaxSeq, toSessionId)
     }
+
+    const collisions = prepareCached(db, `
+        SELECT local_id FROM messages
+        WHERE session_id = ? AND local_id IS NOT NULL
+        INTERSECT
+        SELECT local_id FROM messages
+        WHERE session_id = ? AND local_id IS NOT NULL
+    `).all(toSessionId, fromSessionId) as Array<{ local_id: string }>
+
+    if (collisions.length > 0) {
+        const localIds = collisions.map((row) => row.local_id)
+        const placeholders = localIds.map(() => '?').join(', ')
+        // Force-invoke the older copy: clearing local_id severs its ack path
+        // (markMessagesInvoked matches by local_id), so leaving invoked_at
+        // NULL would strand the row in the queued floating bar forever.
+        // Use COALESCE so an already-invoked row keeps its server timestamp.
+        prepareCached(db,
+            `UPDATE messages
+             SET local_id = NULL,
+                 invoked_at = COALESCE(invoked_at, created_at)
+             WHERE session_id = ? AND local_id IN (${placeholders})`
+        ).run(fromSessionId, ...localIds)
+    }
+
+    // Revisions belong to a session, unlike stable message IDs. Translate
+    // only unread source outputs above the destination head; already-read
+    // history is a baseline and must not light up the destination.
+    const source = prepareCached(db, 'SELECT content_revision, read_revision, manual_unread FROM sessions WHERE id = ?')
+        .get(fromSessionId) as { content_revision: number; read_revision: number; manual_unread: number }
+    const target = prepareCached(db, 'SELECT content_revision FROM sessions WHERE id = ?')
+        .get(toSessionId) as { content_revision: number }
+    prepareCached(db, `UPDATE messages SET content_revision = CASE WHEN content_revision > ?
+        THEN ? + content_revision - ? ELSE 0 END WHERE session_id = ?`)
+        .run(source.read_revision, target.content_revision, source.read_revision, fromSessionId)
+    const additional = Math.max(0, source.content_revision - source.read_revision)
+    prepareCached(db, `UPDATE sessions SET content_revision = content_revision + ?,
+        manual_unread = MAX(manual_unread, ?),
+        read_state_version = read_state_version + CASE WHEN manual_unread < ? THEN 1 ELSE 0 END WHERE id = ?`)
+        .run(additional, source.manual_unread, source.manual_unread, toSessionId)
+
+    const result = prepareCached(db,
+        'UPDATE messages SET session_id = ? WHERE session_id = ?'
+    ).run(toSessionId, fromSessionId)
+
+    // History moves can keep the source session alive. Retire its old
+    // unread state as well, so a second merge cannot count it again.
+    prepareCached(db, `UPDATE sessions SET read_revision = content_revision, manual_unread = 0,
+        read_state_version = read_state_version + 1 WHERE id = ?
+        AND (read_revision < content_revision OR manual_unread = 1)`).run(fromSessionId)
+
+    if (result.changes > 0) {
+        rebuildMessageContentSearchForSessions(db, [fromSessionId, toSessionId], true)
+        prepareCached(db, `
+            UPDATE sessions SET last_user_message_at = MAX(COALESCE(last_user_message_at, 0),
+                (SELECT last_user_message_at FROM sessions WHERE id = ?))
+            WHERE id = ? AND (SELECT last_user_message_at FROM sessions WHERE id = ?) IS NOT NULL
+        `).run(fromSessionId, toSessionId, fromSessionId)
+        bumpMessageEpoch(db, fromSessionId)
+        bumpMessageEpoch(db, toSessionId)
+    }
+
+    return { moved: result.changes, oldMaxSeq, newMaxSeq }
+}
+
+export function mergeSessionMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): { moved: number; oldMaxSeq: number; newMaxSeq: number } {
+    return db.transaction(() => mergeSessionMessagesInTransaction(
+        db,
+        fromSessionId,
+        toSessionId
+    ))()
 }
 
 /**

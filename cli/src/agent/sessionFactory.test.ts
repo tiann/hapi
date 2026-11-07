@@ -235,6 +235,9 @@ describe('bootstrapExistingSession', () => {
                 machineId: 'machine-1',
                 startedAt: 123,
             },
+            forkedFrom: 'parent-session',
+            forkedAtMessageLocalId: 'historical-boundary',
+            forkedThroughMessageLocalId: 'current-tip-boundary',
             ptyResumeAttempt: {
                 state: 'quarantined',
                 machineId: 'machine-1',
@@ -279,6 +282,9 @@ describe('bootstrapExistingSession', () => {
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
+            forkedFrom: 'parent-session',
+            forkedAtMessageLocalId: 'historical-boundary',
+            forkedThroughMessageLocalId: 'current-tip-boundary',
             dshSessionId: 'dsh-thread-1',
             piResumeAttempt: {
                 state: 'resuming',

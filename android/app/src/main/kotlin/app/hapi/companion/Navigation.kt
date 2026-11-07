@@ -485,6 +485,9 @@ fun HapiNavigation() {
                         generatedImageUrl = { imageId ->
                             hubGraph.generatedImageUrl(sessionId, imageId)
                         },
+                        attachmentUrl = { attachmentId ->
+                            hubGraph.attachmentUrl(sessionId, attachmentId)
+                        },
                         // Non-image generated media (video/audio/file): same
                         // endpoint, same authed client (JWT + silent 401
                         // re-auth + ETag disk cache) as the image loader.

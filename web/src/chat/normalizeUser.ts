@@ -12,14 +12,15 @@ function parseAttachments(raw: unknown): AttachmentMetadata[] | undefined {
             typeof item.filename === 'string' &&
             typeof item.mimeType === 'string' &&
             typeof item.size === 'number' &&
-            typeof item.path === 'string'
+            (typeof item.path === 'string' || typeof item.attachmentId === 'string')
         ) {
             attachments.push({
                 id: item.id,
                 filename: item.filename,
                 mimeType: item.mimeType,
                 size: item.size,
-                path: item.path,
+                ...(typeof item.path === 'string' ? { path: item.path } : {}),
+                ...(typeof item.attachmentId === 'string' ? { attachmentId: item.attachmentId } : {}),
                 previewUrl: typeof item.previewUrl === 'string' ? item.previewUrl : undefined
             })
         }

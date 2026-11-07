@@ -8,18 +8,19 @@
  */
 
 import { type SessionReadStateRequest, isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { AttachmentMetadataSchema } from '@hapi/protocol/schemas'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadFileResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { AgentFlavor, AttachmentMetadata, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
-import type { Store, CancelQueuedMessageResult } from '../store'
+import type { Store, CancelQueuedMessageResult, StoredAttachment, StoredMessage } from '../store'
 import type {
     MessageContentSearchMatch,
     SessionMessageContentSearchResult
@@ -35,8 +36,8 @@ import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
+import { latestForkTranscriptLocalId, selectForkTranscriptPrefix, selectForkTranscriptThrough } from './forkTranscript'
 import { createPromptTitle } from './promptTitle'
-import { selectForkTranscriptPrefix } from './forkTranscript'
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
@@ -155,6 +156,53 @@ function normalizeUserMessageText(value: string): string | undefined {
     return text.length > 0 ? text : undefined
 }
 
+function messageReferencesAttachment(content: unknown, attachmentId: string): boolean {
+    const message = asRecord(content)
+    if (message?.role !== 'user') return false
+    const messageContent = asRecord(message.content)
+    if (!Array.isArray(messageContent?.attachments)) return false
+    return messageContent.attachments.some((attachment) => {
+        const parsed = AttachmentMetadataSchema.safeParse(attachment)
+        return parsed.success && parsed.data.attachmentId === attachmentId
+    })
+}
+
+function durableUserAttachments(content: unknown): AttachmentMetadata[] {
+    const message = asRecord(content)
+    if (message?.role !== 'user') return []
+    const messageContent = asRecord(message.content)
+    if (!Array.isArray(messageContent?.attachments)) return []
+    return messageContent.attachments.flatMap((attachment) => {
+        const parsed = AttachmentMetadataSchema.safeParse(attachment)
+        return parsed.success && parsed.data.attachmentId ? [parsed.data] : []
+    })
+}
+
+function mergeProjectedAttachmentContent(projected: unknown, source: unknown): unknown {
+    const projectedMessage = asRecord(projected)
+    const projectedContent = asRecord(projectedMessage?.content)
+    const sourceMessage = asRecord(source)
+    const sourceContent = asRecord(sourceMessage?.content)
+    if (!projectedMessage || !projectedContent || !sourceContent || !Array.isArray(sourceContent.attachments)) {
+        return source
+    }
+    return {
+        ...projectedMessage,
+        content: {
+            ...projectedContent,
+            attachments: sourceContent.attachments
+        }
+    }
+}
+
+function decodeBase64Attachment(value: string): Buffer {
+    const payload = value.includes(',') ? value.slice(value.indexOf(',') + 1) : value
+    if (!payload || !/^[A-Za-z0-9+/\s]+={0,2}$/.test(payload)) {
+        throw new Error('Invalid attachment content')
+    }
+    return Buffer.from(payload, 'base64')
+}
+
 function extractUserMessageText(content: unknown): string | undefined {
     if (typeof content === 'string') {
         return normalizeUserMessageText(content)
@@ -197,6 +245,8 @@ export class SyncEngine {
     private readonly archiveRequests = new Map<string, Promise<void>>()
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
+    private readonly deletingAttachmentKeys = new Set<string>()
+    private readonly sendingAttachmentCounts = new Map<string, number>()
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
@@ -223,9 +273,15 @@ export class SyncEngine {
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
     /** Coalesce concurrent resume/reopen requests so parallel callers share in-flight startup. */
     private readonly resumeTails = new Map<string, Promise<ResumeSessionResult>>()
+    private readonly resumeSpawnStates = new Map<string, { activeBefore: Set<string>; targets: Set<string> }>()
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Shared native fork children whose projected history is being hydrated. */
+    private readonly sharedForkAttachmentHydrations = new Map<string, Promise<void>>()
+    private readonly sharedForkAttachmentHydrationsBySource = new Map<string, Set<Promise<void>>>()
+    private readonly sharedForkAttachmentsHydrated = new Set<string>()
+    private readonly sharedForkAttachmentFailures = new Map<string, Map<string, Error>>()
     /**
      * Single-flight + last-good caches for session enumerations. The backing
      * RPCs can queue for tens of seconds behind a busy engine (mid-turn or
@@ -281,10 +337,16 @@ export class SyncEngine {
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
+            beforeDeleteSession: (sessionId, options) => this.prepareSessionForDeletionIfNeeded(sessionId, options),
+            assertDeleteSession: (sessionId) => this.assertSessionDeletionAllowed(sessionId),
+            isResumeRotation: (sourceSessionId, targetSessionId) => (
+                this.resumeSpawnStates.get(sourceSessionId)?.targets.has(targetSessionId) === true
+            ),
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
             // dedup alike — so enumeration cleanup rides on one hook.
-            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId),
+            afterDeleteSession: (sessionId) => this.clearSharedForkAttachmentTarget(sessionId),
         })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
@@ -723,6 +785,15 @@ export class SyncEngine {
             this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
         }
         this.sessionCache.handleSessionAlive(payload)
+        const aliveSession = this.sessionCache.getSession(payload.sid)
+        for (const [sourceSessionId, state] of this.resumeSpawnStates) {
+            const sourceSession = this.sessionCache.getSession(sourceSessionId)
+            if (!state.activeBefore.has(payload.sid)
+                && sourceSession?.metadata?.codexSessionId === aliveSession?.metadata?.codexSessionId) {
+                state.targets.add(payload.sid)
+            }
+        }
+        this.maybeHydrateSharedForkAttachments(aliveSession)
         if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -734,6 +805,7 @@ export class SyncEngine {
     handleSessionReady(payload: { sid: string; time: number }): void {
         this.sessionReadyIds.add(payload.sid)
         const session = this.sessionCache.getSession(payload.sid)
+        this.maybeHydrateSharedForkAttachments(session)
         if (session?.active && session.metadata?.codexResumePending
             && session.metadata.codexResumePending.nativeSessionId === session.metadata.codexSessionId) {
             this.writeCodexResumePending(session.id, session.namespace, undefined)
@@ -780,7 +852,14 @@ export class SyncEngine {
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
-                this.abortOpenCodeClearSession(payload.sid, before.namespace, operation.replacementSessionId, 'abort-needed')
+                void this.abortOpenCodeClearSession(
+                    payload.sid,
+                    before.namespace,
+                    operation.replacementSessionId,
+                    'abort-needed'
+                ).catch((error) => {
+                    console.warn('[opencode] Failed to abort clear after session end', { sessionId: payload.sid, error })
+                })
             }
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
@@ -1202,7 +1281,7 @@ export class SyncEngine {
             if (session.active || !operation) continue
             if (operation.state === 'reserved') continue
             if (operation.state === 'abort-needed') {
-                this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
+                await this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
                 continue
             }
             if (!['cleanup-confirmed', 'finalizing', 'pending', 'failed'].includes(operation.state)) continue
@@ -1278,14 +1357,7 @@ export class SyncEngine {
         payload: {
             text: string
             localId?: string | null
-            attachments?: Array<{
-                id: string
-                filename: string
-                mimeType: string
-                size: number
-                path: string
-                previewUrl?: string
-            }>
+            attachments?: import('@hapi/protocol').AttachmentMetadata[]
             sentFrom?: 'telegram-bot' | 'webapp'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
@@ -1294,12 +1366,45 @@ export class SyncEngine {
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
-        if (!this.sessionCache.getSession(sessionId)?.thinking) {
-            this.automaticTitleSuggestionService.onTurnStarted(sessionId)
+        const session = this.getSession(sessionId)
+        const attachmentIds = session
+            ? Array.from(new Set(
+                (payload.attachments ?? [])
+                    .map((attachment) => attachment.attachmentId)
+                    .filter((attachmentId): attachmentId is string => typeof attachmentId === 'string' && attachmentId.length > 0)
+            ))
+            : []
+        const attachmentKeys = session
+            ? attachmentIds.map((attachmentId) => this.attachmentKey(session.namespace, attachmentId))
+            : []
+        if (attachmentKeys.some((key) => this.deletingAttachmentKeys.has(key))) {
+            throw new Error('Attachment deletion in progress')
         }
-        const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
-        this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
-        this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
+        if (session && attachmentIds.some((attachmentId) => (
+            !this.store.attachments.getForSession(attachmentId, session.namespace, session.id)
+        ))) {
+            throw new Error('Attachment not found')
+        }
+        for (const key of attachmentKeys) {
+            this.sendingAttachmentCounts.set(key, (this.sendingAttachmentCounts.get(key) ?? 0) + 1)
+        }
+        try {
+            if (!this.sessionCache.getSession(sessionId)?.thinking) {
+                this.automaticTitleSuggestionService.onTurnStarted(sessionId)
+            }
+            const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+            this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
+            this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
+        } finally {
+            for (const key of attachmentKeys) {
+                const remaining = (this.sendingAttachmentCounts.get(key) ?? 1) - 1
+                if (remaining === 0) {
+                    this.sendingAttachmentCounts.delete(key)
+                } else {
+                    this.sendingAttachmentCounts.set(key, remaining)
+                }
+            }
+        }
     }
 
     async cancelQueuedMessage(
@@ -1314,6 +1419,11 @@ export class SyncEngine {
         messageId: string
     ): Promise<RetryIndeterminateMessageResult> {
         return this.messageService.retryIndeterminateMessage(sessionId, messageId)
+    }
+
+    /** Whether at least one message currently holds this attachment for send. */
+    private isAttachmentSendInProgress(key: string): boolean {
+        return (this.sendingAttachmentCounts.get(key) ?? 0) > 0
     }
 
     /**
@@ -1709,10 +1819,11 @@ export class SyncEngine {
                 throw new Error('Upgrade the source Runner to fork archived Codex sessions')
             }
             let attempt = metadata.codexArchivedFork
-            if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
-            const turnId = attempt ? attempt.boundaryTurnId : messageLocalId ? metadata.conversationHistoryTurns?.[messageLocalId] : undefined
-            if (messageLocalId) {
-                if (!attempt) this.assertInvokedHistoryBoundary(source.id, messageLocalId)
+            const boundaryLocalId = messageLocalId ?? attempt?.boundaryLocalId
+            if (attempt && attempt.boundaryLocalId !== boundaryLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
+            const turnId = attempt ? attempt.boundaryTurnId : boundaryLocalId ? metadata.conversationHistoryTurns?.[boundaryLocalId] : undefined
+            if (boundaryLocalId) {
+                if (!attempt) this.assertInvokedHistoryBoundary(source.id, boundaryLocalId)
                 if (!turnId) throw new Error('No native history point for this message')
             }
             if (!attempt) {
@@ -1722,6 +1833,13 @@ export class SyncEngine {
             }
             const childId = attempt.childSessionId
             let child = this.sessionCache.refreshSession(childId)
+            const forkAtMessageLocalId = boundaryLocalId
+            const forkThroughMessageLocalId = forkAtMessageLocalId ? undefined
+                : child?.metadata?.forkedThroughMessageLocalId ?? latestForkTranscriptLocalId(this.store.messages.getAllMessages(source.id)) ?? ''
+            if (child) {
+                this.persistSharedForkBoundary(childId, namespace, forkAtMessageLocalId, forkThroughMessageLocalId)
+                child = this.sessionCache.refreshSession(childId)
+            }
             if (child?.active) {
                 if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
                     || child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Archived fork child binding is unconfirmed')
@@ -1734,7 +1852,10 @@ export class SyncEngine {
                 child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
                     path: metadata.path, host: metadata.host, machineId: metadata.machineId, flavor: 'codex',
                     forkedFrom: source.id, startedBy: 'runner',
-                    summary: buildForkSessionSummary(metadata)
+                    summary: buildForkSessionSummary(metadata),
+                    ...(forkAtMessageLocalId
+                        ? { forkedAtMessageLocalId: forkAtMessageLocalId }
+                        : { forkedThroughMessageLocalId: forkThroughMessageLocalId })
                 }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
             } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
             if (attempt.spawnAttempted) {
@@ -1745,7 +1866,7 @@ export class SyncEngine {
                 const result = await this.rpcGateway.forkArchivedCodex(metadata.machineId, {
                     operationId: attempt.operationId, sourceSessionId: source.id,
                     sourceThreadId: metadata.codexSessionId, directory: metadata.path,
-                    ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
+                    ...(forkAtMessageLocalId ? { boundary: { localId: forkAtMessageLocalId, turnId: turnId! } } : {})
                 })
                 if ('error' in result) {
                     if (result.rollbackSafe) {
@@ -1882,6 +2003,29 @@ export class SyncEngine {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
             if (!child || child.metadata?.forkedFrom !== sessionId) return { type: 'error', message: 'Invalid shared-runtime fork binding' }
             this.restoreForkSummaryMetadata(child.id, namespace, buildForkSessionSummary(source.metadata))
+            try {
+                const throughMessageLocalId = messageLocalId
+                    ? undefined
+                    : child.metadata?.forkedThroughMessageLocalId
+                        ?? latestForkTranscriptLocalId(this.store.messages.getAllMessages(sessionId))
+                        ?? ''
+                this.persistSharedForkBoundary(child.id, namespace, messageLocalId, throughMessageLocalId)
+                await this.ensureSharedForkAttachments(
+                    sessionId,
+                    namespace,
+                    child.id,
+                    messageLocalId,
+                    throughMessageLocalId
+                )
+            } catch (error) {
+                try {
+                    await this.cleanupFailedForkChild(child.id, machineId, true)
+                } catch (cleanupError) {
+                    const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                    return { type: 'error', message: `Fork failed; child cleanup was not confirmed: ${message}` }
+                }
+                return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+            }
             return { type: 'success', sessionId: child.id }
         }
 
@@ -1895,9 +2039,10 @@ export class SyncEngine {
 
         const flavor = this.resolveFlavor(source)
         const childId = randomUUID()
+        const sourceMessages = this.store.messages.getAllMessages(sessionId)
         let prefix
         try {
-            prefix = selectForkTranscriptPrefix(this.store.messages.getAllMessages(sessionId), messageLocalId)
+            prefix = selectForkTranscriptPrefix(sourceMessages, messageLocalId)
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -1914,6 +2059,9 @@ export class SyncEngine {
             forkedFrom: sessionId,
             startedBy: 'runner',
             capabilities: source.metadata?.capabilities,
+            ...(messageLocalId
+                ? { forkedAtMessageLocalId: messageLocalId }
+                : { forkedThroughMessageLocalId: latestForkTranscriptLocalId(sourceMessages) ?? '' }),
             conversationHistoryPoints: Object.fromEntries(
                 Object.entries(source.metadata?.conversationHistoryPoints ?? {})
                     .filter(([localId]) => copiedLocalIds.has(localId))
@@ -1965,15 +2113,26 @@ export class SyncEngine {
 
             // Native fork keeps agent context, but the new HAPI row starts empty.
             // Hydrate the transcript prefix so web navigation is not a blank thread.
-            this.store.messages.copyMessagesToSession(
-                childId,
-                prefix.map((message) => ({
-                    content: message.content,
+            const clonedAttachments = new Map<string, StoredAttachment>()
+            const copiedPrefix = []
+            for (const message of prefix) {
+                copiedPrefix.push({
+                    content: await this.store.attachments.cloneMessageAttachments(
+                        namespace,
+                        sessionId,
+                        childId,
+                        message.content,
+                        clonedAttachments
+                    ),
                     createdAt: message.createdAt,
                     localId: message.localId,
                     invokedAt: message.invokedAt,
                     scheduledAt: message.scheduledAt
-                }))
+                })
+            }
+            this.store.messages.copyMessagesToSession(
+                childId,
+                copiedPrefix
             )
             this.sessionCache.rebuildTodosFromTranscript(childId)
             this.sessionCache.refreshSession(childId)
@@ -2049,6 +2208,323 @@ export class SyncEngine {
                 }
             }
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+    }
+
+    private maybeHydrateSharedForkAttachments(session: Session | undefined): void {
+        const sourceSessionId = session?.metadata?.forkedFrom
+        const forkMessageLocalId = session?.metadata?.forkedAtMessageLocalId
+        const forkThroughMessageLocalId = session?.metadata?.forkedThroughMessageLocalId
+        if (!session
+            || session.metadata?.flavor !== 'codex'
+            || session.metadata.capabilities?.concurrentClients !== true
+            || typeof sourceSessionId !== 'string'
+            || this.historyActionsInFlight.has(sourceSessionId)) {
+            return
+        }
+        void this.ensureSharedForkAttachments(
+            sourceSessionId,
+            session.namespace,
+            session.id,
+            forkMessageLocalId,
+            forkThroughMessageLocalId
+        )
+            .catch((error) => {
+                console.warn('[attachments] Failed to hydrate native shared fork', {
+                    sourceSessionId,
+                    targetSessionId: session.id,
+                    error
+                })
+            })
+    }
+
+    /** Persist the fork cut on the Hub row, independently of CLI restart state. */
+    private persistSharedForkBoundary(
+        targetSessionId: string,
+        namespace: string,
+        messageLocalId?: string,
+        throughMessageLocalId?: string
+    ): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(targetSessionId, namespace)
+                ?? this.sessionCache.refreshSession(targetSessionId)
+            if (!session?.metadata) return
+            const nextMetadata = {
+                ...session.metadata,
+                ...(messageLocalId
+                    ? { forkedAtMessageLocalId: messageLocalId }
+                    : { forkedThroughMessageLocalId: throughMessageLocalId ?? '' })
+            }
+            if (messageLocalId
+                ? session.metadata.forkedAtMessageLocalId === messageLocalId
+                : session.metadata.forkedThroughMessageLocalId === (throughMessageLocalId ?? '')) {
+                return
+            }
+            const result = this.store.sessions.updateSessionMetadata(
+                targetSessionId,
+                nextMetadata,
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(targetSessionId)
+                return
+            }
+            if (result.result === 'error') return
+            this.sessionCache.refreshSession(targetSessionId)
+        }
+    }
+
+    /**
+     * Shared Codex forks already have a child HAPI row and project native
+     * history as text. Add durable attachment ownership without copying the
+     * rest of the projected transcript or creating duplicate user turns.
+     */
+    private async hydrateSharedForkAttachments(
+        sourceSessionId: string,
+        namespace: string,
+        targetSessionId: string,
+        messageLocalId?: string,
+        throughMessageLocalId?: string
+    ): Promise<void> {
+        const sourceMessages = this.store.messages.getAllMessages(sourceSessionId)
+        const prefix = messageLocalId !== undefined
+            ? selectForkTranscriptPrefix(sourceMessages, messageLocalId)
+            : throughMessageLocalId !== undefined
+                ? selectForkTranscriptThrough(sourceMessages, throughMessageLocalId)
+                : selectForkTranscriptPrefix(sourceMessages)
+        const targetByLocalId = new Map(
+            this.store.messages.getAllMessages(targetSessionId)
+                .flatMap((message) => message.localId ? [[message.localId, message] as const] : [])
+        )
+        const clonedAttachments = new Map<string, StoredAttachment>()
+        const copiedMessages: Array<Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'>> = []
+
+        try {
+            for (const message of prefix) {
+                const sourceAttachments = durableUserAttachments(message.content)
+                if (sourceAttachments.length === 0) continue
+
+                const projected = message.localId ? targetByLocalId.get(message.localId) : undefined
+                if (projected) {
+                    const projectedAttachments = durableUserAttachments(projected.content)
+                    if (projectedAttachments.length === sourceAttachments.length
+                        && projectedAttachments.every((attachment, index) => {
+                            const sourceAttachment = sourceAttachments[index]
+                            return sourceAttachment?.filename === attachment.filename
+                                && sourceAttachment.mimeType === attachment.mimeType
+                                && sourceAttachment.size === attachment.size
+                                && Boolean(this.store.attachments.getForSession(
+                                    attachment.attachmentId!, namespace, targetSessionId
+                                ))
+                        })) {
+                        continue
+                    }
+                }
+
+                const rewritten = await this.store.attachments.cloneMessageAttachments(
+                    namespace,
+                    sourceSessionId,
+                    targetSessionId,
+                    message.content,
+                    clonedAttachments
+                )
+                copiedMessages.push({
+                    content: projected ? mergeProjectedAttachmentContent(projected.content, rewritten) : rewritten,
+                    createdAt: message.createdAt,
+                    localId: message.localId,
+                    invokedAt: message.invokedAt,
+                    scheduledAt: message.scheduledAt,
+                    deliveryState: message.deliveryState
+                })
+            }
+
+            const changed = this.store.messages.mergeCopiedMessagesToSession(targetSessionId, copiedMessages)
+            if (changed > 0) {
+                this.sessionCache.refreshSession(targetSessionId)
+                this.eventPublisher.emit({
+                    type: 'messages-invalidated',
+                    sessionId: targetSessionId
+                })
+            }
+        } catch (error) {
+            for (const attachment of clonedAttachments.values()) {
+                await this.store.attachments.deleteForSession(
+                    attachment.id,
+                    namespace,
+                    targetSessionId
+                ).catch(() => {})
+            }
+            throw error
+        }
+    }
+
+    private ensureSharedForkAttachments(
+        sourceSessionId: string,
+        namespace: string,
+        targetSessionId: string,
+        messageLocalId?: string,
+        throughMessageLocalId?: string
+    ): Promise<void> {
+        if (this.sharedForkAttachmentsHydrated.has(targetSessionId)) return Promise.resolve()
+        const target = this.sessionCache.getSessionByNamespace(targetSessionId, namespace)
+            ?? this.sessionCache.refreshSession(targetSessionId)
+        if (target?.metadata?.sharedForkAttachmentsHydrated === true) {
+            this.sharedForkAttachmentsHydrated.add(targetSessionId)
+            return Promise.resolve()
+        }
+        const existing = this.sharedForkAttachmentHydrations.get(targetSessionId)
+        if (existing) return existing
+
+        const priorFailures = this.sharedForkAttachmentFailures.get(sourceSessionId)
+        priorFailures?.delete(targetSessionId)
+        if (priorFailures?.size === 0) this.sharedForkAttachmentFailures.delete(sourceSessionId)
+        const sourceHydration = this.ensureSharedForkSourceHydrated(sourceSessionId)
+        const work = sourceHydration.then(() => this.hydrateSharedForkAttachments(
+            sourceSessionId,
+            namespace,
+            targetSessionId,
+            messageLocalId,
+            throughMessageLocalId
+        )).then(() => {
+            this.persistSharedForkHydrationCompletion(targetSessionId, namespace)
+            this.sharedForkAttachmentsHydrated.add(targetSessionId)
+        }).catch((error) => {
+            const failure = error instanceof Error ? error : new Error(String(error))
+            const failures = this.sharedForkAttachmentFailures.get(sourceSessionId) ?? new Map<string, Error>()
+            failures.set(targetSessionId, failure)
+            this.sharedForkAttachmentFailures.set(sourceSessionId, failures)
+            throw failure
+        })
+        this.sharedForkAttachmentHydrations.set(targetSessionId, work)
+        const sourceHydrations = this.sharedForkAttachmentHydrationsBySource.get(sourceSessionId) ?? new Set<Promise<void>>()
+        sourceHydrations.add(work)
+        this.sharedForkAttachmentHydrationsBySource.set(sourceSessionId, sourceHydrations)
+        void work.then(
+            () => this.releaseSharedForkHydration(sourceSessionId, targetSessionId, work),
+            () => this.releaseSharedForkHydration(sourceSessionId, targetSessionId, work)
+        )
+        return work
+    }
+
+    /** Ensure a nested shared fork's source has its own durable attachments first. */
+    private ensureSharedForkSourceHydrated(sourceSessionId: string): Promise<void> {
+        const source = this.sessionCache.getSession(sourceSessionId)
+            ?? this.sessionCache.refreshSession(sourceSessionId)
+        const parentSessionId = source?.metadata?.forkedFrom
+        if (!source
+            || source.metadata?.flavor !== 'codex'
+            || source.metadata.capabilities?.concurrentClients !== true
+            || typeof parentSessionId !== 'string') {
+            return Promise.resolve()
+        }
+        if (source.metadata.sharedForkAttachmentsHydrated === true) {
+            return Promise.resolve()
+        }
+
+        const messageLocalId = source.metadata.forkedAtMessageLocalId
+        const throughMessageLocalId = source.metadata.forkedThroughMessageLocalId
+        if (messageLocalId === undefined && throughMessageLocalId === undefined) {
+            return Promise.reject(new Error(
+                `Cannot hydrate nested shared fork before fork boundary is known: ${sourceSessionId}`
+            ))
+        }
+
+        return this.ensureSharedForkAttachments(
+            parentSessionId,
+            source.namespace,
+            source.id,
+            messageLocalId,
+            throughMessageLocalId
+        )
+    }
+
+    /** Persist successful hydration so later restarts do not depend on ancestors. */
+    private persistSharedForkHydrationCompletion(targetSessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(targetSessionId, namespace)
+                ?? this.sessionCache.refreshSession(targetSessionId)
+            if (!session?.metadata) {
+                throw new Error(`Cannot persist shared fork hydration for missing session: ${targetSessionId}`)
+            }
+            if (session.metadata.sharedForkAttachmentsHydrated === true) return
+            const result = this.store.sessions.updateSessionMetadata(
+                targetSessionId,
+                { ...session.metadata, sharedForkAttachmentsHydrated: true },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(targetSessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error(`Failed to persist shared fork hydration for session: ${targetSessionId}`)
+            }
+            this.sessionCache.refreshSession(targetSessionId)
+        }
+        throw new Error(`Shared fork hydration metadata update kept conflicting: ${targetSessionId}`)
+    }
+
+    private releaseSharedForkHydration(
+        sourceSessionId: string,
+        targetSessionId: string,
+        work: Promise<void>
+    ): void {
+        if (this.sharedForkAttachmentHydrations.get(targetSessionId) === work) {
+            this.sharedForkAttachmentHydrations.delete(targetSessionId)
+        }
+        const sourceHydrations = this.sharedForkAttachmentHydrationsBySource.get(sourceSessionId)
+        sourceHydrations?.delete(work)
+        if (sourceHydrations?.size === 0) {
+            this.sharedForkAttachmentHydrationsBySource.delete(sourceSessionId)
+        }
+    }
+
+    private async waitForSharedForkAttachmentHydration(sourceSessionId: string): Promise<void> {
+        const failure = this.sharedForkAttachmentFailures.get(sourceSessionId)?.values().next().value as Error | undefined
+        if (failure) {
+            throw new Error(`Cannot delete source session before shared fork attachments are preserved: ${failure.message}`)
+        }
+        const pending = this.sharedForkAttachmentHydrationsBySource.get(sourceSessionId)
+        if (pending) await Promise.all([...pending])
+        const after = this.sharedForkAttachmentFailures.get(sourceSessionId)?.values().next().value as Error | undefined
+        if (after) {
+            throw new Error(`Cannot delete source session before shared fork attachments are preserved: ${after.message}`)
+        }
+    }
+
+    /** Drop retry/error bookkeeping once a failed fork child has been removed. */
+    private clearSharedForkAttachmentTarget(targetSessionId: string): void {
+        this.sharedForkAttachmentsHydrated.delete(targetSessionId)
+        for (const [sourceSessionId, failures] of this.sharedForkAttachmentFailures) {
+            failures.delete(targetSessionId)
+            if (failures.size === 0) this.sharedForkAttachmentFailures.delete(sourceSessionId)
+        }
+    }
+
+    /** Rebuild fork hydration protection from durable child metadata after restart. */
+    private async ensureSharedForkChildrenBeforeDelete(sourceSessionId: string): Promise<void> {
+        const children = this.sessionCache.getSessions().filter((session) =>
+            session.metadata?.forkedFrom === sourceSessionId
+            && session.metadata?.flavor === 'codex'
+            && session.metadata.capabilities?.concurrentClients === true
+        )
+        for (const child of children) {
+            const messageLocalId = child.metadata?.forkedAtMessageLocalId
+            const throughMessageLocalId = child.metadata?.forkedThroughMessageLocalId
+            if (messageLocalId === undefined && throughMessageLocalId === undefined) {
+                throw new Error(`Cannot delete source session before shared fork boundary is known: ${child.id}`)
+            }
+            await this.ensureSharedForkAttachments(
+                sourceSessionId,
+                child.namespace,
+                child.id,
+                messageLocalId,
+                throughMessageLocalId
+            )
         }
     }
 
@@ -2551,14 +3027,85 @@ export class SyncEngine {
         await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
     }
 
-    async deleteSession(sessionId: string): Promise<void> {
-        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+    /** Lifecycle guards shared by direct deletion and duplicate-session consolidation. */
+    assertSessionDeletionAllowed(sessionId: string): void {
+        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) {
+            throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+        }
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is pending; reconcile it before deleting the source')
         }
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        this.assertSessionDeletionAllowed(sessionId)
+        await this.prepareSessionForDeletion(sessionId)
+        this.assertSessionDeletionAllowed(sessionId)
         await this.sessionCache.deleteSession(sessionId)
+        this.clearSharedForkAttachmentTarget(sessionId)
         this.titleTurnCompletedIds.delete(sessionId)
         this.automaticTitleSuggestionService.forgetSession(sessionId)
+        this.releaseSessionEnumerations(sessionId)
+    }
+
+    /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
+    async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean; allowLifecycleGuard?: boolean }): Promise<void> {
+        if (!options?.allowLifecycleGuard) this.assertSessionDeletionAllowed(sessionId)
+        // A duplicate merge snapshots this session's messages and attachments.
+        // After a Hub restart the in-memory hydration maps are empty, so a
+        // shared-fork child can look complete even though its inherited
+        // attachments were never materialized. Rebuild and await its own
+        // durable hydration before taking that snapshot.
+        if (options?.requireTargetHydration) await this.ensureSharedForkSourceHydrated(sessionId)
+        await this.ensureSharedForkChildrenBeforeDelete(sessionId)
+        await this.waitForSharedForkAttachmentHydration(sessionId)
+        await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)
+    }
+
+    /** Avoid yielding on ordinary consolidations that have no shared-fork dependency. */
+    private prepareSessionForDeletionIfNeeded(sessionId: string, options?: { allowLifecycleGuard?: boolean }): Promise<void> | undefined {
+        const session = this.sessionCache.getSession(sessionId)
+        const hasOwnForkDependency = typeof session?.metadata?.forkedFrom === 'string'
+            && session.metadata.flavor === 'codex'
+            && session.metadata.capabilities?.concurrentClients === true
+            && session.metadata.sharedForkAttachmentsHydrated !== true
+        const hasChild = this.sessionCache.getSessions().some((candidate) => (
+            candidate.metadata?.forkedFrom === sessionId
+            && candidate.metadata?.flavor === 'codex'
+            && candidate.metadata.capabilities?.concurrentClients === true
+        ))
+        if (!hasOwnForkDependency
+            && !hasChild
+            && !this.sharedForkAttachmentHydrations.has(sessionId)
+            && !this.sharedForkAttachmentHydrationsBySource.has(sessionId)
+            && !this.sharedForkAttachmentFailures.has(sessionId)) {
+            return undefined
+        }
+        return this.prepareSessionForDeletion(sessionId, {
+            ...options,
+            requireTargetHydration: hasOwnForkDependency,
+        })
+    }
+
+    /** Wait for a hydration targeting a child before deleting that child. */
+    private async settleSharedForkAttachmentTarget(targetSessionId: string, requireSuccess = false): Promise<void> {
+        const pending = this.sharedForkAttachmentHydrations.get(targetSessionId)
+        if (pending) await (requireSuccess ? pending : pending.catch(() => {}))
+        if (requireSuccess) {
+            for (const failures of this.sharedForkAttachmentFailures.values()) {
+                const failure = failures.get(targetSessionId)
+                if (failure) throw failure
+            }
+        }
+    }
+
+    finalizeDeletedSession(
+        sessionId: string,
+        namespace: string,
+        scratchlistAttachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[] = []
+    ): void {
+        this.sessionCache.finalizeDeletedSession(sessionId, namespace, scratchlistAttachments)
+        this.clearSharedForkAttachmentTarget(sessionId)
         this.releaseSessionEnumerations(sessionId)
     }
 
@@ -2812,13 +3359,13 @@ export class SyncEngine {
         return { type: 'success', sessionId: operation.replacementSessionId }
     }
 
-    abortOpenCodeClearSession(
+    async abortOpenCodeClearSession(
         sessionId: string,
         namespace: string,
         replacementSessionId: string,
         expectedState: 'reserved' | 'abort-needed' = 'reserved',
         requireInactive: boolean = false
-    ): ClearOpencodeSessionResult {
+    ): Promise<ClearOpencodeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
@@ -2843,7 +3390,7 @@ export class SyncEngine {
             if ((required.requireInactive && latest.active)
                 || current.replacementSessionId !== required.replacementSessionId
                 || current.state !== required.state) break
-            const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
+            const result = await this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
                 ...latest.metadata,
                 opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
             }, latest.metadataVersion, namespace, required)
@@ -2987,7 +3534,7 @@ export class SyncEngine {
         // A previous request can have spawned the target but lost the source
         // link acknowledgement. Do not ask the runner again in that case.
         if (replacement.active) {
-            return this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
+            return await this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
         }
 
         // Do not supply a native OpenCode resume id. existingSessionId is only
@@ -3018,15 +3565,15 @@ export class SyncEngine {
             return { type: 'error', message, code: 'spawn_failed' }
         }
 
-        return this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
+        return await this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
     }
 
-    private finishOpenCodeClear(
+    private async finishOpenCodeClear(
         sessionId: string,
         namespace: string,
         replacementSessionId: string,
         operation: NonNullable<Session['metadata']>['opencodeClearOperation']
-    ): ClearOpencodeSessionResult {
+    ): Promise<ClearOpencodeSessionResult> {
         if (!operation) {
             return {
                 type: 'error',
@@ -3035,7 +3582,7 @@ export class SyncEngine {
             }
         }
         try {
-            const moved = this.store.messages.moveUninvokedMessages(sessionId, replacementSessionId)
+            const moved = await this.store.moveUninvokedMessages(namespace, sessionId, replacementSessionId)
             if (moved > 0) {
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementSessionId })
@@ -3573,9 +4120,9 @@ export class SyncEngine {
         try {
             const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
             if (status === 'still_alive' || status === 'unknown') return false
-            return this.abortOpenCodeClearSession(
+            return (await this.abortOpenCodeClearSession(
                 session.id, namespace, operation.replacementSessionId, 'reserved', true
-            ).type === 'success'
+            )).type === 'success'
         } catch {
             return false
         }
@@ -3822,6 +4369,10 @@ export class SyncEngine {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
             }
+            this.resumeSpawnStates.set(access.sessionId, {
+                activeBefore: new Set(this.sessionCache.getSessions().filter((candidate) => candidate.active).map((candidate) => candidate.id)),
+                targets: new Set()
+            })
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
                 directory,
@@ -4012,7 +4563,9 @@ export class SyncEngine {
                     try {
                         // Enumeration cleanup for the deleted old row fires via
                         // the onSessionMergedAway hook wired in the constructor.
-                        await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
+                        await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace, {
+                            allowLifecycleDeletionGuard: true
+                        })
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
                         return { type: 'error', message, code: 'resume_failed' }
@@ -4040,6 +4593,7 @@ export class SyncEngine {
             }
             return { type: 'success', sessionId: spawnResult.sessionId }
         } finally {
+            this.resumeSpawnStates.delete(access.sessionId)
             if (resumedStartingMode === 'pty') {
                 this.ptyResumeInFlightIds.delete(access.sessionId)
                 // Do not clear a deliberate fail-closed `resuming` marker left
@@ -4872,6 +5426,101 @@ export class SyncEngine {
                 this.rpcGateway.statWorkspaceFiles(machineId, { cwd, paths })
             )
         }
+    }
+
+    /** Store a user upload durably on the hub; the CLI-local upload RPC remains a legacy fallback. */
+    async createAttachment(
+        sessionId: string,
+        namespace: string,
+        filename: string,
+        content: string,
+        mimeType: string
+    ): Promise<UploadFileResponse> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            throw new Error(access.reason === 'access-denied' ? 'Session access denied' : 'Session not found')
+        }
+        const original = decodeBase64Attachment(content)
+        const stored = await this.store.attachments.create({
+            namespace,
+            sessionId: access.sessionId,
+            filename,
+            mimeType,
+            original
+        })
+        if (!this.store.sessions.getSessionByNamespace(access.sessionId, namespace)) {
+            await this.store.attachments.deleteById(stored.id, namespace)
+            throw new Error('Session was deleted while uploading')
+        }
+        return {
+            success: true,
+            attachmentId: stored.id,
+            filename: stored.filename,
+            mimeType: stored.mimeType,
+            size: stored.size
+        }
+    }
+
+    async deleteAttachment(sessionId: string, namespace: string, attachmentId: string): Promise<{ success: boolean; error?: string }> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { success: false, error: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found' }
+        }
+        const key = this.attachmentKey(namespace, attachmentId)
+        if (this.deletingAttachmentKeys.has(key)) {
+            return { success: false, error: 'Attachment deletion in progress' }
+        }
+        if (this.isAttachmentSendInProgress(key)) {
+            return { success: false, error: 'Attachment is being sent' }
+        }
+        if (!this.store.attachments.getForSession(attachmentId, namespace, access.sessionId)) {
+            return { success: false, error: 'Attachment not found' }
+        }
+        this.deletingAttachmentKeys.add(key)
+        try {
+            const referenced = this.store.messages.getAllMessages(access.sessionId)
+                .some((message) => messageReferencesAttachment(message.content, attachmentId))
+            if (referenced) {
+                return { success: false, error: 'Attachment is already referenced by a message' }
+            }
+            const deleted = await this.store.attachments.deleteForSession(attachmentId, namespace, access.sessionId)
+            return deleted ? { success: true } : { success: false, error: 'Attachment not found' }
+        } finally {
+            this.deletingAttachmentKeys.delete(key)
+        }
+    }
+
+    async readAttachment(
+        sessionId: string,
+        namespace: string,
+        attachmentId: string
+    ) {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) return null
+        if (this.deletingAttachmentKeys.has(this.attachmentKey(namespace, attachmentId))) return null
+        return await this.store.attachments.readForSessionAsync(attachmentId, namespace, access.sessionId)
+    }
+
+    async readAttachmentStream(
+        sessionId: string,
+        namespace: string,
+        attachmentId: string
+    ) {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) return null
+        if (this.deletingAttachmentKeys.has(this.attachmentKey(namespace, attachmentId))) return null
+        return await this.store.attachments.openForSessionAsync(attachmentId, namespace, access.sessionId)
+    }
+
+    hasAttachment(sessionId: string, namespace: string, attachmentId: string): boolean {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        return access.ok
+            && !this.deletingAttachmentKeys.has(this.attachmentKey(namespace, attachmentId))
+            && Boolean(this.store.attachments.getForSession(attachmentId, namespace, access.sessionId))
+    }
+
+    private attachmentKey(namespace: string, attachmentId: string): string {
+        return `${namespace}:${attachmentId}`
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {

@@ -296,6 +296,26 @@ describe('archived Codex fork coordination', () => {
         } finally { f.engine.stop() }
     })
 
+    it('rechecks the resume guard after direct deletion preparation', async () => {
+        const f = fixture()
+        try {
+            const prepare = f.engine.prepareSessionForDeletion.bind(f.engine)
+            f.engine.prepareSessionForDeletion = async (...args) => {
+                await prepare(...args)
+                const latest = f.store.sessions.getSession(f.source.id)!
+                f.store.sessions.updateSessionMetadata(f.source.id, {
+                    ...(latest.metadata as Record<string, unknown>),
+                    codexResumePending: { machineId: f.machineId, nativeSessionId: 'native-source' }
+                }, latest.metadataVersion, 'ns')
+                ;(f.engine as unknown as { sessionCache: { refreshSession(id: string): void } })
+                    .sessionCache.refreshSession(f.source.id)
+            }
+
+            await expect(f.engine.deleteSession(f.source.id)).rejects.toThrow('resume startup is unconfirmed')
+            expect(f.store.sessions.getSession(f.source.id)).not.toBeNull()
+        } finally { f.engine.stop() }
+    })
+
     it('reconciles a failed launcher and reuses its native child without another fork', async () => {
         const f = fixture()
         try {
@@ -334,6 +354,25 @@ describe('archived Codex fork coordination', () => {
             expect(f.engine.getSession(f.source.id)?.metadata?.codexArchivedFork).toBeUndefined()
         } finally { f.engine.stop() }
     })
+
+    for (const boundary of [undefined, 'boundary'] as const) {
+        it(`persists the archived fork attachment boundary for ${boundary ?? 'the current tip'}`, async () => {
+            const f = fixture()
+            try {
+                const result = await f.engine.forkConversation(f.source.id, 'ns', boundary)
+                expect(result.type).toBe('success')
+                if (result.type !== 'success') throw new Error(result.message)
+                const metadata = f.engine.getSession(result.sessionId)?.metadata
+                if (boundary) {
+                    expect(metadata?.forkedAtMessageLocalId).toBe(boundary)
+                    expect(metadata?.forkedThroughMessageLocalId).toBeUndefined()
+                } else {
+                    expect(metadata?.forkedAtMessageLocalId).toBeUndefined()
+                    expect(metadata?.forkedThroughMessageLocalId).toBe('boundary')
+                }
+            } finally { f.engine.stop() }
+        })
+    }
 
     it('does not complete an active child retry until native readiness is confirmed again', async () => {
         const f = fixture()

@@ -14,6 +14,32 @@ afterEach(() => {
 })
 
 describe('schema migrations through v31', () => {
+    it('adds the durable attachments table when upgrading a V25 database', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v25-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+
+        new Store(dbPath, { attachmentsRoot: join(dir, 'attachments') }).close()
+        const legacy = new Database(dbPath)
+        legacy.exec('DROP TABLE IF EXISTS attachments; DROP TABLE IF EXISTS attachment_deletions; DROP TABLE IF EXISTS attachment_creations; PRAGMA user_version = 25;')
+        legacy.close()
+
+        const migrated = new Store(dbPath, { attachmentsRoot: join(dir, 'attachments') })
+        try {
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const table = internalDb.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachments'"
+            ).get() as { name: string } | null
+            const columns = internalDb.prepare('PRAGMA table_info(attachments)').all() as Array<{ name: string }>
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+
+            expect(table?.name).toBe('attachments')
+            expect(columns.map((column) => column.name)).not.toContain('thumbnail_path')
+            expect(version.user_version).toBe(32)
+        } finally {
+            migrated.close()
+        }
+    })
     it('adds fcm_devices.push_key to a V23 database and keeps existing rows', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-'))
         tempDirs.push(dir)
@@ -41,7 +67,7 @@ describe('schema migrations through v31', () => {
             expect(columns.some((col) => col.name === 'push_key')).toBe(true)
             const messageColumns = messageColumnsStatement.all() as Array<{ name: string }>
             expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
 
             // Existing Android rows survive with a NULL push key.
             const devices = migrated.fcm.getDevicesByNamespace('default')
@@ -91,7 +117,7 @@ describe('schema migrations through v31', () => {
             const version = versionStatement.get() as { user_version: number }
             const indexes = indexesStatement.all() as Array<{ name: string }>
             expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
                 'idx_messages_immediate_queued',
                 'idx_messages_future_scheduled_queued'

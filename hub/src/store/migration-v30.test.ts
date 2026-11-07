@@ -52,7 +52,7 @@ it('creates and backfills search tables when upgrading a base v30 database', () 
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(migrated.messages.searchContent('searchable', 'default')[0]?.sessionId).toBe(session.id)
         } finally { migrated.close() }
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
@@ -84,7 +84,7 @@ it('upgrades a genuine v26 schema without read-state or search table shortcuts',
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(migrated.sessions.getSession(session.id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
             migrated.messages.addMessage(session.id, {
                 role: 'user', content: { type: 'text', text: 'genuine v26 searchable text' }
@@ -96,4 +96,34 @@ it('upgrades a genuine v26 schema without read-state or search table shortcuts',
             expect(migrated.messages.searchContent('genuine v26', 'default')[0]?.sessionId).toBe(session.id)
         } finally { migrated.close() }
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
+})
+
+it('adds attachment tables when upgrading an unmodified v30 database', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-attachment-migration-v31-'))
+    try {
+        const path = join(dir, 'hub.db')
+        const initial = new Store(path)
+        initial.close()
+        const legacy = new Database(path)
+        legacy.exec(`
+            DROP TABLE attachment_creations;
+            DROP TABLE attachment_deletions;
+            DROP TABLE attachments;
+            PRAGMA user_version = 30;
+        `)
+        legacy.close()
+
+        const migrated = new Store(path)
+        try {
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const tables = internalDb.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('attachments', 'attachment_deletions', 'attachment_creations')"
+            ).all() as Array<{ name: string }>
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+            expect(tables.map((table) => table.name).sort()).toEqual([
+                'attachment_creations', 'attachment_deletions', 'attachments'
+            ])
+            expect(version.user_version).toBe(32)
+        } finally { migrated.close() }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
 })

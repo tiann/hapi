@@ -45,6 +45,7 @@ export class SharedCodexProjection {
     // Unlike transcript emission, title side effects survive reset/replay.
     private readonly pendingTitles = new Map<string, string>();
     private readonly completedTitles = new Set<string>();
+    private latestMessageLocalIdValue: string | undefined;
     private titleRevision = 0;
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
     private summaryThread: unknown;
@@ -57,11 +58,24 @@ export class SharedCodexProjection {
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
+    latestMessageLocalId(): string | undefined { return this.latestMessageLocalIdValue; }
+    firstMessageLocalIdForTurn(turnId: string): string | undefined {
+        return [...this.turns].find(([, mappedTurnId]) => mappedTurnId === turnId)?.[0];
+    }
+    firstMessageLocalIdAfterTurn(turnId: string): string | undefined {
+        let foundTurn = false;
+        for (const [id, mappedTurnId] of this.turns) {
+            if (foundTurn && mappedTurnId !== turnId) return id;
+            if (mappedTurnId === turnId) foundTurn = true;
+        }
+        return undefined;
+    }
     reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
     private send(body: Record<string, unknown>, key: string): void {
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
         const id = `codex:${this.threadId}:${key}`;
+        if (!this.parentThreadId) this.latestMessageLocalIdValue = id;
         this.session.sendAgentMessage(this.parentThreadId && !String(body.type).startsWith('agent-run-') ? {
             type: 'agent-run-trace', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`, message: { ...body, id }, id,
             scope: { role: 'child', threadId: this.threadId, parentThreadId: this.parentThreadId }, scope_role: 'child'
@@ -139,6 +153,7 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
+                this.latestMessageLocalIdValue = id;
                 const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
                 if (turnId) this.turns.set(id, turnId);
                 await this.committed(id);
