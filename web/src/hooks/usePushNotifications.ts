@@ -31,6 +31,19 @@ const PUSH_VAPID_KEY_STORAGE = 'hapi.push.vapidKey'
 const PUSH_DISABLED_STORAGE = 'hapi.push.disabled'
 const PUSH_SUBSCRIPTION_CHANGED = 'hapi.push.subscriptionChanged'
 
+// Subscription hooks are mounted independently in the app and settings.
+// A later unsubscribe invalidates an earlier recovery, even while the hub
+// request is in flight. Registrations are ordered so a stale registration's
+// cleanup cannot remove a newer registration for the same endpoint.
+let unsubscribeVersion = 0
+let registrationTail: Promise<void> = Promise.resolve()
+
+function queueRegistration<T>(work: () => Promise<T>): Promise<T> {
+    const result = registrationTail.then(work)
+    registrationTail = result.then(() => {}, () => {})
+    return result
+}
+
 function notifySubscriptionChanged(): void {
     window.dispatchEvent(new Event(PUSH_SUBSCRIPTION_CHANGED))
 }
@@ -134,10 +147,12 @@ export function usePushNotifications(api: ApiClient | null) {
             return false
         }
 
+        const version = unsubscribeVersion
         try {
             const registration = await navigator.serviceWorker.ready
             const existing = await registration.pushManager.getSubscription()
             const { publicKey } = await api.getPushVapidPublicKey()
+            if (version !== unsubscribeVersion) return false
             const applicationServerKey = base64UrlToUint8Array(publicKey).buffer as ArrayBuffer
             // A subscription created against a previous hub or VAPID key can
             // never receive notifications from the current hub. Detect the
@@ -147,6 +162,7 @@ export function usePushNotifications(api: ApiClient | null) {
                 const staleEndpoint = existing.endpoint
                 const unsubscribed = await existing.unsubscribe()
                 if (!unsubscribed) return false
+                if (version !== unsubscribeVersion) return false
                 // Prune the obsolete endpoint from the hub so it stops
                 // receiving failed sends (VapidPkHashMismatch) for a
                 // subscription that can no longer be reached.
@@ -165,6 +181,12 @@ export function usePushNotifications(api: ApiClient | null) {
                     userVisibleOnly: true,
                     applicationServerKey
                 })
+                if (version !== unsubscribeVersion) {
+                    // A disable may have run before the browser finished
+                    // creating this subscription.
+                    if (pushNotificationsDisabled()) await subscription.unsubscribe()
+                    return false
+                }
             }
 
             const json = subscription.toJSON()
@@ -172,22 +194,29 @@ export function usePushNotifications(api: ApiClient | null) {
             if (!json.endpoint || !keys?.p256dh || !keys.auth) {
                 return false
             }
+            const endpoint = json.endpoint
+            const { p256dh, auth } = keys
 
-            await api.subscribePushNotifications({
-                endpoint: json.endpoint,
-                keys: {
-                    p256dh: keys.p256dh,
-                    auth: keys.auth
+            return await queueRegistration(async () => {
+                if (version !== unsubscribeVersion) return false
+                await api.subscribePushNotifications({
+                    endpoint,
+                    keys: { p256dh, auth }
+                })
+                if (version !== unsubscribeVersion) {
+                    // The delete may have reached the hub before this older
+                    // registration. Remove it again before newer registrations.
+                    if (pushNotificationsDisabled()) {
+                        await api.unsubscribePushNotifications({ endpoint })
+                    }
+                    return false
                 }
+                // Persist the key only after the hub registration succeeds.
+                writeStoredVapidKey(publicKey)
+                setPushNotificationsDisabled(false)
+                setIsSubscribed(true)
+                return true
             })
-            // Only record the key after the hub registration succeeded. A
-            // failed registration must leave the previous key in place so the
-            // next load retries the replacement instead of reusing a
-            // subscription the hub never learned about.
-            writeStoredVapidKey(publicKey)
-            setPushNotificationsDisabled(false)
-            setIsSubscribed(true)
-            return true
         } catch (error) {
             console.error('[PushNotifications] Failed to subscribe:', error)
             return false
@@ -201,6 +230,7 @@ export function usePushNotifications(api: ApiClient | null) {
             return false
         }
 
+        unsubscribeVersion += 1
         try {
             const registration = await navigator.serviceWorker.ready
             const subscription = await registration.pushManager.getSubscription()
