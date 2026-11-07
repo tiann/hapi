@@ -1104,6 +1104,8 @@ export default {
   'settings.display.activeSessionsOnly.desc': '在侧边栏隐藏非活跃会话；当前打开的会话仍会保留显示。',
   'settings.display.pinInProgressSessions': '置顶进行中会话',
   'settings.display.pinInProgressSessions.desc': '将未置顶的已连接会话移到项目文件夹上方的分区：先运行中和待处理，再是安静的活跃会话（已执行完但仍在连接）。全局置顶仍在其上。关闭后全部保留在目录分组中。',
+  'settings.display.keepUnreadSessionsVisible': '保持未读会话可见',
+  'settings.display.keepUnreadSessionsVisible.desc': '折叠的项目会在标题下列出其未读会话，会话预览数量限制也不会隐藏未读行。关闭后，折叠的项目将完全折叠，预览数量限制也适用于未读行。',
   'settings.display.appBadge': '任务栏未读角标',
   'settings.notifications.title': '通知',
   'settings.notifications.push': '在此设备上接收推送通知',

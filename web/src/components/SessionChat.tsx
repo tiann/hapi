@@ -64,7 +64,7 @@ import {
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
-import { isSteeringSupportedForSession } from '@hapi/protocol'
+import { hasActiveSteeringTurn } from '@hapi/protocol'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
@@ -2211,10 +2211,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 }}
                                 deliveryActive={props.session.active && props.session.thinking}
                                 canSteer={props.session.active && props.session.thinking
-                                    && isSteeringSupportedForSession(props.session.metadata)
-                                    && (agentFlavor === 'pi'
-                                        ? props.session.thinking
-                                        : props.session.agentState?.steeringActive === true)
+                                    && hasActiveSteeringTurn(props.session)
                                     && !controlledByUser}
                             />
                         </div>

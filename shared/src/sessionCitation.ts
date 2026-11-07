@@ -79,13 +79,14 @@ export const LIST_PEERS_TOOL_DESCRIPTION =
 
 /** Shared delivery guidance for the peer MCP schemas, descriptions, and prompts. */
 export const PEER_DELIVERY_MODE_DESCRIPTION =
-    'auto (default): steer an active Codex turn when steering is available; otherwise queue. ' +
-    'Auto currently queues for other agent flavors. Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
+    'auto (default): steer an active turn when the target supports steering and is ready; otherwise queue. Inactive peers require explicit wake=true and then receive a queued message. ' +
+    'Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
+    'If steering cannot be confirmed after acceptance, auto retains the same single accepted message without resending; accepted does not confirm consumption. ' +
     'queue: explicitly defer non-urgent updates that can wait instead of steering. ' +
     'steer: use for important, time-sensitive findings the peer needs to know now, not after finishing its current turn ' +
     '(e.g. a correction that invalidates its assumptions, a blocker, or a result that changes its next action). ' +
     'State why the finding matters now and what the peer should adjust. ' +
-    'Steer requires insertion into an active Claude, Pi, Codex, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
+    'Steer requires insertion into an active Claude, Pi, Codex, OpenCode, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
     'Steering does not abort the current turn or guarantee an immediate response. ' +
     'If send or steer is unconfirmed after submission, inspect the target before retrying; do not resend automatically.'
 
