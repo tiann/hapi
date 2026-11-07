@@ -682,7 +682,10 @@ export class AcpSdkBackend implements AgentBackend {
     async prompt(
         sessionId: string,
         content: PromptContent[],
-        onUpdate: (msg: AgentMessage) => void
+        onUpdate: (msg: AgentMessage) => void,
+        // prompt() waits for earlier output before it sends and for late output
+        // after the answer; callers timing the agent itself need both moments.
+        timing?: { onSent?: () => void; onAnswered?: () => void }
     ): Promise<void> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
@@ -722,12 +725,15 @@ export class AcpSdkBackend implements AgentBackend {
             this.promptRequestInFlight = true;
             let response: unknown;
             try {
-                response = await this.transport.sendRequest('session/prompt', {
+                const request = this.transport.sendRequest('session/prompt', {
                     sessionId,
                     prompt: content
                 }, { timeoutMs: Infinity });
+                timing?.onSent?.();
+                response = await request;
             } finally {
                 this.promptRequestInFlight = false;
+                timing?.onAnswered?.();
             }
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
@@ -848,8 +854,14 @@ export class AcpSdkBackend implements AgentBackend {
      * Separates transport dispatch from prompt completion so callers can commit
      * queue state only after stdin accepted the request without waiting for the turn.
      */
-    beginSoftSteerPrompt(sessionId: string, content: PromptContent[]): {
+    beginSoftSteerPrompt(sessionId: string, content: PromptContent[], options?: {
+        // Agents that answer each request with its own share (Antigravity)
+        // need every response's usage to total the turn.
+        onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+    }): {
         dispatched: Promise<void>;
+        /** Settles when the agent answers, before late output is drained. */
+        answered: Promise<void>;
         /** Resolves with the ACP stopReason (`cancelled` after session/cancel). */
         completed: Promise<string | null>;
     } {
@@ -869,6 +881,16 @@ export class AcpSdkBackend implements AgentBackend {
         const completed = (async () => {
             try {
                 const response = await request.completed;
+                const usage = options?.onUsage ? this.extractPromptUsage(response) : null;
+                if (usage) {
+                    const context = this.readLatestUsageUpdate();
+                    options?.onUsage?.({
+                        type: 'usage',
+                        ...usage,
+                        contextTokens: context?.contextTokens,
+                        contextWindow: context?.contextWindow
+                    });
+                }
                 return isObject(response) ? asString(response.stopReason) : null;
             } finally {
                 try {
@@ -889,7 +911,8 @@ export class AcpSdkBackend implements AgentBackend {
             logger.warn('[ACP] soft-steer session/prompt failed', error);
         });
 
-        return { dispatched: request.dispatched, completed };
+        const answered = request.completed.then(() => {}, () => {});
+        return { dispatched: request.dispatched, answered, completed };
     }
 
     async respondToPermission(

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import agySteeredTurn from './__fixtures__/agy-steered-turn.json';
 import type { AgentMessage } from '@/agent/types';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
@@ -769,6 +770,31 @@ describe('AcpSdkBackend', () => {
         ]);
     });
 
+    it('reports when the prompt is sent and answered, apart from its own waits', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const events: string[] = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: () => Promise<unknown>; close: () => Promise<void> } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => { events.push('wait'); };
+        backendInternal.transport = {
+            sendRequest: async () => {
+                events.push('request');
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        await backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
+            onSent: () => events.push('sent'),
+            onAnswered: () => events.push('answered')
+        });
+        events.push('resolved');
+
+        expect(events).toEqual(['wait', 'request', 'sent', 'answered', 'wait', 'resolved']);
+    });
+
     it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 40;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
@@ -1439,6 +1465,38 @@ describe('AcpSdkBackend', () => {
         }]);
     });
 
+    it('beginSoftSteerPrompt settles answered before it drains late output', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const events: string[] = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+        };
+        backendInternal.isProcessingMessage = true;
+        let releaseDrain!: () => void;
+        backendInternal.waitForSessionUpdateQuiet = () => new Promise((resolve) => { releaseDrain = resolve; });
+        backendInternal.drainLateBuffers = async () => {};
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({ dispatched: Promise.resolve(), completed: Promise.resolve({ stopReason: 'end_turn' }) }),
+            close: async () => {}
+        };
+
+        const steer = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]);
+        void steer.completed.then(() => events.push('completed'));
+        await steer.answered;
+        events.push('answered');
+        await vi.waitFor(() => expect(releaseDrain).toBeTypeOf('function'));
+        expect(events).toEqual(['answered']);
+        releaseDrain();
+        await steer.completed;
+        expect(events).toEqual(['answered', 'completed']);
+    });
+
     it('beginSoftSteerPrompt drains buffered output after completion', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const backendInternal = backend as unknown as {
@@ -1473,6 +1531,53 @@ describe('AcpSdkBackend', () => {
         await backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot now' }]).completed;
 
         expect(events).toEqual(['request', 'quiet', 'drain', 'late', 'drain']);
+    });
+
+    it('beginSoftSteerPrompt reports the steered prompt usage with the latest context size', async () => {
+        // agy 1.5.2 answers each request of a steered turn with only its own share.
+        const steerResponse = agySteeredTurn.frames
+            .filter((frame) => frame.direction === 'agy->client' && 'result' in frame.message)
+            .map((frame) => (frame.message as { result: unknown }).result)
+            .at(-1);
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: (method: string, params: unknown, options?: { timeoutMs?: number }) => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+            latestUsageUpdate: { contextTokens: number | undefined; contextWindow: number | undefined } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.latestUsageUpdate = { contextTokens: 15_300, contextWindow: 1_000_000 };
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({ dispatched: Promise.resolve(), completed: Promise.resolve(steerResponse) }),
+            close: async () => {}
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {};
+        backendInternal.drainLateBuffers = async () => {};
+        const usages: unknown[] = [];
+
+        const stopReason = await backend.beginSoftSteerPrompt(
+            'session-1',
+            [{ type: 'text', text: 'pivot now' }],
+            { onUsage: (usage) => usages.push(usage) }
+        ).completed;
+
+        expect(stopReason).toBe('end_turn');
+        expect(usages).toEqual([{
+            type: 'usage',
+            inputTokens: 15286,
+            outputTokens: 14,
+            totalTokens: 15300,
+            thoughtTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextTokens: 15_300,
+            contextWindow: 1_000_000
+        }]);
     });
 
     it('beginSoftSteerPrompt returns a pending promise without blocking the caller', async () => {
