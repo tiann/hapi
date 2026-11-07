@@ -26,6 +26,12 @@ function stubEngine(store: Store): SyncEngine {
         getSession: (id) => sessions.get(id) ?? null,
     }
     ;(engine as unknown as { _sessions: typeof sessions })._sessions = sessions
+    // Identity redirects unless a test overrides (ownership-transfer coverage).
+    ;(engine as unknown as { resolveAttachedJobSessionId: (id: string) => string })
+        .resolveAttachedJobSessionId = (id) => id
+    ;(engine as unknown as {
+        resolveAttachedJobKey: (_a: string, _b: string, key: string) => string
+    }).resolveAttachedJobKey = (_a, _b, key) => key
     return engine
 }
 
@@ -154,6 +160,137 @@ describe('SyncEngine job terminal wake scheduling (#1489)', () => {
         expect(sendCalls).toEqual(['hapi-job-wake:batch:run-offline'])
         expect(store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId).toBe('run-offline')
 
+        store.close()
+    })
+
+    it('requeues pending wakes after rapid-retry budget on machine recovery', async () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('wake-budget', { path: '/tmp', flavor: 'cursor' }, null, 'default')
+        const engine = stubEngine(store)
+        ;(engine as unknown as { jobWakeRetryBaseMs: number }).jobWakeRetryBaseMs = 5
+        ;(engine as unknown as { constructor: { JOB_WAKE_RETRY_MAX_ATTEMPTS: number } })
+        // Cap via prototype static — SyncEngine.JOB_WAKE_RETRY_MAX_ATTEMPTS is private static 8;
+        // force budget exhaustion quickly by failing every resume and waiting.
+        const sessions = (engine as unknown as { _sessions: Map<string, { id: string; namespace: string; active: boolean }> })._sessions
+        sessions.set(session.id, { id: session.id, namespace: 'default', active: false })
+
+        let resumeCalls = 0
+        const sendCalls: string[] = []
+        ;(engine as unknown as {
+            resumeSession: () => Promise<{ type: 'error'; code: string; message: string }>
+        }).resumeSession = async () => {
+            resumeCalls += 1
+            return { type: 'error', code: 'no_machine_online', message: 'offline' }
+        }
+        ;(engine as unknown as {
+            sendMessage: (id: string, payload: { localId?: string | null }) => Promise<void>
+        }).sendMessage = async (_id, payload) => {
+            sendCalls.push(payload.localId ?? '')
+        }
+        ;(engine as unknown as {
+            resolveAttachedJobSessionId: (id: string) => string
+            resolveAttachedJobKey: (_a: string, _b: string, key: string) => string
+        }).resolveAttachedJobSessionId = (id) => id
+        ;(engine as unknown as {
+            resolveAttachedJobKey: (_a: string, _b: string, key: string) => string
+        }).resolveAttachedJobKey = (_a, _b, key) => key
+
+        engine.upsertSessionJob(session.id, 'batch', {
+            label: 'batch',
+            status: 'completed',
+            runId: 'run-budget',
+            wakeOnTerminal: true,
+        })
+
+        for (let i = 0; i < 200 && resumeCalls < 9; i++) {
+            await new Promise((r) => setTimeout(r, 20))
+        }
+        expect(resumeCalls).toBeGreaterThanOrEqual(8)
+        expect(sendCalls).toHaveLength(0)
+        expect(store.sessionJobs.listPendingTerminalWakes().map((j) => j.key)).toContain('batch')
+
+        // Recovery: resume succeeds; requeue scans pending.
+        ;(engine as unknown as {
+            resumeSession: (id: string) => Promise<{ type: 'success'; sessionId: string }>
+        }).resumeSession = async (id) => {
+            resumeCalls += 1
+            sessions.set(id, { id, namespace: 'default', active: true })
+            return { type: 'success', sessionId: id }
+        }
+        engine.requeuePendingJobTerminalWakes()
+        for (let i = 0; i < 80 && sendCalls.length === 0; i++) {
+            await new Promise((r) => setTimeout(r, 20))
+        }
+        expect(sendCalls).toEqual(['hapi-job-wake:batch:run-budget'])
+        store.close()
+    })
+
+    it('follows job-owner redirect when releasing and retrying a deferred wake', async () => {
+        const store = new Store(':memory:')
+        const source = store.sessions.getOrCreateSession('wake-src', { path: '/tmp', flavor: 'cursor' }, null, 'default')
+        const target = store.sessions.getOrCreateSession('wake-dst', { path: '/tmp', flavor: 'cursor' }, null, 'default')
+        const engine = stubEngine(store)
+        ;(engine as unknown as { jobWakeRetryBaseMs: number }).jobWakeRetryBaseMs = 15
+        const sessions = (engine as unknown as { _sessions: Map<string, { id: string; namespace: string; active: boolean; metadata?: Record<string, unknown> }> })._sessions
+        sessions.set(source.id, {
+            id: source.id,
+            namespace: 'default',
+            active: false,
+            metadata: { jobsTransferredToSessionId: target.id },
+        })
+        sessions.set(target.id, { id: target.id, namespace: 'default', active: false })
+
+        // Job lives on target (post-transfer); wake scheduled against source id.
+        store.sessionJobs.upsert(target.id, 'batch', {
+            label: 'batch',
+            status: 'completed',
+            runId: 'run-xfer',
+            wakeOnTerminal: true,
+        })
+
+        let resumeCalls = 0
+        const sendCalls: Array<{ sessionId: string; localId: string }> = []
+        ;(engine as unknown as {
+            resumeSession: (id: string) => Promise<
+                | { type: 'success'; sessionId: string }
+                | { type: 'error'; code: string; message: string }
+            >
+        }).resumeSession = async (id) => {
+            resumeCalls += 1
+            if (resumeCalls === 1) {
+                return { type: 'error', code: 'no_machine_online', message: 'offline' }
+            }
+            sessions.set(id, { ...(sessions.get(id) ?? { id, namespace: 'default', active: true }), active: true })
+            return { type: 'success', sessionId: id }
+        }
+        ;(engine as unknown as {
+            sendMessage: (id: string, payload: { localId?: string | null }) => Promise<void>
+        }).sendMessage = async (id, payload) => {
+            sendCalls.push({ sessionId: id, localId: payload.localId ?? '' })
+        }
+        ;(engine as unknown as {
+            resolveAttachedJobSessionId: (id: string) => string
+        }).resolveAttachedJobSessionId = (id) => (id === source.id ? target.id : id)
+        ;(engine as unknown as {
+            resolveAttachedJobKey: (_a: string, _b: string, key: string) => string
+        }).resolveAttachedJobKey = (_a, _b, key) => key
+
+        // Claim against redirected owner via maybeSchedule from source id.
+        ;(engine as unknown as {
+            maybeScheduleJobTerminalWake: (sessionId: string, jobKey: string) => void
+        }).maybeScheduleJobTerminalWake(source.id, 'batch')
+
+        for (let i = 0; i < 40 && store.sessionJobs.get(target.id, 'batch')?.wakeEmittedRunId; i++) {
+            await new Promise((r) => setTimeout(r, 10))
+        }
+        // First attempt claimed+released on target (redirected).
+        expect(store.sessionJobs.get(target.id, 'batch')?.wakeEmittedRunId).toBeUndefined()
+
+        for (let i = 0; i < 80 && sendCalls.length === 0; i++) {
+            await new Promise((r) => setTimeout(r, 20))
+        }
+        expect(sendCalls).toEqual([{ sessionId: target.id, localId: 'hapi-job-wake:batch:run-xfer' }])
+        expect(store.sessionJobs.get(target.id, 'batch')?.wakeEmittedRunId).toBe('run-xfer')
         store.close()
     })
 })

@@ -98,4 +98,32 @@ describe('session job terminal wake claim (#1489)', () => {
         expect(store.sessionJobs.get(session.id, 'beets')?.wakeEmittedRunId).toBe('run-retry')
         store.close()
     })
+
+    it('lists pending terminal wakes when claim is absent or stale', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('test', { path: '/tmp' }, null, 'default')
+        store.sessionJobs.upsert(session.id, 'pending', {
+            label: 'pending',
+            status: 'completed',
+            runId: 'run-p',
+            wakeOnTerminal: true,
+        })
+        store.sessionJobs.upsert(session.id, 'done', {
+            label: 'done',
+            status: 'completed',
+            runId: 'run-d',
+            wakeOnTerminal: true,
+        })
+        store.sessionJobs.claimTerminalWake(session.id, 'done')
+        store.sessionJobs.upsert(session.id, 'off', {
+            label: 'off',
+            status: 'completed',
+            runId: 'run-o',
+            wakeOnTerminal: false,
+        })
+
+        const pending = store.sessionJobs.listPendingTerminalWakes()
+        expect(pending.map((j) => j.key)).toEqual(['pending'])
+        store.close()
+    })
 })

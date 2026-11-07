@@ -11,6 +11,7 @@ import {
     patchSessionJob,
     claimSessionJobTerminalWake,
     releaseSessionJobTerminalWake,
+    listPendingTerminalWakes,
     toAttachedJob,
     transferSessionJobs,
     upsertSessionJob,
@@ -70,6 +71,11 @@ export class SessionJobsStore {
     /** Release a provisional wake claim after a recoverable delivery failure. */
     releaseTerminalWake(sessionId: string, jobKey: string, expectedClaimId: string): boolean {
         return releaseSessionJobTerminalWake(this.db, sessionId, jobKey, expectedClaimId)
+    }
+
+    /** Terminal + opt-in jobs still awaiting wake delivery for their current run. */
+    listPendingTerminalWakes(): StoredSessionJob[] {
+        return listPendingTerminalWakes(this.db)
     }
 
     delete(

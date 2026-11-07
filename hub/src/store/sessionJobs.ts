@@ -366,6 +366,25 @@ export function releaseSessionJobTerminalWake(
     return result.changes > 0
 }
 
+/**
+ * Opted-in terminal jobs whose wake has not been delivered for the current
+ * run (claim absent or stale). Used to requeue after runner recovery / hub start.
+ */
+export function listPendingTerminalWakes(db: Database): StoredSessionJob[] {
+    const rows = db.prepare(
+        `SELECT ${JOB_COLUMNS}
+         FROM session_jobs
+         WHERE wake_on_terminal = 1
+           AND status IN ('completed', 'failed')
+           AND (
+             wake_emitted_run_id IS NULL
+             OR wake_emitted_run_id != COALESCE(run_id, 'norun:' || CAST(started_at AS TEXT))
+           )
+         ORDER BY updated_at ASC, job_key ASC`
+    ).all() as DbJobRow[]
+    return rows.map(toStored)
+}
+
 export type DeleteSessionJobResult =
     | { outcome: 'deleted' }
     | { outcome: 'not-found' }

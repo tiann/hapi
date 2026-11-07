@@ -235,6 +235,8 @@ export class SyncEngine {
     /** Pending #1489 wake retries after recoverable pre-delivery failures. */
     private readonly jobTerminalWakeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
     private readonly jobTerminalWakeRetryAttempts = new Map<string, number>()
+    /** Debounced scan of DB-pending wakes after runner recovery / hub start. */
+    private jobWakeRequeueTimer: ReturnType<typeof setTimeout> | null = null
     /** Base delay for wake retries; tests may lower this. */
     private jobWakeRetryBaseMs = 1_000
     private static readonly JOB_WAKE_RETRY_MAX_ATTEMPTS = 8
@@ -328,6 +330,9 @@ export class SyncEngine {
         this.sessionCache.closeTurnsLeftOpen()
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
+        // Hub start: undelivered opt-in wakes survive process restart as eligible
+        // SQLite rows — requeue after caches are warm.
+        this.requeuePendingJobTerminalWakes()
     }
 
     setHubOwnerUserId(ownerUserId: string | number): void {
@@ -341,6 +346,15 @@ export class SyncEngine {
             clearInterval(this.inactivityTimer)
             this.inactivityTimer = null
         }
+        if (this.jobWakeRequeueTimer) {
+            clearTimeout(this.jobWakeRequeueTimer)
+            this.jobWakeRequeueTimer = null
+        }
+        for (const timer of this.jobTerminalWakeRetryTimers.values()) {
+            clearTimeout(timer)
+        }
+        this.jobTerminalWakeRetryTimers.clear()
+        this.jobTerminalWakeRetryAttempts.clear()
     }
 
     subscribe(listener: SyncEventListener): () => void {
@@ -1131,6 +1145,20 @@ export class SyncEngine {
         return `${sessionId}\0${jobKey}`
     }
 
+    /**
+     * Follow merge/OpenCode job-owner + key redirects before claim/release/retry
+     * so a deferred wake does not abandon a transferred row.
+     */
+    private resolveJobWakeLocation(
+        sessionId: string,
+        jobKey: string,
+        namespace: string
+    ): { sessionId: string; jobKey: string; namespace: string } {
+        const ownerId = this.resolveAttachedJobSessionId(sessionId, namespace)
+        const resolvedKey = this.resolveAttachedJobKey(sessionId, ownerId, jobKey, namespace)
+        return { sessionId: ownerId, jobKey: resolvedKey, namespace }
+    }
+
     private clearJobTerminalWakeRetry(sessionId: string, jobKey: string): void {
         const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
         const timer = this.jobTerminalWakeRetryTimers.get(key)
@@ -1143,14 +1171,23 @@ export class SyncEngine {
 
     /**
      * After a recoverable pre-delivery failure, drop the provisional claim and
-     * retry once a runner may be back. Caps attempts so a permanently offline
-     * machine does not spin forever.
+     * retry with capped rapid backoff. Exhausted budgets leave the row eligible
+     * in SQLite; {@link requeuePendingJobTerminalWakes} picks them up when a
+     * runner returns (or on hub start).
      */
-    private scheduleJobTerminalWakeRetry(sessionId: string, jobKey: string): void {
+    private scheduleJobTerminalWakeRetry(
+        sessionId: string,
+        jobKey: string,
+        namespace: string
+    ): void {
         const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
         const attempt = (this.jobTerminalWakeRetryAttempts.get(key) ?? 0) + 1
         if (attempt > SyncEngine.JOB_WAKE_RETRY_MAX_ATTEMPTS) {
-            console.warn('[session-job-wake] retry budget exhausted', { sessionId, jobKey, attempt })
+            console.warn('[session-job-wake] rapid retry budget exhausted; awaiting runner recovery', {
+                sessionId,
+                jobKey,
+                attempt,
+            })
             this.clearJobTerminalWakeRetry(sessionId, jobKey)
             return
         }
@@ -1160,9 +1197,38 @@ export class SyncEngine {
         const delayMs = Math.min(30_000, this.jobWakeRetryBaseMs * (2 ** (attempt - 1)))
         const timer = setTimeout(() => {
             this.jobTerminalWakeRetryTimers.delete(key)
-            this.maybeScheduleJobTerminalWake(sessionId, jobKey)
+            const loc = this.resolveJobWakeLocation(sessionId, jobKey, namespace)
+            this.maybeScheduleJobTerminalWake(loc.sessionId, loc.jobKey)
         }, delayMs)
         this.jobTerminalWakeRetryTimers.set(key, timer)
+    }
+
+    /**
+     * Re-claim opted-in terminal wakes that are still undelivered. Called on
+     * hub start and when a machine flips offline→online. Resets rapid-retry
+     * budgets so a long outage can still complete after recovery.
+     */
+    requeuePendingJobTerminalWakes(): void {
+        if (this.jobWakeRequeueTimer) return
+        this.jobWakeRequeueTimer = setTimeout(() => {
+            this.jobWakeRequeueTimer = null
+            this.jobTerminalWakeRetryAttempts.clear()
+            let pending: import('../store/types').StoredSessionJob[] = []
+            try {
+                pending = this.store.sessionJobs.listPendingTerminalWakes()
+            } catch (error) {
+                console.warn('[session-job-wake] list pending failed', {
+                    error: error instanceof Error ? error.message : String(error),
+                })
+                return
+            }
+            for (const job of pending) {
+                const session = this.sessionCache.getSession(job.sessionId)
+                if (!session) continue
+                const loc = this.resolveJobWakeLocation(job.sessionId, job.key, session.namespace)
+                this.maybeScheduleJobTerminalWake(loc.sessionId, loc.jobKey)
+            }
+        }, 250)
     }
 
     /**
@@ -1171,14 +1237,19 @@ export class SyncEngine {
      * a new terminal claim. Claim is provisional until send persists.
      */
     private maybeScheduleJobTerminalWake(sessionId: string, jobKey: string): void {
-        const claimed = this.store.sessionJobs.claimTerminalWake(sessionId, jobKey)
+        const session = this.sessionCache.getSession(sessionId)
+        const namespace = session?.namespace
+        const loc = namespace
+            ? this.resolveJobWakeLocation(sessionId, jobKey, namespace)
+            : { sessionId, jobKey }
+        const claimed = this.store.sessionJobs.claimTerminalWake(loc.sessionId, loc.jobKey)
         if (!claimed || !isTerminalJobStatus(claimed.status)) {
             return
         }
-        void this.deliverJobTerminalWake(sessionId, claimed).catch((error) => {
+        void this.deliverJobTerminalWake(loc.sessionId, claimed, namespace).catch((error) => {
             console.warn('[session-job-wake] deliver failed', {
-                sessionId,
-                jobKey,
+                sessionId: loc.sessionId,
+                jobKey: loc.jobKey,
                 status: claimed.status,
                 error: error instanceof Error ? error.message : String(error),
             })
@@ -1192,26 +1263,50 @@ export class SyncEngine {
      */
     private async deliverJobTerminalWake(
         sessionId: string,
-        job: import('../store/types').StoredSessionJob
+        job: import('../store/types').StoredSessionJob,
+        namespaceHint?: string
     ): Promise<void> {
         const claimId = job.runId ?? `norun:${job.startedAt}`
+        let ownerSessionId = sessionId
+        let ownerJobKey = job.key
+        let namespace = namespaceHint
+
         const releaseAndRetry = (info: Record<string, unknown>): void => {
-            console.warn('[session-job-wake] delivery deferred', { sessionId, jobKey: job.key, ...info })
-            this.store.sessionJobs.releaseTerminalWake(sessionId, job.key, claimId)
-            this.scheduleJobTerminalWakeRetry(sessionId, job.key)
+            const ns = namespace
+                ?? this.sessionCache.getSession(ownerSessionId)?.namespace
+                ?? this.sessionCache.getSession(sessionId)?.namespace
+            if (ns) {
+                const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, ns)
+                ownerSessionId = loc.sessionId
+                ownerJobKey = loc.jobKey
+                namespace = loc.namespace
+            }
+            console.warn('[session-job-wake] delivery deferred', {
+                sessionId: ownerSessionId,
+                jobKey: ownerJobKey,
+                ...info,
+            })
+            this.store.sessionJobs.releaseTerminalWake(ownerSessionId, ownerJobKey, claimId)
+            // Also clear a stale provisional claim left on the pre-transfer row.
+            if (ownerSessionId !== sessionId || ownerJobKey !== job.key) {
+                this.store.sessionJobs.releaseTerminalWake(sessionId, job.key, claimId)
+            }
+            if (namespace) {
+                this.scheduleJobTerminalWakeRetry(ownerSessionId, ownerJobKey, namespace)
+            }
         }
 
         try {
-            const session = this.sessionCache.getSession(sessionId)
+            const session = this.sessionCache.getSession(ownerSessionId)
             if (!session) {
                 releaseAndRetry({ reason: 'session_missing' })
                 return
             }
-            const namespace = session.namespace
-            let targetId = sessionId
+            namespace = session.namespace
+            let targetId = ownerSessionId
 
             if (!session.active) {
-                const resume = await this.resumeSession(sessionId, namespace)
+                const resume = await this.resumeSession(ownerSessionId, namespace)
                 if (resume.type !== 'success') {
                     releaseAndRetry({
                         reason: 'resume_failed',
@@ -1221,6 +1316,10 @@ export class SyncEngine {
                     return
                 }
                 targetId = resume.sessionId
+                // Resume/merge may have moved the job — follow redirects before release/send.
+                const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, namespace)
+                ownerSessionId = loc.sessionId
+                ownerJobKey = loc.jobKey
                 const becameActive = await waitUntilSessionActive({
                     getActive: () => this.sessionCache.getSession(targetId)?.active === true,
                     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -1264,23 +1363,29 @@ export class SyncEngine {
                         return
                     }
                     targetId = resume.sessionId
+                    const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, namespace)
+                    ownerSessionId = loc.sessionId
+                    ownerJobKey = loc.jobKey
                 }
             }
 
+            // Prefer the live row's label/status/detail after any mid-flight transfer.
+            const liveJob = this.store.sessionJobs.get(ownerSessionId, ownerJobKey) ?? job
             const text = buildJobTerminalWakePrompt({
-                key: job.key,
-                label: job.label,
-                status: job.status,
-                ...(job.detail !== undefined ? { detail: job.detail } : {}),
-                ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
-                ...(job.runId !== undefined ? { runId: job.runId } : {}),
+                key: liveJob.key,
+                label: liveJob.label,
+                status: liveJob.status,
+                ...(liveJob.detail !== undefined ? { detail: liveJob.detail } : {}),
+                ...(liveJob.wakePrompt !== undefined ? { wakePrompt: liveJob.wakePrompt } : {}),
+                ...(liveJob.runId !== undefined ? { runId: liveJob.runId } : {}),
             })
             // Run-scoped localId so a rare double-send after persist dedupes.
             await this.sendMessage(targetId, {
                 text,
                 sentFrom: 'webapp',
-                localId: `hapi-job-wake:${job.key}:${claimId}`,
+                localId: `hapi-job-wake:${ownerJobKey}:${claimId}`,
             })
+            this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
             this.clearJobTerminalWakeRetry(sessionId, job.key)
         } catch (error) {
             releaseAndRetry({
@@ -1428,7 +1533,13 @@ export class SyncEngine {
     }
 
     handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
+        const wasActive = this.machineCache.getMachine(payload.machineId)?.active === true
         this.machineCache.handleMachineAlive(payload)
+        const nowActive = this.machineCache.getMachine(payload.machineId)?.active === true
+        if (!wasActive && nowActive) {
+            // Runner recovery: requeue wakes whose rapid-retry budget expired.
+            this.requeuePendingJobTerminalWakes()
+        }
     }
 
     /**
