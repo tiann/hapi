@@ -74,6 +74,15 @@ async function openStream(app: Hono<WebAppEnv>, query: string): Promise<Response
 }
 
 describe('GET /api/events replay', () => {
+    it('keeps live streams compressed when the browser accepts gzip', async () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const app = buildApp(manager)
+        const response = await app.request('/api/events?all=true', { headers: { 'Accept-Encoding': 'gzip, deflate' } })
+        expect(response.headers.get('Content-Encoding')).toBe('gzip')
+        manager.stop()
+        await response.body?.cancel()
+    })
+
     it('first connect gets a gap verdict and id-tagged live events', async () => {
         const manager = new SSEManager(0, new VisibilityTracker())
         const app = buildApp(manager)

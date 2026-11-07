@@ -51,21 +51,22 @@ export class SharedCodexProjection {
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
         private readonly readSummaryThread?: () => Promise<unknown>,
-        private readonly observeItem?: (threadId: string, item: unknown) => void) {
-        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
-        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        private readonly observeItem?: (threadId: string, item: unknown) => void,
+        private readonly committedHistory?: (ids: string[]) => Promise<void>) {
+        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
     reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
-    private send(body: Record<string, unknown>, key: string): void {
+    private send(body: Record<string, unknown>, key: string, consumed: Set<string>): void {
+        const id = `codex:${this.threadId}:${key}`;
+        consumed.add(id);
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
-        const id = `codex:${this.threadId}:${key}`;
         this.session.sendAgentMessage(this.parentThreadId && !String(body.type).startsWith('agent-run-') ? {
             type: 'agent-run-trace', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`, message: { ...body, id }, id,
             scope: { role: 'child', threadId: this.threadId, parentThreadId: this.parentThreadId }, scope_role: 'child'
-        } : { ...body, id }, id);
+        } : { ...body, id }, id, { acknowledgeConsumption: false });
     }
 
     private applyDisplayRename(title: string, revision: number): void {
@@ -96,26 +97,28 @@ export class SharedCodexProjection {
                 }
             }
         }
-        await this.project(method, params, modelAtReceipt);
+        const consumed = new Set<string>();
+        await this.project(method, params, modelAtReceipt, false, consumed);
         if (p.threadId === this.threadId && !this.parentThreadId) {
             const turn = record(p.turn);
             const turnId = string(turn.id);
             if (method === 'turn/started') this.roundDuration.start(turnId, receivedAt);
             if (method === 'turn/completed') {
                 const duration = this.roundDuration.finish(turnId, receivedAt, turn.status === 'completed');
-                if (duration) this.send(duration, `duration:${turnId}`);
+                if (duration) this.send(duration, `duration:${turnId}`, consumed);
             }
         }
+        if (consumed.size) this.session.emitMessagesConsumed([...consumed]);
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt: string | undefined, fromHistory: boolean, consumed: Set<string>): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
         const turnId = string(p.turnId) ?? string(record(p.turn).id);
         const send = (body: Record<string, unknown>, key: string) => this.send({
             ...body, ...(turnId ? { turn_id: turnId } : {})
-        }, key);
+        }, key, consumed);
         const asyncQuestions = asyncQuestionsForItem(this.threadId, item);
         if (asyncQuestions.length) {
             if (method === 'item/completed') {
@@ -126,8 +129,7 @@ export class SharedCodexProjection {
             }
             return;
         }
-        if (method === 'item/completed') this.observeItem?.(this.threadId, item);
-        // Settings may already describe the next turn by the time queued
+        if (method === 'item/completed') this.observeItem?.(this.threadId, item);        // Settings may already describe the next turn by the time queued
         // notifications are projected. Never attribute usage to that model.
         if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
             this.turnModels.set(turnId, modelAtReceipt);
@@ -139,14 +141,18 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
+                const previousTurn = this.turns.get(id);
                 const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
                 if (turnId) this.turns.set(id, turnId);
-                await this.committed(id);
+                if (!fromHistory || !this.committedHistory) await this.committed(id);
                 const text = inputText(item.content);
                 const replies = asyncQuestionReplies(text);
                 const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
-                if (displayText) this.session.sendUserMessage(displayText, undefined, id);
-                this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
+                if (displayText) this.session.sendUserMessage(displayText, undefined, id, { acknowledgeConsumption: false });
+                consumed.add(id);
+                const needsPoint = turnId && (!firstInTurn || firstInTurn === id)
+                    && !this.session.getMetadata()?.conversationHistoryPoints?.[id];
+                if (previousTurn !== turnId || needsPoint) this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
             }
@@ -250,6 +256,24 @@ export class SharedCodexProjection {
         if (record(thread).id === this.threadId) this.summaryThread = thread;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
+        const consumed = new Set<string>();
+        if (!this.parentThreadId && this.committedHistory) {
+            const ids = turns.flatMap(value => {
+                const items = record(value).items;
+                return (Array.isArray(items) ? items : []).flatMap(value => {
+                    const item = record(value);
+                    if (item.type !== 'userMessage') return [];
+                    const id = string(item.clientId ?? item.clientUserMessageId)
+                        ?? (string(item.id) ? `codex:${this.threadId}:user:${item.id}` : undefined);
+                    return id ? [id] : [];
+                });
+            });
+            // Persist consumption first, but acknowledge only after transcript
+            // packets: the Hub cannot mark an ID that has not been inserted yet.
+            await this.committedHistory(ids);
+            // Collect ACK IDs below in transcript order, so separate bounded
+            // packets cannot place every historical prompt ahead of its reply.
+        }
         const titleRevision = this.titleRevision;
         let latestTitle: string | undefined;
         for (const value of turns) {
@@ -262,7 +286,7 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                await this.project('item/started', params, undefined, true, consumed);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
@@ -275,10 +299,11 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    await this.project('item/completed', params, undefined, true, consumed);
                 }
             }
         }
+        if (consumed.size) this.session.emitMessagesConsumed([...consumed]);
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
         // and a replay must never replace an existing or newer display title.

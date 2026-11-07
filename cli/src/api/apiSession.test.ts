@@ -102,6 +102,7 @@ vi.mock('axios', () => ({
 }))
 
 import { ApiSessionClient, isExternalUserMessage, IncomingMessageFilter } from './apiSession'
+import { SharedCodexProjection } from '@/codex/shared/projection'
 
 function createSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -663,6 +664,66 @@ describe('ApiSessionClient lazy materialization', () => {
         await vi.waitFor(() => expect(archived).toBe(true))
         expect(client.getMetadata()?.archivedBy).toBe('hub')
         client.close()
+    })
+})
+
+describe('shared Codex projection consumption acknowledgements', () => {
+    it('bounds consumption packets while preserving ID order and delivery options', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        try {
+            const ids = Array.from({ length: 1_201 }, (_, i) => `id-${i}`)
+            client.emitMessagesConsumed(ids, { steered: true, clearQueuedThinkingGrace: true })
+            const packets = socketHarness.sockets[0]!.emitted.filter(entry => entry.event === 'messages-consumed')
+                .map(entry => entry.args[0] as { localIds: string[]; steered: boolean; clearQueuedThinkingGrace: boolean })
+            expect(packets.map(packet => packet.localIds.length)).toEqual([500, 500, 201])
+            expect(packets.flatMap(packet => packet.localIds)).toEqual(ids)
+            expect(packets.every(packet => packet.steered && packet.clearQueuedThinkingGrace)).toBe(true)
+        } finally { client.close() }
+    })
+    it('acknowledges user and output IDs in one batch after replay without per-item implicit acknowledgements', async () => {
+        socketHarness.sockets.length = 0
+        const turns = Array.from({ length: 200 }, (_, index) => ({
+            id: `turn-${index}`, status: 'completed', items: [
+                { id: `user-${index}`, clientId: `local-${index}`, type: 'userMessage', content: [{ type: 'text', text: `prompt ${index}` }] },
+                { id: `agent-${index}`, type: 'agentMessage', text: `reply ${index}` }
+            ]
+        }))
+        const metadata = {
+            conversationHistoryTurns: Object.fromEntries(turns.map((turn, index) => [`local-${index}`, turn.id])),
+            conversationHistoryPoints: Object.fromEntries(turns.map((_, index) => [`local-${index}`, true]))
+        }
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default', metadata: metadata as never }))
+        const socket = socketHarness.sockets[0]!
+        const projection = new SharedCodexProjection(client, 'thread', async () => {}, undefined, async () => {})
+        try {
+            await projection.history({ turns })
+            const acknowledgements = socket.emitted.filter(entry => entry.event === 'messages-consumed')
+            expect(acknowledgements).toHaveLength(1)
+            const consumedIds = (acknowledgements[0]!.args[0] as {localIds: string[]}).localIds
+            expect(consumedIds).toEqual(expect.arrayContaining(turns.map((_, index) => `local-${index}`)))
+            expect(consumedIds).toEqual(expect.arrayContaining(turns.map((_, index) => `codex:thread:turn-${index}:agent-${index}:agent_message`)))
+            expect(consumedIds).toEqual(turns.flatMap((_, index) => [
+                `local-${index}`, `codex:thread:turn-${index}:agent-${index}:agent_message`
+            ]))
+            expect(socket.emitted.at(-1)?.event).toBe('messages-consumed')
+            const messages = socket.emitted.filter(entry => entry.event === 'message')
+            expect(messages.some(entry => JSON.stringify(entry.args).includes('reply 199'))).toBe(true)
+            socket.emitted.length = 0
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'live', item: {
+                id: 'live-user', clientId: 'live-local', type: 'userMessage', content: [{ type: 'text', text: 'live prompt' }]
+            } })
+            expect(socket.emitted.filter(entry => entry.event === 'messages-consumed')).toHaveLength(1)
+        } finally { client.close() }
+    })
+    it('preserves implicit acknowledgements for ordinary callers', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        try {
+            client.sendUserMessage('prompt', undefined, 'ordinary-user')
+            client.sendAgentMessage({ type: 'message', message: 'reply' }, 'ordinary-agent')
+            expect(socketHarness.sockets[0]!.emitted.filter(entry => entry.event === 'messages-consumed')).toHaveLength(2)
+        } finally { client.close() }
     })
 })
 

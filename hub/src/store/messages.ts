@@ -136,6 +136,17 @@ export function addMessage(
     scheduledAt?: number | null,
     createdAt?: number
 ): StoredMessage {
+    return addMessageWithStatus(db, sessionId, content, localId, scheduledAt, createdAt).message
+}
+
+export function addMessageWithStatus(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    localId?: string,
+    scheduledAt?: number | null,
+    createdAt?: number
+): { message: StoredMessage; inserted: boolean } {
     const now = Date.now()
     // Client-provided origin timestamp (e.g. a Claude transcript entry's own
     // `timestamp`), falling back to server-receive time when absent. Only
@@ -158,7 +169,7 @@ export function addMessage(
             'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         ).get(sessionId, localId) as DbMessageRow | undefined
         if (existing) {
-            return toStoredMessage(existing)
+            return { message: toStoredMessage(existing), inserted: false }
         }
     }
 
@@ -215,7 +226,7 @@ export function addMessage(
         if (previousHead && positionAt < previousHead.at) bumpMessageEpoch(db, sessionId)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
-        return toStoredMessage(row)
+        return { message: toStoredMessage(row), inserted: true }
     })()
 }
 
