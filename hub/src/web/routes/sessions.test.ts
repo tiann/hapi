@@ -67,6 +67,8 @@ function createApp(session: Session, opts?: {
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
+    listDshModelsForSession?: SyncEngine['listDshModelsForSession']
+    listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
     implementCodexPlan?: SyncEngine['implementCodexPlan']
@@ -149,6 +151,15 @@ function createApp(session: Session, opts?: {
         listCodexModelsForSession: opts?.listCodexModelsForSession ?? (async () => ({
             success: true,
             models: []
+        })),
+        listDshModelsForSession: opts?.listDshModelsForSession ?? (async () => ({
+            success: true,
+            models: []
+        })),
+        listPiModelsForSession: opts?.listPiModelsForSession ?? (async () => ({
+            success: true,
+            availableModels: [],
+            currentModelId: null
         })),
         listOpencodeModelsForSession,
         listOpencodeReasoningEffortOptionsForSession,
@@ -432,6 +443,53 @@ describe('sessions routes', () => {
             success: false,
             error: 'RPC handler not registered: session-1:listCodexModels',
             code: 'rpc_target_missing'
+        })
+    })
+
+    it('returns a stable code when the DSH session model RPC target is absent', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'dsh' }
+        })
+        const { app } = createApp(session, {
+            listDshModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listDshModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/dsh-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listDshModels',
+            code: 'rpc_target_missing'
+        })
+    })
+
+    it('serves Pi session model lists through the engine cache wrapper', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const captured: string[] = []
+        const { app } = createApp(session, {
+            listPiModelsForSession: async (sessionId) => {
+                captured.push(sessionId)
+                return {
+                    success: true,
+                    availableModels: [{ provider: 'openai-codex', modelId: 'gpt-5.6-sol' }],
+                    currentModelId: 'gpt-5.6-sol'
+                }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/pi-models')
+
+        expect(response.status).toBe(200)
+        expect(captured).toEqual(['session-1'])
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ provider: 'openai-codex', modelId: 'gpt-5.6-sol' }],
+            currentModelId: 'gpt-5.6-sol'
         })
     })
 
@@ -2177,6 +2235,32 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         const body = await response.json() as { sessions: Array<{ id: string }> }
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
+    })
+
+    it('active=true filters inactive sessions before limit truncation', async () => {
+        const sessions = [
+            createSession({ id: 'old-active', active: true, updatedAt: 10 }),
+            createSession({ id: 'new-inactive', active: false, updatedAt: 50 }),
+            createSession({ id: 'mid-active', active: true, updatedAt: 20 })
+        ]
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions?limit=1&order=updatedAt&active=true')
+        expect(response.status).toBe(200)
+        const body = await response.json() as { sessions: Array<{ id: string }> }
+        expect(body.sessions.map((s) => s.id)).toEqual(['mid-active'])
     })
 
 })

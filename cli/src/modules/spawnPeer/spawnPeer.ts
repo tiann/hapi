@@ -681,6 +681,8 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
             message,
             waitActiveSecs,
             waitForInitialActive: true,
+            // The remit targets a session this call just created.
+            wake: true,
             apiUrl,
             accessToken,
             http,
@@ -734,7 +736,9 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
             throw new SpawnPeerError(deliveryError.code, `${deliveryError.message}; ${leaveRunning}`)
         }
         if (deliveryError instanceof PingPeerError) {
-            throw new SpawnPeerError(deliveryError.code, `${deliveryError.message}; ${leaveRunning}`)
+            // Remit delivery passes wake, so 'inactive' only means the child never stayed up.
+            const code = deliveryError.code === 'inactive' ? 'send_failed' : deliveryError.code
+            throw new SpawnPeerError(code, `${deliveryError.message}; ${leaveRunning}`)
         }
         throw new SpawnPeerError(
             'send_failed',

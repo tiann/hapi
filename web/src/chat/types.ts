@@ -29,6 +29,8 @@ export type RoundSummary = {
     totalCostUsd?: number
     numTurns?: number
     durationMs?: number
+    generationMs?: number
+    generationOutputTokens?: number
 }
 
 export type AgentEvent =

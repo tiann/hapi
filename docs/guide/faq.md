@@ -84,7 +84,7 @@ HAPI's CLI, hub and Web/PWA client are open source and free. The Web/PWA is full
 
 HAPI supports these notification channels:
 
-1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
+1. **PWA Push Notifications** - Enable in Settings → General; works even when the app is closed
 2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
 3. **Native app notifications** - App Store and Google Play apps use encrypted push delivery; pair your hub and allow notifications, with no push-provider setup required
 4. **ServerChan (Server酱)** - Send notifications to WeChat and other channels; see [ServerChan Setup](./notifications.md#serverchan-server酱-setup)

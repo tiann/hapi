@@ -56,6 +56,8 @@ function areRoundSummariesEqual(left?: RoundSummary, right?: RoundSummary): bool
     return left.totalCostUsd === right.totalCostUsd
         && left.numTurns === right.numTurns
         && left.durationMs === right.durationMs
+        && left.generationMs === right.generationMs
+        && left.generationOutputTokens === right.generationOutputTokens
         && areUsageDataEqual(left.usage, right.usage)
         && leftModels.length === rightModels.length
         && leftModels.every(model => right.modelUsage[model] !== undefined

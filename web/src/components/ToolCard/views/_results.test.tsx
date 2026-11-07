@@ -51,6 +51,14 @@ describe('extractTextFromResult', () => {
         expect(extractTextFromResult({ output: 'ok' })).toBe('ok')
     })
 
+    it('extracts output text from an output plus metadata result', () => {
+        expect(extractTextFromResult({ output: 'ok', metadata: { status: 'completed', exit: 0 } })).toBe('ok')
+    })
+
+    it('returns no text for a metadata-only result', () => {
+        expect(extractTextFromResult({ metadata: { status: 'completed', exit: 0 } })).toBeNull()
+    })
+
     it('extracts from object with error field', () => {
         expect(extractTextFromResult({ error: 'not found' })).toBe('not found')
     })
@@ -162,6 +170,63 @@ describe('getToolResultViewComponent registry', () => {
         const agentView = getToolResultViewComponent('Agent')
         const genericView = getToolResultViewComponent('SomeUnknownTool')
         expect(agentView).toBe(genericView)
+    })
+})
+
+describe('OpenCode lowercase tool names', () => {
+    it.each([
+        ['bash', 'Bash'],
+        ['glob', 'Glob'],
+        ['grep', 'Grep'],
+        ['list', 'LS'],
+        ['write', 'Write'],
+        ['edit', 'Edit'],
+        ['webfetch', 'WebFetch'],
+        ['websearch', 'WebSearch'],
+        ['task', 'Task']
+    ])('uses the %s result view of %s', (lowercase, canonical) => {
+        expect(getToolResultViewComponent(lowercase)).toBe(getToolResultViewComponent(canonical))
+        expect(getToolResultViewComponent(lowercase)).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+
+    it.each(['skill', 'todowrite', 'patch', 'apply_patch', 'question'])(
+        'keeps %s on the generic view',
+        (name) => {
+            expect(getToolResultViewComponent(name)).toBe(getToolResultViewComponent('SomeUnknownTool'))
+        }
+    )
+
+    it('keeps multi-line shell output on separate lines in a code block', () => {
+        const ResultView = getToolResultViewComponent('bash')
+        const block: ToolCallBlock = {
+            id: 'tool-bash',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-bash',
+                name: 'bash',
+                state: 'completed',
+                input: { command: 'ls' },
+                result: { output: 'total 8\nnotes.txt\nmain.ts', metadata: { exit: 0 } },
+                createdAt: 0,
+                startedAt: null,
+                completedAt: 0,
+                execStartedAt: null,
+                execCompletedAt: null,
+                description: null
+            }
+        }
+
+        const { container } = render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+
+        const code = container.querySelector('pre code')
+        expect(code?.textContent).toBe('total 8\nnotes.txt\nmain.ts')
     })
 })
 

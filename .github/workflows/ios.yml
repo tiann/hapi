@@ -33,6 +33,7 @@ jobs:
 
     app-build:
         runs-on: xcode-27
+        timeout-minutes: 120
         steps:
             - uses: actions/checkout@v4
             - name: Show toolchain versions
@@ -60,13 +61,41 @@ jobs:
               run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO
             # Dynamic Type overrides do not scale Mac-idiom windows, so the
             # typography suite stays on the iOS simulators above.
-            - name: Mac navigation and layout regression tests
+            # Keep each suite in a separate bounded step so a hang identifies
+            # the responsible suite and cannot hold the job for hours.
+            - name: Mac navigation regression tests
+              timeout-minutes: 20
               run: >-
                   xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi
                   -destination 'platform=macOS,variant=Mac Catalyst'
                   -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+                  -resultBundlePath "$RUNNER_TEMP/mac-session-navigation.xcresult"
                   -only-testing:HapiTests/SessionNavigationTests
+            - name: Mac split presentation regression tests
+              if: ${{ !cancelled() }}
+              timeout-minutes: 20
+              run: >-
+                  xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi
+                  -destination 'platform=macOS,variant=Mac Catalyst'
+                  -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+                  -resultBundlePath "$RUNNER_TEMP/mac-session-split-presentation.xcresult"
                   -only-testing:HapiTests/SessionSplitPresentationTests
+            - name: Mac transcript geometry regression tests
+              if: ${{ !cancelled() }}
+              timeout-minutes: 20
+              run: >-
+                  xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi
+                  -destination 'platform=macOS,variant=Mac Catalyst'
+                  -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+                  -resultBundlePath "$RUNNER_TEMP/mac-transcript-geometry.xcresult"
                   -only-testing:HapiTests/TranscriptGeometryTests
+            - name: Upload Mac regression test results
+              if: ${{ always() }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: mac-regression-test-results
+                  path: ${{ runner.temp }}/*.xcresult
+                  if-no-files-found: ignore
+                  retention-days: 7
             - name: Verify localization catalog was not rewritten
               run: git diff --exit-code -- ios/Hapi/Resources/Localizable.xcstrings

@@ -25,8 +25,9 @@ import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
-import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
+import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock, type VisibleChatBlock, visibleBlockRole } from '@/chat/toolGroups'
 import { filterConciseChatBlocks } from '@/chat/conciseView'
+import { getAssistantResponseGroups, hasUnambiguousResponseOwner, responseBlockKey, responseBlockIdentity, responseGroupIdentity } from '@/chat/responseGroups'
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
@@ -56,14 +57,14 @@ import { classifySessionAttention, getSessionAttentionLabelKey } from '@/lib/ses
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
-import { findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
+import { assignThreadMessageIds, findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
 import {
     getRestoredComposerSendIntent,
     resolveMessageDeliveryMode,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
-import { isSteeringSupportedForSession } from '@hapi/protocol'
+import { hasActiveSteeringTurn } from '@hapi/protocol'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
@@ -557,17 +558,72 @@ export function buildGoalStateMessages(
  * A live tail revision invalidates the remembered boundary until tail view
  * observes the authoritative current boundary again.
  */
+type CompletedBoundaryMemory = {
+    id: string | null
+    tailRevision: number
+    sessionId?: string
+    canonicalBlocks?: readonly ChatBlock[]
+    visibleBlocks?: readonly VisibleChatBlock[]
+}
+
+type BoundaryProjection = {
+    sessionId: string
+    canonicalBlocks: readonly ChatBlock[]
+    visibleBlocks: readonly VisibleChatBlock[]
+    isRunning: boolean
+}
+
+function renderedResponseGroups(blocks: readonly VisibleChatBlock[]): { id: string; keys: string[] }[] {
+    const groups: { id: string; keys: string[] }[] = []
+    let group: { id: string; keys: string[] } | null = null
+    for (const { block, threadMessageId } of assignThreadMessageIds(blocks)) {
+        if (visibleBlockRole(block) !== 'assistant') { group = null; continue }
+        if (!group) { group = { id: threadMessageId, keys: [] }; groups.push(group) }
+        group.keys.push(...(block.kind === 'tool-group' ? block.tools.map(responseBlockKey) : [responseBlockKey(block)]))
+    }
+    return groups
+}
+
 export function resolveLatestCompletedBoundaryIdForView(
     viewMode: 'tail' | 'history',
     currentTailBoundaryId: string | null,
-    rememberedTailBoundary: { id: string | null; tailRevision: number } | null,
-    currentTailRevision: number
+    rememberedTailBoundary: CompletedBoundaryMemory | null,
+    currentTailRevision: number,
+    projection?: BoundaryProjection
 ): string | null {
     if (viewMode === 'tail') return currentTailBoundaryId
-    if (!rememberedTailBoundary || rememberedTailBoundary.tailRevision !== currentTailRevision) {
-        return null
+    const memory = rememberedTailBoundary
+    if (!memory || memory.tailRevision !== currentTailRevision) return null
+    if (!projection) return memory.id
+    if (projection.isRunning || memory.sessionId !== projection.sessionId
+        || !memory.id || !memory.canonicalBlocks || !memory.visibleBlocks) return null
+
+    // User boundaries retain their canonical identity through either projection.
+    const rememberedUser = assignThreadMessageIds(memory.visibleBlocks).find(({ block, threadMessageId }) =>
+        threadMessageId === memory.id && visibleBlockRole(block) === 'user')
+    if (rememberedUser && rememberedUser.block.kind !== 'tool-group') {
+        const identity = JSON.stringify(responseBlockIdentity(rememberedUser.block))
+        const matches = assignThreadMessageIds(projection.visibleBlocks).filter(({ block }) =>
+            block.kind !== 'tool-group' && visibleBlockRole(block) === 'user'
+            && JSON.stringify(responseBlockIdentity(block)) === identity)
+        return matches.length === 1 ? matches[0].threadMessageId : null
     }
-    return rememberedTailBoundary.id
+
+    const rememberedCard = renderedResponseGroups(memory.visibleBlocks).find(group => group.id === memory.id)
+    if (!rememberedCard) return null
+    const originals = getAssistantResponseGroups(memory.canonicalBlocks).filter(group =>
+        rememberedCard.keys.every(key => group.blocks.some(block => responseBlockKey(block) === key)))
+    if (originals.length !== 1 || !hasUnambiguousResponseOwner(originals[0])) return null
+    const signature = responseGroupIdentity(originals[0])
+    const matches = getAssistantResponseGroups(projection.canonicalBlocks).filter(group =>
+        hasUnambiguousResponseOwner(group) && responseGroupIdentity(group) === signature)
+    if (matches.length !== 1) return null
+    const keys = new Set(matches[0].blocks.map(responseBlockKey))
+    if (keys.size !== matches[0].blocks.length || matches[0].blocks.some(block => !block.id.trim())) return null
+    const cards = renderedResponseGroups(projection.visibleBlocks).filter(group => group.keys.every(key => keys.has(key)))
+    // A hidden event can join distinct original groups into one card. Its extra
+    // keys fail the subset check above; do not invent current ownership.
+    return cards.length === 1 ? cards[0].id : null
 }
 
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
@@ -743,10 +799,7 @@ function SessionChatInner(props: SessionChatProps) {
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const visibleGroupsModeRef = useRef(toolGroupingMode)
-    const [rememberedTailBoundary, setRememberedTailBoundary] = useState<{
-        id: string | null
-        tailRevision: number
-    } | null>(null)
+    const [rememberedTailBoundary, setRememberedTailBoundary] = useState<CompletedBoundaryMemory | null>(null)
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const uploadDraftSnapshotRef = useRef<{ text: string; attachments: AttachmentDraftInput[] }>({
         text: '',
@@ -1636,16 +1689,21 @@ function SessionChatInner(props: SessionChatProps) {
         if (props.viewMode !== 'tail') return
         setRememberedTailBoundary((previous) => (
             previous?.id === currentTailBoundaryId && previous.tailRevision === props.tailRevision
+                && previous.sessionId === props.session.id && previous.canonicalBlocks === reconciled.blocks
+                && previous.visibleBlocks === visibleBlocks
                 ? previous
-                : { id: currentTailBoundaryId, tailRevision: props.tailRevision }
+                : { id: currentTailBoundaryId, tailRevision: props.tailRevision, sessionId: props.session.id,
+                    canonicalBlocks: reconciled.blocks, visibleBlocks }
         ))
-    }, [currentTailBoundaryId, props.tailRevision, props.viewMode])
+    }, [currentTailBoundaryId, props.tailRevision, props.viewMode, props.session.id, reconciled.blocks, visibleBlocks])
 
     const latestCompletedBoundaryId = resolveLatestCompletedBoundaryIdForView(
         props.viewMode,
         currentTailBoundaryId,
         rememberedTailBoundary,
-        props.tailRevision
+        props.tailRevision,
+        { sessionId: props.session.id, canonicalBlocks: reconciled.blocks, visibleBlocks,
+            isRunning: props.session.thinking }
     )
 
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
@@ -2205,10 +2263,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 }}
                                 deliveryActive={props.session.active && props.session.thinking}
                                 canSteer={props.session.active && props.session.thinking
-                                    && isSteeringSupportedForSession(props.session.metadata)
-                                    && (agentFlavor === 'pi'
-                                        ? props.session.thinking
-                                        : props.session.agentState?.steeringActive === true)
+                                    && hasActiveSteeringTurn(props.session)
                                     && !controlledByUser}
                             />
                         </div>
