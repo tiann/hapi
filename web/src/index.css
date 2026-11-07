@@ -862,6 +862,31 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
   animation: bounce-in 0.3s ease-out;
 }
 
+/*
+ * Session-attached job: classic indeterminate / marquee progress (no %).
+ * Sliding segment on a track — not spinner-only, not empty track, not fake fill.
+ * Prefer transform animation; under reduced motion, slow the sweep (do not drop the bar).
+ */
+@keyframes attached-job-marquee {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.animate-attached-job-marquee {
+  width: 40%;
+  animation: attached-job-marquee 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-attached-job-marquee {
+    animation-duration: 8s;
+  }
+}
+
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */
 .tsqd-open-btn-container {
   bottom: 50% !important;

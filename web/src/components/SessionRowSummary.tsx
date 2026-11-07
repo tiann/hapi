@@ -318,15 +318,35 @@ export function SessionRowSummary(props: {
                         </span>
                         {jobFraction !== null ? (
                             <span
+                                data-testid="attached-job-progress-bar"
+                                data-progress="determinate"
                                 className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
-                                aria-hidden="true"
+                                role="progressbar"
+                                aria-label={attachedJob.label}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={Math.round(jobFraction * 100)}
                             >
                                 <span
                                     className="block h-full rounded-full bg-current transition-[width] duration-300"
                                     style={{ width: `${Math.round(jobFraction * 100)}%` }}
                                 />
                             </span>
-                        ) : null}
+                        ) : (
+                            <span
+                                data-testid="attached-job-progress-bar"
+                                data-progress="indeterminate"
+                                className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
+                                role="progressbar"
+                                aria-label={attachedJob.label}
+                            >
+                                {/* No aria-valuenow: unknown amount (ARIA indeterminate). No inline width%. */}
+                                <span
+                                    className="block h-full rounded-full bg-current animate-attached-job-marquee"
+                                    aria-hidden="true"
+                                />
+                            </span>
+                        )}
                     </div>
                 ) : null}
                 {contentSnippet ? (

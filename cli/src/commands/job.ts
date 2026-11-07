@@ -72,7 +72,7 @@ ${chalk.bold('Wake on terminal (tiann/hapi#1489, default off):')}
 ${chalk.bold('Progress UI:')}
   remaining           → "N units left · 2h"
   done + total        → "P% · done/total · 2h"
-  label/detail only   → "running · 2h" + indeterminate bar
+  label/detail only   → "running · 2h" + classic indeterminate/marquee bar (no %)
   elapsed always from startedAt (wall clock) — never an ETA / time-remaining field
   --clear-remaining   → drop leftover meter so done/total can take over (PATCH null)
 

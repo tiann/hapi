@@ -263,7 +263,7 @@ describe('SessionRowSummary attached job progress', () => {
         vi.useRealTimers()
     })
 
-    it('does not invent a partial fill for remaining-only (indeterminate) jobs', () => {
+    it('renders a classic indeterminate marquee (no %) when fraction is unknown', () => {
         const { container } = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -286,10 +286,42 @@ describe('SessionRowSummary attached job progress', () => {
         )
 
         expect(screen.getByText(/172800 s left/)).toBeInTheDocument()
-        // No determinate bar: no fixed fraction width (w-1/3 etc.) and no inline % width.
+        const bar = screen.getByTestId('attached-job-progress-bar')
+        expect(bar).toHaveAttribute('data-progress', 'indeterminate')
+        expect(bar).toHaveAttribute('role', 'progressbar')
+        expect(bar).not.toHaveAttribute('aria-valuenow')
+        // Classic marquee segment — not spinner-only, not empty track, not fake inline %.
+        expect(bar.querySelector('.animate-attached-job-marquee')).not.toBeNull()
         expect(container.querySelector('[class*="w-1/3"]')).toBeNull()
-        expect(container.querySelector('[class*="w-1/2"]')).toBeNull()
         expect(container.querySelector('[style*="width"]')).toBeNull()
+    })
+
+    it('renders label-only unknown jobs with marquee + running · elapsed (shape B)', () => {
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'beets',
+                            label: 'beets import',
+                            status: 'running',
+                            detail: 'phase: match',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 120_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText(/running · 2m/)).toBeInTheDocument()
+        const bar = screen.getByTestId('attached-job-progress-bar')
+        expect(bar).toHaveAttribute('data-progress', 'indeterminate')
+        expect(bar.querySelector('.animate-attached-job-marquee')).not.toBeNull()
+        expect(bar).not.toHaveAttribute('aria-valuenow')
     })
 
     it('renders a real fill only when total yields a fraction', () => {
@@ -315,9 +347,13 @@ describe('SessionRowSummary attached job progress', () => {
             </I18nProvider>
         )
 
+        const bar = screen.getByTestId('attached-job-progress-bar')
+        expect(bar).toHaveAttribute('data-progress', 'determinate')
+        expect(bar).toHaveAttribute('aria-valuenow', '50')
         const fill = container.querySelector('[style*="width"]') as HTMLElement | null
         expect(fill).not.toBeNull()
         expect(fill!.style.width).toBe('50%')
+        expect(bar.querySelector('.animate-attached-job-marquee')).toBeNull()
     })
 })
 
