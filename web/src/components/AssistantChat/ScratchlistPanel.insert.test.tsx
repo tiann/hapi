@@ -7,6 +7,8 @@ import type { ApiClient } from '@/api/client'
 import {
     clearScratchlistAttachmentPreviewCache,
     getScratchlistAttachmentPreview,
+    rememberScratchlistAttachmentObjectUrl,
+    retainScratchlistAttachmentPreview,
 } from '@/lib/scratchlistAttachmentPreview'
 
 afterEach(() => {
@@ -78,6 +80,51 @@ describe('insert attachments into a saved scratchlist draft', () => {
             expect(onUpdate).toHaveBeenCalledTimes(1)
         } finally {
             await act(async () => finish())
+            Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: originalCreateObjectURL })
+            Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: originalRevokeObjectURL })
+        }
+    })
+
+    it('keeps an inserted preview while the cache is over budget with retained mounted previews', async () => {
+        const cachedAttachment = (id: string) => ({
+            id,
+            filename: `${id}.png`,
+            mimeType: 'image/png',
+            size: 10 * 1024 * 1024,
+            path: `hapi-hub:scratchlist/default/test/${id}.png`,
+        })
+        const releaseCachedA = retainScratchlistAttachmentPreview('cached-a')
+        const releaseCachedB = retainScratchlistAttachmentPreview('cached-b')
+        rememberScratchlistAttachmentObjectUrl(cachedAttachment('cached-a'), 'blob:cached-a')
+        rememberScratchlistAttachmentObjectUrl(cachedAttachment('cached-b'), 'blob:cached-b')
+
+        let finish!: () => void
+        const pending = new Promise<void>(resolve => { finish = resolve })
+        const onUpdate = vi.fn(() => pending)
+        const originalCreateObjectURL = URL.createObjectURL
+        const originalRevokeObjectURL = URL.revokeObjectURL
+        const createObjectURL = vi.fn(() => 'blob:selected-image')
+        Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
+        Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+
+        try {
+            const { select } = setup(onUpdate)
+            select([new File(['image'], 'photo.png', { type: 'image/png' })])
+
+            await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
+            expect(getScratchlistAttachmentPreview({
+                id: 'photo.png',
+                filename: 'photo.png',
+                mimeType: 'image/png',
+                size: 3,
+                path: 'hapi-hub:scratchlist/default/test/photo.png',
+            })).toBe('blob:selected-image')
+            expect(getScratchlistAttachmentPreview(cachedAttachment('cached-a'))).toBe('blob:cached-a')
+            expect(getScratchlistAttachmentPreview(cachedAttachment('cached-b'))).toBe('blob:cached-b')
+        } finally {
+            await act(async () => finish())
+            releaseCachedA()
+            releaseCachedB()
             Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: originalCreateObjectURL })
             Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: originalRevokeObjectURL })
         }

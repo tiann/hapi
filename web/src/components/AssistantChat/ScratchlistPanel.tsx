@@ -37,6 +37,7 @@ import { ScheduleTimePicker, type PendingSchedule } from './ScheduleTimePicker'
 import {
     releaseScratchlistAttachmentPreview,
     rememberScratchlistAttachmentObjectUrl,
+    retainScratchlistAttachmentPreview,
 } from '@/lib/scratchlistAttachmentPreview'
 import { orderItemsById } from '@/lib/attachmentOrder'
 import { ScratchlistAttachments } from './ScratchlistAttachments'
@@ -529,6 +530,7 @@ function ScratchlistInventory({
         setAttachmentUploadEntryId(entryId)
         setAttachmentError(null)
         let uploaded: ScratchlistAttachmentMetadata[] = []
+        const temporaryRetains: Array<() => void> = []
         try {
             uploaded = await prepareScratchlistParkAttachments(api, sessionId, files.map((file) => ({
                 id: crypto.randomUUID(), name: file.name, contentType: file.type, file,
@@ -536,6 +538,7 @@ function ScratchlistInventory({
             uploaded.forEach((attachment, index) => {
                 const file = files[index]
                 if (file && attachment.mimeType.startsWith('image/')) {
+                    temporaryRetains.push(retainScratchlistAttachmentPreview(attachment.id))
                     rememberScratchlistAttachmentObjectUrl(attachment, URL.createObjectURL(file))
                 }
             })
@@ -548,6 +551,7 @@ function ScratchlistInventory({
             await Promise.allSettled(uploaded.map((attachment) => api.deleteScratchlistAttachment(sessionId, attachment.id)))
             setAttachmentError({ entryId, message: cause instanceof Error ? cause.message : String(cause) })
         } finally {
+            temporaryRetains.forEach((release) => release())
             attachmentUploadPendingRef.current = false
             setAttachmentUploadEntryId(null)
         }
