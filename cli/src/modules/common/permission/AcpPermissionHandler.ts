@@ -148,6 +148,10 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         logger.debug('[ACP] Permission response received for unknown request', response.id)
     }
 
+    hasPendingRequests(): boolean {
+        return this.pendingBackendRequests.size > 0
+    }
+
     async cancelAll(reason: string): Promise<void> {
         const pending = Array.from(this.pendingBackendRequests.values())
         this.pendingBackendRequests.clear()

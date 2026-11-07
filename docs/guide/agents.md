@@ -326,14 +326,21 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   through `session/resume` without replaying history, whichever integration
   started it. If the agy process dies, the next message restarts it and
   resumes the conversation; a prompt agy never started is restored to the
-  composer. Stop sends `session/cancel`, which also ends open tool calls.
+  composer. Stop sends `session/cancel`, which also ends open tool calls; a
+  prompt stopped before agy answered anything also goes back to the composer.
+
+  On ACP, **Steer** a queued message to add it to the running turn instead of
+  waiting for the turn to end. HAPI sends it as another `session/prompt`; agy
+  finishes any tool call already running, then continues the same turn with
+  the new message. The turn's usage includes the steered part.
+
   Permission modes map to agy's session modes: `request-review` is agy's
   `default` mode, which follows agy's own permission settings and, on ACP,
   shows its approval requests in HAPI; `acceptEdits` and `plan` are agy's
   `accept-edits` and `plan` modes; `always-proceed` approves every request
   automatically. On ACP, mode changes apply to the next message without
-  restarting agy.
-  Conversation titles come from agy, and each turn reports its token usage.
+  restarting agy. Conversation titles come from agy; on ACP each turn also
+  reports its token usage.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or

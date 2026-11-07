@@ -1,5 +1,5 @@
 import React from 'react';
-import { splitAgyModelSelection } from '@hapi/protocol';
+import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -19,6 +19,11 @@ import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
 
 type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
+
+const STEER_CANCEL_GRACE_MS = 3_000;
+const CANCEL_HARD_STOP_MS = 10_000;
+const PROMPT_SEND_POLL_MS = 50;
+const ECHO_BUFFER_LIMIT = 64 * 1024;
 
 /** `always-proceed` stays in agy's default mode; HAPI answers its requests. */
 export function agyAcpModeForPermission(mode: PermissionMode | undefined): string {
@@ -80,6 +85,10 @@ export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): Usa
     };
 }
 
+function normalizeEcho(text: string): string {
+    return text.replace(/\s+/g, ' ').trim();
+}
+
 /** agy's question tool; its permission request must reach the user. */
 export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     const input = request.rawInput as { questions?: unknown } | undefined;
@@ -87,10 +96,26 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
 }
 
 type AgyTurn = {
+    modeHash: string;
+    aborted: boolean;
+    stopReason: string | null;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
     acknowledge: () => void;
+    steers: Promise<void>[];
+    // Steers agy may have taken; one put back in the queue no longer counts.
+    steersTaken: number;
+    // agy's answers to the turn's requests, before HAPI drains late output.
+    mainAnswered: Promise<void>;
+    answerMain: () => void;
+    steerAnswers: Promise<void>[];
+    // agy echoes the prompt first, and that echo may contain a steer's text.
+    promptEcho: { text: string; echo: string; done: boolean };
+    unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
+    abandonSteers: Array<() => void>;
+    releaseSteerWait: () => void;
+    steerWaitReleased: Promise<void>;
 };
 
 /**
@@ -100,6 +125,8 @@ type AgyTurn = {
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
     private readonly createBackend: () => AcpSdkBackend;
+    private readonly steerCancelGraceMs: number;
+    private readonly cancelHardStopMs: number;
     private backend: AcpSdkBackend | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
     private acpSessionId: string | null = null;
@@ -111,10 +138,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turn: AgyTurn | null = null;
     private backendLost = false;
 
-    constructor(session: AgySession, opts: { createBackend?: () => AcpSdkBackend } = {}) {
+    constructor(session: AgySession, opts: {
+        createBackend?: () => AcpSdkBackend;
+        steerCancelGraceMs?: number;
+        cancelHardStopMs?: number;
+    } = {}) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.createBackend = opts.createBackend ?? createAgyAcpBackend;
+        this.steerCancelGraceMs = opts.steerCancelGraceMs ?? STEER_CANCEL_GRACE_MS;
+        this.cancelHardStopMs = opts.cancelHardStopMs ?? CANCEL_HARD_STOP_MS;
         this.session.setKillHandler(() => this.handleKill());
     }
 
@@ -132,9 +165,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
+        session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
         this.messageBuffer.addMessage(
             session.sessionId ? 'Resuming agy session...' : 'Starting agy session...',
             'status'
+        );
+        // Steering keys on this marker; published before agy starts, it reaches
+        // the hub before any turn can take a steer.
+        session.client.updateMetadata((metadata) => ({ ...metadata, agyProtocol: 'acp' }));
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => await this.handleSteer(payload)
         );
         await this.startBackend(session.sessionId);
 
@@ -153,7 +194,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const localIds = batch.items
                 .map((item) => item.localId)
                 .filter((localId): localId is string => Boolean(localId));
-            await this.runTurn(batch.message, batch.mode, localIds);
+            await this.runTurn(batch.message, batch.mode, batch.hash, localIds);
         }
     }
 
@@ -165,6 +206,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             const titleSync = createAcpSessionTitleSync(session.client);
             registerAcpSessionTitleSync(backend, session.client, titleSync);
+            backend.setUserMessageChunkListener((text) => this.handleUserEcho(text));
             backend.onStderrError((error) => {
                 logger.debug('[agy-acp] stderr error', error);
                 session.sendSessionEvent({ type: 'message', message: error.message });
@@ -200,8 +242,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
             }
             this.acpSessionId = acpSessionId;
-            // Marks the session as running on agy acp.
-            session.onSessionFound(acpSessionId, { agyProtocol: 'acp' });
+            session.onSessionFound(acpSessionId);
             session.client.emitSessionReady();
 
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
@@ -282,23 +323,42 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         return true;
     }
 
-    private async runTurn(message: string, mode: AgyMode, localIds: string[]): Promise<void> {
+    private async runTurn(message: string, mode: AgyMode, modeHash: string, localIds: string[]): Promise<void> {
         const session = this.session;
         session.onThinkingChange(true);
         this.turnPermissionMode = mode.permissionMode;
+        let releaseSteerWait!: () => void;
+        const steerWaitReleased = new Promise<void>((resolve) => { releaseSteerWait = resolve; });
         let acknowledged = false;
+        let answerMain!: () => void;
+        const mainAnswered = new Promise<void>((resolve) => { answerMain = resolve; });
         const turn: AgyTurn = {
+            modeHash,
+            aborted: false,
+            stopReason: null,
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
-            // delivered once agy takes it (output or answer), or when it goes
-            // back to the composer.
+            // delivered once agy takes it (echo, output, or answer), or when
+            // it goes back to the composer.
             acknowledge: () => {
                 if (acknowledged || localIds.length === 0) return;
                 acknowledged = true;
                 session.client.emitMessagesConsumed(localIds);
-            }
+            },
+            steers: [],
+            steersTaken: 0,
+            mainAnswered,
+            answerMain,
+            steerAnswers: [],
+            promptEcho: { text: normalizeEcho(message), echo: '', done: false },
+            unechoedSteers: [],
+            abandonSteers: [],
+            releaseSteerWait,
+            steerWaitReleased
         };
+        // Registered before any await so Stop can reach the turn while agy
+        // restarts or switches settings.
         this.turn = turn;
         try {
             if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
@@ -312,28 +372,46 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             const backend = this.backend;
             const acpSessionId = this.acpSessionId;
-            if (!backend || !acpSessionId) {
+            if (!backend || !acpSessionId || turn.aborted) {
                 this.restorePrompt(turn, message);
                 return;
             }
-            if (!await this.applyTurnConfig(backend, acpSessionId, mode)) {
+            if (!await this.applyTurnConfig(backend, acpSessionId, mode) || turn.aborted) {
                 this.restorePrompt(turn, message);
                 return;
             }
             this.messageBuffer.addMessage(message, 'user');
             const prompt: PromptContent[] = [{ type: 'text', text: message }];
+            session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
-                await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update));
-                turn.acknowledge();
+                await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
+                    onAnswered: () => turn.answerMain()
+                });
+                // agy answers a cancel with a normal `cancelled` result; with no
+                // output yet, the prompt goes back to the composer.
+                if (turn.stopReason === 'cancelled' && !turn.sawActivity && turn.steersTaken === 0) {
+                    this.restorePrompt(turn, message);
+                } else {
+                    turn.acknowledge();
+                }
             } catch (error) {
                 logger.warn('[agy-acp] prompt failed', error);
                 if (isAcpIndeterminateError(error)) this.backendLost = true;
-                this.reportTurnError(`Antigravity prompt failed: ${errorMessage(error)}`);
-                if (!turn.sawActivity) this.restorePrompt(turn, message);
+                if (!turn.aborted) {
+                    this.reportTurnError(`Antigravity prompt failed: ${errorMessage(error)}`);
+                }
+                if (!turn.sawActivity && turn.steersTaken === 0) this.restorePrompt(turn, message);
                 else turn.acknowledge();
             }
+            // A steer makes agy answer the request it interrupts right away
+            // (end_turn) while the turn goes on under the steer, so the turn
+            // ends only when every open request has settled. Steers sent
+            // during this wait extend it.
+            await this.waitForSteers(turn);
         } finally {
+            turn.answerMain();
             if (this.turn === turn) this.turn = null;
+            session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
             this.turnPermissionMode = undefined;
             if (turn.usage) this.forwardAgentMessage(turn.usage);
             session.onThinkingChange(false);
@@ -344,12 +422,208 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async waitForSteers(turn: AgyTurn): Promise<void> {
+        while (turn.steers.length > 0) {
+            const pending = [...turn.steers];
+            const released = await Promise.race([
+                Promise.allSettled(pending).then(() => false),
+                turn.steerWaitReleased.then(() => true)
+            ]);
+            if (released) return;
+            turn.steers = turn.steers.filter((steer) => !pending.includes(steer));
+        }
+    }
+
+    /**
+     * The hub RPC is answered once the steer request is written: the request
+     * itself only completes with the turn, past the hub's RPC timeout.
+     */
+    private async handleSteer(payload: unknown): Promise<{ steered: boolean; error?: string }> {
+        const session = this.session;
+        const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+            ? (payload as { localId: string }).localId
+            : '';
+        if (!localId) return { steered: false, error: 'Missing localId' };
+        const backend = this.backend;
+        const acpSessionId = this.acpSessionId;
+        const turn = this.turn;
+        if (!turn || turn.aborted || !backend || !acpSessionId || this.shouldExit) {
+            return { steered: false, error: 'No active steerable turn' };
+        }
+        // agy rejects a prompt while an approval is open.
+        if (this.permissionHandler?.hasPendingRequests()) {
+            return { steered: false, error: 'Antigravity is waiting for an approval; answer it, then steer' };
+        }
+        const taken = session.queue.takeByLocalId(localId);
+        if (!taken) return { steered: false, error: 'Message not in queue' };
+        if (taken.item.isolate) {
+            session.queue.restoreReservation(taken);
+            return { steered: false, error: 'Control commands cannot be steered' };
+        }
+        if (taken.item.modeHash !== turn.modeHash) {
+            session.queue.restoreReservation(taken);
+            return { steered: false, error: 'Queued message mode differs from the active turn' };
+        }
+        if (!session.queue.beginReservationDispatch(taken)) {
+            return { steered: false, error: 'Steer cancelled' };
+        }
+        if (!await session.client.setSteerDeliveryState([localId], 'dispatching')) {
+            session.queue.markReservationIndeterminate(taken);
+            session.client.emitSteerIndeterminate([localId]);
+            return { steered: false, error: 'Steer state is indeterminate' };
+        }
+        let resolved = false;
+        let steerCounted = false;
+        let forgetEcho = () => {};
+        const markIndeterminate = () => {
+            if (resolved) return;
+            resolved = true;
+            forgetEcho();
+            if (session.queue.markReservationIndeterminate(taken)) {
+                session.client.emitSteerIndeterminate([localId]);
+            }
+        };
+        const restoreQueued = async (): Promise<void> => {
+            if (resolved) return;
+            resolved = true;
+            forgetEcho();
+            if (steerCounted) {
+                steerCounted = false;
+                turn.steersTaken -= 1;
+            }
+            if (!taken.originIndeterminate
+                && !await session.client.setSteerDeliveryState([localId], 'queued')) {
+                if (session.queue.markReservationIndeterminate(taken)) {
+                    session.client.emitSteerIndeterminate([localId]);
+                }
+                return;
+            }
+            if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                session.client.emitSteerIndeterminate([localId]);
+            }
+        };
+        if (taken.state !== 'dispatching') {
+            session.client.emitSteerIndeterminate([localId]);
+            return { steered: false, error: 'Steer cancelled' };
+        }
+        if (this.turn !== turn || this.backend !== backend || turn.aborted) {
+            await restoreQueued();
+            return { steered: false, error: 'Active turn changed' };
+        }
+
+        let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
+        try {
+            steer = backend.beginSoftSteerPrompt(
+                acpSessionId,
+                [{ type: 'text', text: taken.item.message }],
+                {
+                    onUsage: (usage) => {
+                        // Answered after its turn ended: the turn total is already
+                        // reported, and a second usage event would read as a turn.
+                        if (this.turn !== turn) return;
+                        turn.usage = addAgyUsage(turn.usage, usage);
+                    }
+                }
+            );
+        } catch (error) {
+            if (isAcpIndeterminateError(error)) {
+                markIndeterminate();
+                return { steered: false, error: 'Steer outcome is being reconciled' };
+            }
+            // No open request to fold into (the turn just ended): keep it queued.
+            logger.debug('[agy-acp] steer could not start', error);
+            await restoreQueued();
+            return { steered: false, error: 'Failed to steer into the active turn' };
+        }
+        // Register before awaiting dispatch so the turn cannot end in between.
+        const settled = Promise.all([steer.dispatched, steer.completed]).then(() => {}, () => {});
+        turn.steers.push(settled);
+        turn.steersTaken += 1;
+        steerCounted = true;
+        turn.steerAnswers.push(steer.answered);
+        // agy echoes a steer (user_message_chunk) when it folds it into the
+        // turn, which is the moment it belongs in the transcript; the request
+        // itself is only answered when the turn ends.
+        const accept = () => {
+            if (resolved) return;
+            resolved = true;
+            forgetEcho();
+            session.queue.commitReservation(taken);
+            this.messageBuffer.addMessage(taken.item.message, 'user');
+            session.client.emitMessagesConsumed([localId], { steered: true });
+        };
+        forgetEcho = () => {
+            turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry.accept !== accept);
+        };
+        turn.unechoedSteers.push({ text: normalizeEcho(taken.item.message), echo: '', accept });
+        turn.abandonSteers.push(markIndeterminate);
+
+        try {
+            await steer.dispatched;
+        } catch (error) {
+            if (isAcpIndeterminateError(error)) {
+                markIndeterminate();
+                return { steered: false, error: 'Steer outcome is being reconciled' };
+            }
+            await restoreQueued();
+            return { steered: false, error: 'Failed to steer into the active turn' };
+        }
+
+        void steer.completed.then((stopReason) => {
+            // Stop answers an open steer with `cancelled`; without the echo,
+            // agy may or may not have folded it in, so hold it for an
+            // explicit Retry/Cancel.
+            if (stopReason === 'cancelled') {
+                markIndeterminate();
+                return;
+            }
+            accept();
+        }, (error) => {
+            if (isAcpIndeterminateError(error)) {
+                markIndeterminate();
+                return;
+            }
+            // An explicit JSON-RPC error: agy never took the message.
+            void restoreQueued();
+        });
+        return { steered: true };
+    }
+
+    private handleUserEcho(text: string): void {
+        const turn = this.turn;
+        if (!turn) return;
+        turn.acknowledge();
+        const prompt = turn.promptEcho;
+        if (!prompt.done) {
+            const echoed = normalizeEcho(`${prompt.echo} ${text}`);
+            if (echoed && prompt.text.startsWith(echoed)) {
+                prompt.echo = echoed;
+                prompt.done = echoed === prompt.text;
+                return;
+            }
+            prompt.done = true;
+        }
+        // An echo may arrive in several chunks, so each steer matches on the
+        // text echoed since it was sent, and the longest match wins when one
+        // steer's text contains another's.
+        for (const entry of turn.unechoedSteers) {
+            entry.echo = normalizeEcho(`${entry.echo} ${text}`).slice(-ECHO_BUFFER_LIMIT);
+        }
+        const match = turn.unechoedSteers
+            .filter((entry) => entry.text && entry.echo.includes(entry.text))
+            .sort((a, b) => b.text.length - a.text.length)[0];
+        if (!match) return;
+        for (const entry of turn.unechoedSteers) entry.echo = '';
+        match.accept();
+    }
+
     private handleTurnUpdate(turn: AgyTurn, message: AgentMessage): void {
         switch (message.type) {
             case 'usage':
                 turn.usage = addAgyUsage(turn.usage, message);
                 return;
             case 'turn_complete':
+                turn.stopReason = message.stopReason;
                 return;
             default:
                 turn.sawActivity = true;
@@ -401,13 +675,79 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async cancelActiveTurn(): Promise<void> {
+        const turn = this.turn;
+        if (turn) {
+            turn.aborted = true;
+            this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
+        }
         const backend = this.backend;
         const acpSessionId = this.acpSessionId;
-        if (backend && acpSessionId && this.turn && backend.isTransportAlive()) {
-            // ACP cancel also ends open tool calls.
+        if (backend && acpSessionId && turn && backend.isTransportAlive()) {
+            // ACP cancel also ends open tool calls (the hard stop, unlike steer);
+            // their final updates still flow to this turn's handler.
             await backend.cancelPrompt(acpSessionId);
+            // prompt() waits for the previous turn's output to settle before it
+            // sends; a cancel in that window reaches agy before the prompt.
+            if (!backend.isPromptRequestInFlight()) this.cancelOnceSent(backend, acpSessionId, turn);
+            if (turn.steers.length > 0) this.dropUnansweredSteers(backend, turn);
+            this.restartIfCancelIgnored(backend, turn);
         }
         await this.permissionHandler?.cancelAll('User aborted');
+    }
+
+    private cancelOnceSent(backend: AcpSdkBackend, acpSessionId: string, turn: AgyTurn): void {
+        const timer = setInterval(() => {
+            if (this.turn !== turn || this.backend !== backend) {
+                clearInterval(timer);
+                return;
+            }
+            if (backend.isPromptRequestInFlight()) {
+                clearInterval(timer);
+                void backend.cancelPrompt(acpSessionId);
+            }
+        }, PROMPT_SEND_POLL_MS);
+        timer.unref?.();
+    }
+
+    private restartIfCancelIgnored(backend: AcpSdkBackend, turn: AgyTurn): void {
+        // Measured on agy's answers: HAPI's own wait for late output after
+        // them must not count as agy ignoring the cancel.
+        let answered = false;
+        void Promise.allSettled([turn.mainAnswered, ...turn.steerAnswers]).then(() => { answered = true; });
+        const timer = setTimeout(() => {
+            if (answered || this.turn !== turn || this.backend !== backend) return;
+            logger.warn('[agy-acp] agy did not stop the turn after cancel; restarting it');
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: 'Antigravity did not stop; restarting it.'
+            });
+            this.backendLost = true;
+            for (const abandon of turn.abandonSteers) abandon();
+            turn.releaseSteerWait();
+            void this.retireBackend(backend);
+        }, this.cancelHardStopMs);
+        timer.unref?.();
+    }
+
+    /**
+     * A steer agy never answers would block the turn and the next turn's
+     * config calls, so it is dropped after a grace period and agy is stopped,
+     * so the abandoned request can neither write into the next turn nor run
+     * on with approvals. Not done right away: the cancelled tool calls still
+     * report their end through this turn's handler.
+     */
+    private dropUnansweredSteers(backend: AcpSdkBackend, turn: AgyTurn): void {
+        let answered = false;
+        void Promise.allSettled([...turn.steerAnswers]).then(() => { answered = true; });
+        const timer = setTimeout(() => {
+            if (answered || this.turn !== turn || this.backend !== backend) return;
+            logger.warn('[agy-acp] agy did not answer a steer after cancel; dropping it');
+            for (const abandon of turn.abandonSteers) abandon();
+            this.backendLost = true;
+            turn.releaseSteerWait();
+            void this.retireBackend(backend);
+        }, this.steerCancelGraceMs);
+        timer.unref?.();
     }
 
     private async handleAbort(): Promise<void> {
@@ -432,6 +772,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
+            steered: false,
+            error: 'Session ending'
+        }));
+        this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
         await this.permissionHandler?.cancelAll('Session ended');
         this.permissionHandler = null;
         const backend = this.backend;

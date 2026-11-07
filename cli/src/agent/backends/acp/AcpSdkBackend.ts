@@ -88,6 +88,12 @@ type AcpInitializeResult = {
     };
 };
 
+function userMessageChunkText(update: unknown): string | null {
+    if (!isObject(update) || update.sessionUpdate !== 'user_message_chunk') return null;
+    const content = update.content;
+    return isObject(content) && content.type === 'text' ? asString(content.text) : null;
+}
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
@@ -120,6 +126,7 @@ export class AcpSdkBackend implements AgentBackend {
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
+    private userMessageChunkListener: ((text: string) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
     private agentActivityListener: ((thinking: boolean) => void) | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
@@ -616,6 +623,11 @@ export class AcpSdkBackend implements AgentBackend {
     /** Forwards stable ACP session metadata updates independently of prompt streaming. */
     setSessionInfoUpdateListener(listener: ((update: AcpSessionInfoUpdate) => void) | null): void {
         this.sessionInfoUpdateListener = listener;
+    }
+
+    /** Called in order with agent output: text buffered before an echo is flushed first. */
+    setUserMessageChunkListener(listener: ((text: string) => void) | null): void {
+        this.userMessageChunkListener = listener;
     }
 
     /**
@@ -1238,9 +1250,14 @@ export class AcpSdkBackend implements AgentBackend {
         // update into the restored handler if earlier async image work kept
         // the queue busy past restore.
         const handler = this.messageHandler;
+        const echoedText = this.userMessageChunkListener ? userMessageChunkText(update) : null;
         this.sessionUpdateQueue = this.sessionUpdateQueue
             .then(async () => {
                 await handler?.handleUpdate(update);
+                if (echoedText !== null) {
+                    handler?.drainBuffers();
+                    this.userMessageChunkListener?.(echoedText);
+                }
             })
             .catch((error) => {
                 logger.debug(

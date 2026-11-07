@@ -80,6 +80,40 @@ describe('AcpSdkBackend', () => {
         expect(updates).toEqual([{ sessionId: 'session-1', title: 'Native session title' }]);
     });
 
+    it('reports echoed user prompts after flushing the output before them', async () => {
+        const backend = new AcpSdkBackend({ command: 'agy' });
+        const events: string[] = [];
+        backend.setUserMessageChunkListener((text) => events.push(`echo:${text}`));
+        const backendInternal = backend as unknown as {
+            handleSessionUpdate: (params: unknown) => void;
+            sessionUpdateQueue: Promise<void>;
+            messageHandler: { handleUpdate: (update: unknown) => Promise<void>; drainBuffers: () => void } | null;
+        };
+        backendInternal.messageHandler = {
+            handleUpdate: async (update) => {
+                events.push(`update:${(update as { sessionUpdate: string }).sessionUpdate}`);
+            },
+            drainBuffers: () => events.push('drain')
+        };
+
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Working' } }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'also lint' } }
+        });
+        await backendInternal.sessionUpdateQueue;
+
+        expect(events).toEqual([
+            'update:agent_message_chunk',
+            'update:user_message_chunk',
+            'drain',
+            'echo:also lint'
+        ]);
+    });
+
     it('refreshes native titles through ACP session/list', async () => {
         const backend = new AcpSdkBackend({ command: 'opencode' });
         const calls: Array<{ method: string; params: unknown; options: unknown }> = [];

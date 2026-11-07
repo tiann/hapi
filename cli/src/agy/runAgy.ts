@@ -118,6 +118,7 @@ export async function runAgy(opts: {
             logger.debug(`[agy] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found'}`);
             return removed;
         });
+        session.onRetryQueuedMessage((localId) => messageQueue.releaseIndeterminateReservation(localId));
 
         registerSessionConfigRpc<PermissionMode>({
             rpcHandlerManager: session.rpcHandlerManager,

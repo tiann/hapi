@@ -188,6 +188,7 @@ type SteeringSessionMetadata = {
     flavor?: string | null
     cursorSessionId?: string | null
     cursorSessionProtocol?: 'acp' | 'stream-json' | null
+    agyProtocol?: 'acp' | null
 }
 
 type SteeringSessionState = {
@@ -215,16 +216,23 @@ type SteeringCapability = {
  *   {@link isSteeringSupportedForSession}.
  * - Claude: stream-json stdin write during the turn (TUI Ctrl+X Ctrl+S);
  *   Claude folds it in at the next tool boundary. Remote mode only.
+ * - Antigravity: concurrent ACP `session/prompt` (`agy acp`); agy answers the
+ *   interrupted request at once and folds the steer in after any running
+ *   tool call finishes. Only sessions marked `agyProtocol: 'acp'` steer.
  *
  * Others: not supported — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'opencode', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['agy', 'claude', 'codex', 'cursor', 'opencode', 'pi'] as const
 
 type SteeringFlavor = typeof STEERING_SUPPORTED_FLAVORS[number]
 
 // Keep protocol restrictions and the runtime's active-turn signal together so
 // peer senders and the waiting queue do not need their own flavor branches.
 const STEERING_CAPABILITIES = {
+    agy: {
+        activeTurnState: 'steeringActive',
+        supportsSession: (metadata: SteeringSessionMetadata) => metadata.agyProtocol === 'acp'
+    },
     claude: { activeTurnState: 'steeringActive' },
     codex: { activeTurnState: 'steeringActive' },
     cursor: {

@@ -65,6 +65,7 @@ describe('runAgy model and effort config', () => {
             session: {
                 onUserMessage: mocks.onUserMessage,
                 onCancelQueuedMessage: vi.fn(),
+                onRetryQueuedMessage: vi.fn(),
                 rpcHandlerManager: { registerHandler: mocks.registerHandler },
             },
         }
