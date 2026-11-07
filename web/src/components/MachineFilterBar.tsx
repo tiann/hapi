@@ -3,38 +3,16 @@ import type { CSSProperties } from 'react'
 import type { MachineHealthPresentation } from '@/lib/machineHealth'
 import { MachineHealthTooltipBody } from '@/components/MachineHealthIndicator'
 import { HoverTooltip } from '@/components/HoverTooltip'
-import { CheckIcon } from '@/components/icons'
+import { CheckIcon, FilterIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
+import { chipBaseClass, chipIdleClass, chipSelectedClass } from '@/components/filterChipStyles'
 
 export type MachineFilterItem = {
     id: string
     label: string
     sessionCount: number
     healthPresentation: MachineHealthPresentation | null
-}
-
-const chipBaseClass = 'flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors'
-const chipSelectedClass = 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)] font-medium'
-const chipIdleClass = 'border-[var(--app-border)] text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'
-
-function FilterIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-        </svg>
-    )
 }
 
 function MachineFilterChip(props: {

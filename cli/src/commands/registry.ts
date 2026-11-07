@@ -18,9 +18,11 @@ import { hookForwarderCommand } from './hookForwarder'
 import { mcpCommand } from './mcp'
 import { mcpProxyCommand } from './mcpProxy'
 import { notifyCommand } from './notify'
+import { linkPrCommand } from './linkPr'
 import { hubCommand } from './hub'
 import { pingPeerCommand } from './pingPeer'
 import { inspectPeerCommand } from './inspectPeer'
+import { linkIssueCommand } from './linkIssue'
 import { spawnPeerCommand } from './spawnPeer'
 import { usageCommand } from './usage'
 import { setModeCommand } from './setMode'
@@ -64,8 +66,10 @@ const COMMANDS: CommandDefinition[] = [
     resumeCommand,
     runnerCommand,
     notifyCommand,
+    linkPrCommand,
     pingPeerCommand,
     inspectPeerCommand,
+    linkIssueCommand,
     spawnPeerCommand,
     setModeCommand,
     usageCommand

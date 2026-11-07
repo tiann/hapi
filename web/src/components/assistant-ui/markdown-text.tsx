@@ -36,6 +36,7 @@ import { useSessionDirectory } from '@/hooks/queries/useSessionDirectory'
 import { resolveImageMimeType } from '@/lib/file-markdown-preview'
 import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
+import { markExplicitSessionNavigationIntent } from '@/lib/explicitSessionNavigationIntent'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
 import { DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB, useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
 import { ChatMarkdownImage } from '@/components/assistant-ui/markdown-image'
@@ -537,6 +538,7 @@ function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessio
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
 
         event.preventDefault()
+        markExplicitSessionNavigationIntent()
         void navigate({
             to: '/sessions/$sessionId',
             params: { sessionId: props.targetSessionId },

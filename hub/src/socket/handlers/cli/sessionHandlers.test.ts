@@ -317,6 +317,68 @@ describe('cli session handlers', () => {
         expect(data?.updatedAt).toBeGreaterThanOrEqual(session.updatedAt)
     })
 
+    // Codex review (hapi#238): a CLI's routine update-metadata snapshot
+    // omits externalRefs entirely when its own local cache doesn't track
+    // the field — but a snapshot that DOES send the key, empty, is
+    // indistinguishable from an intentional clear to the generic merge
+    // layer alone. Matches the fork's own documented incident class (2026-
+    // 07-30 CONTRIBUTION_FIELDS gap) and established fix
+    // (scripts/tooling/soup-heals/64-externalrefs-cli-empty-omit.patch).
+    it('update-metadata empty externalRefs [] does not wipe prior PR links', () => {
+        const store = new Store(':memory:')
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary' as const
+        }]
+        const session = store.sessions.getOrCreateSession(
+            'external-refs-cli-empty',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs
+            },
+            null,
+            'default'
+        )
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        let ackResponse: unknown
+        socket.trigger(
+            'update-metadata',
+            {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'example',
+                    flavor: 'cursor',
+                    externalRefs: []
+                }
+            },
+            (response) => {
+                ackResponse = response
+            }
+        )
+
+        const ack = ackResponse as { result: string; metadata: Record<string, unknown> }
+        expect(ack.result).toBe('success')
+        expect(ack.metadata.externalRefs).toEqual(externalRefs)
+        const stored = store.sessions.getSession(session.id)
+        expect((stored?.metadata as Record<string, unknown> | null)?.externalRefs).toEqual(externalRefs)
+    })
+
     it('emits a structured agentState patch on update-state RPC (closes second half of #884)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(

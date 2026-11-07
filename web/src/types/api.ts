@@ -61,6 +61,17 @@ export type {
     SessionsResponse,
     SessionContentSearchResponse,
     SpawnResponse,
+    AssignableUsersResponse,
+    BoardAssignableUser,
+    BoardItem,
+    BoardItemComment,
+    BoardItemCommentsResponse,
+    BoardItemsResponse,
+    BoardSummary,
+    BoardsResponse,
+    CreateBoardItemRequest,
+    CreateBoardItemResponse,
+    GetIssueTemplatesResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 
@@ -69,6 +80,11 @@ export type {
     AttachmentMetadata,
     BackgroundTask,
     CodexCollaborationMode,
+    ExternalRef,
+    GithubPrChecks,
+    GithubPrExternalRef,
+    GithubPrMerge,
+    GithubPrOpenState,
     CopilotAgentMode,
     Metadata,
     PermissionMode,
@@ -90,6 +106,22 @@ export type {
     TodoItem,
     WorktreeMetadata
 } from '@hapi/protocol/types'
+
+export type {
+    IssueFormAnswer,
+    IssueFormCheckboxesField,
+    IssueFormCheckboxOption,
+    IssueFormDropdownField,
+    IssueFormField,
+    IssueFormInputField,
+    IssueFormMarkdownField,
+    IssueFormTextareaField,
+    IssueTemplate,
+    IssueTemplateBase,
+    LegacyIssueTemplate,
+    StructuredIssueTemplate,
+    UnsupportedIssueTemplate
+} from '@hapi/protocol/issueTemplates'
 
 export type {
     HapiSessionExport,

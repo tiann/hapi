@@ -4,7 +4,9 @@ import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { InfoIcon, ScheduleIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
+import { IssueRefChip } from '@/components/IssueRefChip'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
+import { getLinkedGithubIssue } from '@/lib/externalRefs'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
@@ -13,6 +15,8 @@ import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { SessionPrChip } from '@/components/SessionPrChip'
+import { getPrimaryGithubPrRef, type PrChipDisplayProfile } from '@hapi/protocol'
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -92,12 +96,29 @@ export function SessionRowSummary(props: {
     lastSeenVersion?: number
     scheduleTooltipId?: string
     className?: string
+    /** When enabled, show primary GitHub PR chip left of the time column (ADR D8). */
+    githubPrAwarenessEnabled?: boolean
+    /**
+     * When false, omit the inline PR chip (parent renders an interactive chip
+     * beside the row button to avoid nesting `<a>` inside `<button>`).
+     */
+    showPrChip?: boolean
+    prChipDisplay?: PrChipDisplayProfile
+    /** Shared minute clock from the session list (avoids per-row timers). */
+    prNowMs?: number
     /** Rows inside the pinned "in progress" section skip the text label (dot only). */
     inRunningSection?: boolean
     /** Short project name shown under the title (pinned "in progress" rows). */
     projectLabel?: string
     /** Machine label shown next to the project name (pinned "in progress" rows). */
     machineLabel?: string
+    /**
+     * False when the parent renders the issue chip itself as a sibling of an
+     * enclosing `role="button"` row (ARIA forbids a focusable descendant of
+     * a button role — see SessionList.tsx's row wrapper). Defaults to true
+     * for callers like the mention-chip tooltip, which aren't inside one.
+     */
+    showIssueChip?: boolean
     /** Context returned by the opt-in session message-content search. */
     contentSnippet?: string
     /** The indexed message exceeded the search index budget. */
@@ -111,10 +132,15 @@ export function SessionRowSummary(props: {
         showDetailedStatus = true,
         selected = false,
         nestedTooltips = true,
+        showIssueChip = true,
         attentionTooltipId: attentionTooltipIdProp,
         lastSeenVersion,
         scheduleTooltipId: scheduleTooltipIdProp,
         className,
+        githubPrAwarenessEnabled = false,
+        showPrChip = true,
+        prChipDisplay,
+        prNowMs,
         inRunningSection = false,
         projectLabel,
         machineLabel,
@@ -154,6 +180,10 @@ export function SessionRowSummary(props: {
     const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
     const importedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const timeLabel = getSessionTimeLabel(s, importedAt, t)
+    const primaryPrRef = githubPrAwarenessEnabled
+        ? getPrimaryGithubPrRef(s.metadata?.externalRefs)
+        : null
+    const linkedIssue = getLinkedGithubIssue(s.metadata)
 
     // Presence lives on the agent icon (pulsing while a turn or background
     // work runs) instead of dimming disconnected rows or adding spinners.
@@ -202,6 +232,7 @@ export function SessionRowSummary(props: {
                         >
                             {sessionName}
                         </div>
+                        {showIssueChip && linkedIssue ? <IssueRefChip ref={linkedIssue} /> : null}
                         {isUnread ? (
                             <>
                                 <span data-testid="session-unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" />
@@ -250,7 +281,8 @@ export function SessionRowSummary(props: {
                             </span>
                         ) : null}
                     </div>
-                    <div className={`flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs ${trailingClassName ?? ''}`}>
+                    {/* overflow-visible so the PR chip HoverTooltip is not clipped */}
+                    <div className={`flex min-w-0 items-center justify-end gap-2 overflow-visible text-xs ${trailingClassName ?? ''}`}>
                         {todoProgress ? (
                             <span className="flex shrink-0 items-center gap-1 text-[var(--app-hint)]">
                                 <BulbIcon className="h-3 w-3" />
@@ -261,6 +293,14 @@ export function SessionRowSummary(props: {
                             <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
+                        ) : null}
+                        {primaryPrRef && showPrChip ? (
+                            <SessionPrChip
+                                refs={s.metadata?.externalRefs}
+                                displayProfile={prChipDisplay}
+                                nowMs={prNowMs}
+                                interactive={false}
+                            />
                         ) : null}
                         {timeLabel ? (
                             <span className={`min-w-0 truncate whitespace-nowrap tabular-nums ${

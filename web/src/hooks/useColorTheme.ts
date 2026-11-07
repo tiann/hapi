@@ -240,6 +240,7 @@ export function applyColorTheme(theme: ColorThemePreset = getStoredColorTheme(),
         '--app-fg': values.foreground,
         '--app-hint': values.hint,
         '--app-link': values.accent,
+        '--app-link-muted': withAlpha(values.accent, MUTED_ACCENT_ALPHA[scheme]),
         '--app-button': values.accent,
         '--app-button-text': values.buttonText,
         '--app-banner-bg': values.accent,
@@ -280,7 +281,7 @@ export function applyColorTheme(theme: ColorThemePreset = getStoredColorTheme(),
 
 function removeThemeProperties(root: HTMLElement): void {
     const properties = [
-        '--app-bg', '--app-fg', '--app-hint', '--app-link', '--app-button', '--app-button-text', '--app-banner-bg', '--app-banner-text',
+        '--app-bg', '--app-fg', '--app-hint', '--app-link', '--app-link-muted', '--app-button', '--app-button-text', '--app-banner-bg', '--app-banner-text',
         '--app-secondary-bg', '--app-dialog-bg', '--app-chat-user-bg', '--app-chat-user-fg', '--app-chat-user-chip-bg',
         '--app-chat-user-chip-fg', '--app-tool-card-bg', '--app-tool-card-hover-bg', '--app-tool-card-accent',
         '--app-tool-card-muted-action-fg', '--app-tool-card-subtitle', '--app-code-header-bg', '--app-code-header-fg', '--app-code-bg',
@@ -338,10 +339,15 @@ function mix(a: string, b: string, weight: number): string {
     return toHex(channel(ca.r, cb.r), channel(ca.g, cb.g), channel(ca.b, cb.b))
 }
 
-function withAlpha(hex: string, alpha: number): string {
+export function withAlpha(hex: string, alpha: number): string {
     const color = parseHex(hex)
     return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`
 }
+
+// Matches each scheme's static `--app-link-muted` alpha in index.css
+// (0.18 / 0.2 / 0.22) — single source of truth shared by both the color-theme
+// preset path (below) and the per-key custom accent override (useThemeColors.ts).
+export const MUTED_ACCENT_ALPHA: Record<ColorScheme, number> = { light: 0.18, dark: 0.2, oled: 0.22 }
 
 function compositeOnBackground(rgba: string, background: string): string {
     const match = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(rgba)

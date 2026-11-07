@@ -32,7 +32,8 @@ describe('ListCodexSessionsRpcResponseSchema', () => {
 
         expect(parsed.success).toBe(true)
         if (parsed.success) {
-            expect(parsed.sessions[0]?.messages).toHaveLength(1)
+            const session = parsed.sessions[0]
+            expect(session && 'messages' in session && session.messages).toHaveLength(1)
         }
     })
 })
@@ -63,7 +64,10 @@ describe('ListPiSessionsRpcResponseSchema', () => {
         })
 
         expect(parsed.success).toBe(true)
-        if (parsed.success) expect(parsed.sessions[0]?.messages?.[0]?.entryId).toBe('entry-1')
+        if (parsed.success) {
+            const session = parsed.sessions[0]
+            expect(session && 'messages' in session && session.messages[0]?.entryId).toBe('entry-1')
+        }
     })
 })
 
