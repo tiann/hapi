@@ -38,6 +38,13 @@ import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol/modes'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
 import { applySessionDisplayRename, normalizeSessionDisplayTitle } from "@/agent/sessionDisplayRename";
+import {
+    SESSION_JOB_TOOL_DESCRIPTION,
+    SESSION_JOB_TOOL_NAME,
+    handleSessionJobTool,
+    sessionJobInputSchema,
+    type SessionJobToolArgs,
+} from "@/modules/sessionJob/sessionJobMcp";
 import { SpawnPeerError, spawnPeer } from "@/modules/spawnPeer/spawnPeer";
 
 type StartHappyServerOptions = {
@@ -394,6 +401,19 @@ function createHapiMcpServer(
         }
     });
 
+    mcp.registerTool<any, any>(SESSION_JOB_TOOL_NAME, {
+        description: SESSION_JOB_TOOL_DESCRIPTION,
+        title: 'Session-Attached Job',
+        inputSchema: sessionJobInputSchema,
+    }, async (args: SessionJobToolArgs) => {
+        logger.debug('[hapiMCP] session_job:', args.action, args.jobKey);
+        const result = await handleSessionJobTool(args, client.sessionId);
+        return {
+            content: [{ type: 'text' as const, text: result.text }],
+            isError: result.isError,
+        };
+    });
+
     if (!peerToolsDisabled) {
         mcp.registerTool<any, any>('ping_peer', {
             description: PING_PEER_TOOL_DESCRIPTION,
@@ -728,6 +748,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         'display_video',
         'display_media',
         ...(peerToolsDisabled ? [] : (['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'] as const)),
+        SESSION_JOB_TOOL_NAME,
     ];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');

@@ -26,6 +26,8 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         backgroundTaskCount: 2,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         contentRevision: overrides.updatedAt ?? 0,
@@ -247,6 +249,75 @@ describe('SessionRowSummary background status', () => {
 
         expect(screen.getByLabelText('This message was truncated for search; some content may be missing.'))
             .toBeInTheDocument()
+    })
+})
+
+describe('SessionRowSummary attached job progress', () => {
+    beforeEach(() => {
+        localStorage.clear()
+        vi.useFakeTimers()
+        vi.setSystemTime(1_000_000)
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('does not invent a partial fill for remaining-only (indeterminate) jobs', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'countdown',
+                            label: 'dogfood countdown',
+                            status: 'running',
+                            remaining: 172_800,
+                            unit: 's',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 60_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText(/172800 s left/)).toBeInTheDocument()
+        // No determinate bar: no fixed fraction width (w-1/3 etc.) and no inline % width.
+        expect(container.querySelector('[class*="w-1/3"]')).toBeNull()
+        expect(container.querySelector('[class*="w-1/2"]')).toBeNull()
+        expect(container.querySelector('[style*="width"]')).toBeNull()
+    })
+
+    it('renders a real fill only when total yields a fraction', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'countdown',
+                            label: 'dogfood countdown',
+                            status: 'running',
+                            remaining: 86_400,
+                            total: 172_800,
+                            unit: 's',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 60_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        const fill = container.querySelector('[style*="width"]') as HTMLElement | null
+        expect(fill).not.toBeNull()
+        expect(fill!.style.width).toBe('50%')
     })
 })
 

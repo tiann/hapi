@@ -13,6 +13,11 @@ import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import {
+    attachedJobFraction,
+    formatAttachedJobProgress,
+    isAttachedJobStale
+} from '@/lib/attachedJob'
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -72,9 +77,10 @@ function getSessionTimeLabel(
 /**
  * Presentational session row — same chrome as the sidebar SessionItem body
  * (flavor icon with presence badge, title, request/schedule symbols, todos,
- * relative time, path). Visual language matches the native apps: no dimmed
- * rows or spinners; unread sessions have a separate accent dot.
- * Used by the session list and by rich-composer mention chip tooltips.
+ * relative time, path, optional attached-job meter). Visual language matches
+ * the native apps: no dimmed rows or spinners; unread sessions have a
+ * separate accent dot. Used by the session list and by rich-composer
+ * mention chip tooltips.
  */
 export function SessionRowSummary(props: {
     session: SessionSummary
@@ -149,16 +155,31 @@ export function SessionRowSummary(props: {
     )
     const attentionId = attentionTooltipIdProp ?? ownedIds.attentionId
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
-    // Rows are memoized, so the label keeps itself current.
+    // Rows are memoized, so the label keeps itself current (also advances job elapsed).
     useMinuteTick()
+    const nowMs = Date.now()
     const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
     const importedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const timeLabel = getSessionTimeLabel(s, importedAt, t)
+    const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
+    const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
+    const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
+    const jobProgressLabel = attachedJob
+        ? formatAttachedJobProgress(attachedJob, nowMs, {
+            left: t('session.item.attachedJob.left'),
+            running: t('session.item.attachedJob.running'),
+            noHeartbeat: t('session.item.attachedJob.noHeartbeat'),
+        })
+        : null
 
-    // Presence lives on the agent icon (pulsing while a turn or background
-    // work runs) instead of dimming disconnected rows or adding spinners.
+    // Presence lives on the agent icon (pulsing while a turn, background work,
+    // or outliving attached job runs) instead of dimming disconnected rows or
+    // adding spinners.
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
+    // Attached jobs keep the presence badge even when the agent is idle.
+    const showPresence = s.active || Boolean(attachedJob)
+    const presencePulse = isRunning || isBackgroundOnly || Boolean(attachedJob)
     const isUnread = sessionIsUnread(s, {
         lastSeenAt: getSessionLastSeenAt(s.id),
         manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
@@ -171,12 +192,12 @@ export function SessionRowSummary(props: {
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
             <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
-            {s.active ? (
+            {showPresence ? (
                 <span
                     data-testid="session-presence"
                     className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--app-bg)] ${
                         isBackgroundOnly ? 'bg-blue-400' : 'bg-[var(--app-badge-success-text)]'
-                    } ${isRunning || isBackgroundOnly ? 'animate-pulse' : ''}`}
+                    } ${presencePulse ? 'animate-pulse' : ''}`}
                 />
             ) : null}
         </span>
@@ -269,6 +290,45 @@ export function SessionRowSummary(props: {
                         ) : null}
                     </div>
                 </div>
+                {attachedJob && jobProgressLabel ? (
+                    <div
+                        className={`flex min-w-0 items-center gap-2 text-[11px] leading-none ${
+                            jobStale
+                                ? 'text-[var(--app-badge-warning-text)]'
+                                : 'text-[var(--app-badge-success-text)]'
+                        }`}
+                        title={
+                            jobStale
+                                ? t('session.item.attachedJob.staleTitle', {
+                                    detail: attachedJob.detail ?? attachedJob.label,
+                                })
+                                : (attachedJob.detail ?? attachedJob.label)
+                        }
+                    >
+                        <span
+                            className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${jobStale ? '' : 'animate-pulse'}`}
+                            aria-hidden="true"
+                        />
+                        <span className="min-w-0 truncate font-medium">
+                            {attachedJob.label}
+                            {jobStale ? (
+                                <span className="font-semibold"> · {t('session.item.attachedJob.stale')}</span>
+                            ) : null}
+                            <span className="font-normal opacity-80"> · {jobProgressLabel}</span>
+                        </span>
+                        {jobFraction !== null ? (
+                            <span
+                                className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
+                                aria-hidden="true"
+                            >
+                                <span
+                                    className="block h-full rounded-full bg-current transition-[width] duration-300"
+                                    style={{ width: `${Math.round(jobFraction * 100)}%` }}
+                                />
+                            </span>
+                        ) : null}
+                    </div>
+                ) : null}
                 {contentSnippet ? (
                     <div
                         className="line-clamp-2 text-xs text-[var(--app-fg)]/80"
