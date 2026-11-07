@@ -51,9 +51,11 @@ export class SharedCodexProjection {
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
         private readonly readSummaryThread?: () => Promise<unknown>,
-        private readonly observeItem?: (threadId: string, item: unknown) => void) {
+        private readonly observeItem?: (threadId: string, item: unknown) => void,
+        restoreLocators = true) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
-        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        if (!parentThreadId && restoreLocators) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        if (!restoreLocators) session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: {}, conversationHistoryPoints: {} }));
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
@@ -108,14 +110,18 @@ export class SharedCodexProjection {
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, replayTranscript = true): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
         const turnId = string(p.turnId) ?? string(record(p.turn).id);
-        const send = (body: Record<string, unknown>, key: string) => this.send({
-            ...body, ...(turnId ? { turn_id: turnId } : {})
-        }, key);
+        const send = (body: Record<string, unknown>, key: string) => {
+            if (replayTranscript) {
+                this.send({ ...body, ...(turnId ? { turn_id: turnId } : {}) }, key);
+            } else {
+                this.emitted.add(key);
+            }
+        };
         const asyncQuestions = asyncQuestionsForItem(this.threadId, item);
         if (asyncQuestions.length) {
             if (method === 'item/completed') {
@@ -145,7 +151,7 @@ export class SharedCodexProjection {
                 const text = inputText(item.content);
                 const replies = asyncQuestionReplies(text);
                 const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
-                if (displayText) this.session.sendUserMessage(displayText, undefined, id);
+                if (displayText && replayTranscript) this.session.sendUserMessage(displayText, undefined, id);
                 this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
@@ -246,7 +252,8 @@ export class SharedCodexProjection {
         }
     }
 
-    async history(thread: unknown): Promise<void> {
+    async history(thread: unknown, options?: { replayTranscript?: boolean }): Promise<void> {
+        const replayTranscript = options?.replayTranscript ?? true;
         if (record(thread).id === this.threadId) this.summaryThread = thread;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
@@ -262,7 +269,7 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                await this.project('item/started', params, undefined, true, replayTranscript);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
@@ -275,7 +282,7 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    await this.project('item/completed', params, undefined, true, replayTranscript);
                 }
             }
         }
