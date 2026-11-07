@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HAPI</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_deny">Deny</string>
+    <string name="action_reply">Reply</string>
+    <string name="sessions_empty">No sessions</string>
+    <string name="sessions_error">Can\'t reach phone</string>
+    <string name="transcript_empty">No messages yet</string>
+    <string name="not_paired">Phone not paired to a hub</string>
+    <string name="sending">Sending…</string>
+    <string name="sent">Sent</string>
+    <string name="send_failed">Failed to send</string>
+</resources>
