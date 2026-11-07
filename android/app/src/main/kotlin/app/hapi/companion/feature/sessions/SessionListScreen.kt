@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -97,12 +99,18 @@ import kotlinx.coroutines.delay
  * Inventory (mirrors the web sidebar semantics):
  * - amber "Offline · updated …" notice with Retry over snapshot data (only a
  *   failed refresh; transient SSE states are a quiet top-bar subtitle shown
- *   after 2s), pull-to-refresh, empty state and no-search-results state;
- *   search and filters live in the home toolbar;
+ *   after 2s), lens chips — unread-only, active-only, and the
+ *   pin-in-progress sections toggle — plus mark-all-read (hub-wide count,
+ *   confirm dialog), pull-to-refresh, empty state and no-search-results +
+ *   no-unread + no-active states; search and filters live in the home
+ *   toolbar;
  * - duplicate agent-session views are collapsed and fresh "new session"
  *   stubs hidden (ViewModel pipeline, web sidebar parity);
- * - pinned section first (the sort already puts globalPinned/pinned rows on
- *   top; compact "Pinned" / "Recent" headers mark the boundary);
+ * - sections: pinned first (the sort already puts globalPinned/pinned rows
+ *   on top; compact headers mark the boundary); with pin-in-progress on,
+ *   connected unpinned rows float into Running (thinking/background tasks,
+ *   pulsing) / Pending (pulsing) / Active / Idle-keepalive buckets above
+ *   the plain Sessions body;
  * - per row: a two-line-tall flavor icon whose presence badge marks
  *   connected sessions (pulsing while a turn is in flight), title with a
  *   right-aligned relative `updatedAt` (unread: semibold title + accent
@@ -111,8 +119,9 @@ import kotlinx.coroutines.delay
  *   trailing. Disconnected rows are not dimmed and have no spinner;
  * - swipe: start→end pin/unpin (project), end→start archive (live) or
  *   delete with confirmation (inactive); the row snaps back;
- * - long-press → actions sheet: mark read (unread rows), pin
- *   (none/project/global), rename (dialog),
+ * - long-press → actions sheet: mark read (unread rows), mark unread
+ *   (queues a manual-unread intent), pin (none/project/global), rename
+ *   (dialog),
  *   reopen (inactive rows; navigates into the possibly-superseding id),
  *   archive, delete (confirm; 409 while active) — optimistic store updates;
  *   failures land in a snackbar (B-M2b + B-M3ce).
@@ -136,6 +145,7 @@ fun SessionListScreen(
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
+    var markAllReadOpen by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -197,6 +207,17 @@ fun SessionListScreen(
             if (state.isOffline) {
                 OfflineNotice(lastRefreshedAt = state.lastRefreshedAt, onRetry = viewModel::refresh)
             }
+            SessionLensRow(
+                showUnreadOnly = state.showUnreadOnly,
+                showActiveOnly = state.showActiveOnly,
+                pinInProgress = state.pinInProgress,
+                unreadCount = state.unreadCount,
+                onToggleUnread = { viewModel.setUnreadOnly(!state.showUnreadOnly) },
+                onToggleActive = { viewModel.setActiveOnly(!state.showActiveOnly) },
+                onTogglePinInProgress = { viewModel.setPinInProgress(!state.pinInProgress) },
+                onMarkAllRead = { markAllReadOpen = true },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            )
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = viewModel::refresh,
@@ -205,14 +226,15 @@ fun SessionListScreen(
                     .weight(1f),
             ) {
                 if (state.rows.isEmpty()) {
-                    if (state.isSearching) {
-                        SearchEmptyState(query = state.searchQuery)
-                    } else {
-                        EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline, hasDateFilter = state.dateRange != null)
+                    when {
+                        state.isSearching -> SearchEmptyState(query = state.searchQuery)
+                        state.showUnreadOnly -> UnreadEmptyState()
+                        state.showActiveOnly -> ActiveEmptyState()
+                        else -> EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline, hasDateFilter = state.dateRange != null)
                     }
                 } else {
                     SessionRows(
-                        rows = state.rows,
+                        sections = state.sections,
                         onOpen = { sessionId ->
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
@@ -264,6 +286,10 @@ fun SessionListScreen(
                 renameRow = row
                 sheetRow = null
             },
+            onMarkUnread = {
+                viewModel.markSessionUnread(row.id)
+                sheetRow = null
+            },
             onReopen = {
                 viewModel.reopenSession(row.id)
                 sheetRow = null
@@ -298,37 +324,58 @@ fun SessionListScreen(
             onDismiss = { deleteRow = null },
         )
     }
+    if (markAllReadOpen) {
+        MarkAllReadDialog(
+            count = state.unreadCount,
+            onConfirm = {
+                viewModel.markAllSessionsRead()
+                markAllReadOpen = false
+            },
+            onDismiss = { markAllReadOpen = false },
+        )
+    }
 }
 
 // ------------------------------------------------------------------ list --
 
 @Composable
 private fun SessionRows(
-    rows: List<SessionRowUi>,
+    sections: List<SessionSectionUi>,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
     onSwipePin: (SessionRowUi) -> Unit = {},
     onSwipeEnd: (SessionRowUi) -> Unit = {},
 ) {
-    // The sort contract puts globalPinned/pinned rows first; the boundary
-    // index is where the pinned section ends.
-    val pinnedCount = rows.takeWhile {
-        it.summary.globalPinned == true || it.summary.pinned == true
-    }.size
-
     LazyColumn(modifier = Modifier.fillMaxSize()) {
-        if (pinnedCount > 0) {
-            item(key = "header-pinned") { SectionHeader(stringResource(R.string.sessions_section_pinned)) }
-        }
-        items(rows.take(pinnedCount), key = { it.id }) { row ->
-            SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
-        }
-        if (pinnedCount in 1 until rows.size) {
-            // "Recent", not "Sessions": the top bar title already says so.
-            item(key = "header-recent") { SectionHeader(stringResource(R.string.sessions_section_recent)) }
-        }
-        items(rows.drop(pinnedCount), key = { it.id }) { row ->
-            SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
+        sections.forEachIndexed { index, section ->
+            when (section.kind) {
+                SessionSectionKind.PINNED -> item(key = "header-pinned") {
+                    SectionHeader(stringResource(R.string.sessions_section_pinned))
+                }
+                SessionSectionKind.RUNNING -> item(key = "header-running") {
+                    BucketSectionHeader(R.string.sessions_section_running, color = RunningGreen, pulse = true)
+                }
+                SessionSectionKind.PENDING -> item(key = "header-pending") {
+                    BucketSectionHeader(R.string.sessions_section_pending, color = PendingAmber, pulse = true)
+                }
+                SessionSectionKind.ACTIVE -> item(key = "header-active") {
+                    BucketSectionHeader(R.string.sessions_section_active, color = null, pulse = false)
+                }
+                SessionSectionKind.IDLE -> item(key = "header-idle") {
+                    BucketSectionHeader(R.string.sessions_section_idle, color = null, pulse = false)
+                }
+                // The plain body keeps the old look: unlabeled when it is the
+                // only section, divider + header once something sits above it.
+                SessionSectionKind.RECENT -> if (index > 0) item(key = "divider-recent") {
+                    Column {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        SectionHeader(stringResource(R.string.sessions_section_sessions))
+                    }
+                }
+            }
+            items(section.rows, key = { it.id }) { row ->
+                SwipeableSessionRow(row, onOpen, onLongPress, onSwipePin, onSwipeEnd)
+            }
         }
     }
 }
@@ -414,6 +461,47 @@ private fun SwipeBackground(row: SessionRowUi, direction: SwipeToDismissBoxValue
 private val ICON_SIZE = 30.dp
 private val ICON_SPACING = 12.dp
 private val PRESENCE_GREEN = Color(0xFF34C759)
+
+/** Bucket accent colors — the row spinner's green, an amber for pending (web: success/warning badges). */
+private val RunningGreen = Color(0xFF34C759)
+private val PendingAmber = Color(0xFFFF9F0A)
+
+/**
+ * Running-bucket header: a status dot — pulsing for live states (working /
+ * pending), steady for quiet ones (active / idle) — plus the label in the
+ * bucket's accent color (web: `RUNNING_BUCKETS` pulse/colorClass).
+ */
+@Composable
+private fun BucketSectionHeader(labelRes: Int, color: Color?, pulse: Boolean) {
+    val dotColor = color ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val alpha = if (pulse) {
+        val transition = rememberInfiniteTransition(label = "bucket-pulse")
+        transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+            label = "bucket-pulse-alpha",
+        ).value
+    } else {
+        1f
+    }
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .background(dotColor.copy(alpha = alpha), CircleShape),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelMedium,
+            color = dotColor,
+        )
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -686,6 +774,109 @@ private fun SearchEmptyState(query: String) {
     }
 }
 
+/**
+ * Lens chips + mark-all-read (web toolbar parity): the transient unread-only
+ * and active-only lenses, the pin-in-progress sections toggle, and — only
+ * while something is unread — the mark-all-read button with the hub-wide
+ * count. Horizontally scrollable: three chips + button overflows narrow
+ * screens.
+ */
+@Composable
+private fun SessionLensRow(
+    showUnreadOnly: Boolean,
+    showActiveOnly: Boolean,
+    pinInProgress: Boolean,
+    unreadCount: Int,
+    onToggleUnread: () -> Unit,
+    onToggleActive: () -> Unit,
+    onTogglePinInProgress: () -> Unit,
+    onMarkAllRead: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        item {
+            FilterChip(
+                selected = showUnreadOnly,
+                onClick = onToggleUnread,
+                label = { Text(stringResource(R.string.sessions_unread_filter)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = showActiveOnly,
+                onClick = onToggleActive,
+                label = { Text(stringResource(R.string.sessions_active_filter)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = pinInProgress,
+                onClick = onTogglePinInProgress,
+                label = { Text(stringResource(R.string.sessions_pin_in_progress)) },
+            )
+        }
+        if (unreadCount > 0) {
+            item {
+                TextButton(onClick = onMarkAllRead) {
+                    Text(stringResource(R.string.sessions_mark_all_read, unreadCount))
+                }
+            }
+        }
+    }
+}
+
+/** Lens on but everything is read — distinct from the plain empty list. */
+@Composable
+private fun UnreadEmptyState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_unread_empty_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_unread_empty_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Lens on but nothing is active — distinct from the plain empty list. */
+@Composable
+private fun ActiveEmptyState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_active_empty_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_active_empty_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @Composable
 private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Boolean = false) {
     // verticalScroll keeps the pull-to-refresh gesture available even though
@@ -733,6 +924,7 @@ private fun SessionActionsSheet(
     onSetPinMode: (PinMode) -> Unit,
     onArchive: () -> Unit,
     onRename: () -> Unit,
+    onMarkUnread: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
     onMarkRead: () -> Unit = {},
@@ -760,6 +952,7 @@ private fun SessionActionsSheet(
             SheetAction(stringResource(R.string.sessions_action_pin_global)) { onSetPinMode(PinMode.Global) }
         }
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
+        SheetAction(stringResource(R.string.sessions_action_mark_unread), onClick = onMarkUnread)
         if (!summary.active) {
             SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
         }
@@ -828,11 +1021,23 @@ private fun SessionRowsPreview() {
     HapiTheme {
         Surface {
             SessionRows(
-                rows = listOf(
-                    previewRow("s1", "Pinned build fix", pinned = true),
-                    previewRow("s2", "Session list UI", active = true, thinking = true, unread = true, todo = TodoProgress(3, 5)),
-                    previewRow("s3", "Fixture sweep", active = true, pending = 2),
-                    previewRow("s4", "Old research"),
+                sections = listOf(
+                    SessionSectionUi(
+                        SessionSectionKind.PINNED,
+                        listOf(previewRow("s1", "Pinned build fix", pinned = true)),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.RUNNING,
+                        listOf(previewRow("s2", "Session list UI", active = true, thinking = true, unread = true, todo = TodoProgress(3, 5))),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.PENDING,
+                        listOf(previewRow("s3", "Fixture sweep", active = true, pending = 2)),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.RECENT,
+                        listOf(previewRow("s4", "Old research")),
+                    ),
                 ),
                 onOpen = {},
                 onLongPress = {},

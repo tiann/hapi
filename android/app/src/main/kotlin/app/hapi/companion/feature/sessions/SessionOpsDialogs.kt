@@ -78,6 +78,34 @@ fun DeleteSessionDialog(
     )
 }
 
+/**
+ * Mark-all-read confirmation — local device state, but irreversible in the
+ * "unread markers are gone" sense, so it shares the confirm-dialog pattern
+ * with the destructive ops (web parity).
+ */
+@Composable
+fun MarkAllReadDialog(
+    count: Int,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.sessions_mark_all_read_title)) },
+        text = {
+            Text(stringResource(R.string.sessions_mark_all_read_description, count))
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.sessions_mark_all_read_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.sessions_cancel)) }
+        },
+    )
+}
+
 // -------------------------------------------------------------- previews --
 
 @Preview
@@ -93,5 +121,13 @@ private fun RenameSessionDialogPreview() {
 private fun DeleteSessionDialogPreview() {
     HapiTheme {
         DeleteSessionDialog(sessionTitle = "Fixture sweep", onConfirm = {}, onDismiss = {})
+    }
+}
+
+@Preview
+@Composable
+private fun MarkAllReadDialogPreview() {
+    HapiTheme {
+        MarkAllReadDialog(count = 3, onConfirm = {}, onDismiss = {})
     }
 }
