@@ -108,6 +108,64 @@ If you use the dev-only workaround, assume MITM risk; do not use on public netwo
 
 </details>
 
+## Cloudflare Access (optional web login)
+
+Instead of typing the long-lived HAPI access token, allowlisted users can open
+the web app directly when the hub is fronted by
+[Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
+Configure an Access application (for example with Google as the identity
+provider) in front of the hub origin, then set three environment variables on
+the hub:
+
+```bash
+export HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN="myteam.cloudflareaccess.com"
+export HAPI_CLOUDFLARE_ACCESS_AUD="your-access-application-audience"
+export HAPI_CLOUDFLARE_ACCESS_USERS='{"alice@example.com":"default","bob@example.com":"work"}'
+hapi hub
+```
+
+- Set these variables in the environment of the **Hub process** before it
+  starts. For systemd, use the service's `Environment` or `EnvironmentFile`;
+  for Docker Compose, use the Hub service's `environment` or `env_file`.
+  Restart the Hub after changing them. Browsers and CLI runners do not need
+  these variables.
+- `TEAM_DOMAIN` is the team's `<team>.cloudflareaccess.com` hostname without
+  `https://` or a path. To find `AUD`, open Cloudflare **Zero Trust → Access
+  controls → Applications → your application's Configure → Additional
+  settings → Application Audience (AUD) Tag**. See the
+  [official AUD instructions](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/#get-your-aud-tag).
+- Each Hub supports one Access team and one application audience. That
+  application can use multiple identity providers. Map each allowed email
+  to the intended existing HAPI namespace; `default` grants Hub owner access.
+- Open the Hub-hosted web app through the protected Access application,
+  complete Access login, and HAPI signs in automatically. Telegram, URL-token
+  and saved-token sources take precedence. To try automatic Access discovery,
+  open a URL without `token=` in a browser profile with no saved HAPI access token.
+- The variables are env-only and are never written to `settings.json`. The
+  feature stays disabled unless all three are set; a partial or malformed
+  bundle aborts startup.
+- `HAPI_CLOUDFLARE_ACCESS_USERS` is an exact-email allowlist: assertions
+  whose email is not listed are rejected (403). Email matching is
+  case-insensitive. Identity-provider selection (Google, or any other IdP)
+  happens in the Cloudflare Access policy — HAPI is provider-independent and
+  only consumes the verified `sub` and `email` claims.
+- Assertions are verified at the hub origin (RS256, fixed issuer/audience,
+  expiry) against the team's JWKS endpoint. The issuer and JWKS URL are always
+  derived from `HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN`, never from JWT claims or
+  incoming `Host`/`Forwarded` headers; the email-only forwarded header is
+  untrusted.
+- The issued web session is bound to the Access identity and expires at the
+  earlier of 4 hours and the Access assertion expiry. Protected REST/SSE
+  requests, terminal WebSocket handshakes, and voice WebSocket upgrades
+  re-verify the current Access assertion, so a captured bound JWT alone is not
+  enough to authenticate. Already-open SSE/WS streams are not continuously
+  revoked — the checks apply to HTTP requests/handshakes and authentication
+  refreshes.
+- The web app only attempts Cloudflare discovery for same-origin hub requests
+  and gives up after 5 s, so hubs without the capability (or older hubs)
+  fall back to the existing manual login. Telegram login, URL-token login,
+  and stored-token login are unchanged, and no native SSO pairing is added.
+
 ## Background service deployment
 
 Keep HAPI running persistently so it survives terminal closes, system restarts, and continues running in the background.
