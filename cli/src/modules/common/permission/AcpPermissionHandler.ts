@@ -49,7 +49,11 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => PermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionMode | undefined,
+        /** Called synchronously with the pending close-based cancellation when
+         *  a permission decision aborts, before the handler awaits it — lets
+         *  the host serialize follow-up work against the close response. */
+        private readonly onAbortClose?: (cancellation: Promise<void>) => void
     ) {
         super(session)
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request))
@@ -113,7 +117,14 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
 
         if (decision === 'abort' && request) {
-            await this.backend.cancelPrompt(request.sessionId)
+            // Hand the pending cancellation to the host synchronously (before
+            // awaiting) so it can record it as an in-flight close immediately —
+            // the current prompt may complete while session/close is still on
+            // the wire, and the host must not send follow-up work to the
+            // closing session in that gap.
+            const cancellation = this.backend.cancelPrompt(request.sessionId)
+            this.onAbortClose?.(cancellation)
+            await cancellation
         }
         if (request) {
             await this.backend.respondToPermission(request.sessionId, request, mapDecisionToOutcome(request, decision))

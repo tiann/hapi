@@ -52,7 +52,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resumes through its native ACP `session/resume`; sessions without a native DSH session id stay resumable-unavailable rather than falling back to a fresh shell. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
 ### Mathematical formulas in HAPI Markdown
 
@@ -276,6 +276,11 @@ than npm's stale `latest` tag:
 ```bash
 npm install -g @deepseek-ai/dsh-acp-demo@0.1.0-rc.7
 ```
+
+The demo package has not tracked recent DSH releases; resume support here was
+validated against `@deepseek-ai/dsh` 0.2.0-rc.2 launched with `dsh --profile
+acp` (via `HAPI_DSH_ACP_COMMAND=dsh` and
+`HAPI_DSH_ACP_ARGS_JSON='["--profile","acp"]'`).
 
 A published package still needs a DSH Cordis composition/config. A source
 checkout can be launched directly:

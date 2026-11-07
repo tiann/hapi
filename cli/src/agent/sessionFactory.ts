@@ -170,6 +170,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.cursorSessionProtocol !== undefined) preserved.cursorSessionProtocol = metadata.cursorSessionProtocol
     if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId
     if (metadata.copilotSessionId !== undefined) preserved.copilotSessionId = metadata.copilotSessionId
+    if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.piSessionId !== undefined) preserved.piSessionId = metadata.piSessionId
     if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.piResumeAttempt !== undefined) preserved.piResumeAttempt = metadata.piResumeAttempt
