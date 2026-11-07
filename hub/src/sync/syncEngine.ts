@@ -3024,6 +3024,12 @@ export class SyncEngine {
     /** Preserve shared-fork attachment copies before an external deletion transaction removes the source row. */
     async prepareSessionForDeletion(sessionId: string, options?: { requireTargetHydration?: boolean; allowLifecycleGuard?: boolean }): Promise<void> {
         if (!options?.allowLifecycleGuard) this.assertSessionDeletionAllowed(sessionId)
+        // A duplicate merge snapshots this session's messages and attachments.
+        // After a Hub restart the in-memory hydration maps are empty, so a
+        // shared-fork child can look complete even though its inherited
+        // attachments were never materialized. Rebuild and await its own
+        // durable hydration before taking that snapshot.
+        if (options?.requireTargetHydration) await this.ensureSharedForkSourceHydrated(sessionId)
         await this.ensureSharedForkChildrenBeforeDelete(sessionId)
         await this.waitForSharedForkAttachmentHydration(sessionId)
         await this.settleSharedForkAttachmentTarget(sessionId, options?.requireTargetHydration === true)

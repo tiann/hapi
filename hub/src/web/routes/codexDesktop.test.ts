@@ -1568,6 +1568,128 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('hydrates a restarted duplicate source before merging its inherited attachments', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-unhydrated-duplicate-merge-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const setupEngine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const ancestor = setupEngine.getOrCreateSession(
+            'ancestor-unhydrated-duplicate-session',
+            {
+                path: 'C:/work/project',
+                host: 'test-host',
+                machineId: 'machine',
+                codexSessionId: 'codex-thread-unhydrated-ancestor',
+                flavor: 'codex',
+                capabilities: { concurrentClients: true }
+            },
+            {},
+            'default'
+        )
+        const source = setupEngine.getOrCreateSession(
+            'source-unhydrated-duplicate-session',
+            {
+                path: 'C:/work/project',
+                host: 'test-host',
+                machineId: 'machine',
+                codexSessionId: 'codex-thread-unhydrated-child',
+                flavor: 'codex',
+                capabilities: { concurrentClients: true },
+                forkedFrom: ancestor.id,
+                forkedThroughMessageLocalId: 'ancestor-unhydrated-tip'
+            },
+            {},
+            'default'
+        )
+        const canonical = setupEngine.getOrCreateSession(
+            'canonical-unhydrated-duplicate-session',
+            {
+                path: 'C:/work/project',
+                host: 'test-host',
+                machineId: 'machine',
+                codexSessionId: 'codex-thread-unhydrated-child'
+            },
+            {},
+            'default'
+        )
+        store.sessions.touchSessionUpdatedAt(canonical.id, Date.now() + 1_000, 'default')
+        const attachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: ancestor.id,
+            filename: 'unhydrated-original.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('unhydrated inherited original')
+        })
+        store.messages.addMessage(ancestor.id, {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'inherited attachment prompt',
+                attachments: [{
+                    id: 'unhydrated-message-attachment',
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    attachmentId: attachment.id
+                }]
+            }
+        }, 'ancestor-unhydrated-tip')
+        store.messages.markMessagesInvoked(ancestor.id, ['ancestor-unhydrated-tip'], Date.now())
+        store.messages.addMessage(source.id, {
+            role: 'user',
+            content: { type: 'text', text: 'inherited attachment prompt' }
+        }, 'source-unhydrated-tip')
+        store.messages.addMessage(canonical.id, {
+            role: 'user',
+            content: { type: 'text', text: 'inherited attachment prompt' }
+        }, 'canonical-unhydrated-tip')
+
+        // Simulate a Hub restart after the child row and fork boundary were
+        // persisted, but before inherited attachment hydration completed.
+        setupEngine.stop()
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-unhydrated-child'] })
+            })
+            expect(response.status).toBe(200)
+            expect(await response.json()).toMatchObject({ success: true })
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).toBeNull()
+
+            const mergedMessage = store.messages.getAllMessages(canonical.id).find((message) => {
+                const attachments = (message.content as {
+                    content?: { attachments?: Array<{ attachmentId?: string }> }
+                }).content?.attachments
+                return Boolean(attachments?.length)
+            })
+            const copiedId = (mergedMessage?.content as {
+                content?: { attachments?: Array<{ attachmentId?: string }> }
+            } | undefined)?.content?.attachments?.[0]?.attachmentId
+            expect(copiedId).toBeDefined()
+            expect(copiedId).not.toBe(attachment.id)
+            expect((await store.attachments.readForSessionAsync(copiedId!, 'default', canonical.id))?.data)
+                .toEqual(Buffer.from('unhydrated inherited original'))
+
+            const cachedAncestor = engine.getSession(ancestor.id)
+            if (cachedAncestor) cachedAncestor.active = false
+            await engine.deleteSession(ancestor.id)
+            expect((await store.attachments.readForSessionAsync(copiedId!, 'default', canonical.id))?.data)
+                .toEqual(Buffer.from('unhydrated inherited original'))
+        } finally {
+            engine.stop()
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
     it('refuses to merge a duplicate source whose Codex resume startup is unconfirmed', async () => {
         const root = mkdtempSync(join(tmpdir(), 'hapi-codex-resume-pending-merge-'))
         const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
