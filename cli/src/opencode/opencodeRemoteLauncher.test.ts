@@ -2867,6 +2867,46 @@ describe('selectAbortStatusMessage', () => {
         addMessage.mockRestore();
     });
 
+    it('plain Stop during post-prompt summary settlement does not leave the dequeue loop spinning on an aborted signal', async () => {
+        roundSummaryHarness.summaryImpl = ({ promptText }) => {
+            return promptText.includes('completed first prompt')
+                ? new Promise<unknown>(() => {})
+                : Promise.resolve(null);
+        };
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'completed first prompt', mode: createMode() }
+        ], { keepOpen: true });
+        // An aborted dequeue signal resolves immediately; a loop that keeps
+        // re-reading it never yields to timers. Trip the spin instead of hanging.
+        const realWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        let abortedWaits = 0;
+        vi.spyOn(session.queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal');
+            return realWait(signal);
+        });
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        while (
+            !rpcHandlers.has(RPC_METHODS.Abort)
+            || !roundSummaryHarness.summaryCalls.some(({ promptText }) => promptText.includes('completed first prompt'))
+        ) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        session.queue.push('queued second prompt', createMode());
+        const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined;
+        await abortHandler!();
+        for (let attempt = 0; attempt < 50 && !JSON.stringify(harness.promptContents).includes('queued second prompt'); attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.close();
+        await launchPromise;
+
+        expect(abortedWaits).toBeLessThan(5);
+        expect(JSON.stringify(harness.promptContents)).toContain('queued second prompt');
+        expect(harness.cancelPrompt).not.toHaveBeenCalled();
+    });
+
     it('attempts and delivers a summary after a caught prompt error', async () => {
         harness.promptImpl = async () => { throw new Error('fixture prompt failure'); };
         roundSummaryHarness.summaryImpl = async () => ({

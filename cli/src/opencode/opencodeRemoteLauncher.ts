@@ -2281,7 +2281,15 @@ ${messageText}`;
                 entry.backend === this.backend && entry.turnEpoch === this.steerTurnEpoch
             )
             && !this.v2AbortInProgress
-        ) return;
+        ) {
+            // The Abort entry hook already aborted the dequeue signal to wake an
+            // idle wait. This metadata-only Stop skips performAbort, which is what
+            // normally replaces the controller, so recycle it here: otherwise the
+            // loop re-reads the aborted signal forever and never reaches the
+            // queued input.
+            if (this.abortController.signal.aborted) this.abortController = new AbortController();
+            return;
+        }
 
         if (this.majorVersion !== 'v2') return this.performAbort(leavingRemote);
         const inProgress = this.v2AbortInProgress;
