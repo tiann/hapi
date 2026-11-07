@@ -115,7 +115,7 @@ public enum NewSessionLogic {
     /// (`web/src/lib/codexFamilyPermissionAgents.ts`). Gemini is listed for
     /// completeness though it is not creatable.
     public static let codexFamilyPermissionAgents: Set<AgentFlavor> = [
-        .codex, .gemini, .kimi, .copilot, .opencode,
+        .codex, .gemini, .kimi, .copilot, .opencode, .dsh,
     ]
 
     public static func usesCodexFamilyPermissionModes(_ flavor: AgentFlavor) -> Bool {
@@ -136,8 +136,8 @@ public enum NewSessionLogic {
         switch flavor {
         case .claude, .grok: return .bypassPermissions
         case .agy: return .alwaysProceed
-        case .codex, .copilot, .cursor, .gemini, .kimi, .opencode: return .yolo
-        case .dsh, .pi, .other: return nil
+        case .codex, .copilot, .cursor, .gemini, .kimi, .opencode, .dsh: return .yolo
+        case .pi, .other: return nil
         }
     }
 
@@ -191,7 +191,7 @@ public enum NewSessionLogic {
             modelReasoningEffort: (sendsReasoningEffort && form.modelReasoningEffort != "default")
                 ? form.modelReasoningEffort
                 : nil,
-            yolo: (agent == .dsh || usesNativePermissionSelect(agent)) ? nil : form.yolo,
+            yolo: usesNativePermissionSelect(agent) ? nil : form.yolo,
             permissionMode: usesNativePermissionSelect(agent) ? form.permissionMode : nil,
             sessionType: form.sessionType,
             worktreeName: (form.sessionType == .worktree && !trimmedWorktreeName.isEmpty)

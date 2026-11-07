@@ -938,7 +938,7 @@ class NewSessionViewModel(
         // null (not probed/omitted/failed) keeps the option fully available.
         val grokAutoUnavailable = agent == "grok" && catalogs.grokAutoSupported == false
         val permission: PermissionUi = when {
-            agent == "pi" || agent == "dsh" -> PermissionUi.Managed
+            agent == "pi" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
                 PermissionModes.forFlavor(agent).map { mode ->
                     val unavailable = grokAutoUnavailable && mode == PermissionMode.Auto
@@ -1014,7 +1014,7 @@ class NewSessionViewModel(
         fun hapiYoloNativeMode(flavor: String?): PermissionMode? = when (flavor) {
             "claude", "grok" -> PermissionMode.BypassPermissions
             "agy" -> PermissionMode.AlwaysProceed
-            "codex", "copilot", "cursor", "gemini", "kimi", "opencode" -> PermissionMode.Yolo
+            "codex", "copilot", "cursor", "dsh", "gemini", "kimi", "opencode" -> PermissionMode.Yolo
             else -> null
         }
 

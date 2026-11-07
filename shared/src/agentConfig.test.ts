@@ -32,14 +32,15 @@ describe('agent config descriptors', () => {
         }))
     })
 
-    test('reports DSH permission as managed by its ACP composition', () => {
+    test('exposes DSH permission as a regular picker field (ACP bridge honors it)', () => {
         const descriptor = getAgentConfigDescriptor('dsh')
         expect(descriptor.fields).toEqual([expect.objectContaining({
             id: 'permission',
-            kind: 'status',
-            availability: 'managed'
+            kind: 'select',
+            optionSource: 'static',
+            availability: 'both'
         })])
-        expect(resolveHapiYoloPermissionMode('dsh')).toBeNull()
+        expect(resolveHapiYoloPermissionMode('dsh')).toBe('yolo')
     })
 
     test('reports Pi permission as managed rather than pretending YOLO applies', () => {

@@ -55,6 +55,10 @@ export function createDshBackend(env: NodeJS.ProcessEnv = process.env): AcpSdkBa
         command,
         args,
         env: filterEnv(env),
-        flavor: 'dsh'
+        flavor: 'dsh',
+        // dsh 0.2.x exits its process on the standard session/cancel
+        // notification; cancel by closing the session instead (the launcher
+        // respawns the ACP session for the next message).
+        cancelMode: 'close-fallback'
     })
 }

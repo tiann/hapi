@@ -14,6 +14,7 @@ const {
     runPiMock,
     runAgyMock,
     runDshMock,
+    runCursorMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ const {
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
     runDshMock: vi.fn(async () => {}),
+    runCursorMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -56,6 +58,7 @@ vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/dsh/runDsh', () => ({ runDsh: runDshMock }))
+vi.mock('@/cursor/runCursor', () => ({ runCursor: runCursorMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -88,6 +91,7 @@ describe('resumeCommand', () => {
         runPiMock.mockClear()
         runAgyMock.mockClear()
         runDshMock.mockClear()
+        runCursorMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -121,6 +125,66 @@ describe('resumeCommand', () => {
             model: 'gpt-5.4',
             modelReasoningEffort: 'xhigh',
             collaborationMode: 'default'
+        })
+    })
+
+    it('dispatches a DSH target to runDsh instead of the cursor fall-through', async () => {
+        // Without an explicit branch the dsh flavor fell through to runCursor,
+        // bootstrapping the row with flavor 'cursor' and the ACP id.
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'acp-session-1',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'acp-session-1',
+            startedBy: 'terminal',
+            startingMode: 'remote'
+        })
+        expect(runCursorMock).not.toHaveBeenCalled()
+    })
+
+    it('hands off an active DSH target to the local terminal before dispatching to runDsh', async () => {
+        // Active targets are stopped via the HandoffLocal RPC first; runDsh
+        // must register that handler, and resume must await the handoff before
+        // dispatching locally so the running copy archives cleanly.
+        let dispatchedBeforeHandoffCompleted = false
+        handoffSessionToLocalMock.mockImplementation(async () => {
+            dispatchedBeforeHandoffCompleted = runDshMock.mock.calls.length > 0
+        })
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: true,
+            controlledByUser: false,
+            agentSessionId: 'acp-session-1',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-session-dsh')
+        expect(dispatchedBeforeHandoffCompleted).toBe(false)
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'acp-session-1',
+            startedBy: 'terminal',
+            startingMode: 'remote'
         })
     })
 
