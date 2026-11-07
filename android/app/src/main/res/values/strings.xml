@@ -346,6 +346,7 @@
     <string name="chat_queued_scheduled">Scheduled for %1$s</string>
     <string name="chat_queued_steer">Steer</string>
     <string name="chat_queued_edit">Edit</string>
+    <string name="chat_markdown_image_failed">Image failed to load · Tap to retry</string>
     <string name="chat_picker_title">Attach</string>
     <string name="chat_picker_photos">Photo library</string>
     <string name="chat_picker_camera">Camera</string>

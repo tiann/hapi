@@ -4,16 +4,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
@@ -28,10 +27,14 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.layout.layoutId
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
@@ -50,6 +53,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import app.hapi.companion.feature.chat.ChatMedia
+import app.hapi.companion.feature.chat.LocalChatMedia
 import app.hapi.companion.ui.theme.HapiExtendedColors
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.markdown.HrefDecision
@@ -238,18 +243,23 @@ private fun headingStyle(level: Int): TextStyle {
 @Composable
 private fun MarkdownBlockQuote(node: BlockQuote, parsed: ParsedMarkdown) {
     val colors = MaterialTheme.hapi
+    // The bar is drawn instead of intrinsic-sized: `height(IntrinsicSize.Min)`
+    // walks intrinsic height into the children, which crashes on
+    // image-bearing spans (SubcomposeLayout cannot answer intrinsics) and
+    // coerces the quote to the intrinsic estimate even without images.
     Row(
         modifier = Modifier
-            .height(IntrinsicSize.Min)
             .clip(RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp))
-            .background(colors.blockquoteBackground),
+            .background(colors.blockquoteBackground)
+            .drawBehind {
+                drawRect(
+                    color = colors.blockquoteBar,
+                    topLeft = Offset.Zero,
+                    size = Size(3.dp.toPx(), size.height),
+                )
+            },
     ) {
-        Box(
-            Modifier
-                .width(3.dp)
-                .fillMaxHeight()
-                .background(colors.blockquoteBar),
-        )
+        Box(Modifier.width(3.dp))
         CompositionLocalProvider(LocalContentColor provides colors.blockquoteForeground) {
             Column(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -463,18 +473,45 @@ private fun MarkdownInlineText(
 ) {
     val handler = LocalMarkdownLinkHandler.current
     val colors = MaterialTheme.hapi
-    val annotated = remember(parent, colors, handler) {
-        buildAnnotatedString {
-            appendInlineChildren(parent, InlineContext(colors, handler), insideLink = false)
+    val media = LocalChatMedia.current
+    val resolvedStyle = if (textAlign != null) style.copy(textAlign = textAlign) else style
+    val (annotated, images) = remember(parent, colors, handler, media) {
+        val ctx = InlineContext(colors, handler, media)
+        buildAnnotatedString { appendInlineChildren(parent, ctx, insideLink = false) } to ctx.images.toList()
+    }
+    if (images.isEmpty()) {
+        Text(text = annotated, style = resolvedStyle)
+        return
+    }
+    // Inline image placeholders adapt to the measured column width (web
+    // `max-w-full`); the subcompose only exists for image-bearing spans, and
+    // the boundary keeps container intrinsic passes (table column sizing,
+    // blockquote bars) off the subcompose — its intrinsics policy throws.
+    IntrinsicSafeImageSpan(imageCount = images.size) {
+        BoxWithConstraints {
+            val density = LocalDensity.current
+            val inlineContent = remember(images, maxWidth, density, media) {
+                markdownImageInlineContent(images, maxWidth, density, media)
+            }
+            Text(text = annotated, style = resolvedStyle, inlineContent = inlineContent)
         }
     }
-    Text(
-        text = annotated,
-        style = if (textAlign != null) style.copy(textAlign = textAlign) else style,
-    )
 }
 
-private class InlineContext(val colors: HapiExtendedColors, val handler: MarkdownLinkHandler) {
+private class InlineContext(
+    val colors: HapiExtendedColors,
+    val handler: MarkdownLinkHandler,
+    val media: ChatMedia,
+) {
+    /** Inline image specs in document order (ordinal = placeholder key suffix). */
+    val images: MutableList<MarkdownInlineImageSpec> = mutableListOf()
+
+    /** Counts every Image node seen, whether it renders or degrades (stable ids). */
+    var imageOrdinal: Int = 0
+        private set
+
+    fun nextImageOrdinal(): Int = imageOrdinal++
+
     val linkStyles = TextLinkStyles(
         style = SpanStyle(
             color = colors.link,
@@ -523,7 +560,7 @@ private fun AnnotatedString.Builder.appendInlineNode(node: Node, ctx: InlineCont
         }
         is Code -> appendInlineCode(node.literal.orEmpty(), ctx, insideLink)
         is Link -> if (insideLink) appendInlineChildren(node, ctx, true) else appendLink(node, ctx)
-        is Image -> appendImageFallback(node, ctx)
+        is Image -> appendImage(node, ctx)
         is HtmlInline -> append(node.literal.orEmpty())
         is MathInlineNode -> appendMathLiteral(node.latex, ctx)
         is MathBlockNode -> appendMathLiteral(node.latex, ctx)
@@ -628,7 +665,34 @@ private fun AnnotatedString.Builder.appendClassifiedLink(
     }
 }
 
-/** No inline image loading in the markdown pass (M2 wires Coil): alt text as a link. */
+/**
+ * Inline image: real render via AnnotatedString inlineContent when the src is
+ * loadable ([markdownInlineImageSpec]); otherwise the classified-link fallback
+ * below. Placeholder ids are unique per span (document order ordinal) and
+ * stable across recompositions (same parse + media → same ids).
+ */
+private fun AnnotatedString.Builder.appendImage(node: Image, ctx: InlineContext) {
+    val ordinal = ctx.nextImageOrdinal()
+    val spec = markdownInlineImageSpec(
+        destination = node.destination.orEmpty(),
+        alt = imageAltText(node),
+        ordinal = ordinal,
+        hubMediaUrl = ctx.media.hubMediaUrl,
+        hasAuthedLoader = ctx.media.imageLoader != null,
+    )
+    if (spec == null) {
+        appendImageFallback(node, ctx)
+        return
+    }
+    ctx.images += spec
+    appendInlineContent(spec.id, spec.alt.ifBlank { INLINE_IMAGE_ALT_FALLBACK })
+}
+
+/**
+ * Degradation path: destination as a classified link with the alt text as the
+ * label. Reached for denied srcs (web strips `data:` etc.), unrenderable
+ * schemes, and relative srcs without the authed hub loader (previews, tests).
+ */
 private fun AnnotatedString.Builder.appendImageFallback(node: Image, ctx: InlineContext) {
     val destination = node.destination.orEmpty()
     appendClassifiedLink(destination, ctx) {

@@ -20,11 +20,11 @@ import app.hapi.protocol.git.UnifiedDiffParser
 /**
  * Kitchen-sink markdown exercising every renderer path (headings, emphasis,
  * strikethrough, inline code + file citations, links incl. blocked/custom
- * schemes, CJK autolink artifacts, lists + task lists, blockquote, tables --
- * one streaming-truncated, fenced code, KaTeX block/inline math + currency
- * prose, mermaid diagram + raw-source fallback, html fallback, thematic
- * break). Compile-checked
- * previews double as visual regressions.
+ * schemes, CJK autolink artifacts, inline images, lists + task lists,
+ * blockquote, tables -- one streaming-truncated, fenced code, KaTeX
+ * block/inline math + currency prose, mermaid diagram + raw-source
+ * fallback, html fallback, thematic break). Compile-checked previews
+ * double as visual regressions.
  */
 class MarkdownPreviewParameterProvider : PreviewParameterProvider<String> {
     override val values: Sequence<String> = sequenceOf(KITCHEN_SINK_MARKDOWN)
@@ -40,6 +40,9 @@ Edit `web/src/lib/remark-repair-tables.ts` or jump to hub/src/startHub.ts:345 di
 Links: [docs](https://example.com/docs), [guide](docs/guide.md#install),
 [blocked](/settings), vscode://file/readme.md, and https://example.com/a，中文标点。
 
+Images: ![HAPI banner](https://example.com/banner.png) absolute, plus a
+hub-relative ![chart](/api/sessions/demo/generated-images/plot) and a denied ![data](data:image/png;base64,AAAA).
+
 ## Checklist
 
 - [x] port transforms
@@ -50,10 +53,12 @@ Links: [docs](https://example.com/docs), [guide](docs/guide.md#install),
 2. second with `a/b.ts:12`
 
 > Quoted wisdom with **bold** and a [link](https://example.com).
+> With an inline ![quote shot](https://example.com/shot.png) too.
 
 | Column A | Column B | Column C |
 | --- | --- |
 | left | 2 | `x|y` |
+| ![cell shot](https://example.com/cell.png) | two rows | 4 |
 
 The plan is ${'$'}200/mo — currency stays prose — and inline \(a^2 + b^2\) degrades to TeX.
 

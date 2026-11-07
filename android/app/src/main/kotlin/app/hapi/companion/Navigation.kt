@@ -497,6 +497,7 @@ fun HapiNavigation() {
                                 fileName,
                             )
                         },
+                        hubMediaUrl = { path -> hubGraph.hubMediaUrl(path) },
                     )
                 },
                 onBack = closeChat,
