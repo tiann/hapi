@@ -4,8 +4,16 @@ import { ScratchlistDrawer } from './ScratchlistPanel'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
 import type { ApiClient } from '@/api/client'
+import {
+    clearScratchlistAttachmentPreviewCache,
+    getScratchlistAttachmentPreview,
+} from '@/lib/scratchlistAttachmentPreview'
 
-afterEach(cleanup)
+afterEach(() => {
+    cleanup()
+    clearScratchlistAttachmentPreviewCache()
+    vi.restoreAllMocks()
+})
 const original = { id: 'original', filename: 'original.txt', mimeType: 'text/plain', size: 1, path: 'hapi-hub:scratchlist/default/test/original.txt' }
 const entry: ScratchlistEntry = { id: 'draft', text: 'Existing text', createdAt: 1, attachments: [original] }
 
@@ -43,6 +51,36 @@ describe('insert attachments into a saved scratchlist draft', () => {
         expect(onUpdate.mock.calls[0][0]).toBe('draft')
         expect(onUpdate.mock.calls[0][1]).toBe('Existing text')
         expect(onUpdate.mock.calls[0][2].map((a: { id: string }) => a.id)).toEqual(['original', 'first.txt', 'second.txt'])
+    })
+
+    it('seeds an image preview before delayed draft persistence completes', async () => {
+        let finish!: () => void
+        const pending = new Promise<void>(resolve => { finish = resolve })
+        const onUpdate = vi.fn(() => pending)
+        const originalCreateObjectURL = URL.createObjectURL
+        const originalRevokeObjectURL = URL.revokeObjectURL
+        const createObjectURL = vi.fn(() => 'blob:selected-image')
+        Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
+        Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+
+        try {
+            const { select } = setup(onUpdate)
+            select([new File(['image'], 'photo.png', { type: 'image/png' })])
+
+            await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
+            expect(getScratchlistAttachmentPreview({
+                id: 'photo.png',
+                filename: 'photo.png',
+                mimeType: 'image/png',
+                size: 3,
+                path: 'hapi-hub:scratchlist/default/test/photo.png',
+            })).toBe('blob:selected-image')
+            expect(onUpdate).toHaveBeenCalledTimes(1)
+        } finally {
+            await act(async () => finish())
+            Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: originalCreateObjectURL })
+            Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: originalRevokeObjectURL })
+        }
     })
 
     it('does nothing when the system picker is cancelled', async () => {

@@ -36,6 +36,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ScheduleTimePicker, type PendingSchedule } from './ScheduleTimePicker'
 import {
     releaseScratchlistAttachmentPreview,
+    rememberScratchlistAttachmentObjectUrl,
 } from '@/lib/scratchlistAttachmentPreview'
 import { orderItemsById } from '@/lib/attachmentOrder'
 import { ScratchlistAttachments } from './ScratchlistAttachments'
@@ -532,11 +533,18 @@ function ScratchlistInventory({
             uploaded = await prepareScratchlistParkAttachments(api, sessionId, files.map((file) => ({
                 id: crypto.randomUUID(), name: file.name, contentType: file.type, file,
             })))
+            uploaded.forEach((attachment, index) => {
+                const file = files[index]
+                if (file && attachment.mimeType.startsWith('image/')) {
+                    rememberScratchlistAttachmentObjectUrl(attachment, URL.createObjectURL(file))
+                }
+            })
             // Re-read after upload: preserve edits and ordering made while the picker was open.
             const current = entriesRef.current.find((entry) => entry.id === entryId)
             if (!current) throw new Error(t('scratchlist.attachmentDraftMissing'))
             await onUpdate(current, current.text, [...(current.attachments ?? []), ...uploaded])
         } catch (cause) {
+            uploaded.forEach((attachment) => releaseScratchlistAttachmentPreview(attachment.id))
             await Promise.allSettled(uploaded.map((attachment) => api.deleteScratchlistAttachment(sessionId, attachment.id)))
             setAttachmentError({ entryId, message: cause instanceof Error ? cause.message : String(cause) })
         } finally {
