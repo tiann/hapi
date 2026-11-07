@@ -76,7 +76,12 @@ export function windowsGenerationMayBeAlive(table: WindowsProcessTable | null, p
 }
 
 export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: number; snapshots: number }
-export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void): Promise<boolean> {
+export async function stopWindowsProcessTree(
+    rootPid: number,
+    force: boolean,
+    report?: (result: WindowsStopReport) => void,
+    canSignal?: (phase?: 'root' | 'descendant') => boolean,
+): Promise<boolean> {
     // Includes command startup, queries, signalling and verification, independent
     // of tree size. Each async child is killed when its remaining budget expires.
     const started = performance.now()
@@ -88,6 +93,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     }
     const remaining = () => Math.max(0, deadline - performance.now())
     const signal = async (pid: number, hard: boolean, tree: boolean) => {
+        if (canSignal && !canSignal(pid === rootPid ? 'root' : 'descendant')) return null
         phase = 'signal'
         return execute('taskkill', [
             ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),

@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
 import { readFileSync } from 'node:fs';
-import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
+import { stopWindowsProcessTree } from './windowsProcessStop';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -343,7 +343,8 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
   return parseWindowsProcessTreeStdout((result.stdout ?? '').toString(), n)
 }
 
-async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<void> {
+async function signalAndWaitWindowsRoot(pid: number, force: boolean, canSignal?: () => boolean): Promise<void> {
+  if (canSignal && !canSignal()) return;
   if (force) {
     killProcessWindows(pid, true);
     await waitForProcessToDie(pid, true);
@@ -355,14 +356,15 @@ async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<vo
     await waitForProcessToDie(pid, true);
     return;
   }
-  await waitForProcessToDie(pid, false);
+  await waitForProcessToDie(pid, false, canSignal);
 }
 
-export async function killProcess(pid: number, force: boolean = false): Promise<boolean> {
+export async function killProcess(pid: number, force: boolean = false, canSignal?: () => boolean): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) {
     return false;
   }
+  if (canSignal && !canSignal()) return false;
 
   if (isWindows()) {
     // Soft taskkill (/T without /F) is routinely refused on win32 console trees
@@ -371,7 +373,7 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
     // but the PID is still draining, honor the grace wait before /F so archive
     // flush can finish.
     // Root-only verify — callers that need full-tree proof use killProcessTreeByPid.
-    await signalAndWaitWindowsRoot(n, force);
+    await signalAndWaitWindowsRoot(n, force, canSignal);
     return !isProcessAlive(n);
   }
 
@@ -459,21 +461,49 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
   return pids.every((candidate) => !isProcessAlive(candidate));
 }
 
+export type ProcessTreeStopReport = {
+  rootPid: number;
+  outcome: 'verified' | 'scan_failed' | 'unconfirmed';
+  elapsedMs: number;
+  phaseMs: Record<string, number>;
+  members: Array<{
+    pid: number;
+    expectedMarker: string | null;
+    observedMarker?: string | null;
+    alive?: boolean;
+    observedAt?: number;
+    resolution?: 'exited' | 'generation_changed';
+  }>;
+};
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
-export async function killProcessTreeByPid(pid: number, force: boolean = false, report?: (result: WindowsStopReport) => void): Promise<boolean> {
+export async function killProcessTreeByPid(
+  pid: number,
+  force: boolean = false,
+  onReport?: (report: ProcessTreeStopReport) => void,
+  canSignal?: (phase?: 'root' | 'descendant') => boolean,
+): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
-  if (!Number.isFinite(n) || n <= 0) return false;
+  if (!Number.isFinite(n) || n <= 0) return false
   if (isWindows()) {
-    return stopWindowsProcessTree(n, force, report);
+    return stopWindowsProcessTree(n, force, onReport
+      ? result => onReport({
+          rootPid: n,
+          outcome: result.confirmed ? 'verified' : 'unconfirmed',
+          elapsedMs: result.elapsedMs,
+          phaseMs: { [result.phase]: result.elapsedMs },
+          members: [],
+        })
+      : undefined, canSignal)
   }
-  return killProcessTree(n, force);
+  return killProcessTree(n, force)
 }
+
 
 /**
  * Waits for a process to die, escalating if the graceful signal didn't work.
  * POSIX: SIGTERM → SIGKILL. Windows: taskkill /T → taskkill /F /T.
  */
-async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
+async function waitForProcessToDie(pid: number, force: boolean, canSignal?: () => boolean): Promise<void> {
   const maxWait = 2000;
   // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
   // stop cannot burn the runner event loop for seconds (#1911 Overseer).
@@ -491,6 +521,7 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 
   // Graceful kill didn't finish — escalate (same structure on both platforms).
   if (!force && isProcessAlive(pid)) {
+    if (canSignal && !canSignal()) return;
     try {
       if (isWindows()) {
         killProcessWindows(pid, true);
@@ -509,10 +540,27 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   }
 }
 
+/** Exit listeners cannot await another turn; signal this owned child tree now. */
+export function killProcessByChildProcessSync(child: ChildProcess): void {
+  const pid = child.pid;
+  if (!pid || pid <= 0 || child.exitCode != null || child.signalCode != null) return;
+  if (isWindows()) {
+    // Preserve normal cleanup's soft signal, with immediate forced fallback
+    // only when Windows refuses it. Exit hooks cannot wait for escalation.
+    if (!killProcessWindows(pid, false) && isProcessAlive(pid)) killProcessWindows(pid, true);
+    return;
+  }
+  const tree = collectProcessTree(pid);
+  for (const target of tree === 'scan_failed' ? [pid] : tree) {
+    try { process.kill(target, 'SIGTERM'); } catch { /* best effort during exit */ }
+  }
+}
+
 export async function killProcessByChildProcess(
   child: ChildProcess,
   force: boolean = false,
-  report?: (result: WindowsStopReport) => void
+  onReport?: (report: ProcessTreeStopReport) => void,
+  canSignal?: (phase?: 'root' | 'descendant') => boolean,
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -520,5 +568,5 @@ export async function killProcessByChildProcess(
   }
 
   // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force, report);
+  return killProcessTreeByPid(pid, force, onReport, canSignal);
 }

@@ -15,8 +15,11 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
-import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { findStopSessionOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { readStopRuntimeCandidates } from './stopRuntimes';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
+import { observeHeartbeatProcesses, type HeartbeatProcessState } from './heartbeatProcesses';
+import { captureProcessBinding, captureStopSignalBinding, sharedStopBinding, terminateCapturedBinding } from './processBinding';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import {
     decideKeepWrapperArchive,
@@ -142,6 +145,28 @@ export function probeRecoveredProcessGeneration(
   };
   if (classifyRecoveredProcessGeneration(true, null, record.processStartMarker, evidence) === 'exited') return 'exited';
   return classifyRecoveredProcessGeneration(true, currentMarker !== undefined ? currentMarker : getProcessStartMarker(pid), record.processStartMarker, evidence);
+}
+
+/** Heartbeat snapshots are the only process probe on Windows. */
+export function classifyObservedRecoveredProcessGeneration(
+  pid: number,
+  record: { processStartMarker: string; bootId?: string },
+  observation: HeartbeatProcessState,
+): 'verified' | 'quarantined' | 'exited' {
+  // Preserve Linux boot/thread-group evidence without re-running the Windows
+  // tasklist/CIM probes that the caller already completed as one snapshot.
+  const evidence = isWindows() ? undefined : {
+    pid,
+    threadGroupId: getProcessThreadGroupId(pid),
+    currentBootId: getSystemBootId(),
+    persistedBootId: record.bootId,
+  };
+  return classifyRecoveredProcessGeneration(
+    observation.alive,
+    observation.startMarker,
+    record.processStartMarker,
+    evidence,
+  );
 }
 
 export function releaseRecoveredSpawnDedupe(
@@ -307,6 +332,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Setup state - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
+    // A webhook can refresh an existing shared wrapper without replacing its
+    // map entry. Such fresh liveness evidence invalidates an in-flight scan.
+    const sessionWebhookRevisions = new WeakMap<TrackedSession, number>();
+    const webhookRevisionFor = (session: TrackedSession | undefined) => session ? sessionWebhookRevisions.get(session) ?? 0 : 0;
     // Retained until actual child exit even if webhook timeout removes normal
     // tracking, so confirmed exit can be attributed to the requested HAPI row.
     const pidToRequestedSessionId = new Map<number, string>();
@@ -406,6 +435,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         logger.debug('[RUNNER RUN] Failed to persist resume processes:', error);
       }
     };
+    const capturePidBinding = (pid: number, sessionId: string) => captureProcessBinding(() => [
+      pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
+      pidToConfirmedSessionId.get(pid), persistedResumeProcesses.get(pid),
+      existingSessionIdByChildPid.get(pid), sharedStopBinding(pidToTrackedSession.get(pid), sessionId),
+    ]);
+    const capturePidSignalGuard = (pid: number, sessionId: string) => captureStopSignalBinding(() => [
+      pidToTrackedSession.get(pid), pidToRequestedSessionId.get(pid),
+      pidToConfirmedSessionId.get(pid), persistedResumeProcesses.get(pid),
+      existingSessionIdByChildPid.get(pid),
+    ], () => sharedStopBinding(pidToTrackedSession.get(pid), sessionId) !== '[]');
     for (const [pid, record] of [...persistedResumeProcesses]) {
       const alive = isProcessAlive(pid);
       const generation = probeRecoveredProcessGeneration(pid, record);
@@ -472,6 +511,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // Check if we already have this PID (runner-spawned)
       const existingSession = pidToTrackedSession.get(pid);
+      if (existingSession) {
+        sessionWebhookRevisions.set(existingSession, (sessionWebhookRevisions.get(existingSession) ?? 0) + 1);
+      }
 
       if (existingSession && sessionMetadata.capabilities?.concurrentClients) {
         existingSession.sharedSessions ??= {};
@@ -1209,18 +1251,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             runtime.hub === configuration.apiUrl
             && runtime.authHash === runtimeAuthHash()
           );
-          if (!records.length) return records;
-          const unchecked = records.filter(record => !possiblyLiveGenerations.has(runtimeGenerationKey(record)));
-          const table = isWindows() && unchecked.length ? await readWindowsProcessTable(10_000,
-            [...new Set(unchecked.flatMap(record => [record.pid, ...(record.serverPid ? [record.serverPid] : [])]))]) : undefined;
-          const live = records.filter(runtime => {
-            const key = runtimeGenerationKey(runtime);
-            if (possiblyLiveGenerations.has(key)) return true;
-            const alive = runtimeMayBeAlive(runtime, table);
-            // An unknown snapshot is safe to retain but not cache as evidence.
-            if (alive && table !== null) possiblyLiveGenerations.add(key);
-            return alive;
-          });
+          // A fresh, complete process snapshot keeps archive cost independent
+          // of old registry entries. Per-record tasklist/CIM calls made three
+          // reads of nine retired runtimes exceed the 30s StopSession RPC.
+          // Read the registry first, then snapshot; never reuse it across scans.
+          const live = await readStopRuntimeCandidates(records, sessionId);
           logger.debug('[RUNNER RUN] Runtime stop scan', { sessionId, records: records.length, live: live.length, elapsedMs: Date.now() - scanStarted });
           return live;
         } catch (error) {
@@ -1256,6 +1291,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+          killTree: pid => killProcessTreeByPid(pid, false, undefined, capturePidSignalGuard(pid, sessionId)),
           findTargets: (id) => findStopSessionOrphanTargets(
             id,
             (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
@@ -1323,8 +1359,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       if (sessionId.startsWith('PID-')) {
         const pid = parseInt(sessionId.slice(4), 10);
         if (Number.isFinite(pid) && pid > 0) {
+          const bindingUnchanged = capturePidBinding(pid, sessionId);
+          const canSignal = capturePidSignalGuard(pid, sessionId);
           const liveForPid = await liveRegistryRuntimes();
           if (liveForPid === null) return 'still_alive';
+          if (!bindingUnchanged()) return 'unknown';
           const decision = decideRawPidStop({
             alive: isProcessAlive(pid),
             expectedMarker: opts?.processStartMarker,
@@ -1347,8 +1386,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             );
             return await finishWithOrphanSweep('stopped');
           }
-          if (!(await killProcessTreeByPid(pid))) return 'still_alive';
-          rememberVerifiedExit(sessionId);
+          if (!(await killProcessTreeByPid(pid, false, undefined, canSignal))) return 'still_alive';
+          if (bindingUnchanged() && !isProcessAlive(pid)) rememberVerifiedExit(sessionId);
           return await finishWithOrphanSweep('stopped');
         }
         return 'unknown';
@@ -1399,6 +1438,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (session.happySessionId === sessionId ||
           session.requestedHappySessionId === sessionId) {
+          const bindingUnchanged = capturePidBinding(pid, sessionId);
+          const canSignal = capturePidSignalGuard(pid, sessionId);
 
           // Primary match, but live shared siblings still use this wrapper
           // (KillSession may already have cleared this id from sharedSessions).
@@ -1413,6 +1454,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             detachSharedRootFromWrapper(session, sessionId);
             return await finishKeepWrapperDetach(pid);
           }
+
+          if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
 
           let treeTerminationVerified = false;
           if (session.startedBy === 'runner') {
@@ -1446,8 +1489,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
               };
               const treeStopped = session.childProcess
-                ? await killProcessByChildProcess(session.childProcess, false, reportStop)
-                : await killProcessTreeByPid(pid, false, reportStop);
+                ? await killProcessByChildProcess(session.childProcess, false, reportStop, canSignal)
+                : await killProcessTreeByPid(pid, false, reportStop, canSignal);
               if (!treeStopped) {
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
@@ -1461,7 +1504,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           } else {
             // For externally started sessions, try to kill by PID
             try {
-              if (!(await killProcess(pid))) return 'still_alive';
+              if (!(await killProcess(pid, false, bindingUnchanged))) return 'still_alive';
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill external session PID ${pid}:`, error);
@@ -1472,7 +1515,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // A stop request starts termination but does not prove that a detached
           // child is gone. Keep its HAPI-row dedupe key until exit/stale detection.
           const existingSessionId = existingSessionIdByChildPid.get(pid);
-          if (existingSessionId) {
+          if (bindingUnchanged() && existingSessionId) {
             spawnSession.markChildStopping(existingSessionId);
           }
           const deadline = Date.now() + 5_000;
@@ -1485,6 +1528,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logger.debug(`[RUNNER RUN] Session ${sessionId} process ${pid} is still alive after stop request`);
             return 'still_alive';
           }
+          // The verifier proves the old generation exited, not that the PID
+          // still belongs to it. Its exit handler may already have removed the
+          // old binding and a concurrent spawn/webhook installed a replacement.
+          if (!bindingUnchanged()) return await finishWithOrphanSweep('stopped');
           if (session.happySessionId) rememberVerifiedExit(session.happySessionId);
           if (session.requestedHappySessionId) rememberVerifiedExit(session.requestedHappySessionId);
           rememberVerifiedExit(`PID-${pid}`);
@@ -1510,6 +1557,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const requestedSessionId = pidToRequestedSessionId.get(pid) ?? persisted?.requestedSessionId;
         const confirmedSessionId = pidToConfirmedSessionId.get(pid) ?? persisted?.confirmedSessionId;
         if (requestedSessionId !== sessionId && confirmedSessionId !== sessionId) continue;
+        const bindingUnchanged = capturePidBinding(pid, sessionId);
+        const canSignal = capturePidSignalGuard(pid, sessionId);
         if (isProcessAlive(pid)) {
           if (!persisted) return 'still_alive';
           const generation = probeRecoveredProcessGeneration(pid, persisted);
@@ -1524,6 +1573,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           }
           const liveForPid = await liveRegistryRuntimes();
           if (liveForPid === null) return 'still_alive';
+          if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
           if (wrapperHasActiveSiblingRoots(liveForPid, sessionId, pid)) {
             // Keep this shared wrapper; siblings alone are not stop proof for
             // this root — require an inactive registry binding (KillSession ack).
@@ -1538,15 +1588,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             );
             return decision;
           }
-          if (!(await killProcessTreeByPid(pid))) return 'still_alive';
-          if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
-          if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
-          rememberVerifiedExit(`PID-${pid}`);
-          pidToRequestedSessionId.delete(pid);
-          pidToConfirmedSessionId.delete(pid);
-          if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
-          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-          return await finishWithOrphanSweep('stopped');
+          const outcome = await terminateCapturedBinding(bindingUnchanged, () => killProcessTreeByPid(pid, false, undefined, canSignal), () => {
+            if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+            if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
+            rememberVerifiedExit(`PID-${pid}`);
+            pidToRequestedSessionId.delete(pid);
+            pidToConfirmedSessionId.delete(pid);
+            if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+            releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+          });
+          if (outcome === 'still_alive') return outcome;
+          return await finishWithOrphanSweep(outcome);
         }
         if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
         if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
@@ -1570,6 +1622,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+          killTree: pid => killProcessTreeByPid(pid, false, undefined, capturePidSignalGuard(pid, sessionId)),
           findTargets: (id) => findStopSessionOrphanTargets(
             id,
             (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
@@ -1840,26 +1893,45 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         logger.debug(`[RUNNER RUN] Health check started at ${new Date().toLocaleString()}`);
       }
 
-      // Prune stale sessions
-      const pidsToCheck = new Set([
+      // Snapshot bindings before yielding to CIM. A new child or webhook can
+      // change these maps while the query is in flight; never apply an old
+      // absence/generation observation to a different binding of the same PID.
+      const candidates = [...new Set([
         ...pidToTrackedSession.keys(),
         ...existingSessionIdByChildPid.keys()
-      ]);
-      // The heartbeat runs during stop RPCs. Synchronous per-PID WMI probes
-      // can block their acknowledgements even after tree shutdown is async.
-      const heartbeatTable = isWindows() && pidsToCheck.size
-        ? await readWindowsProcessTable(10_000, [...pidsToCheck]) : undefined;
-      for (const pid of pidsToCheck) {
-        if (heartbeatTable === null) continue; // Failed query is not exit proof.
-        if (heartbeatTable ? !heartbeatTable.has(pid) : !isProcessAlive(pid)) {
+      ])].map(pid => ({ pid,
+        tracked: pidToTrackedSession.get(pid),
+        webhookRevision: webhookRevisionFor(pidToTrackedSession.get(pid)),
+        persisted: persistedResumeProcesses.get(pid),
+        requested: pidToRequestedSessionId.get(pid),
+        confirmed: pidToConfirmedSessionId.get(pid),
+        existing: existingSessionIdByChildPid.get(pid),
+      }));
+      let observations: Map<number, HeartbeatProcessState> | undefined;
+      try {
+        observations = await observeHeartbeatProcesses(candidates.map(candidate => candidate.pid));
+      } catch (error) {
+        // Unknown state is not proof of exit. Keep all bindings and continue
+        // publishing heartbeat/version state; a later tick retries the scan.
+        logger.warn(`[RUNNER RUN] Cannot verify heartbeat process snapshot: ${String(error)}`);
+      }
+      for (const candidate of candidates) {
+        const { pid, persisted } = candidate;
+        if (pidToTrackedSession.get(pid) !== candidate.tracked
+          || webhookRevisionFor(candidate.tracked) !== candidate.webhookRevision
+          || persistedResumeProcesses.get(pid) !== persisted
+          || pidToRequestedSessionId.get(pid) !== candidate.requested
+          || pidToConfirmedSessionId.get(pid) !== candidate.confirmed
+          || existingSessionIdByChildPid.get(pid) !== candidate.existing) continue;
+        const observation = observations?.get(pid);
+        if (!observation) continue;
+        if (!observation.alive) {
           logger.debug(`[RUNNER RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           onChildExited(pid);
           continue;
         }
-        const persisted = persistedResumeProcesses.get(pid);
         if (persisted) {
-          const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : undefined;
-          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker);
+          const generation = classifyObservedRecoveredProcessGeneration(pid, persisted, observation);
           if (generation === 'exited') {
             logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
             discardStaleProcess(pid);
