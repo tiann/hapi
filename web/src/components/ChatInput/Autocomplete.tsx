@@ -48,7 +48,7 @@ export const Autocomplete = memo(function Autocomplete(props: AutocompleteProps)
                     onClick={() => onSelect(index)}
                     onMouseDown={(e) => e.preventDefault()} // Prevent blur on textarea
                 >
-                    <span className={`w-full font-medium ${suggestion.action ? 'border-t border-[var(--app-divider)] pt-2' : ''}`}>
+                    <span className={`w-full break-words font-medium line-clamp-2 whitespace-pre-wrap ${suggestion.action ? 'border-t border-[var(--app-divider)] pt-2' : ''}`}>
                         {suggestion.action ? <span aria-hidden="true">{suggestion.action.expanded ? '▾ ' : '▸ '}</span> : null}
                         {suggestion.label}
                     </span>

@@ -198,6 +198,7 @@ export function QueuedMessagesBar({
     pendingSchedule,
     pendingScheduleRevision,
     onEdit,
+    onExternalComposerEdit,
     canSteer,
     deliveryActive = canSteer,
     compactionPendingMessageIds,
@@ -215,6 +216,8 @@ export function QueuedMessagesBar({
      * Edit is always cancel + prefill, regardless of whether the message is scheduled or immediate.
      */
     onEdit?: (params: { text: string; pendingSchedule: PendingSchedule | null }) => void
+    /** Invalidates composer history before restoring queued text externally. */
+    onExternalComposerEdit?: () => void
     /**
      * When true, each queued row gets a Steer button that delivers that
      * message into a supported active remote turn.
@@ -281,11 +284,12 @@ export function QueuedMessagesBar({
         }
 
         if (recovery.text) {
+            onExternalComposerEdit?.()
             assistantApi.composer().setText(recovery.text)
         }
         onEditRef.current?.({ text: recovery.text, pendingSchedule: recovery.pendingSchedule })
         clearQueuedEditRecovery(sessionId)
-    }, [addToast, assistantApi, sessionId, t])
+    }, [addToast, assistantApi, onExternalComposerEdit, sessionId, t])
 
     useEffect(() => {
         let disposed = false
@@ -504,6 +508,7 @@ export function QueuedMessagesBar({
                                     return
                                 }
                                 if (editText) {
+                                    onExternalComposerEdit?.()
                                     assistantApi.composer().setText(editText)
                                 }
                                 onEdit?.({ text: editText, pendingSchedule: restoredPendingSchedule })
