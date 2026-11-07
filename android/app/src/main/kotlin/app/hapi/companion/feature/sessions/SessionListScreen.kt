@@ -59,6 +59,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -89,6 +91,7 @@ import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
 import app.hapi.protocol.wire.TodoProgress
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The session list (B-M2b) — standalone screen: navigation and app graph stay
@@ -130,12 +133,18 @@ fun SessionListScreen(
     modifier: Modifier = Modifier,
     /** Shows the "+" FAB (new-session form, B-M3d) when non-null. */
     onNewSession: (() -> Unit)? = null,
+    /** null ⇒ no export entry in the actions sheet (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
+    // Saveable session id: the export dialog must come back after the SAF
+    // picker rotates/kills the activity, to re-register for its result.
+    var exportSessionId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -264,6 +273,10 @@ fun SessionListScreen(
                 renameRow = row
                 sheetRow = null
             },
+            onExport = {
+                exportSessionId = row.id
+                sheetRow = null
+            },
             onReopen = {
                 viewModel.reopenSession(row.id)
                 sheetRow = null
@@ -296,6 +309,20 @@ fun SessionListScreen(
                 deleteRow = null
             },
             onDismiss = { deleteRow = null },
+        )
+    }
+    if (exportSessionId != null && sessionExport != null) {
+        SessionExportDialog(
+            sessionId = exportSessionId.orEmpty(),
+            support = sessionExport,
+            onDismiss = { exportSessionId = null },
+            onSaved = { filename ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.session_export_saved, filename),
+                    )
+                }
+            },
         )
     }
 }
@@ -736,6 +763,7 @@ private fun SessionActionsSheet(
     onReopen: () -> Unit,
     onDelete: () -> Unit,
     onMarkRead: () -> Unit = {},
+    onExport: () -> Unit = {},
 ) {
     val summary = row.summary
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -760,6 +788,7 @@ private fun SessionActionsSheet(
             SheetAction(stringResource(R.string.sessions_action_pin_global)) { onSetPinMode(PinMode.Global) }
         }
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
+        SheetAction(stringResource(R.string.sessions_action_export), onClick = onExport)
         if (!summary.active) {
             SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
         }
