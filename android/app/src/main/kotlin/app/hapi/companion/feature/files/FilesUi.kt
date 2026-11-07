@@ -96,3 +96,21 @@ internal val GitBranchGlyph: ImageVector by lazy {
         2f,
     )
 }
+
+/** Download glyph (the web `DownloadIcon` paths). */
+internal val DownloadGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiDownload",
+        "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3",
+        2f,
+    )
+}
+
+/** Sort glyph (the web `SortIcon` paths: decreasing lines + arrow). */
+internal val SortGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiSort",
+        "M3 6h13 M3 12h9 M3 18h5 M17 15l3 3 3-3 M20 18V6",
+        2f,
+    )
+}
