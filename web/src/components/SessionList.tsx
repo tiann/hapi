@@ -1532,6 +1532,16 @@ export function SessionList(props: {
 
     // Transient session-list lens — not a Settings preference. Cleared on reload.
     const [sessionFilters, setSessionFilters] = useState<SessionListFilterState>(DEFAULT_SESSION_LIST_FILTER_STATE)
+    const effectiveSessionFilters = useMemo<SessionListFilterState>(() => ({
+        ...sessionFilters,
+        unread: listView.unreadOnly,
+    }), [sessionFilters, listView.unreadOnly])
+    const applySessionFilters = useCallback((next: SessionListFilterState) => {
+        setSessionFilters(prev => prev.scratchlist === next.scratchlist
+            ? prev
+            : { ...prev, scratchlist: next.scratchlist })
+        if (next.unread !== listView.unreadOnly) setListView({ unreadOnly: next.unread })
+    }, [listView.unreadOnly, setListView])
     const showScratchlistOnly = sessionFilters.scratchlist
     const {
         sessionIds: scratchlistSessionIds,
@@ -1631,7 +1641,7 @@ export function SessionList(props: {
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
-    const isFiltering = isSearchFiltering || sessionFilters.unread || sessionFilters.scratchlist
+    const isFiltering = isSearchFiltering || listView.unreadOnly || sessionFilters.scratchlist
 
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
@@ -1660,14 +1670,12 @@ export function SessionList(props: {
         () => props.sessions.filter(session => shouldShowSessionInSidebar(session, selectedSessionId)),
         [props.sessions, selectedSessionId]
     )
+    // Keep status filtering separate from the unread lens. Machine choices are
+    // derived from this set, so selecting a machine with no unread matches must
+    // stay an empty intersection instead of falling back to another machine.
     const allSessions = useMemo(
-        () => {
-            const byStatus = filterSessionsByStatus(sidebarSessions, listView.status, selectedSessionId)
-            return listView.unreadOnly
-                ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
-                : byStatus
-        },
-        [sidebarSessions, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread]
+        () => filterSessionsByStatus(sidebarSessions, listView.status, selectedSessionId),
+        [sidebarSessions, selectedSessionId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -1794,7 +1802,7 @@ export function SessionList(props: {
 
     const contentSearchCandidateSessions = useMemo(() => {
         let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange))
-        if (sessionFilters.unread) {
+        if (listView.unreadOnly) {
             filtered = filterUnreadSessionsOnly(
                 filtered,
                 isSessionUnread,
@@ -1818,7 +1826,8 @@ export function SessionList(props: {
         scratchlistSessionIds,
         scratchlistStatusError,
         selectedSessionId,
-        sessionFilters,
+        sessionFilters.scratchlist,
+        listView.unreadOnly,
         timeRange?.start,
         timeRange?.end
     ])
@@ -1882,14 +1891,9 @@ export function SessionList(props: {
     // would drop machines with zero matching sessions and clear a persisted
     // machine selection.
     const sessionFilteredSessions = useMemo(() => {
-        let filtered = visibleSessions
-        if (sessionFilters.unread) {
-            filtered = filterUnreadSessionsOnly(
-                filtered,
-                isSessionUnread,
-                selectedSessionId
-            )
-        }
+        let filtered = listView.unreadOnly
+            ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
+            : visibleSessions
         if (sessionFilters.scratchlist) {
             if (isScratchlistStatusLoading || scratchlistStatusError) {
                 return []
@@ -1907,7 +1911,8 @@ export function SessionList(props: {
         scratchlistSessionIds,
         scratchlistStatusError,
         selectedSessionId,
-        sessionFilters,
+        sessionFilters.scratchlist,
+        listView.unreadOnly,
         visibleSessions
     ])
     const machineFilteredSessions = useMemo(
@@ -2647,14 +2652,8 @@ export function SessionList(props: {
                                         widthPx: slotWidth('session-filter', TOOLBAR_ICON_PX),
                                         node: (
                                             <SessionListFilterMenu
-                                                value={sessionFilters}
-                                                onChange={(next) => {
-                                                    setSessionFilters(next)
-                                                    // Keep the two unread controls in sync: the transient
-                                                    // filter lens and the persisted view preference are
-                                                    // the same user intent ("show only unread").
-                                                    if (next.unread !== sessionFilters.unread) setListView({ unreadOnly: next.unread })
-                                                }}
+                                                value={effectiveSessionFilters}
+                                                onChange={applySessionFilters}
                                                 customStart={customStart}
                                                 customEnd={customEnd}
                                                 sessionActivityDates={sessionActivityDates}
@@ -2675,10 +2674,7 @@ export function SessionList(props: {
                                     node: (
                                         <SessionListViewMenu
                                             view={listView}
-                                            onChange={(next) => {
-                                                setListView(next)
-                                                if (next.unreadOnly !== listView.unreadOnly) setSessionFilters((prev) => ({ ...prev, unread: next.unreadOnly ?? false }))
-                                            }}
+                                            onChange={setListView}
                                             onReset={() => setListView(DEFAULT_SESSION_LIST_VIEW)}
                                         />
                                     )
@@ -2770,11 +2766,8 @@ export function SessionList(props: {
                                                     totalCount={allSessions.length}
                                                     value={activeMachineFilter}
                                                     onChange={setMachineFilter}
-                                                    sessionFilter={sessionFilters}
-                                                    onSessionFilterChange={(next) => {
-                                                        setSessionFilters(next)
-                                                        if (next.unread !== sessionFilters.unread) setListView({ unreadOnly: next.unread })
-                                                    }}
+                                                    sessionFilter={effectiveSessionFilters}
+                                                    onSessionFilterChange={applySessionFilters}
                                                     customStart={customStart}
                                                     customEnd={customEnd}
                                                     sessionActivityDates={sessionActivityDates}

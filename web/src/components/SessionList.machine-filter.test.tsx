@@ -12,6 +12,7 @@ const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
 
 afterEach(() => cleanup())
+beforeEach(() => window.localStorage.clear())
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -201,6 +202,60 @@ describe('SessionList machine filter', () => {
         // Suffix disappears once a single machine is selected
         expect(screen.getByText('work/docs')).toBeTruthy()
         expect(window.localStorage.getItem('hapi-session-list-machine-filter')).toBe('machine-2')
+    })
+
+    it('uses the persisted unread view as the unified filter state through patches and reset', () => {
+        window.localStorage.setItem('hapi-session-list-unread-only', 'true')
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
+        renderSessionList([
+            makeSession({ id: 'unread-only', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/unread', name: 'Unread row' } }),
+            makeSession({ id: 'read-only', updatedAt: 500, contentRevision: 1, readState: readState(1), metadata: { path: '/work/read', name: 'Read row' } })
+        ])
+
+        expect(screen.queryByTitle('/work/read')).toBeNull()
+        const viewButton = screen.getAllByTestId('session-list-view-button').find(button => !button.closest('[inert]'))!
+        fireEvent.click(viewButton)
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'Date created' }))
+
+        fireEvent.click(screen.getAllByRole('button', { name: 'Filter sessions' })[0])
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Unread' })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.queryByTitle('/work/read')).toBeNull()
+
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Reset to default' }))
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Unread' })).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByTitle('/work/read')).toBeTruthy()
+    })
+
+    it('preserves a selected machine when unread filtering has no matches for it', () => {
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
+        renderSessionList([
+            makeSession({
+                id: 'unread-m1',
+                updatedAt: 500,
+                contentRevision: 1,
+                readState: readState(0),
+                metadata: { path: '/work/m1-unread', machineId: 'machine-1', name: 'Unread on Mint' }
+            }),
+            makeSession({
+                id: 'read-m2',
+                updatedAt: 500,
+                contentRevision: 1,
+                readState: readState(1),
+                metadata: { path: '/work/m2-read', machineId: 'machine-2', name: 'Read on Teemo' }
+            })
+        ])
+
+        const teemo = screen.getByRole('button', { name: /Teemo \(1\)/ })
+        fireEvent.click(teemo)
+        expect(teemo).toHaveAttribute('aria-pressed', 'true')
+
+        fireEvent.click(screen.getAllByRole('button', { name: 'Filter sessions' })[0])
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }))
+
+        expect(screen.getByRole('button', { name: /Teemo \(1\)/ })).toHaveAttribute('aria-pressed', 'true')
+        expect(screen.queryByTitle('/work/m1-unread')).toBeNull()
+        expect(screen.queryByTitle('/work/m2-read')).toBeNull()
+        expect(screen.getByText('No sessions match your filters.')).toBeTruthy()
     })
 
     it('falls back to All when the persisted machine no longer has sessions', () => {
