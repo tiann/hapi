@@ -19,6 +19,7 @@ import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveOpencodeSlashCommand } from './utils/slashCommands';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
 import { withRetry } from '@/utils/time';
+import { OpenCodeRuntimeGate } from './rewind';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -76,6 +77,9 @@ export async function runOpencode(opts: {
             reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
+    const runtimeGate = new OpenCodeRuntimeGate(startingMode === 'remote');
+    const pendingRewind = session.getMetadata()?.opencodeRewind;
+    if (startingMode !== 'remote' && pendingRewind && pendingRewind.phase !== 'rejected') runtimeGate.block();
 
     setControlledByUser(session, startingMode);
 
@@ -144,18 +148,33 @@ export async function runOpencode(opts: {
     });
     const hookUrl = `http://127.0.0.1:${hookServer.port}/hook/opencode`;
 
+    const finishLocalHistory = async () => {
+        const publisher = sessionWrapperRef.current?.localHistoryPublisher;
+        if (publisher && !await publisher.finish()) {
+            logger.warn('[opencode] Local transcript shutdown drain was not confirmed');
+        }
+    };
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'opencode',
         stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: finishLocalHistory,
         onAfterClose: () => {
             hookServer.stop();
         }
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
-    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId,
+        beforeKill: async (lease) => await sessionWrapperRef.current?.localHistoryPublisher?.prepare(lease) ?? true
+    }, session);
+    registerLocalHandoffHandler({ registerHandler: (method, handler) => {
+        session.rpcHandlerManager.registerHandler(method, (payload) => {
+            const release = runtimeGate.enterRuntime();
+            // An accepted handoff owns admission until this process exits.
+            try { return handler(payload); } catch (error) { release(); throw error; }
+        });
+    } }, lifecycle);
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
@@ -230,8 +249,11 @@ export async function runOpencode(opts: {
 
     let userMessageChain: Promise<void> = Promise.resolve();
     session.onUserMessage((message, localId) => {
+        // Admission is synchronous, including async slash/config preparation.
+        let release = runtimeGate.isBlocked() ? undefined : runtimeGate.enterRuntime();
         if (localId) preparingLocalIds.add(localId);
         userMessageChain = userMessageChain.then(async () => {
+            if (!release) { await runtimeGate.waitUntilOpen(); release = runtimeGate.enterRuntime(); }
             const wasCancelled = (): boolean => {
                 if (!localId) return false;
                 return cancelledBeforeEnqueue.delete(localId);
@@ -429,6 +451,7 @@ export async function runOpencode(opts: {
                     pushPlain();
                 }
             } finally {
+                release?.();
                 if (localId) {
                     preparingLocalIds.delete(localId);
                     cancelledBeforeEnqueue.delete(localId);
@@ -495,6 +518,8 @@ export async function runOpencode(opts: {
         modelMode: 'nullable',
         modelReasoningEffortMode: 'nullable',
         onApply: (config) => {
+            const release = runtimeGate.enterRuntime();
+            try {
             if (config.permissionMode !== undefined) {
                 currentPermissionMode = config.permissionMode;
             }
@@ -504,8 +529,11 @@ export async function runOpencode(opts: {
             if (config.modelReasoningEffort !== undefined) {
                 sessionModelReasoningEffort = config.modelReasoningEffort;
             }
-        },
-        onAfterApply: syncSessionMode
+            // Publish within the same synchronous admission, not after the
+            // config helper's await, where rewind could already own the gate.
+            syncSessionMode();
+            } finally { release(); }
+        }
     });
 
     let crashed = false;
@@ -513,6 +541,7 @@ export async function runOpencode(opts: {
 
     try {
         await opencodeLoop({
+            runtimeGate,
             path: workingDirectory,
             startingMode,
             startedBy,

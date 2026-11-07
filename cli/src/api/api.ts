@@ -1,4 +1,6 @@
 import axios from 'axios'
+import { randomUUID } from 'node:crypto'
+import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
@@ -21,6 +23,7 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { ApiMachineClient } from './apiMachine'
 import { ApiSessionClient, type ApiSessionClientOptions } from './apiSession'
 import { buildHubRequestHeaders } from './hubExtraHeaders'
+import { monotonicTimeMs } from '@/utils/time'
 
 export class ApiClient {
     static async create(): Promise<ApiClient> {
@@ -34,6 +37,31 @@ export class ApiClient {
             Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json'
         })
+    }
+
+    async prepareOpenCodeSessionStop(sessionId: string, machineId: string, pid: number, processStartMarker: string): Promise<number | undefined> {
+        const preparationLease = { id: randomUUID(), expiresAt: monotonicTimeMs() + DEFAULT_RPC_TIMEOUT_MS }
+        try {
+            const response = await axios.post<{ status: string; preparationLease?: SessionStopPreparationLease }>(
+                `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/prepare-stop`,
+                { machineId, pid, processStartMarker, preparationLease }, { headers: this.authHeaders(), timeout: 60_000 }
+            )
+            if (response.data.status !== 'ready' && response.data.status !== 'not_required') {
+                throw new Error('Session shutdown preparation was not confirmed')
+            }
+            if (response.data.status === 'not_required') return
+            if (response.data.preparationLease?.id !== preparationLease.id
+                || response.data.preparationLease.expiresAt !== preparationLease.expiresAt
+                || monotonicTimeMs() >= preparationLease.expiresAt) {
+                throw new Error('Session shutdown preparation lease was not confirmed')
+            }
+            return preparationLease.expiresAt
+        } catch (error) {
+            // A removed Hub row has no transcript left to drain. Preserve the
+            // runner's existing orphan-process cleanup for that case.
+            if (axios.isAxiosError(error) && error.response?.status === 404) return
+            throw error
+        }
     }
 
     async getOrCreateSession(opts: {

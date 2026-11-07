@@ -696,6 +696,7 @@ export function HappyThread(props: {
     onForkConversation?: (messageLocalId?: string) => Promise<void>
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
+    assistantForkPoints?: ReadonlyMap<string, string>
     onViewModeChange: (mode: 'tail' | 'history') => void
     onJumpToTail?: () => void
     readThroughRevision?: number
@@ -2522,6 +2523,7 @@ export function HappyThread(props: {
             onForkConversation: props.onForkConversation,
             onRewindConversation: props.onRewindConversation,
             isLatestCompletedBoundary: props.isLatestCompletedBoundary,
+            assistantForkPoints: props.assistantForkPoints,
             onShareTurn: handleShareTurn,
             hasMoreMessages: props.hasMoreMessages,
             isSyncingTail: props.isSyncingTail,

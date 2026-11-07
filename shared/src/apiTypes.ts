@@ -6,7 +6,9 @@ import {
     DecryptedMessageSchema,
     MachineSchema,
     PermissionModeSchema,
-    SessionSchema
+    SessionSchema,
+    MetadataSchema,
+    OpenCodeRewindSchema
 } from './schemas'
 import { AgentFlavorSchema } from './modes'
 import {
@@ -60,6 +62,7 @@ export const CliMessagesResponseSchema = z.object({
         seq: z.number(),
         createdAt: z.number(),
         localId: z.string().nullable().optional(),
+        invokedAt: z.number().nullable().optional(),
         content: z.unknown()
     }))
 })
@@ -692,6 +695,7 @@ export type RewindConversationResponse = {
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
     nativeSessionId: string
+    opencodeHistoryCheckpoint?: NonNullable<Session['metadata']>['opencodeHistoryCheckpoint']
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
@@ -718,6 +722,17 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+
+export const OpenCodeRewindReportSchema = z.object({
+    operation: OpenCodeRewindSchema,
+    phase: z.enum(['prepared', 'applied', 'unknown', 'rejected']),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    prefixHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    unchanged: z.literal(true).optional(),
+    checkpoint: MetadataSchema.shape.opencodeHistoryCheckpoint,
+    indexes: z.record(z.string(), z.number().int().nonnegative()).optional()
+})
+export type OpenCodeRewindReport = z.infer<typeof OpenCodeRewindReportSchema>
 
 export type RewindConversationRpcResult = {
     success: true
