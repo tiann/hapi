@@ -1,3 +1,4 @@
+import type { OpencodeSteerCancelHandler } from './utils/opencodeV2Steer';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { runLocalRemoteSession } from '@/agent/loopBase';
@@ -25,6 +26,7 @@ interface OpencodeLoopOptions {
     onSessionReady?: (session: OpencodeSession) => void;
     onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
+    onSteerCancelHandlerChange?: (handler: OpencodeSteerCancelHandler | null) => void;
     onCompactAvailabilityChange?: (available: boolean) => void;
     onClearRequested?: () => Promise<void>;
     onClearCleanupComplete?: () => Promise<void>;
@@ -85,6 +87,7 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
             onModelRollback: opts.onModelRollback,
             onReasoningEffortRollback: opts.onReasoningEffortRollback,
             onCompactAvailabilityChange: opts.onCompactAvailabilityChange,
+            onSteerCancelHandlerChange: opts.onSteerCancelHandlerChange,
             isLocalIdCancelled: opts.isLocalIdCancelled,
             onClearRequested: opts.onClearRequested,
             onClearCleanupComplete: opts.onClearCleanupComplete,

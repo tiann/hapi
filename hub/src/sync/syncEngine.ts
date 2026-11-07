@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
@@ -20,6 +20,10 @@ import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
+import type {
+    MessageContentSearchMatch,
+    SessionMessageContentSearchResult
+} from '../store/messageContentSearch'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
@@ -236,6 +240,24 @@ export class SyncEngine {
         ttlMs: 30_000,
         fetchTimeoutMs: 8_000
     })
+    /**
+     * Same single-flight + last-good treatment for machine/session model
+     * lists. The backing RPC round-trips even when healthy (observed ~1s
+     * floor, 3-13s under load) and every picker open re-fetches; a stalled
+     * engine stretches them past the web server's 30s request cap. Model
+     * catalogs change rarely, so serve cached values and revalidate. The
+     * 8s cold cap sits well under that request cap — callers get a typed
+     * error instead of an opaque gateway timeout.
+     */
+    private readonly modelListCache = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+
+    /** A model-list payload is only cacheable when the RPC actually
+     *  succeeded — error bodies must propagate, never get pinned. */
+    private static readonly modelListCacheable = (result: unknown): boolean =>
+        !!result && typeof result === 'object' && (result as { success?: unknown }).success === true
 
     /** Drop cached enumeration RPCs for a session leaving the active set
      *  (deleted or archived). The keys are never queried again; without this
@@ -243,6 +265,7 @@ export class SyncEngine {
     private releaseSessionEnumerations(sessionId: string): void {
         this.slashCommandsEnumeration.releaseSession(sessionId)
         this.skillsEnumeration.releaseSession(sessionId)
+        this.modelListCache.releaseSession(sessionId)
     }
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
@@ -447,6 +470,32 @@ export class SyncEngine {
         return this.sessionCache.getSessionsByNamespace(namespace)
     }
 
+    searchSessionContent(
+        query: string,
+        namespace: string,
+        limit: number = 50,
+        sessionIds?: readonly string[]
+    ): MessageContentSearchMatch[] {
+        return this.store.messages.searchContent(query, namespace, limit, sessionIds)
+    }
+
+    searchSessionContentMatches(
+        query: string,
+        namespace: string,
+        sessionId: string,
+        limit: number = 500
+    ): SessionMessageContentSearchResult {
+        return this.store.messages.searchContentInSession(query, namespace, sessionId, limit)
+    }
+
+    hasPotentiallyIncompleteSessionContent(
+        namespace: string,
+        query: string,
+        sessionIds?: readonly string[]
+    ): boolean {
+        return this.store.messages.hasPotentiallyIncompleteContent(namespace, query, sessionIds)
+    }
+
     setSessionPinned(sessionId: string, pinned: boolean): void {
         this.sessionCache.setSessionPinned(sessionId, pinned)
     }
@@ -528,6 +577,10 @@ export class SyncEngine {
         return this.messageService.getMessagesPage(sessionId, options)
     }
 
+    getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {
+        return this.messageService.getMessageContext(sessionId, messageId)
+    }
+
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
         return this.messageService.getQueuedState(sessionId, localIds)
     }
@@ -570,6 +623,7 @@ export class SyncEngine {
             if (patchApplied) {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
+                this.reconcileSteerDeliveryOwner(beforeMetadata, after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -586,6 +640,7 @@ export class SyncEngine {
             // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
+            this.reconcileSteerDeliveryOwner(beforeMetadata, after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -599,6 +654,14 @@ export class SyncEngine {
 
         if (event.type === 'machine-updated' && event.machineId) {
             this.machineCache.refreshMachine(event.machineId)
+            return
+        }
+
+        if (event.type === 'machine-agy-models-updated' && event.machineId) {
+            // The runner just reported its agy catalog moved; drop the
+            // cached list so the web's event-driven refetch sees it cold.
+            this.modelListCache.release(event.machineId)
+            this.eventPublisher.emit(event)
             return
         }
 
@@ -690,6 +753,28 @@ export class SyncEngine {
         this.sessionCache.clearQueuedThinkingGrace(sessionId)
     }
 
+    private reconcileSteerDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
+        const current = after?.metadata
+        if ((before?.flavor !== 'opencode' && before?.flavor !== 'claude')
+            || current?.flavor !== before.flavor) return
+        // Steer admission closes before an existing request finishes draining.
+        // Only replacement of the owning worker ends its confirmation lease.
+        if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
+            || before.hostStartMarker !== current.hostStartMarker) {
+            this.markSteerDispatchesUncertain(after)
+        }
+    }
+
+    private markSteerDispatchesUncertain(session: Session | undefined): void {
+        // These launchers own confirmation through a single worker. Shared-client
+        // runtimes have separate delivery ownership and are not fenced here.
+        if (session?.metadata?.flavor !== 'opencode' && session?.metadata?.flavor !== 'claude') return
+        const localIds = this.store.messages.markDispatchingMessagesIndeterminate(session.id)
+        if (localIds.length > 0) {
+            this.eventPublisher.emit({ type: 'messages-indeterminate', sessionId: session.id, localIds })
+        }
+    }
+
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
@@ -710,6 +795,7 @@ export class SyncEngine {
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
+        this.markSteerDispatchesUncertain(this.sessionCache.getSession(payload.sid))
         if (payload.reason === 'completed') {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -1096,6 +1182,7 @@ export class SyncEngine {
             .filter((s): s is NonNullable<typeof s> => s != null)
             .sort((a, b) => (b.activeAt - a.activeAt) || (b.updatedAt - a.updatedAt))
         for (const session of sorted) {
+            this.markSteerDispatchesUncertain(session)
             this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive?.()
@@ -1231,8 +1318,8 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Claude, Pi, Codex, and Cursor ACP sessions; the
-     * CLI's `steer-queued-message` handler is registered per flavor. Legacy
+     * (native steer). Supported for Claude, Pi, Codex, OpenCode, and Cursor
+     * ACP sessions; the CLI's handler is registered per flavor. Legacy
      * stream-json Cursor sessions and other flavors are rejected by the
      * capability gate.
      */
@@ -1245,30 +1332,30 @@ export class SyncEngine {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Claude, Pi, Codex, and Cursor ACP sessions', localId: null }
+            return { status: 'failed', error: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions', localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
         }
 
+        const invokedResponse = (message: DecryptedMessage): SteerQueuedMessageResponse => ({
+            status: 'invoked',
+            message: {
+                id: message.id,
+                seq: message.seq,
+                localId: message.localId,
+                content: message.content,
+                createdAt: message.createdAt,
+                invokedAt: message.invokedAt,
+                scheduledAt: message.scheduledAt
+            }
+        })
         const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
         if (lookup.status === 'absent') {
             return { status: 'failed', error: 'Message not found', localId: null }
         }
         if (lookup.status === 'invoked') {
-            const message = lookup.message
-            return {
-                status: 'invoked',
-                message: {
-                    id: message.id,
-                    seq: message.seq,
-                    localId: message.localId,
-                    content: message.content,
-                    createdAt: message.createdAt,
-                    invokedAt: message.invokedAt,
-                    scheduledAt: message.scheduledAt
-                }
-            }
+            return invokedResponse(lookup.message)
         }
         const { localId, scheduledAt } = lookup
         if (!localId) {
@@ -1281,20 +1368,23 @@ export class SyncEngine {
             return { status: 'failed', error: 'Scheduled messages cannot be steered', localId }
         }
 
+        let failure: string
         try {
             const result = await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+            const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            if (settled.status === 'invoked') return { status: 'invoked', message: settled.message }
             if (result.steered) {
                 return { status: 'steered', localId }
             }
-            return {
-                status: 'failed',
-                error: result.error ?? 'Steer failed',
-                localId
-            }
+            failure = result.error ?? 'Steer failed'
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Steer failed'
-            return { status: 'failed', error: message, localId }
+            failure = error instanceof Error ? error.message : 'Steer failed'
         }
+        // The consumed event can win the race against an RPC error or stale
+        // negative reply. Persisted invocation is authoritative in either case.
+        const current = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (current.status === 'invoked') return invokedResponse(current.message)
+        return { status: 'failed', error: failure, localId }
     }
 
     sweepImmediateQueuedOnSessionEnd(sessionId: string, invokedAt: number): void {
@@ -4826,15 +4916,41 @@ export class SyncEngine {
         machineId: string,
         options?: { refresh?: boolean }
     ): Promise<RpcListAgyModelsResponse> {
-        return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        // An explicit refresh must actually hit the engine; bypass the cache
+        // entirely. `machine-agy-models-changed` invalidates the entry via
+        // handleRealtimeEvent so plain fetches revalidate too.
+        if (options?.refresh === true) {
+            return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        }
+        return await this.modelListCache.get(
+            `${machineId}|agy-models`,
+            () => this.rpcGateway.listAgyModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListAgyModelsResponse
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
-        return await this.rpcGateway.listPiModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
     }
 
     async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
-        return await this.rpcGateway.listClaudeModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|claude-models`,
+            () => this.rpcGateway.listClaudeModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListClaudeModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
@@ -4890,11 +5006,19 @@ export class SyncEngine {
     }
 
     async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
-        return await this.rpcGateway.listDshModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
     }
 
     async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
-        return await this.rpcGateway.listDshModelsForSession(sessionId)
+        return await this.modelListCache.get(
+            `${sessionId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

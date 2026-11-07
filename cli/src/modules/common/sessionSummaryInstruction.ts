@@ -57,7 +57,12 @@ export function buildSessionSummaryInstruction(): string {
         'Use the language used by the user in the current conversation for the',
         'human-readable "action" and "summary" values.',
         'Use status "blocked" if unsure. Keep action to 12 words or fewer when status',
-        'is "done" and follow-up remains.'
+        'is "done" and follow-up remains.',
+        // Cross-turn close (#2267): status "done" ends the spoken unit. Redundant
+        // background task-complete / "briefly inform" system pings must be silent
+        // until new user intent — do not open another user-visible reply.
+        'After status "done", do not emit further user-visible replies for redundant',
+        'background task-complete notifications until the user sends new intent.'
     ].join('\n')
 }
 

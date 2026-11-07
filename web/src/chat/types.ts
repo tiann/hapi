@@ -29,6 +29,8 @@ export type RoundSummary = {
     totalCostUsd?: number
     numTurns?: number
     durationMs?: number
+    generationMs?: number
+    generationOutputTokens?: number
 }
 
 export type AgentEvent =
@@ -240,6 +242,8 @@ export type UserTextBlock = {
 export type AgentTextBlock = {
     kind: 'agent-text'
     id: string
+    /** Raw HAPI message ids represented by a coalesced streaming block. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null
@@ -254,6 +258,8 @@ export type AgentTextBlock = {
 export type AgentReasoningBlock = {
     kind: 'agent-reasoning'
     id: string
+    /** Raw HAPI message ids represented by a coalesced streaming block. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null

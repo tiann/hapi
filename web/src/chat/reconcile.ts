@@ -56,6 +56,8 @@ function areRoundSummariesEqual(left?: RoundSummary, right?: RoundSummary): bool
     return left.totalCostUsd === right.totalCostUsd
         && left.numTurns === right.numTurns
         && left.durationMs === right.durationMs
+        && left.generationMs === right.generationMs
+        && left.generationOutputTokens === right.generationOutputTokens
         && areUsageDataEqual(left.usage, right.usage)
         && leftModels.length === rightModels.length
         && leftModels.every(model => right.modelUsage[model] !== undefined
@@ -156,6 +158,7 @@ function areUserTextBlocksEqual(left: UserTextBlock, right: UserTextBlock): bool
 
 function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): boolean {
     return left.text === right.text
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
@@ -164,6 +167,7 @@ function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): b
 
 function areAgentReasoningBlocksEqual(left: AgentReasoningBlock, right: AgentReasoningBlock): boolean {
     return left.text === right.text
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta

@@ -1,10 +1,10 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
-import { ScheduleIcon } from '@/components/icons'
+import { InfoIcon, ScheduleIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
-import { classifySessionAttention } from '@/lib/sessionAttention'
+import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
@@ -73,7 +73,7 @@ function getSessionTimeLabel(
  * Presentational session row — same chrome as the sidebar SessionItem body
  * (flavor icon with presence badge, title, request/schedule symbols, todos,
  * relative time, path). Visual language matches the native apps: no dimmed
- * rows or spinners; unread is a semibold title + accent time, not a dot.
+ * rows or spinners; unread sessions have a separate accent dot.
  * Used by the session list and by rich-composer mention chip tooltips.
  */
 export function SessionRowSummary(props: {
@@ -98,6 +98,12 @@ export function SessionRowSummary(props: {
     projectLabel?: string
     /** Machine label shown next to the project name (pinned "in progress" rows). */
     machineLabel?: string
+    /** Context returned by the opt-in session message-content search. */
+    contentSnippet?: string
+    /** The indexed message exceeded the search index budget. */
+    contentSearchTruncated?: boolean
+    /** Extra classes for the right-hand time/progress cluster (e.g. to yield to hover actions). */
+    trailingClassName?: string
 }) {
     const {
         session: s,
@@ -112,6 +118,9 @@ export function SessionRowSummary(props: {
         inRunningSection = false,
         projectLabel,
         machineLabel,
+        contentSnippet,
+        contentSearchTruncated = false,
+        trailingClassName,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -150,9 +159,10 @@ export function SessionRowSummary(props: {
     // work runs) instead of dimming disconnected rows or adding spinners.
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    // Unread is a semibold title plus accent time — no dot, so the presence
-    // badge stays the row's only dot. The label stays for screen readers.
-    const isUnread = attention?.kind === 'unread'
+    const isUnread = sessionIsUnread(s, {
+        lastSeenAt: getSessionLastSeenAt(s.id),
+        manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
+    })
     const requestKind = urgentAttention
         ? attention.kind as 'permission' | 'input'
         : s.active && (s.pendingRequestsCount ?? 0) > 0
@@ -193,9 +203,12 @@ export function SessionRowSummary(props: {
                             {sessionName}
                         </div>
                         {isUnread ? (
-                            <span id={nestedTooltips ? attentionId : undefined} className="sr-only">
-                                {attentionLabel}
-                            </span>
+                            <>
+                                <span data-testid="session-unread" className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" />
+                                <span id={attention?.kind === 'unread' && nestedTooltips ? attentionId : undefined} className="sr-only">
+                                    {t('session.item.newActivity')}
+                                </span>
+                            </>
                         ) : null}
                         {requestKind && urgentAttention && nestedTooltips && attentionId ? (
                             <SessionAttentionIndicator
@@ -237,7 +250,7 @@ export function SessionRowSummary(props: {
                             </span>
                         ) : null}
                     </div>
-                    <div className="flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs">
+                    <div className={`flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs ${trailingClassName ?? ''}`}>
                         {todoProgress ? (
                             <span className="flex shrink-0 items-center gap-1 text-[var(--app-hint)]">
                                 <BulbIcon className="h-3 w-3" />
@@ -256,6 +269,25 @@ export function SessionRowSummary(props: {
                         ) : null}
                     </div>
                 </div>
+                {contentSnippet ? (
+                    <div
+                        className="line-clamp-2 text-xs text-[var(--app-fg)]/80"
+                        title={contentSearchTruncated
+                            ? `${contentSnippet}\n${t('sessions.search.content.truncated')}`
+                            : contentSnippet}
+                    >
+                        {contentSnippet}
+                        {contentSearchTruncated ? (
+                            <span
+                                className="ml-1 inline-flex align-[-2px] text-[var(--app-badge-warning-text)]"
+                                title={t('sessions.search.content.truncated')}
+                                aria-label={t('sessions.search.content.truncated')}
+                            >
+                                <InfoIcon className="h-3 w-3" />
+                            </span>
+                        ) : null}
+                    </div>
+                ) : null}
                 {projectLabel || machineLabel ? (
                     <div className="truncate text-xs text-[var(--app-hint)]" title={[projectLabel, machineLabel].filter(Boolean).join(' · ')}>
                         {[projectLabel, machineLabel].filter(Boolean).join(' · ')}
