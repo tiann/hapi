@@ -47,6 +47,7 @@ internal fun ChatHost(
     dictation: DictationController?,
     onOpenFiles: () -> Unit,
     onOpenFile: (String, Int?) -> Unit,
+    onOpenSession: (String) -> Unit,
     onOpenScratchlist: (() -> Unit)?,
 ) {
     val navigation = rememberNavController()
@@ -61,6 +62,7 @@ internal fun ChatHost(
     val latestKeyboard by rememberUpdatedState(keyboard)
     val latestBack by rememberUpdatedState(onBack)
     val latestNavigate by rememberUpdatedState(onNavigateToSession)
+    val latestOpenSession by rememberUpdatedState(onOpenSession)
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
 
@@ -123,7 +125,10 @@ internal fun ChatHost(
         LocalChatInteractions provides interactions,
         LocalChatMedia provides media,
         LocalMarkdownRenderCache provides viewModel.markdownCache,
-        LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = openFile),
+        LocalMarkdownLinkHandler provides rememberChatLinkHandler(
+            onOpenFile = openFile,
+            onOpenSession = { pauseReading(); latestOpenSession(it) },
+        ),
     ) {
         Box(Modifier.fillMaxSize()) {
             NavHost(navigation, startDestination = "thread") {
@@ -131,6 +136,7 @@ internal fun ChatHost(
                     ChatScreen(
                         viewModel, media, onBack, snackbarHostState = snackbar,
                         dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
+                        onOpenSession = { pauseReading(); onOpenSession(it) },
                         onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
                         transcriptList = transcriptList, readingState = reading,
                     )
