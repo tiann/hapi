@@ -708,6 +708,17 @@ export function getToolPresentation(
         }
     }
 
+    // OpenCode v2 names running cards after the raw command ("ls"), so they
+    // never match the alias table; the input shape is the only shell signal.
+    if (getTerminalCommand(opts.input)) {
+        return {
+            icon: <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+            title: getTerminalTitle({ ...opts, t }),
+            subtitle: getTerminalSubtitle({ ...opts, t }),
+            minimal: true
+        }
+    }
+
     const filePath = getInputStringAny(opts.input, ['file_path', 'path', 'filePath', 'file'])
     const command = getInputStringAny(opts.input, ['command', 'cmd'])
     const pattern = getInputStringAny(opts.input, ['pattern'])

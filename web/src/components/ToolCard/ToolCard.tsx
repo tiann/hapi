@@ -307,10 +307,7 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     }
 
     const commandArray = isObject(input) && Array.isArray(input.command) ? input.command : null
-    // Resolve flavor-specific ids (OpenCode `bash`) so their shell input renders
-    // as a Command code block, exactly like the canonical Bash/CodexBash cards.
-    const canonicalToolName = resolveToolNameAlias(toolName)
-    if ((canonicalToolName === 'CodexBash' || canonicalToolName === 'Bash') && (typeof commandArray?.[0] === 'string' || typeof input === 'object')) {
+    if (isTerminalToolBlock(block)) {
         const cmd = Array.isArray(commandArray)
             ? commandArray.filter((part) => typeof part === 'string').join(' ')
             : getInputStringAny(input, ['command', 'cmd'])

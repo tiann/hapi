@@ -61,7 +61,7 @@ describe('formatTerminalCommandTitle', () => {
 })
 
 describe('getToolPresentation — unknown tool semantic title + subtitle dedup', () => {
-    it('promotes semantic title "Run shell" when toolName equals input.command (Gemini ACP case)', () => {
+    it('routes shell-shaped unknown tools (Gemini ACP command-name card) to the terminal presentation', () => {
         const presentation = getToolPresentation({
             toolName: 'cat /tmp/hello.txt',
             input: { command: 'cat /tmp/hello.txt' },
@@ -71,7 +71,10 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
             metadata: null,
         })
 
-        expect(presentation.title).toBe('Run shell')
+        // Same treatment as the canonical Bash card: the simple command is
+        // formatted to its executable and the full command stays in the
+        // subtitle.
+        expect(presentation.title).toBe('cat')
         expect(presentation.subtitle).toBe('cat /tmp/hello.txt')
     })
 
@@ -457,6 +460,39 @@ describe('getToolPresentation — OpenCode lowercase aliases', () => {
 
         expect(presentation.title).toBe('Run shell')
         expect(presentation.subtitle).toBe('grep -rn "x" src | head -8')
+    })
+
+    it('routes OpenCode command-name cards to the terminal presentation', () => {
+        // OpenCode v2 running updates title the call after the raw command, so
+        // the final card name is "ls", not "bash" — it never matches the alias
+        // table and must still get the Bash card treatment.
+        const presentation = getToolPresentation({
+            toolName: 'ls',
+            input: { command: 'ls', description: 'List demo files', cwd: '/workspace/demo-repo' },
+            result: null,
+            childrenCount: 0,
+            description: 'ls',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('List demo files')
+        expect(presentation.subtitle).toBe('ls')
+        expect(presentation.minimal).toBe(true)
+        expectNotGenericWrench(presentation)
+    })
+
+    it('drops the repeated native title from command-name cards without a description', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bun test',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: 'bun test',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('bun test')
+        expect(presentation.subtitle).toBeNull()
     })
 
     it('keeps a meaningful ACP title over the command formatting', () => {
