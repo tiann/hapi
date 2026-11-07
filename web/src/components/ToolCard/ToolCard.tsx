@@ -19,7 +19,7 @@ import { getToolResultViewComponent } from '@/components/ToolCard/views/_results
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
 import { toolDurationMs } from '@/components/ToolCard/toolDuration'
 import { formatDuration, formatMessageTimestampTitle } from '@/chat/presentation'
-import { getToolGroupActionKind } from '@/chat/toolGroups'
+import { getToolGroupActionKind, isTerminalToolBlock } from '@/chat/toolGroups'
 import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
@@ -63,9 +63,7 @@ export function shouldShowInlineToolCardBody(
     return !presentationMinimal
 }
 
-export function isTerminalToolBlock(block: ToolCallBlock): boolean {
-    return block.tool.name === 'CodexBash' || getToolGroupActionKind(block) === 'command'
-}
+export { isTerminalToolBlock }
 
 export function getToolTimingDetails(tool: ChatToolCall, now: number): {
     startedAt: number | null
@@ -394,7 +392,7 @@ export function ToolDetailDialogContent(props: {
     const { t } = useTranslation()
     const toolName = props.block.tool.name
     const FullToolView = getToolFullViewComponent(toolName)
-    const ResultToolView = getToolResultViewComponent(toolName)
+    const ResultToolView = getToolResultViewComponent(toolName, props.block)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
@@ -460,7 +458,7 @@ function ToolCardInner(props: ToolCardProps) {
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
     const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
     const compactViewOwnsInteractions = toolName === 'CodexDiff'
-    const ResultToolView = getToolResultViewComponent(toolName)
+    const ResultToolView = getToolResultViewComponent(toolName, props.block)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)

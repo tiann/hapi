@@ -71,9 +71,8 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
             metadata: null,
         })
 
-        // Same treatment as the canonical Bash card: the simple command is
-        // formatted to its executable and the full command stays in the
-        // subtitle.
+        // Formatted like the canonical Bash card: title is the executable, the full
+        // command stays in the subtitle.
         expect(presentation.title).toBe('cat')
         expect(presentation.subtitle).toBe('cat /tmp/hello.txt')
     })

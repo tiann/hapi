@@ -1,4 +1,5 @@
 import type { ToolViewComponent, ToolViewProps } from '@/components/ToolCard/views/_all'
+import type { ToolCallBlock } from '@/chat/types'
 import type { ReactNode } from 'react'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -8,6 +9,7 @@ import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalTools'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
+import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import {
     getCodexAgentActivity,
@@ -1101,12 +1103,18 @@ const GoalResultView: ToolViewComponent = (props) => {
 
 // Skill, todowrite, patch and question deliberately stay unaliased: their
 // dedicated views read Claude-shaped input or result fields.
-export function getToolResultViewComponent(toolName: string): ToolViewComponent {
+export function getToolResultViewComponent(toolName: string, block?: ToolCallBlock): ToolViewComponent {
     if (isGoalToolName(toolName)) return GoalResultView
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }
-    return toolResultViewRegistry[toolName]
+    const resolved = toolResultViewRegistry[toolName]
         ?? toolResultViewRegistry[resolveToolNameAlias(toolName)]
-        ?? GenericResultView
+    if (resolved) return resolved
+    // Generic markdown would collapse the output lines and autolink file
+    // names; shell output reads as a terminal code block instead.
+    if (block && isTerminalToolBlock(block)) {
+        return toolResultViewRegistry.Bash ?? GenericResultView
+    }
+    return GenericResultView
 }

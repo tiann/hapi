@@ -45,22 +45,12 @@ describe('ToolDetailDialogContent — shell input rendering', () => {
             />
         )
 
-<<<<<<< HEAD
         // Exactly one 'Input' label: the section heading (no JSON block title).
-=======
-        // Same Command block as the canonical Bash/CodexBash cards; the extra
-        // cwd/description keys stay out of the input display. Exactly one
-        // 'Input' label remains: the section heading (no JSON block title).
->>>>>>> e3aebeec8c (fix(web): render OpenCode lowercase tool names like their canonical cards)
         expect(screen.getByText('Command')).toBeTruthy()
         expect(screen.getByText('ls -la /tmp')).toBeTruthy()
         expect(screen.getAllByText('Input')).toHaveLength(1)
     })
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> adecb707e8 (fix(web): render shell-shaped unknown-tool cards like the terminal cards)
     it('renders the OpenCode command-name card (execute kind) as a Command code block', () => {
         renderWithI18n(
             <ToolDetailDialogContent
@@ -81,7 +71,6 @@ describe('ToolDetailDialogContent — shell input rendering', () => {
         expect(screen.getAllByText('Input')).toHaveLength(1)
     })
 
-<<<<<<< HEAD
     it('renders the shell result with line breaks preserved, not as markdown links', () => {
         const { container } = renderWithI18n(
             <ToolDetailDialogContent
@@ -105,10 +94,6 @@ describe('ToolDetailDialogContent — shell input rendering', () => {
         expect(container.textContent).toContain('src')
     })
 
-=======
->>>>>>> e3aebeec8c (fix(web): render OpenCode lowercase tool names like their canonical cards)
-=======
->>>>>>> adecb707e8 (fix(web): render shell-shaped unknown-tool cards like the terminal cards)
     it('keeps the canonical Bash command block unchanged', () => {
         renderWithI18n(
             <ToolDetailDialogContent
