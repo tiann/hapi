@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: instrumented terminal tests talk to a loopback fake
+     hub (MockWebServer) over ws://127.0.0.1. The config keeps the platform
+     cleartext deny everywhere else, matching the release manifest's
+     android:usesCleartextTraffic="false" (paired hubs must use HTTPS). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
