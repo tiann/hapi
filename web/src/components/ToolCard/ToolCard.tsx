@@ -23,19 +23,20 @@ import { getToolGroupActionKind } from '@/chat/toolGroups'
 import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { TraceSection } from '@/components/ToolCard/trace'
 import { isSubagentToolName } from '@/chat/subagentTool'
 
 const ELAPSED_INTERVAL_MS = 1000
+// Canonical spellings only; flavor ids resolve through resolveToolNameAlias.
 const TERMINAL_RELATED_TOOL_NAMES = new Set([
     'Bash',
     'CodexBash',
     'shell_command',
     'run_shell_command',
     'Shell',
-    'bash',
     'run_command',
     'execute_command',
     'terminal',
@@ -44,7 +45,7 @@ const TERMINAL_RELATED_TOOL_NAMES = new Set([
 export function shouldUseCompactTerminalToolCard(
     toolName: string,
     terminalToolDisplayMode: TerminalToolDisplayMode,
-    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(toolName)
+    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(resolveToolNameAlias(toolName))
 ): boolean {
     return terminalTool && terminalToolDisplayMode === 'compact'
 }
@@ -53,7 +54,7 @@ export function shouldShowInlineToolCardBody(
     toolName: string,
     presentationMinimal: boolean,
     terminalToolDisplayMode: TerminalToolDisplayMode,
-    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(toolName)
+    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(resolveToolNameAlias(toolName))
 ): boolean {
     if (isSubagentToolName(toolName)) return false
     if (terminalTool) {
@@ -306,7 +307,10 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     }
 
     const commandArray = isObject(input) && Array.isArray(input.command) ? input.command : null
-    if ((toolName === 'CodexBash' || toolName === 'Bash') && (typeof commandArray?.[0] === 'string' || typeof input === 'object')) {
+    // Resolve flavor-specific ids (OpenCode `bash`) so their shell input renders
+    // as a Command code block, exactly like the canonical Bash/CodexBash cards.
+    const canonicalToolName = resolveToolNameAlias(toolName)
+    if ((canonicalToolName === 'CodexBash' || canonicalToolName === 'Bash') && (typeof commandArray?.[0] === 'string' || typeof input === 'object')) {
         const cmd = Array.isArray(commandArray)
             ? commandArray.filter((part) => typeof part === 'string').join(' ')
             : getInputStringAny(input, ['command', 'cmd'])
