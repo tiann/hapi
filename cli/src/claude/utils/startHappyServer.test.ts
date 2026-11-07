@@ -1134,6 +1134,7 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         expect(toClaudeAllowedHapiMcpTools([
             'change_title',
             'link_issue',
+            'link_pr',
             'display_image',
             'display_video',
             'display_media',
@@ -1151,6 +1152,16 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         ])
         expect(toClaudeAllowedHapiMcpTools(['display_video'])).not.toContain('mcp__hapi__display_video')
         expect(toClaudeAllowedHapiMcpTools(['display_media'])).not.toContain('mcp__hapi__display_media')
+    })
+
+    // Regression (bot review, hapi#2147, same class found on the Claude side
+    // while fixing the Codex bridge's equivalent gap): pre-approving link_pr
+    // via --allowedTools would let Claude skip HAPI's permission handler
+    // entirely, bypassing resolveToolAutoApprovalDecision's dedicated
+    // read-only guard the same way the Codex bridge's `approval_mode:
+    // 'approve'` did.
+    it('keeps link_pr off --allowedTools so HAPI\'s read-only guard is reachable', () => {
+        expect(toClaudeAllowedHapiMcpTools(['link_pr'])).not.toContain('mcp__hapi__link_pr')
     })
 })
 

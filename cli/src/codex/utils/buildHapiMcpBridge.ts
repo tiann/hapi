@@ -120,8 +120,16 @@ export async function buildHapiMcpBridge(
         };
     }
     if (happyServer.toolNames.includes('link_pr')) {
+        // Unlike change_title/list_peers/skill_lookup above, this must reach
+        // HAPI's own permission handler on every call rather than being
+        // pre-approved by Codex itself — link_pr mutates session metadata,
+        // and BasePermissionHandler's resolveToolAutoApprovalDecision has a
+        // dedicated guard that refuses to auto-approve it in read-only mode.
+        // `approve` here would let Codex short-circuit the call before that
+        // guard ever runs; `prompt` routes it through, where the handler
+        // still auto-approves it in every other mode (bot review, hapi#2147).
         tools.link_pr = {
-            approval_mode: 'approve'
+            approval_mode: 'prompt'
         };
     }
 

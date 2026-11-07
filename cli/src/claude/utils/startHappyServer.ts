@@ -102,14 +102,23 @@ const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
     'display_video',
     'ping_peer',
     'inspect_peer',
-    'spawn_peer'
+    'spawn_peer',
+    // Mutates session metadata — BasePermissionHandler's
+    // resolveToolAutoApprovalDecision has a dedicated guard that refuses to
+    // auto-approve it in read-only mode, but that guard only runs if the
+    // call actually reaches HAPI's permission handler. Pre-approving it via
+    // Claude's own --allowedTools would bypass that guard the same way the
+    // Codex bridge's now-fixed `approval_mode: 'approve'` did (bot review,
+    // hapi#2147).
+    'link_pr'
 ]);
 
 /**
  * Map HAPI MCP tool names to Claude `--allowedTools` entries.
  * Keeps `display_media` / `display_video` (arbitrary local-path readers), `ping_peer`,
- * `inspect_peer`, and `spawn_peer` off the auto-allow list so they still prompt.
- * `list_peers` stays allowed (discovery shortlist only).
+ * `inspect_peer`, `spawn_peer`, and `link_pr` (mutates session metadata) off the
+ * auto-allow list so they still prompt. `list_peers` stays allowed (discovery
+ * shortlist only).
  */
 export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
     return toolNames
