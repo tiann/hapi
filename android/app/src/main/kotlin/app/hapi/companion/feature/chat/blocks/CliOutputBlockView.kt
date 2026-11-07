@@ -16,7 +16,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.ui.theme.HapiTheme
-import app.hapi.companion.ui.theme.HapiTypography
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.CliOutputBlock
 
@@ -42,7 +42,7 @@ internal fun TerminalText(text: String, modifier: Modifier = Modifier, isError: 
     ) {
         Text(
             text = text,
-            style = HapiTypography.code,
+            style = LocalHapiTypeStyles.current.code,
             softWrap = false,
             color = if (isError) MaterialTheme.colorScheme.error else colors.inlineCodeForeground,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),

@@ -33,8 +33,9 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
 import app.hapi.companion.feature.chat.LocalChatInspection
+import app.hapi.companion.feature.chat.LocalChatSurfaceColors
 import app.hapi.companion.feature.chat.messagePreview
-import app.hapi.companion.ui.theme.HapiTypography
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.feature.chat.attachments.PreviewImage
 import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
 import app.hapi.companion.ui.theme.HapiTheme
@@ -58,15 +59,24 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Spacer(modifier = Modifier.width(48.dp).weight(1f))
             Column(horizontalAlignment = Alignment.End) {
+                // P2 Chat `userMessageBackground` preset (web --app-user-message-bg):
+                // a preset replaces the primary-container tint with a neutral-base
+                // mix and pairs it with the neutral `onSurface` foreground, mirroring
+                // the web's neutral user-bubble text colors.
+                val bubbleTint = LocalChatSurfaceColors.current.userMessage
                 Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = bubbleTint ?: MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = if (bubbleTint != null) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    },
                     shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
                     modifier = Modifier.widthIn(max = maxBubbleWidth),
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                         SelectionContainer {
-                            Text(text = preview.text, style = HapiTypography.body)
+                            Text(text = preview.text, style = LocalHapiTypeStyles.current.body)
                         }
                         if (preview.end < block.text.length) {
                             TextButton(onClick = { inspection?.openMessage(block.id) }, enabled = inspection != null) {

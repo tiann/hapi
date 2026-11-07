@@ -70,6 +70,11 @@ import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.settings.ChatSettingsViewModel
+import app.hapi.companion.feature.settings.DisplayViewModel
+import app.hapi.companion.feature.settings.SessionHeaderMetadata
+import app.hapi.companion.feature.settings.SettingsChatScreen
+import app.hapi.companion.feature.settings.SettingsDisplayScreen
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -84,6 +89,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -153,10 +161,14 @@ object Routes {
     /**
      * Settings hub (category directory) + flat subpage routes (B-M4e → P2
      * hub IA). Usage/Storage are owner-only dashboards reached straight from
-     * the hub rows; General holds the uncategorized items.
+     * the hub rows; General holds the uncategorized items, Display the P2
+     * session-list/metadata/font-scale preferences, Chat the P2
+     * composer/collapse/surface-color preferences.
      */
     const val SETTINGS = "settings"
     const val SETTINGS_GENERAL = "settings/general"
+    const val SETTINGS_DISPLAY = "settings/display"
+    const val SETTINGS_CHAT = "settings/chat"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
 }
@@ -357,7 +369,9 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder() },
+                factory = viewModelFactory {
+                    SessionListViewModelHolder(graph.displayPrefs.settings.map { it.showActiveSessionsOnly })
+                },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -394,6 +408,34 @@ fun HapiNavigation() {
                 factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph) },
             )
             SettingsGeneralScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_DISPLAY) {
+            val hubGraph = activeHubGraph ?: return@composable
+            // Keyed per hub like the sibling subpages, though display prefs
+            // themselves are app-wide; a hub swap just rebuilds from DataStore.
+            val holder = viewModel<DisplayViewModelHolder>(
+                key = "settingsDisplay:${hubGraph.hubUrl}",
+                factory = viewModelFactory { DisplayViewModelHolder(graph) },
+            )
+            SettingsDisplayScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_CHAT) {
+            val hubGraph = activeHubGraph ?: return@composable
+            // Same app-wide-prefs subpage shape as Display (per-hub key only
+            // so a hub swap rebuilds the holder from DataStore).
+            val holder = viewModel<ChatSettingsViewModelHolder>(
+                key = "settingsChat:${hubGraph.hubUrl}",
+                factory = viewModelFactory { ChatSettingsViewModelHolder(graph) },
+            )
+            SettingsChatScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
@@ -445,7 +487,7 @@ fun HapiNavigation() {
             }
             val holder = viewModel<ChatViewModelHolder>(
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
-                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext, graph.sessionHeaderMetadata) },
             )
             DisposableEffect(holder) {
                 composedChat.value = ComposedChat(hubGraph.hubUrl, holder.viewModel)
@@ -615,7 +657,7 @@ fun HapiNavigation() {
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext, graph.sessionHeaderMetadata) },
                 )
             }
             ScratchlistScreen(
@@ -789,9 +831,13 @@ private class ShareViewModelHolder : ViewModel() {
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
  * config changes with the nav entry. Retain only the current graph: returning
  * to the same URL creates a new HubGraph and must not revive a closed store
- * or its old filter. The global SSE pipe still belongs to HubGraph.
+ * or its old filter. The global SSE pipe still belongs to HubGraph. The P2
+ * display "active sessions only" lens arrives as an app-wide flow (default
+ * off, so tests and previews construct without display prefs).
  */
-private class SessionListViewModelHolder : ViewModel() {
+private class SessionListViewModelHolder(
+    private val showActiveSessionsOnly: Flow<Boolean> = flowOf(false),
+) : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -810,6 +856,8 @@ private class SessionListViewModelHolder : ViewModel() {
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
+            showActiveSessionsOnly = showActiveSessionsOnly,
+
         ).also { model = it }
     }
 
@@ -819,11 +867,33 @@ private class SessionListViewModelHolder : ViewModel() {
     }
 }
 
+/** Shell for the Display subpage's [DisplayViewModel] (app-wide prefs, no hub state). */
+private class DisplayViewModelHolder(graph: AppGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val viewModel = DisplayViewModel(graph.displayPrefs, scope)
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+/** Same shell for the Chat subpage's [ChatSettingsViewModel] (app-wide prefs). */
+private class ChatSettingsViewModelHolder(graph: AppGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val viewModel = ChatSettingsViewModel(graph.chatPrefs, scope)
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
 /** Same shell for the per-session [ChatViewModel] (+ its dictation controller). */
 private class ChatViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
+    /** P2 display gates for the header subtitle (app-wide flow; default = all visible). */
+    headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -839,6 +909,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        headerMetadata = headerMetadata,
     )
 
     /**
