@@ -247,6 +247,15 @@ describe('bootstrapExistingSession', () => {
             acpManualTitle: true,
             tools: ['read_file'],
             slashCommands: ['/compact'],
+            contextDetails: {
+                version: 1,
+                updatedAt: 99,
+                provider: 'codex',
+                codex: {
+                    skills: [{ name: 'find-docs' }],
+                    mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
+                }
+            },
             conversationHistoryPoints: { 'local-user-1': true },
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
@@ -296,6 +305,15 @@ describe('bootstrapExistingSession', () => {
             },
             tools: ['read_file'],
             slashCommands: ['/compact'],
+            contextDetails: {
+                version: 1,
+                updatedAt: 99,
+                provider: 'codex',
+                codex: {
+                    skills: [{ name: 'find-docs' }],
+                    mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
+                }
+            },
             conversationHistoryPoints: { 'local-user-1': true },
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
@@ -309,7 +327,8 @@ describe('bootstrapExistingSession', () => {
             acpManualTitle: true,
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
-            conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
+            conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
+            contextDetails: session.metadata.contextDetails
         }))
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',

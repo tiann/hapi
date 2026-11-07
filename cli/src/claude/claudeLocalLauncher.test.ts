@@ -214,6 +214,154 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(sentMessages).toHaveLength(2)
     })
 
+    it('publishes local Claude context details from assistant context_usage', async () => {
+        const { session, sentMessages, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'assistant-context-details',
+            context_usage: {
+                total_tokens: 26_697,
+                raw_max_tokens: 262_144,
+                mcp_tools: [{ name: 'mcp__hapi__list_peers', server_name: 'hapi' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            provider: 'claude',
+            contextWindow: 262_144,
+            usage: { contextTokens: 26_697 },
+            claude: {
+                mcpTools: [{ name: 'mcp__hapi__list_peers', serverName: 'hapi' }]
+            }
+        })
+        expect(sentMessages[0]).not.toHaveProperty('context_usage')
+    })
+
+    it('does not replace context details with a synthetic API error', async () => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'valid-context-details',
+            context_usage: {
+                model: 'claude-sonnet-5-5',
+                total_tokens: 26_697,
+                raw_max_tokens: 1_000_000
+            },
+            message: {
+                role: 'assistant',
+                model: 'claude-sonnet-5-5',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+        const beforeError = getMetadata().contextDetails
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'synthetic-api-error',
+            isApiErrorMessage: true,
+            error: 'invalid_request',
+            message: {
+                role: 'assistant',
+                model: '<synthetic>',
+                content: [{ type: 'text', text: 'Prompt is too long' }],
+                usage: {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0
+                }
+            }
+        })
+
+        expect(getMetadata().contextDetails).toEqual(beforeError)
+    })
+
+    it('keeps the resolved assistant model when a launch uses an alias', async () => {
+        const { session, getMetadata } = createSessionStub()
+        session.getModel = () => 'sonnet'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'resolved-context-details',
+            context_usage: {
+                model: 'claude-sonnet-5-5',
+                total_tokens: 26_697,
+                raw_max_tokens: 1_000_000
+            },
+            message: {
+                role: 'assistant',
+                model: 'claude-sonnet-5-5',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'resolved-ordinary-reply',
+            message: {
+                role: 'assistant',
+                model: 'claude-sonnet-5-5',
+                content: [{ type: 'text', text: 'still resolved' }]
+            }
+        })
+        harness.scannerOnMessage!({
+            type: 'system',
+            subtype: 'turn_duration',
+            uuid: 'model-less-system-event'
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            model: 'claude-sonnet-5-5',
+            contextWindow: 1_000_000,
+            usage: { contextTokens: 26_697 }
+        })
+    })
+
+    it('does not let Claude sidechain context details replace parent metadata', async () => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'parent-assistant',
+            context_usage: {
+                total_tokens: 100,
+                raw_max_tokens: 1_000,
+                mcp_tools: [{ name: 'mcp__parent__tool', server_name: 'parent' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'parent' }]
+            }
+        })
+        const parentDetails = getMetadata().contextDetails
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'sidechain-assistant',
+            isSidechain: true,
+            context_usage: {
+                total_tokens: 900,
+                raw_max_tokens: 9_000,
+                mcp_tools: [{ name: 'mcp__child__tool', server_name: 'child' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'child' }]
+            }
+        })
+
+        expect(getMetadata().contextDetails).toEqual(parentDetails)
+    })
+
     it('filters out isMeta messages (e.g. skill injections)', async () => {
         const { session, sentMessages } = createSessionStub()
         await claudeLocalLauncher(session as never)

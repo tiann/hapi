@@ -6,7 +6,7 @@ import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { hashObject } from "@/utils/deterministicJson";
-import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
+import { SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKSystemMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
@@ -23,6 +23,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 interface PermissionsField {
     date: number;
@@ -48,6 +49,13 @@ function getRespawnBackoffMs(): number {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isNaN(parsed) || parsed < 0) return 1000;
     return parsed;
+}
+
+function hasPositiveClaudeUsage(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const usage = value as Record<string, unknown>;
+    return ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
+        .some((key) => typeof usage[key] === 'number' && usage[key] > 0);
 }
 
 class ClaudeRemoteLauncher extends RemoteLauncherBase {
@@ -267,8 +275,53 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         let planModeToolCalls = new Set<string>();
         let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();
+        let lastSystemModel = session.getModel();
 
         function onMessage(message: SDKMessage) {
+            const rawPayload = message as unknown as Record<string, unknown>;
+            const isSidechain = typeof rawPayload.parent_tool_use_id === 'string';
+            if (!isSidechain) {
+                if (message.type === 'system') {
+                    const systemMessage = message as SDKSystemMessage;
+                    if (systemMessage.model) {
+                        lastSystemModel = systemMessage.model;
+                    }
+                    const details = buildClaudeContextDetails({ system: systemMessage, model: systemMessage.model });
+                    if (details) {
+                        publishContextDetails(session.client, details);
+                    }
+                } else if (message.type === 'assistant') {
+                    const assistantMessage = message as SDKAssistantMessage;
+                    const rawAssistantPayload = assistantMessage as unknown as Record<string, unknown>;
+                    const rawMessage = assistantMessage.message as unknown as Record<string, unknown>;
+                    const isSyntheticApiError = rawAssistantPayload.isApiErrorMessage === true
+                        || rawAssistantPayload.is_api_error_message === true
+                        || typeof rawAssistantPayload.error === 'string';
+                    if (!isSyntheticApiError) {
+                        const details = buildClaudeContextDetails({
+                            contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
+                            messageUsage: rawMessage.usage,
+                            model: assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
+                        });
+                        if (details) {
+                            publishContextDetails(session.client, details);
+                        }
+                    }
+                } else if (message.type === 'result') {
+                    const resultMessage = message as SDKResultMessage;
+                    if (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage)) {
+                        const details = buildClaudeContextDetails({
+                            result: resultMessage,
+                            messageUsage: resultMessage.usage,
+                            model: resultMessage.model ?? lastSystemModel
+                        });
+                        if (details) {
+                            publishContextDetails(session.client, details);
+                        }
+                    }
+                }
+            }
+
             formatClaudeMessageForInk(message, messageBuffer);
             permissionHandler.onMessage(message);
 
