@@ -5,14 +5,24 @@ vi.mock('@/lib/composer-drafts', () => ({
 }))
 vi.mock('@/lib/composer-attachment-drafts', () => ({
     clearDraftAttachments: vi.fn(),
+    removeDraftAttachmentsById: vi.fn(),
+}))
+vi.mock('@/lib/composer-draft-transfer', () => ({
+    clearComposerDraftSnapshotIfText: vi.fn(),
 }))
 
 import { clearDraft } from '@/lib/composer-drafts'
-import { clearDraftAttachments } from '@/lib/composer-attachment-drafts'
+import {
+    clearDraftAttachments,
+    removeDraftAttachmentsById,
+} from '@/lib/composer-attachment-drafts'
+import { clearComposerDraftSnapshotIfText } from '@/lib/composer-draft-transfer'
 import { clearDraftsAfterSend } from './clearDraftsAfterSend'
 
 const mockClearDraft = vi.mocked(clearDraft)
 const mockClearDraftAttachments = vi.mocked(clearDraftAttachments)
+const mockRemoveDraftAttachmentsById = vi.mocked(removeDraftAttachmentsById)
+const mockClearComposerDraftSnapshotIfText = vi.mocked(clearComposerDraftSnapshotIfText)
 
 describe('clearDraftsAfterSend', () => {
     beforeEach(() => {
@@ -41,5 +51,22 @@ describe('clearDraftsAfterSend', () => {
         expect(mockClearDraft).toHaveBeenCalledWith('session-A')
         expect(mockClearDraft).toHaveBeenCalledTimes(1)
         expect(mockClearDraftAttachments).toHaveBeenCalledWith('session-A')
+    })
+
+    it('clears the sent text snapshot for the sent session', () => {
+        clearDraftsAfterSend('session-A', 'session-A', 'sent text')
+        expect(mockClearComposerDraftSnapshotIfText).toHaveBeenCalledWith('session-A', 'sent text')
+    })
+
+    it('removes only submitted attachment IDs when provided', () => {
+        clearDraftsAfterSend('session-A', null, 'sent text', ['att-1'])
+        expect(mockClearDraft).toHaveBeenCalledWith('session-A')
+        expect(mockClearDraftAttachments).not.toHaveBeenCalled()
+        expect(mockRemoveDraftAttachmentsById).toHaveBeenCalledWith('session-A', ['att-1'])
+        expect(mockClearComposerDraftSnapshotIfText).toHaveBeenCalledWith(
+            'session-A',
+            'sent text',
+            ['att-1'],
+        )
     })
 })
