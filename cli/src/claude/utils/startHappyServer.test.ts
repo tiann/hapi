@@ -249,6 +249,29 @@ describe('startHappyServer skill_lookup', () => {
         }
     })
 
+    it.each([
+        'steer not attempted: target is idle',
+        'steer rejected by hub: Session not found',
+        'steer not confirmed; delivery unresolved: Steer outcome is being reconciled'
+    ])('appends the auto steer note to an accepted ping_peer receipt without claiming nothing was sent: %s', async (steerNote) => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
+            sessionId: 'peer-id', name: 'Peer', resumed: false,
+            localId: 'ping-peer-test', delivery: 'accepted', steerNote
+        })
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'ping_peer', arguments: { sessionIdPrefix: 'peer-id', message: 'hello' }
+            }) as ToolResult
+            expect(result.isError).toBe(false)
+            expect(result.content?.[0]?.text).toBe(
+                `Accepted for peer-id (Peer) localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it (${steerNote})`)
+            expect(result.content?.[0]?.text).not.toMatch(/no message sent/i)
+        } finally {
+            ping.mockRestore()
+        }
+    })
+
     it('forwards ping_peer wake only when explicitly requested', async () => {
         const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
             sessionId: 'peer-id', name: 'Peer', resumed: true,

@@ -977,6 +977,8 @@ export default {
   'settings.display.pinInProgressMode.off': '关闭',
   'settings.display.pinInProgressMode.jobs': '长时间任务',
   'settings.display.pinInProgressMode.all': '工作中与待处理',
+  'settings.display.keepUnreadSessionsVisible': '保持未读会话可见',
+  'settings.display.keepUnreadSessionsVisible.desc': '折叠的项目会在标题下列出其未读会话，会话预览数量限制也不会隐藏未读行。关闭后，折叠的项目将完全折叠，预览数量限制也适用于未读行。',
   'settings.display.appBadge': '任务栏未读角标',
   'settings.notifications.title': '通知',
   'settings.notifications.push': '在此设备上接收推送通知',

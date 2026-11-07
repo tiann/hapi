@@ -86,6 +86,7 @@ import { DEFAULT_SESSION_PREVIEW_LIMIT, useSessionPreviewLimit } from '@/hooks/u
 import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { DEFAULT_SESSION_LIST_VIEW, useSessionListView, type SessionListView } from '@/hooks/useSessionListView'
 import { SessionListViewMenu } from '@/components/SessionListViewMenu'
+import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import {
     usePinInProgressSessions,
     type PinInProgressMode
@@ -1450,8 +1451,12 @@ export function SessionList(props: {
         }),
         [lastSeenVersion] // eslint-disable-line react-hooks/exhaustive-deps
     )
+    const { keepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
+    // When off, unread rows are treated like any other: collapsed projects fold
+    // completely and the preview limit may hide them.
+    const previewIsUnread = keepUnreadSessionsVisible ? isSessionUnread : undefined
     const { pinInProgressMode } = usePinInProgressSessions()
-    // List sort/filter lives in SessionListView (#2263).
+    // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
@@ -1858,7 +1863,7 @@ export function SessionList(props: {
             const currentVisibleCount = getVisibleSessionPreview(group.sessions, {
                 selectedSessionId,
                 limit: currentLimit,
-                isUnread: isSessionUnread
+                isUnread: previewIsUnread
             }).length
             next.set(group.key, getNextSessionVisibleCount(
                 Math.max(currentLimit, currentVisibleCount),
@@ -1892,7 +1897,7 @@ export function SessionList(props: {
             {
                 selectedSessionId,
                 limit: getGroupVisibleCount(group),
-                isUnread: isSessionUnread
+                isUnread: previewIsUnread
             }
         )
     }
@@ -2046,7 +2051,7 @@ export function SessionList(props: {
         const isCollapsed = isGroupCollapsed(group)
         // A collapsed group still shows its unread rows, so new output in a
         // quiet project is never folded out of sight.
-        const collapsedUnreadSessions = isCollapsed ? group.sessions.filter(isSessionUnread) : []
+        const collapsedUnreadSessions = isCollapsed && keepUnreadSessionsVisible ? group.sessions.filter(isSessionUnread) : []
         const visibleGroupSessions = getVisibleGroupSessions(group)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
@@ -2057,7 +2062,7 @@ export function SessionList(props: {
         const previousGroupSessions = getVisibleSessionPreview(group.sessions, {
             selectedSessionId,
             limit: previousLimit,
-            isUnread: isSessionUnread
+            isUnread: previewIsUnread
         })
         const collapseCount = visibleGroupSessions.length - previousGroupSessions.length
         const canShowFewerSessions = previousLimit < currentLimit && collapseCount > 0
