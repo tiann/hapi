@@ -240,6 +240,24 @@ export class SyncEngine {
         ttlMs: 30_000,
         fetchTimeoutMs: 8_000
     })
+    /**
+     * Same single-flight + last-good treatment for machine/session model
+     * lists. The backing RPC round-trips even when healthy (observed ~1s
+     * floor, 3-13s under load) and every picker open re-fetches; a stalled
+     * engine stretches them past the web server's 30s request cap. Model
+     * catalogs change rarely, so serve cached values and revalidate. The
+     * 8s cold cap sits well under that request cap — callers get a typed
+     * error instead of an opaque gateway timeout.
+     */
+    private readonly modelListCache = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+
+    /** A model-list payload is only cacheable when the RPC actually
+     *  succeeded — error bodies must propagate, never get pinned. */
+    private static readonly modelListCacheable = (result: unknown): boolean =>
+        !!result && typeof result === 'object' && (result as { success?: unknown }).success === true
 
     /** Drop cached enumeration RPCs for a session leaving the active set
      *  (deleted or archived). The keys are never queried again; without this
@@ -247,6 +265,7 @@ export class SyncEngine {
     private releaseSessionEnumerations(sessionId: string): void {
         this.slashCommandsEnumeration.releaseSession(sessionId)
         this.skillsEnumeration.releaseSession(sessionId)
+        this.modelListCache.releaseSession(sessionId)
     }
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
@@ -635,6 +654,14 @@ export class SyncEngine {
 
         if (event.type === 'machine-updated' && event.machineId) {
             this.machineCache.refreshMachine(event.machineId)
+            return
+        }
+
+        if (event.type === 'machine-agy-models-updated' && event.machineId) {
+            // The runner just reported its agy catalog moved; drop the
+            // cached list so the web's event-driven refetch sees it cold.
+            this.modelListCache.release(event.machineId)
+            this.eventPublisher.emit(event)
             return
         }
 
@@ -4889,15 +4916,41 @@ export class SyncEngine {
         machineId: string,
         options?: { refresh?: boolean }
     ): Promise<RpcListAgyModelsResponse> {
-        return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        // An explicit refresh must actually hit the engine; bypass the cache
+        // entirely. `machine-agy-models-changed` invalidates the entry via
+        // handleRealtimeEvent so plain fetches revalidate too.
+        if (options?.refresh === true) {
+            return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        }
+        return await this.modelListCache.get(
+            `${machineId}|agy-models`,
+            () => this.rpcGateway.listAgyModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListAgyModelsResponse
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
-        return await this.rpcGateway.listPiModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
     }
 
     async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
-        return await this.rpcGateway.listClaudeModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|claude-models`,
+            () => this.rpcGateway.listClaudeModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListClaudeModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
@@ -4953,11 +5006,19 @@ export class SyncEngine {
     }
 
     async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
-        return await this.rpcGateway.listDshModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
     }
 
     async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
-        return await this.rpcGateway.listDshModelsForSession(sessionId)
+        return await this.modelListCache.get(
+            `${sessionId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

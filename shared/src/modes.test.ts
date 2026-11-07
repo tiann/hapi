@@ -7,9 +7,11 @@ import {
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
     getPermissionModesForFlavor,
+    hasActiveSteeringTurn,
     isPermissionModeAllowedForFlavor,
     isSteeringSupportedForFlavor,
     isSteeringSupportedForSession,
+    STEERING_SUPPORTED_FLAVORS,
 } from './modes'
 
 describe('Gemini CLI sunset (read-only, not creatable)', () => {
@@ -189,5 +191,80 @@ describe('isSteeringSupportedForSession', () => {
     it('rejects non-steerable flavors', () => {
         expect(isSteeringSupportedForSession({ flavor: 'gemini' })).toBe(false)
         expect(isSteeringSupportedForSession(null)).toBe(false)
+    })
+})
+
+describe('hasActiveSteeringTurn', () => {
+    it.each(['claude', 'codex', 'cursor', 'opencode'])('uses steeringActive rather than thinking for %s', (flavor) => {
+        expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: false,
+            agentState: { steeringActive: true } })).toBe(true)
+        expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: true,
+            agentState: { steeringActive: false } })).toBe(false)
+        expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: true })).toBe(false)
+    })
+
+    it('uses the Pi runtime thinking signal', () => {
+        expect(hasActiveSteeringTurn({ metadata: { flavor: 'pi' }, thinking: true,
+            agentState: { steeringActive: false } })).toBe(true)
+        expect(hasActiveSteeringTurn({ metadata: { flavor: 'pi' }, thinking: false,
+            agentState: { steeringActive: true } })).toBe(false)
+    })
+
+    it.each([
+        null, undefined, { flavor: 'gemini' }, { flavor: 'unknown' },
+        { flavor: '__proto__' }, { flavor: 'constructor' },
+        { flavor: 'cursor', cursorSessionProtocol: 'stream-json' as const },
+        { flavor: 'cursor', cursorSessionId: 'legacy' },
+    ])('rejects unsupported metadata even when every turn signal is true: %j', (metadata) => {
+        expect(hasActiveSteeringTurn({ metadata, thinking: true,
+            agentState: { steeringActive: true } })).toBe(false)
+        expect(isSteeringSupportedForSession(metadata)).toBe(false)
+        if (metadata?.flavor !== 'cursor') {
+            expect(isSteeringSupportedForFlavor(metadata?.flavor)).toBe(false)
+        }
+    })
+})
+
+describe('steering support table', () => {
+    // The pre-table branching, kept as the reference the table must match.
+    type Metadata = { flavor?: string | null; cursorSessionId?: string | null; cursorSessionProtocol?: 'acp' | 'stream-json' | null }
+    function referenceSupportsSession(metadata?: Metadata | null): boolean {
+        if (metadata?.flavor === 'claude' || metadata?.flavor === 'codex'
+            || metadata?.flavor === 'opencode' || metadata?.flavor === 'pi') return true
+        if (metadata?.flavor !== 'cursor') return false
+        if (metadata.cursorSessionProtocol === 'stream-json') return false
+        if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) return false
+        return true
+    }
+
+    const flavors = [
+        'claude', 'codex', 'cursor', 'opencode', 'pi', 'gemini', 'agy', 'unknown', '',
+        '__proto__', 'constructor', 'toString', null, undefined,
+    ]
+    const cursorShapes: Array<Pick<Metadata, 'cursorSessionId' | 'cursorSessionProtocol'>> = [
+        {}, { cursorSessionId: 'id' }, { cursorSessionId: null }, { cursorSessionProtocol: 'acp' },
+        { cursorSessionProtocol: 'stream-json' }, { cursorSessionProtocol: null },
+        { cursorSessionId: 'id', cursorSessionProtocol: 'acp' },
+        { cursorSessionId: 'id', cursorSessionProtocol: 'stream-json' },
+        { cursorSessionId: 'id', cursorSessionProtocol: null },
+    ]
+
+    it('gives the same session answer as the previous branching for every flavor and Cursor shape', () => {
+        for (const flavor of flavors) {
+            for (const shape of cursorShapes) {
+                const metadata = { flavor, ...shape }
+                expect(isSteeringSupportedForSession(metadata), JSON.stringify(metadata))
+                    .toBe(referenceSupportsSession(metadata))
+            }
+        }
+        expect(isSteeringSupportedForSession(null)).toBe(referenceSupportsSession(null))
+        expect(isSteeringSupportedForSession(undefined)).toBe(referenceSupportsSession(undefined))
+    })
+
+    it('answers the flavor-only gate from the same flavor list', () => {
+        for (const flavor of flavors) {
+            expect(isSteeringSupportedForFlavor(flavor), String(flavor))
+                .toBe((STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? ''))
+        }
     })
 })

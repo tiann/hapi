@@ -11,6 +11,7 @@ import type { ResolvedPeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { CompanionPairing } from '@/components/settings/CompanionPairing'
+import { PushNotificationsControl } from '@/components/settings/PushNotificationsControl'
 import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { queryKeys } from '@/lib/query-keys'
 import { SearchHistorySettings } from '@/components/settings/SearchHistorySettings'
@@ -87,6 +88,9 @@ export default function SettingsGeneralPage() {
                 <SettingsChoiceGroup hideLabel label={t('settings.language.label')} value={locale} options={locales} onChange={setLocale} />
             </SettingsSection>
             <SearchHistorySettings />
+            <SettingsSection title={t('settings.notifications.title')}>
+                <PushNotificationsControl />
+            </SettingsSection>
             {isOwner ? (
                 <SettingsSection
                     title={t('settings.general.sessionSummary.title')}
