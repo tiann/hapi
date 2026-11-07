@@ -152,7 +152,7 @@ describe('SessionList toolbar order', () => {
             <button type="button">Settings</button>
         )
 
-        expect(slotIds()).toEqual(['view', 'new', 'header-actions', 'mark-all'])
+        expect(slotIds()).toEqual(['session-filter', 'view', 'new', 'header-actions', 'mark-all'])
     })
 
     it('keeps the other controls in place when there is nothing unread', () => {
@@ -162,6 +162,6 @@ describe('SessionList toolbar order', () => {
             <button type="button">Settings</button>
         )
 
-        expect(slotIds()).toEqual(['view', 'new', 'header-actions'])
+        expect(slotIds()).toEqual(['session-filter', 'view', 'new', 'header-actions'])
     })
 })

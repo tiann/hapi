@@ -60,6 +60,7 @@ function createSession(overrides?: Partial<Session>): Session {
 }
 
 type EngineOverrides = Partial<{
+    getScratchlistSessionIdsByNamespace: SyncEngine['getScratchlistSessionIdsByNamespace']
     listScratchlistEntries: SyncEngine['listScratchlistEntries']
     countScratchlistEntries: SyncEngine['countScratchlistEntries']
     getScratchlistEntry: SyncEngine['getScratchlistEntry']
@@ -81,6 +82,7 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
             }
             return { ok: true, sessionId: session.id, session }
         },
+        getScratchlistSessionIdsByNamespace: overrides.getScratchlistSessionIdsByNamespace ?? (() => []),
         listScratchlistEntries: overrides.listScratchlistEntries ?? (() => []),
         countScratchlistEntries: overrides.countScratchlistEntries ?? (() => 0),
         sumScratchlistAttachmentBytes: () => 0,
@@ -122,6 +124,27 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
     app.route('/api', createSessionsRoutes(() => engine))
     return app
 }
+
+describe('GET /api/sessions/scratchlist-status', () => {
+    it('returns the scratchlist session ids for the caller namespace', async () => {
+        const session = createSession()
+        const namespaces: string[] = []
+        const app = createApp(session, {
+            getScratchlistSessionIdsByNamespace: (namespace) => {
+                namespaces.push(namespace)
+                return ['session-with-draft', 'session-with-another-draft']
+            }
+        })
+
+        const res = await app.request('/api/sessions/scratchlist-status')
+
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({
+            sessionIds: ['session-with-draft', 'session-with-another-draft']
+        })
+        expect(namespaces).toEqual(['default'])
+    })
+})
 
 describe('GET /api/sessions/:id/scratchlist', () => {
     it('returns the entries returned by the engine', async () => {

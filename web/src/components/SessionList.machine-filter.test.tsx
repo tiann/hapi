@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import type { SessionSummary, Machine } from '@/types/api'
+import type { ApiClient } from '@/api/client'
+import type { Machine, SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
@@ -11,6 +12,7 @@ const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
 
 afterEach(() => cleanup())
+beforeEach(() => window.localStorage.clear())
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -71,17 +73,32 @@ function makeMachine(overrides: Partial<Machine> & { id: string }): Machine {
     }
 }
 
-function renderSessionList(sessions: SessionSummary[], machinesById?: Record<string, Machine>) {
+function renderSessionList(
+    sessions: SessionSummary[],
+    apiOrMachinesById?: ApiClient | null | Record<string, Machine>,
+    onRefresh: () => Promise<unknown> | void = vi.fn(),
+    machinesByIdParam?: Record<string, Machine>
+) {
+    const isApiClient = Boolean(
+        apiOrMachinesById &&
+        ('getScratchlistSessionIds' in apiOrMachinesById || typeof (apiOrMachinesById as any).fetch === 'function')
+    )
+    const api = isApiClient ? (apiOrMachinesById as ApiClient) : null
+    const machinesById = isApiClient
+        ? machinesByIdParam
+        : (apiOrMachinesById && !('getScratchlistSessionIds' in apiOrMachinesById)
+            ? (apiOrMachinesById as Record<string, Machine>)
+            : undefined)
     return renderWithProviders(
         <SessionList
             sessions={sessions}
             selectedSessionId={null}
             onSelect={vi.fn()}
             onNewSession={vi.fn()}
-            onRefresh={vi.fn()}
+            onRefresh={onRefresh}
             isLoading={false}
             renderHeader={false}
-            api={null}
+            api={api}
             machineLabelsById={{ 'machine-1': 'Mint', 'machine-2': 'Teemo' }}
             machinesById={machinesById}
         />
@@ -116,8 +133,8 @@ describe('SessionList machine filter', () => {
         ])
 
         // One machine has nothing to filter — no bar, no mobile filter menu.
-        expect(screen.queryByRole('group', { name: 'Filter sessions by machine' })).toBeNull()
-        expect(screen.queryByRole('button', { name: 'Filter sessions by machine' })).toBeNull()
+        expect(screen.queryByRole('group', { name: 'Filter by machine' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Filter by machine' })).toBeNull()
         // The machine label and session count stay visible.
         const summary = screen.getByText('Mint').parentElement!
         expect(within(summary).getByText('(1)')).toBeTruthy()
@@ -165,9 +182,11 @@ describe('SessionList machine filter', () => {
     it('shows the filter bar and machine-suffixed group titles with multiple machines', () => {
         renderSessionList(multiMachineSessions)
 
-        expect(screen.getByRole('group', { name: 'Filter sessions by machine' })).toBeTruthy()
-        // Mobile (below md) counterpart: a compact filter icon button in the header
-        expect(screen.getByRole('button', { name: 'Filter sessions by machine' })).toBeTruthy()
+        expect(screen.getByRole('group', { name: 'Filter by machine' })).toBeTruthy()
+        // Mobile (below md) counterpart: the session and machine filters share
+        // one compact filter icon and menu.
+        const filterButtons = screen.getAllByRole('button', { name: 'Filter sessions' })
+        expect(filterButtons.some((button) => button.parentElement?.className.includes('md:hidden'))).toBe(true)
         expect(screen.getByRole('button', { name: /All \(2\)/ })).toBeTruthy()
         expect(screen.getByText('work/hapi · Mint')).toBeTruthy()
         expect(screen.getByText('work/docs · Teemo')).toBeTruthy()
@@ -183,6 +202,60 @@ describe('SessionList machine filter', () => {
         // Suffix disappears once a single machine is selected
         expect(screen.getByText('work/docs')).toBeTruthy()
         expect(window.localStorage.getItem('hapi-session-list-machine-filter')).toBe('machine-2')
+    })
+
+    it('uses the persisted unread view as the unified filter state through patches and reset', () => {
+        window.localStorage.setItem('hapi-session-list-unread-only', 'true')
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
+        renderSessionList([
+            makeSession({ id: 'unread-only', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/unread', name: 'Unread row' } }),
+            makeSession({ id: 'read-only', updatedAt: 500, contentRevision: 1, readState: readState(1), metadata: { path: '/work/read', name: 'Read row' } })
+        ])
+
+        expect(screen.queryByTitle('/work/read')).toBeNull()
+        const viewButton = screen.getAllByTestId('session-list-view-button').find(button => !button.closest('[inert]'))!
+        fireEvent.click(viewButton)
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'Date created' }))
+
+        fireEvent.click(screen.getAllByRole('button', { name: 'Filter sessions' })[0])
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Unread' })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.queryByTitle('/work/read')).toBeNull()
+
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Reset to default' }))
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Unread' })).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByTitle('/work/read')).toBeTruthy()
+    })
+
+    it('preserves a selected machine when unread filtering has no matches for it', () => {
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
+        renderSessionList([
+            makeSession({
+                id: 'unread-m1',
+                updatedAt: 500,
+                contentRevision: 1,
+                readState: readState(0),
+                metadata: { path: '/work/m1-unread', machineId: 'machine-1', name: 'Unread on Mint' }
+            }),
+            makeSession({
+                id: 'read-m2',
+                updatedAt: 500,
+                contentRevision: 1,
+                readState: readState(1),
+                metadata: { path: '/work/m2-read', machineId: 'machine-2', name: 'Read on Teemo' }
+            })
+        ])
+
+        const teemo = screen.getByRole('button', { name: /Teemo \(1\)/ })
+        fireEvent.click(teemo)
+        expect(teemo).toHaveAttribute('aria-pressed', 'true')
+
+        fireEvent.click(screen.getAllByRole('button', { name: 'Filter sessions' })[0])
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }))
+
+        expect(screen.getByRole('button', { name: /Teemo \(1\)/ })).toHaveAttribute('aria-pressed', 'true')
+        expect(screen.queryByTitle('/work/m1-unread')).toBeNull()
+        expect(screen.queryByTitle('/work/m2-read')).toBeNull()
+        expect(screen.getByText('No sessions match your filters.')).toBeTruthy()
     })
 
     it('falls back to All when the persisted machine no longer has sessions', () => {
@@ -215,5 +288,210 @@ describe('SessionList machine filter', () => {
         expect(screen.getByText('No sessions match your filters.')).toBeTruthy()
         expect(screen.queryByTitle('/work/hapi')).toBeNull()
         expect(screen.queryByTitle('/work/docs')).toBeNull()
+    })
+
+    it('excludes the desktop session filter from the mobile toolbar budget', () => {
+        vi.stubGlobal('matchMedia', vi.fn(() => ({
+            matches: false,
+            media: '(min-width: 768px)',
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn()
+        })))
+        try {
+            renderSessionList(multiMachineSessions, {
+                'machine-1': makeMachine({ id: 'machine-1' }),
+                'machine-2': makeMachine({ id: 'machine-2' })
+            })
+
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+            fireEvent.change(input, { target: { value: 'a very long collapsed session search query' } })
+            fireEvent.blur(input)
+
+            const actions = screen.getByTestId('session-list-header-actions')
+            expect(within(actions).queryByTestId('session-toolbar-slot-session-filter')).toBeNull()
+            expect(document.querySelector('[data-measure-id="session-filter"]')).toBeNull()
+        } finally {
+            vi.unstubAllGlobals()
+        }
+    })
+
+    it('combines session and machine options in the mobile filter menu', () => {
+        renderSessionList(multiMachineSessions)
+
+        const mobileTrigger = screen.getAllByRole('button', { name: 'Filter sessions' })
+            .find((button) => button.parentElement?.className.includes('md:hidden'))
+        expect(mobileTrigger).toBeTruthy()
+        fireEvent.click(mobileTrigger!)
+
+        const menu = screen.getByRole('menu', { name: 'Filter sessions' })
+        expect(within(menu).getByRole('group', { name: 'Session' })).toBeTruthy()
+        expect(within(menu).getByRole('group', { name: 'Filter by machine' })).toBeTruthy()
+        expect(Array.from(menu.querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [role="menuitem"]')).map((item) => item.textContent?.replace(/\s+/g, ''))).toEqual([
+            'Unread',
+            'Date',
+            'Scratchlist',
+            'All(2)',
+            'Mint(1)',
+            'Teemo(1)'
+        ])
+        expect(within(menu).getByRole('menuitemradio', { name: /All \(2\)/ })).toBeTruthy()
+        expect(within(menu).getByRole('menuitemradio', { name: /Mint \(1\)/ })).toBeTruthy()
+        expect(within(menu).getByRole('menuitemradio', { name: /Teemo \(1\)/ })).toBeTruthy()
+    })
+})
+
+describe('SessionList session filter menu', () => {
+    it('lists unread, date, and scratchlist and closes when clicking outside', () => {
+        renderSessionList([
+            makeSession({ id: 'session-1', metadata: { path: '/work/hapi', name: 'Session one' } })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+
+        const menu = screen.getByRole('menu', { name: 'Filter sessions' })
+        expect(Array.from(menu.querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [role="menuitem"]')).map((item) => item.textContent)).toEqual([
+            'Unread',
+            'Date',
+            'Scratchlist'
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+        expect(screen.queryByRole('menu', { name: 'Filter sessions' })).toBeNull()
+    })
+
+    it('opens the existing date picker from the unified filter menu with high stacking context and navigates months', () => {
+        renderSessionList([
+            makeSession({ id: 'session-1', metadata: { path: '/work/hapi', name: 'Session one' } })
+        ])
+
+        expect(screen.queryByRole('button', { name: 'Filter sessions by last activity' })).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+
+        const menu = screen.getByRole('menu', { name: 'Filter sessions' })
+        fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: 'Date' }))
+
+        expect(screen.getByRole('menu', { name: 'Filter sessions' })).toBeTruthy()
+        const dialog = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        expect(dialog).toBeTruthy()
+        expect(dialog.className).toContain('z-[60]')
+
+        const prevMonthButton = within(dialog).getByRole('button', { name: 'Previous month' })
+        const nextMonthButton = within(dialog).getByRole('button', { name: 'Next month' })
+        expect(prevMonthButton).toBeTruthy()
+        expect(nextMonthButton).toBeTruthy()
+        fireEvent.click(prevMonthButton)
+        fireEvent.click(nextMonthButton)
+
+        const dayButtons = within(dialog).getAllByRole('button').filter(b => /^\d+$/.test(b.textContent?.trim() || ''))
+        expect(dayButtons.length).toBeGreaterThan(0)
+        fireEvent.click(dayButtons[0])
+        fireEvent.click(dayButtons[Math.min(5, dayButtons.length - 1)])
+        expect(screen.queryByRole('dialog', { name: 'Filter sessions by last activity' })).toBeNull()
+    })
+
+    it('filters by scratchlist session ids using one batch request', async () => {
+        const getScratchlistSessionIds = vi.fn().mockResolvedValue(['session-with-draft'])
+        const api = { getScratchlistSessionIds } as unknown as ApiClient
+        renderSessionList([
+            makeSession({ id: 'session-with-draft', metadata: { path: '/work/draft', name: 'Draft session' } }),
+            makeSession({ id: 'session-without-draft', metadata: { path: '/work/empty', name: 'Empty session' } })
+        ], api)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Scratchlist' }))
+
+        await waitFor(() => expect(getScratchlistSessionIds).toHaveBeenCalledTimes(1))
+        await waitFor(() => {
+            expect(screen.getByTitle('/work/draft')).toBeTruthy()
+            expect(screen.queryByTitle('/work/empty')).toBeNull()
+        })
+    })
+
+    it('retries scratchlist status after a request failure', async () => {
+        const getScratchlistSessionIds = vi.fn()
+            .mockRejectedValueOnce(new Error('temporary failure'))
+            .mockResolvedValueOnce(['session-with-draft'])
+        const api = { getScratchlistSessionIds } as unknown as ApiClient
+        renderSessionList([
+            makeSession({ id: 'session-with-draft', metadata: { path: '/work/draft', name: 'Draft session' } }),
+            makeSession({ id: 'session-without-draft', metadata: { path: '/work/empty', name: 'Empty session' } })
+        ], api)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Scratchlist' }))
+
+        await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+        fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+        await waitFor(() => {
+            expect(getScratchlistSessionIds).toHaveBeenCalledTimes(2)
+            expect(screen.getByTitle('/work/draft')).toBeTruthy()
+            expect(screen.queryByTitle('/work/empty')).toBeNull()
+        })
+    })
+
+    it('refreshes scratchlist status with pull-to-refresh', async () => {
+        const getScratchlistSessionIds = vi.fn().mockResolvedValue(['session-with-draft'])
+        const onRefresh = vi.fn().mockResolvedValue(undefined)
+        const api = { getScratchlistSessionIds } as unknown as ApiClient
+        renderSessionList([
+            makeSession({ id: 'session-with-draft', metadata: { path: '/work/draft', name: 'Draft session' } })
+        ], api, onRefresh)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Scratchlist' }))
+        await waitFor(() => expect(getScratchlistSessionIds).toHaveBeenCalledTimes(1))
+
+        const scrollContainer = document.querySelector('.session-list-scrollbar-left') as HTMLElement
+        fireEvent.touchStart(scrollContainer, { touches: [{ clientY: 100 }] })
+        fireEvent.touchMove(scrollContainer, { touches: [{ clientY: 180 }] })
+        fireEvent.touchEnd(scrollContainer)
+
+        await waitFor(() => {
+            expect(onRefresh).toHaveBeenCalledTimes(1)
+            expect(getScratchlistSessionIds).toHaveBeenCalledTimes(2)
+        })
+    })
+
+    it('allows unread and scratchlist filters to be selected together', async () => {
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
+        const getScratchlistSessionIds = vi.fn().mockResolvedValue(['draft-unread', 'draft-seen'])
+        const api = { getScratchlistSessionIds } as unknown as ApiClient
+        renderSessionList([
+            makeSession({ id: 'draft-unread', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/draft-unread', name: 'Draft unread' } }),
+            makeSession({ id: 'draft-seen', updatedAt: 500, contentRevision: 1, readState: readState(1), metadata: { path: '/work/draft-seen', name: 'Draft seen' } }),
+            makeSession({ id: 'plain-unread', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/plain-unread', name: 'Plain unread' } })
+        ], api)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }))
+        expect(screen.getByRole('menu', { name: 'Filter sessions' })).toBeTruthy()
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Scratchlist' }))
+
+        await waitFor(() => expect(getScratchlistSessionIds).toHaveBeenCalledTimes(1))
+        await waitFor(() => {
+            expect(screen.getByTitle('/work/draft-unread')).toBeTruthy()
+            expect(screen.queryByTitle('/work/draft-seen')).toBeNull()
+            expect(screen.queryByTitle('/work/plain-unread')).toBeNull()
+        })
+    })
+
+    it('keeps the existing unread filter behavior behind the unified menu', () => {
+        const readState = (readRevision: number) => ({ readRevision, manualUnread: false, version: 0 })
+        renderSessionList([
+            makeSession({ id: 'session-unread', updatedAt: 500, contentRevision: 1, readState: readState(0), metadata: { path: '/work/unread', name: 'Unread session' } }),
+            makeSession({ id: 'session-seen', updatedAt: 500, contentRevision: 1, readState: readState(1), metadata: { path: '/work/seen', name: 'Seen session' } })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread' }))
+
+        expect(screen.getByTitle('/work/unread')).toBeTruthy()
+        expect(screen.queryByTitle('/work/seen')).toBeNull()
     })
 })

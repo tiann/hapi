@@ -6,7 +6,9 @@ import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
-import { SessionList } from './SessionList'
+import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
+import { SessionList, SessionListSearch } from './SessionList'
+
 
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
@@ -178,6 +180,215 @@ describe('SessionList directory action', () => {
     })
 })
 
+describe('SessionList time filter', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(2026, 6, 18, 12))
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('opens the date filter from the unified menu and filters without expanding search', () => {
+        const recent = makeSession({
+            id: 'recent',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/recent', name: 'Recent session' }
+        })
+        const old = makeSession({
+            id: 'old',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/old', name: 'Old session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[recent, old]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        // Inactive groups start collapsed and do not mount their rows.
+        fireEvent.click(screen.getByTitle('/work/recent'))
+        fireEvent.click(screen.getByTitle('/work/old'))
+        expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
+
+        const searchButton = screen.getByRole('button', { name: SEARCH_LABEL })
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
+        const searchControl = searchButton.parentElement
+        // #2039: collapsed search must not shrink under neighbors (overlap);
+        // header wraps trailing actions instead.
+        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'shrink-0', 'max-w-full')
+        expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('min-w-0')
+        expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
+        expect(screen.getByTestId('session-list-header-actions')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Filter sessions by last activity' })).toBeNull()
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+
+        fireEvent.click(filterButton)
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        const emptyDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        const activeDate = within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
+        expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
+        expect(activeDate).toHaveClass('text-[var(--app-fg)]')
+        expect(activeDate).toHaveAttribute('title', `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity`)
+        fireEvent.click(emptyDate)
+        fireEvent.click(activeDate)
+
+        expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByRole('menuitemcheckbox', { name: /^Date/ })).toHaveAttribute('aria-checked', 'true')
+    })
+
+    it('keeps the selected session visible when the date range excludes it', () => {
+        const recent = makeSession({
+            id: 'recent-selected-time-filter',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/recent-time', name: 'Recent selected-time row' }
+        })
+        const selected = makeSession({
+            id: 'selected-outside-time-filter',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/selected-time', name: 'Selected outside range' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[recent, selected]}
+                selectedSessionId={selected.id}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Recent selected-time row/ })).toBeInTheDocument()
+    })
+
+    it('highlights today without requiring hover or session activity', () => {
+        const old = makeSession({
+            id: 'old',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/old', name: 'Old session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[old]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        const today = within(calendar).getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
+        const anotherDay = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+
+        expect(today).toHaveClass('bg-[var(--app-subtle-bg)]')
+        expect(today).toHaveAttribute('aria-current', 'date')
+        expect(anotherDay).not.toHaveAttribute('aria-current')
+    })
+
+    it('uses the first calendar click as start and the second as end', () => {
+        const session = makeSession({
+            id: 'session-1',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/hapi', name: 'Session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
+        fireEvent.click(filterButton)
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        const startDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
+        fireEvent.click(startDate)
+        expect(startDate).toHaveClass('bg-[var(--app-button)]', 'text-[var(--app-button-text)]')
+        expect(startDate).not.toHaveClass('text-white')
+        expect(screen.getByText('Select end date')).toBeInTheDocument()
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('returns focus to the date filter row after clearing the date range', () => {
+        const session = makeSession({
+            id: 'session-1',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/hapi', name: 'Session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
+        fireEvent.click(filterButton)
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        let calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        // The footer Clear button unmounts with the range; focus must not drop to body.
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /^Date/ }))
+        calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(within(calendar).getByRole('button', { name: 'Clear' }))
+
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveFocus()
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveAttribute('aria-checked', 'false')
+    })
+})
+
 describe('SessionList collapsed search', () => {
     it('keeps collapsed search compact beside the actions without expanding it', () => {
         renderWithProviders(
@@ -207,6 +418,7 @@ describe('SessionList collapsed search', () => {
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
     })
 })
+
 
 describe('SessionList action menu parity', () => {
     it.each([
@@ -1386,6 +1598,7 @@ describe('SessionList search toggle', () => {
         }
     })
 
+
     it('explains when no content result may be incomplete because long messages were truncated', async () => {
         vi.useFakeTimers()
         try {
@@ -1659,7 +1872,10 @@ describe('SessionList search toggle', () => {
         expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
         // Unmeasured query: keep the daily lens on the row. Do not collapse
         // to [chip][⋯] and waste the right half of a Quest sidebar.
-        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
+        expect(within(actions).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
@@ -1768,10 +1984,12 @@ describe('SessionList search toggle', () => {
         // Empty query + 320px still fits the daily controls. Do not collapse
         // the row to [search][⋯]. Machine menu stays in the row (not shed).
         const actions = screen.getByTestId('session-list-header-actions')
-        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
+        expect(screen.getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
+expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-        expect(within(actions).getByRole('button', { name: 'Filter sessions by machine' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
 
         vi.unstubAllGlobals()
@@ -1854,7 +2072,7 @@ describe('SessionList search toggle', () => {
         expect(maxWidth).toBeLessThanOrEqual(320 - machineMenuPx - morePx)
         expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
-        expect(within(actions).getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
+        expect(screen.getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
 
         if (originalOffset) {
             Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffset)
@@ -1888,7 +2106,10 @@ describe('SessionList search toggle', () => {
 
         const actions = screen.getByTestId('session-list-header-actions')
         expect(actions).toHaveClass('flex-1')
-        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
+        expect(within(actions).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         // Nothing shed — no More, and no ml-auto hole between + and ⋯.
@@ -1942,7 +2163,10 @@ describe('SessionList search toggle', () => {
 
         // Wide header + query: New stays inline (not folded into More-only).
         expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
-        expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
+        expect(within(screen.getByTestId('session-list-header-actions')).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
 
         vi.unstubAllGlobals()
     })
@@ -1967,7 +2191,10 @@ describe('SessionList search toggle', () => {
         )
 
         expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
+        expect(screen.getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
@@ -1998,9 +2225,36 @@ describe('SessionList search toggle', () => {
         expect(clearButton.className).toMatch(/min-h-\[48px\]/)
         expect(clearButton.className).toMatch(/min-w-\[48px\]/)
 
+
+        expect(screen.queryByTestId('session-list-search-date-embedded')).toBeNull()
+    })
+
+    it('keeps the embedded calendar when expanded search enables date filtering', () => {
+        renderWithProviders(
+            <SessionListSearch
+                value="DJ"
+                onChange={vi.fn()}
+                customStart=""
+                customEnd=""
+                sessionActivityDates={new Set()}
+                onDateRangeChange={vi.fn()}
+                expanded={true}
+                onExpandedChange={vi.fn()}
+            />
+        )
+
+        const dateButton = screen.getByTestId('session-list-search-date-embedded')
+        expect(dateButton.className).toMatch(/min-h-\[48px\]/)
+        expect(dateButton.className).toMatch(/min-w-\[48px\]/)
+        const clearButton = screen.getByRole('button', { name: 'Clear search' })
+        expect(clearButton.parentElement?.contains(dateButton)).toBe(true)
+
+
         const fieldChildren = Array.from(clearButton.parentElement?.children ?? [])
-        expect(fieldChildren.at(-1)).toBe(clearButton)
-        expect(fieldChildren.at(-2)).toBe(input)
+        const dateIndex = fieldChildren.findIndex((node) => node === dateButton.parentElement || node.contains(dateButton))
+        const clearIndex = fieldChildren.indexOf(clearButton)
+        expect(dateIndex).toBeGreaterThanOrEqual(0)
+        expect(clearIndex).toBeGreaterThan(dateIndex)
     })
 
     it('stays expanded with focus on the input after clearing the query', () => {

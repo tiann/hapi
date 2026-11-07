@@ -4,6 +4,7 @@ import {
     MachineFilterBar,
     MachineFilterMenu,
     MachineSummaryRow,
+    getCenteredFilterMenuLeft,
     getMachineFilterMenuClampStyle,
     machineFilterMenuAlignsStart,
 } from './MachineFilterBar'
@@ -122,7 +123,7 @@ describe('MachineFilterBar', () => {
     it('is hidden below the md breakpoint (mobile uses MachineFilterMenu)', () => {
         renderBar()
 
-        expect(screen.getByRole('group', { name: 'Filter sessions by machine' }).className).toContain('max-md:hidden')
+        expect(screen.getByRole('group', { name: 'Filter by machine' }).className).toContain('max-md:hidden')
     })
 })
 
@@ -186,7 +187,7 @@ describe('MachineFilterMenu', () => {
     it('renders a compact icon button only below the md breakpoint', () => {
         const { container } = renderMenu()
 
-        const button = screen.getByRole('button', { name: 'Filter sessions by machine' })
+        const button = screen.getByRole('button', { name: 'Filter by machine' })
         expect(button.getAttribute('aria-haspopup')).toBe('menu')
         expect(button.getAttribute('aria-expanded')).toBe('false')
         expect(container.firstElementChild!.className).toContain('md:hidden')
@@ -196,20 +197,20 @@ describe('MachineFilterMenu', () => {
 
     it('shows an active-filter dot only when a machine is selected', () => {
         const { unmount } = renderMenu()
-        const button = screen.getByRole('button', { name: 'Filter sessions by machine' })
+        const button = screen.getByRole('button', { name: 'Filter by machine' })
         expect(button.querySelector('span')).toBeNull()
         unmount()
 
         renderMenu({ value: 'machine-1' })
-        expect(screen.getByRole('button', { name: 'Filter sessions by machine' }).querySelector('span')).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Filter by machine' }).querySelector('span')).toBeTruthy()
     })
 
     it('opens a radio menu listing All plus every machine with counts', () => {
         renderMenu({ value: 'machine-1' })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
 
-        expect(screen.getByRole('button', { name: 'Filter sessions by machine' }).getAttribute('aria-expanded')).toBe('true')
+        expect(screen.getByRole('button', { name: 'Filter by machine' }).getAttribute('aria-expanded')).toBe('true')
         const all = screen.getByRole('menuitemradio', { name: /All \(5\)/ })
         const mint = screen.getByRole('menuitemradio', { name: /Mint \(3\)/ })
         const teemo = screen.getByRole('menuitemradio', { name: /Teemo \(2\)/ })
@@ -222,7 +223,7 @@ describe('MachineFilterMenu', () => {
         const onChange = vi.fn()
         renderMenu({ onChange })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
         fireEvent.click(screen.getByRole('menuitemradio', { name: /Teemo \(2\)/ }))
 
         expect(onChange).toHaveBeenCalledWith('machine-2')
@@ -233,11 +234,11 @@ describe('MachineFilterMenu', () => {
         const onChange = vi.fn()
         renderMenu({ value: 'machine-1', onChange })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
         fireEvent.click(screen.getByRole('menuitemradio', { name: /All \(5\)/ }))
         expect(onChange).toHaveBeenCalledWith(null)
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
         const backdrop = screen.getByRole('button', { name: 'Close' })
         // The invisible full-screen backdrop must not be a Tab stop
         expect(backdrop.getAttribute('tabindex')).toBe('-1')
@@ -248,15 +249,46 @@ describe('MachineFilterMenu', () => {
     it('shows a compact inline health summary (touch devices have no hover tooltip)', () => {
         renderMenu()
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
 
         const teemo = screen.getByRole('menuitemradio', { name: /Teemo \(2\)/ })
         expect(teemo.textContent).toContain('CPU 12%')
         expect(teemo.textContent).toContain('RAM 88%')
     })
 
-    it('clamps the menu to the wider horizontal pocket around the trigger', () => {
-        // Trigger near the left edge (More popover): right-only clamp would be tiny.
+    it('combines session filters with machine filters when requested', () => {
+        const onSessionFilterChange = vi.fn()
+        renderMenu({
+            sessionFilter: { unread: false, scratchlist: false },
+            onSessionFilterChange
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+
+        expect(screen.getByRole('group', { name: 'Session' })).toBeTruthy()
+        expect(screen.getByRole('group', { name: 'Filter by machine' })).toBeTruthy()
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Scratchlist' }))
+        expect(screen.getByRole('menu')).toBeTruthy()
+        expect(onSessionFilterChange).toHaveBeenCalledWith({ unread: false, scratchlist: true })
+    })
+
+    it('opens the existing date picker from the unified machine menu', () => {
+        renderMenu({
+            sessionFilter: { unread: false, scratchlist: false },
+            onSessionFilterChange: vi.fn(),
+            customStart: '',
+            customEnd: '',
+            sessionActivityDates: new Set(),
+            onDateRangeChange: vi.fn()
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+
+        expect(screen.getByRole('dialog', { name: 'Filter sessions by last activity' })).toBeTruthy()
+    })
+
+    it('clamps the menu to the viewport space remaining around the trigger', () => {
         const style = getMachineFilterMenuClampStyle({ left: 24, right: 48, bottom: 100 })
 
         expect(style.maxWidth).toContain('min(16rem, max(')
@@ -269,15 +301,33 @@ describe('MachineFilterMenu', () => {
         expect(style.maxHeight).toContain('env(safe-area-inset-bottom)')
     })
 
+    it('lets the session menu use intrinsic width while preserving centered bounds', () => {
+        const style = getMachineFilterMenuClampStyle({ left: 260, right: 300, bottom: 100 }, { widthCap: null, horizontal: 'center' })
+
+        expect(style.maxWidth).toBe('calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right))')
+    })
+
+    it('centers the menu under the trigger and clamps it at viewport edges', () => {
+        expect(getCenteredFilterMenuLeft({ left: 300, width: 40 }, 200, 800)).toBe(-80)
+        expect(getCenteredFilterMenuLeft({ left: 0, width: 40 }, 200, 400)).toBe(8)
+        expect(getCenteredFilterMenuLeft({ left: 360, width: 40 }, 200, 400)).toBe(-168)
+    })
+
     it('left-aligns when more room opens to the right of the trigger', () => {
         expect(machineFilterMenuAlignsStart({ left: 16, right: 40 }, 320)).toBe(true)
         expect(machineFilterMenuAlignsStart({ left: 260, right: 300 }, 320)).toBe(false)
     })
 
+    it('keeps the centered menu clamp readable near the left edge', () => {
+        // Trigger near the left edge (More popover): right-only clamp would be tiny.
+        const style = getMachineFilterMenuClampStyle({ left: 24, right: 48, bottom: 100 }, { widthCap: null, horizontal: 'center' })
+        expect(style.maxWidth).toContain('100vw - 16px')
+    })
+
     it('focuses the selected row when the menu opens', async () => {
         renderMenu({ value: 'machine-1' })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
 
         await vi.waitFor(() => {
             expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: /Mint \(3\)/ }))
@@ -287,7 +337,7 @@ describe('MachineFilterMenu', () => {
     it('moves focus with Arrow keys, wrapping at both ends', async () => {
         renderMenu()
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by machine' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Filter by machine' }))
         const all = screen.getByRole('menuitemradio', { name: /All \(5\)/ })
         await vi.waitFor(() => expect(document.activeElement).toBe(all))
 
@@ -303,7 +353,7 @@ describe('MachineFilterMenu', () => {
 
     it('closes on Escape and restores focus to the trigger', async () => {
         renderMenu()
-        const trigger = screen.getByRole('button', { name: 'Filter sessions by machine' })
+        const trigger = screen.getByRole('button', { name: 'Filter by machine' })
 
         fireEvent.click(trigger)
         await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: /All \(5\)/ })))
