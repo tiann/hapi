@@ -147,6 +147,11 @@ function createPreviewContext(mode: ToolCardDisplayMode, api: HappyChatContextVa
         isSyncingTail: false,
         isLoadingMoreMessages: false,
         loadOlderMessagesPreservingScroll: async () => 'terminal-stop',
+        jumpToPrompt: async () => false,
+        loadingPromptMessageId: null,
+        scrollToConversationStart: async () => false,
+        isLoadingConversationStart: false,
+        isNavigationInFlight: false,
     }
 }
 
