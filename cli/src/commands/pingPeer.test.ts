@@ -94,4 +94,34 @@ describe('handlePingPeerCommand receipts', () => {
             ? 'OK - accepted for peer-id localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it'
             : `OK - ${delivery} to peer-id localId=ping-peer-test`))
     })
+
+    it.each([
+        'steer not attempted: target is idle',
+        'steer rejected by hub: Session not found',
+        'steer not confirmed; delivery unresolved: Steer outcome is being reconciled'
+    ])('appends the auto steer note to an accepted receipt: %s', async (steerNote) => {
+        vi.spyOn(tokenInit, 'initializeToken').mockResolvedValue(undefined)
+        vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
+            sessionId: 'peer-id', name: 'Peer', resumed: false,
+            localId: 'ping-peer-test', delivery: 'accepted', steerNote
+        })
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+        await handlePingPeerCommand(['peer-id', 'hello'])
+
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(
+            `consumes it (${steerNote})`))
+        expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/no message sent/i))
+    })
+})
+
+describe('ping-peer help', () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    it('includes remote Claude and OpenCode in the explicit steer contract', async () => {
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+        await handlePingPeerCommand(['--help'])
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('remote Claude, Pi, Codex'))
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('Codex, OpenCode,'))
+    })
 })

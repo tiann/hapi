@@ -103,6 +103,40 @@ describe('SessionList unread visibility', () => {
     })
 })
 
+describe('SessionList unread visibility setting off', () => {
+    beforeEach(() => {
+        localStorage.clear()
+        localStorage.setItem('hapi-keep-unread-sessions-visible', 'false')
+    })
+
+    it('folds a collapsed project completely, with no unread peek', () => {
+        seedReads({ read: 1000, unread: 1000 })
+        renderSessionList([
+            makeSession({ id: 'read', updatedAt: 1000, metadata: { path: '/work/quiet', name: 'Read row' } }),
+            makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/quiet', name: 'Unread row' } })
+        ])
+
+        expect(screen.queryByTestId('session-group-unread-peek')).toBeNull()
+        expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
+        expect(screen.queryByRole('button', { name: /Read row/ })).toBeNull()
+    })
+
+    it('applies the preview limit to unread rows', () => {
+        const sessions = Array.from({ length: 10 }, (_, i) => makeSession({
+            id: `s${i}`,
+            active: true,
+            updatedAt: 1000 - i,
+            metadata: { path: '/work/busy', name: `Row ${i}` }
+        }))
+        // The oldest row is the only unread one: it would normally be forced visible.
+        seedReads(Object.fromEntries(sessions.map(s => [s.id, s.id === 's9' ? 0 : 1000])))
+        renderSessionList(sessions)
+
+        expect(screen.queryByRole('button', { name: /Row 9/ })).toBeNull()
+        expect(screen.getByRole('button', { name: /Row 0/ })).toBeInTheDocument()
+    })
+})
+
 describe('SessionList toolbar order', () => {
     beforeEach(() => {
         localStorage.clear()
