@@ -1338,6 +1338,65 @@ export class SessionCache {
     }
 
     /**
+     * Raw-row title-pin check. The sanitized cache/wire view strips
+     * nameLocked (hub-owned, MetadataSchema), so pin decisions must read the
+     * store row directly.
+     */
+    isSessionNamePinned(sessionId: string): boolean {
+        const raw = this.store.sessions.getSession(sessionId)?.metadata as
+            | { nameLocked?: unknown; titleLocked?: unknown }
+            | null
+            | undefined
+        return raw?.nameLocked === true || raw?.titleLocked === true
+    }
+
+    /**
+     * Per-turn hub rewrite of metadata.name for flavors without a native
+     * rename tool (hub-side autoTitlePerTurn fallback). Manual pins win: the
+     * write is skipped whenever nameLocked / titleLocked is set in the raw
+     * row, including a pin that lands while the provider call was in flight.
+     */
+    async updatePerTurnSessionTitle(sessionId: string, name: string): Promise<boolean> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) return false
+
+            const metadata = session.metadata as Record<string, unknown> | null
+            if (!metadata || this.isSessionNamePinned(sessionId)) return false
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...metadata, name },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                const parsed = MetadataSchema.safeParse(result.value)
+                if (!parsed.success) {
+                    this.refreshSession(sessionId)
+                    return true
+                }
+                session.metadata = parsed.data
+                session.metadataVersion = result.version
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    namespace: session.namespace,
+                    data: { metadata: { version: result.version, value: parsed.data } } satisfies SessionPatch
+                })
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
+    /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
      *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.

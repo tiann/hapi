@@ -17,6 +17,8 @@ import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { readAutoTitlePerTurnEnabled } from '../config/autoTitlePerTurn'
+import { getConfiguration } from '../configuration'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -291,7 +293,14 @@ export class SyncEngine {
         this.titleSuggestionService = createTitleSuggestionService(store)
         this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(
             this.sessionCache,
-            this.titleSuggestionService
+            this.titleSuggestionService,
+            Date.now,
+            {
+                // Hub-side per-turn title fallback for flavors without a native
+                // rename tool; reads the same autoTitlePerTurn toggle the CLI
+                // steer uses, so the web switch governs both paths.
+                isPerTurnTitleEnabled: () => readAutoTitlePerTurnEnabled(getConfiguration().dataDir)
+            }
         )
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.sessionCache.closeTurnsLeftOpen()

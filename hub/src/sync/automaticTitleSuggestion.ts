@@ -2,10 +2,36 @@ import type { SessionCache } from './sessionCache'
 import type { TitleSuggestionService } from './titleSuggestion'
 
 /**
+ * Flavors whose CLI injects no rename tool into the agent prompt, so the
+ * autoTitlePerTurn steer cannot reach them. The hub-side per-turn fallback
+ * below regenerates metadata.name for exactly these flavors (claude, codex,
+ * opencode, grok and pi rename themselves via their title tool). Keep in sync
+ * with the flavor system-prompt modules when a flavor gains a native tool.
+ */
+export const FLAVORS_WITHOUT_NATIVE_TITLE_TOOLS: ReadonlySet<string> = new Set([
+    'dsh', 'kimi', 'cursor', 'copilot', 'agy'
+])
+
+type AutomaticTitleSuggestionOptions = {
+    /**
+     * Reads the hub autoTitlePerTurn setting. When it resolves to true the
+     * hub rewrites the title itself after every completed turn for flavors
+     * without a native rename tool. Undefined disables the fallback.
+     */
+    isPerTurnTitleEnabled?: () => Promise<boolean>
+}
+
+/**
  * Best-effort first-turn title fallback.
  *
  * This service owns only the automatic path. The existing manual Generate
  * action remains available after an automatic attempt fails.
+ *
+ * Per-turn mode: the CLI-side autoTitlePerTurn steer only works for flavors
+ * with a native rename tool. For the rest (FLAVORS_WITHOUT_NATIVE_TITLE_TOOLS)
+ * the hub regenerates the title after every turn while the setting is on.
+ * Manual pins still win — a nameLocked / titleLocked session is never
+ * rewritten by the fallback.
  */
 export class AutomaticTitleSuggestionService {
     private readonly inFlightSessionIds = new Set<string>()
@@ -15,7 +41,8 @@ export class AutomaticTitleSuggestionService {
     constructor(
         private readonly sessionCache: SessionCache,
         private readonly titleSuggestionService: TitleSuggestionService,
-        private readonly now: () => number = Date.now
+        private readonly now: () => number = Date.now,
+        private readonly options: AutomaticTitleSuggestionOptions = {}
     ) {
     }
 
@@ -77,6 +104,18 @@ export class AutomaticTitleSuggestionService {
                 try {
                     if (this.stopped) return
                     if (!this.titleSuggestionService.isConfigured()) return
+                    // The undefined check must stay synchronous: awaiting an
+                    // absent gate would defer the first-turn path by a
+                    // microtask tick and break in-flight ordering guarantees.
+                    if (this.options.isPerTurnTitleEnabled !== undefined) {
+                        if (await this.shouldRewriteTitlePerTurn(sessionId)) {
+                            const title = await this.titleSuggestionService.suggestTitle(sessionId)
+                            if (!this.stopped) {
+                                await this.sessionCache.updatePerTurnSessionTitle(sessionId, title)
+                            }
+                            return
+                        }
+                    }
                     const metadata = this.sessionCache.getSession(sessionId)?.metadata
                     if (metadata?.name?.trim() || metadata?.summary?.text?.trim()
                         || metadata?.titleSuggestionAutoAttemptedAt !== undefined) return
@@ -95,5 +134,34 @@ export class AutomaticTitleSuggestionService {
             .finally(() => {
                 this.inFlightSessionIds.delete(sessionId)
             })
+    }
+
+    /**
+     * Hub-side per-turn rewrite gate: the toggle is on, the provider is
+     * configured (checked by the caller), the session runs a flavor without a
+     * native rename tool, and no manual pin (nameLocked / titleLocked) holds
+     * the title. The pin check reads the raw store row via the cache because
+     * the sanitized cache view strips hub-owned fields; the flavor check uses
+     * the cached view, where flavor survives sanitization.
+     */
+    private async shouldRewriteTitlePerTurn(sessionId: string): Promise<boolean> {
+        if (!this.options.isPerTurnTitleEnabled) return false
+        let perTurnEnabled = false
+        try {
+            perTurnEnabled = await this.options.isPerTurnTitleEnabled()
+        } catch {
+            // A settings-read failure must not take the first-turn fallback
+            // down with it; degrade to the legacy path instead.
+            return false
+        }
+        if (!perTurnEnabled) return false
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata as
+            | { flavor?: unknown }
+            | null
+            | undefined
+        if (!metadata) return false
+        if (typeof metadata.flavor !== 'string' || !FLAVORS_WITHOUT_NATIVE_TITLE_TOOLS.has(metadata.flavor)) return false
+        if (this.sessionCache.isSessionNamePinned(sessionId)) return false
+        return true
     }
 }
