@@ -1094,5 +1094,10 @@ private fun newSessionStrings(context: Context) = NewSessionStrings(
     runnerUpgradeRequired = context.getString(R.string.new_session_error_runner_upgrade_required),
     noAvailableAgents = context.getString(R.string.new_session_error_no_available_agents),
     selectedAgentUnavailable = context.getString(R.string.new_session_error_selected_agent_unavailable),
+    agyNotListed = context.getString(R.string.new_session_agy_not_listed),
+    opencodeLoadFailedDetail = context.getString(R.string.new_session_error_opencode_models_detail),
+    opencodeDefaultLabel = context.getString(R.string.new_session_opencode_default),
+    selectVariant = context.getString(R.string.new_session_select_variant),
     grokAutoUnavailable = context.getString(R.string.new_session_grok_auto_unavailable),
+    grokAutoUnavailableDesc = context.getString(R.string.new_session_grok_auto_unavailable_desc),
 )
