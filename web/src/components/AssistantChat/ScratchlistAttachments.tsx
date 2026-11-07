@@ -47,12 +47,19 @@ export function ScratchlistAttachments(props: Props) {
         for (const attachment of attachments) rememberScratchlistAttachmentPreview(attachment, attachment.previewUrl)
         let cancelled = false
         void Promise.all(attachments.filter((a) => !getScratchlistAttachmentPreview(a)).map(async (attachment) => {
-            try {
-                if (!props.api || !props.sessionId) return
-                const blob = await props.api.fetchScratchlistAttachmentBlob(props.sessionId, attachment.id)
-                rememberScratchlistAttachmentObjectUrl(attachment, URL.createObjectURL(blob))
-            } catch {
-                // A missing preview must not hide the file or its actions.
+            if (!props.api || !props.sessionId) return
+            // An optimistic attachment may not be persisted yet (GET 404).
+            // Retry a couple of times so the preview appears once Hub has it,
+            // without hiding the file or its actions on transient failures.
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    const blob = await props.api.fetchScratchlistAttachmentBlob(props.sessionId, attachment.id)
+                    rememberScratchlistAttachmentObjectUrl(attachment, URL.createObjectURL(blob))
+                    return
+                } catch {
+                    if (cancelled) return
+                    await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)))
+                }
             }
         })).then(() => { if (!cancelled) setPreviewRevision((value) => value + 1) })
         return () => { cancelled = true; releases.forEach((release) => release()) }

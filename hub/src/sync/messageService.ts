@@ -1505,17 +1505,22 @@ export class MessageService {
         if (this.matureReleaseInFlightSessions.has(sessionId)) return 0
         this.matureReleaseInFlightSessions.add(sessionId)
         try {
-            return await this.releaseDeliverableQueuedMessages(sessionId, now)
+            const cutoff = this.completedClearHandoffCutoff(sessionId)
+            return await this.releaseDeliverableQueuedMessages(sessionId, now, cutoff)
         } finally {
             this.matureReleaseInFlightSessions.delete(sessionId)
         }
     }
 
     /** Release a completed clear handoff in finalized seq order. */
-    async releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): Promise<number> {
+    async releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now(), untilCreatedAt?: number | null): Promise<number> {
         if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
         const queued = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
             .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
+            // A recovered ordered drain must not overtake the handoff prefix:
+            // keep the newly scheduled (deadline-ordered) tail for the normal
+            // scheduled path, which handles its own materialization barriers.
+            .filter((msg) => untilCreatedAt == null || msg.createdAt <= untilCreatedAt)
         let released = 0
         let completed = true
         for (const msg of queued) {
@@ -1698,7 +1703,7 @@ export class MessageService {
                 if (!hasPendingOrderedDrain && !this.hasCliSessionConnection(sessionId)) return
                 this.matureReleaseInFlightSessions.add(sessionId)
                 try {
-                    await this.releaseDeliverableQueuedMessages(sessionId, now)
+                    await this.releaseDeliverableQueuedMessages(sessionId, now, clearHandoffCutoff)
                 } finally {
                     this.matureReleaseInFlightSessions.delete(sessionId)
                 }
