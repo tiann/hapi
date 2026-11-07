@@ -256,6 +256,11 @@ export class SharedCodexRoot {
         if (lastTurnId) {
             const after = this.projection.firstMessageLocalIdAfterTurn(lastTurnId);
             if (after) return { kind: 'at', localId: after };
+            // Only treat a turn as final when it is actually in the projection;
+            // an unknown turn (valid old turn absent from the projection) must
+            // stay unresolved rather than guessed as "through latest".
+            const inProjection = this.projection.firstMessageLocalIdForTurn(lastTurnId);
+            if (!inProjection) return undefined;
             const latest = this.projection.latestMessageLocalId();
             return latest ? { kind: 'through', localId: latest } : undefined;
         }
