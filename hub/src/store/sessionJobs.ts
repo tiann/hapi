@@ -22,12 +22,15 @@ type DbJobRow = {
     unit: string | null
     detail: string | null
     run_id: string | null
+    wake_on_terminal: number | null
+    wake_prompt: string | null
+    wake_emitted_run_id: string | null
     heartbeat_at: number
     started_at: number
     updated_at: number
 }
 
-const JOB_COLUMNS = `session_id, job_key, label, status, done, total, remaining, unit, detail, run_id, heartbeat_at, started_at, updated_at`
+const JOB_COLUMNS = `session_id, job_key, label, status, done, total, remaining, unit, detail, run_id, wake_on_terminal, wake_prompt, wake_emitted_run_id, heartbeat_at, started_at, updated_at`
 
 function toStored(row: DbJobRow): StoredSessionJob {
     return {
@@ -41,6 +44,9 @@ function toStored(row: DbJobRow): StoredSessionJob {
         unit: row.unit ?? undefined,
         detail: row.detail ?? undefined,
         runId: row.run_id ?? undefined,
+        wakeOnTerminal: row.wake_on_terminal === 1,
+        wakePrompt: row.wake_prompt ?? undefined,
+        wakeEmittedRunId: row.wake_emitted_run_id ?? undefined,
         heartbeatAt: row.heartbeat_at,
         startedAt: row.started_at,
         updatedAt: row.updated_at
@@ -58,6 +64,8 @@ export function toAttachedJob(job: StoredSessionJob): AttachedJob {
         ...(job.unit !== undefined ? { unit: job.unit } : {}),
         ...(job.detail !== undefined ? { detail: job.detail } : {}),
         ...(job.runId !== undefined ? { runId: job.runId } : {}),
+        ...(job.wakeOnTerminal ? { wakeOnTerminal: true } : {}),
+        ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
         heartbeatAt: job.heartbeatAt,
         startedAt: job.startedAt,
         updatedAt: job.updatedAt
@@ -153,13 +161,18 @@ export function upsertSessionJob(
         ? body.startedAt
         : (startsNewSupervisedRun ? now : (existing?.startedAt ?? now))
     const status = body.status ?? 'running'
+    const wakeOnTerminal = body.wakeOnTerminal === true ? 1 : 0
+    const wakePrompt = body.wakePrompt ?? null
+    // New supervised generation clears prior wake claim so a reused key can wake again.
+    const clearWakeClaim = startsNewSupervisedRun
 
     try {
         db.prepare(
             `INSERT INTO session_jobs (
                 session_id, job_key, label, status, done, total, remaining, unit, detail,
-                run_id, heartbeat_at, started_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, wake_on_terminal, wake_prompt, wake_emitted_run_id,
+                heartbeat_at, started_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
              ON CONFLICT(session_id, job_key) DO UPDATE SET
                 label = excluded.label,
                 status = excluded.status,
@@ -169,6 +182,12 @@ export function upsertSessionJob(
                 unit = excluded.unit,
                 detail = excluded.detail,
                 run_id = excluded.run_id,
+                wake_on_terminal = excluded.wake_on_terminal,
+                wake_prompt = excluded.wake_prompt,
+                wake_emitted_run_id = CASE
+                    WHEN ? THEN NULL
+                    ELSE session_jobs.wake_emitted_run_id
+                END,
                 heartbeat_at = excluded.heartbeat_at,
                 started_at = excluded.started_at,
                 updated_at = excluded.updated_at`
@@ -183,9 +202,12 @@ export function upsertSessionJob(
             body.unit ?? null,
             body.detail ?? null,
             runId,
+            wakeOnTerminal,
+            wakePrompt,
             heartbeatAt,
             startedAt,
-            now
+            now,
+            clearWakeClaim ? 1 : 0
         )
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -233,6 +255,10 @@ export function patchSessionJob(
         remaining: patch.remaining === null ? undefined : (patch.remaining ?? existing.remaining),
         unit: patch.unit === null ? undefined : (patch.unit ?? existing.unit),
         detail: patch.detail === null ? undefined : (patch.detail ?? existing.detail),
+        wakeOnTerminal: patch.wakeOnTerminal ?? existing.wakeOnTerminal,
+        wakePrompt: patch.wakePrompt === null
+            ? undefined
+            : (patch.wakePrompt ?? existing.wakePrompt),
         heartbeatAt: now,
         updatedAt: now
     }
@@ -241,6 +267,7 @@ export function patchSessionJob(
     const result = db.prepare(
         `UPDATE session_jobs SET
             label = ?, status = ?, done = ?, total = ?, remaining = ?, unit = ?, detail = ?,
+            wake_on_terminal = ?, wake_prompt = ?,
             heartbeat_at = ?, updated_at = ?
          WHERE session_id = ? AND job_key = ?
            AND (? IS NULL OR run_id = ?)`
@@ -252,6 +279,8 @@ export function patchSessionJob(
         next.remaining ?? null,
         next.unit ?? null,
         next.detail ?? null,
+        next.wakeOnTerminal ? 1 : 0,
+        next.wakePrompt ?? null,
         next.heartbeatAt,
         next.updatedAt,
         sessionId,
@@ -276,6 +305,38 @@ export function patchSessionJob(
     const job = getSessionJob(db, sessionId, jobKey)
     if (!job) return { outcome: 'not-found' }
     return { outcome: 'patched', job }
+}
+
+/**
+ * Atomically claim a one-shot terminal wake for this run (#1489).
+ * Returns the job when this caller owns the wake; null if already claimed,
+ * opt-in is off, status is non-terminal, or the row is missing.
+ */
+export function claimSessionJobTerminalWake(
+    db: Database,
+    sessionId: string,
+    jobKey: string
+): StoredSessionJob | null {
+    const existing = getSessionJob(db, sessionId, jobKey)
+    if (!existing) return null
+    if (!existing.wakeOnTerminal) return null
+    if (existing.status !== 'completed' && existing.status !== 'failed') return null
+    const claimId = existing.runId ?? `norun:${existing.startedAt}`
+    if (existing.wakeEmittedRunId === claimId) return null
+
+    const result = db.prepare(
+        `UPDATE session_jobs SET wake_emitted_run_id = ?
+         WHERE session_id = ? AND job_key = ?
+           AND wake_on_terminal = 1
+           AND status IN ('completed', 'failed')
+           AND (
+             wake_emitted_run_id IS NULL
+             OR wake_emitted_run_id != ?
+           )`
+    ).run(claimId, sessionId, jobKey, claimId)
+
+    if (result.changes === 0) return null
+    return getSessionJob(db, sessionId, jobKey)
 }
 
 export type DeleteSessionJobResult =

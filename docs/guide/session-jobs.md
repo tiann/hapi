@@ -163,6 +163,27 @@ hapi job clear "$HAPI_SESSION_ID" beets --expected-run-id "$RUN_ID"
 
 Same auth as `hapi ping-peer` (`HAPI_API_URL` / `CLI_API_TOKEN` or `hapi auth login`).
 
+## Wake owning session on terminal (opt-in, #1489)
+
+By default jobs are **meter-only**: terminal `completed`/`failed` does not resume the agent. For DJ / beets-style batches where the idle owner must verify and start the next chunk, opt in:
+
+```bash
+hapi job run "$HAPI_SESSION_ID" beets \
+  --label 'beets import' \
+  --wake-on-terminal \
+  --wake-prompt 'If exit looked clean, start the next album batch.' \
+  --remaining 150 --done 1637 --total 1787 --unit units \
+  -- ./beets-import.sh
+```
+
+When the hub accepts terminal status (and the opt-in was set on that run):
+
+1. Claims a one-shot wake for that `runId` (retries / duplicate terminal PATCH do not re-fire).
+2. Resumes the owning session if inactive (same resume path as `ping-peer`).
+3. Posts a user message naming job key, status, last detail, plus optional `--wake-prompt`.
+
+This does **not** treat heartbeats as thinking. Default remains off until dogfood proves the loop.
+
 ## Progress honesty (tiers)
 
 | What you know | What to send | What the list shows |

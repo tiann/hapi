@@ -471,6 +471,13 @@ export const AttachedJobSchema = z.object({
     detail: z.string().max(500).optional(),
     /** Opaque run generation — supervisors CAS against this on PATCH. */
     runId: z.string().min(1).max(64).optional(),
+    /**
+     * Opt-in (tiann/hapi#1489): when the job hits completed/failed, hub resumes
+     * the owning session and posts a wake prompt. Default off.
+     */
+    wakeOnTerminal: z.boolean().optional(),
+    /** Optional prescription text appended to the hub wake message. */
+    wakePrompt: z.string().max(2000).optional(),
     heartbeatAt: z.number(),
     startedAt: z.number(),
     updatedAt: z.number()
@@ -489,7 +496,10 @@ export const AttachedJobUpsertSchema = z.object({
     detail: z.string().max(500).optional(),
     startedAt: z.number().optional(),
     /** Supervisor-owned generation; hub mints one when omitted. */
-    runId: z.string().min(1).max(64).optional()
+    runId: z.string().min(1).max(64).optional(),
+    /** Opt-in job-complete wake (#1489). Default off when omitted. */
+    wakeOnTerminal: z.boolean().optional(),
+    wakePrompt: z.string().max(2000).optional()
 }).strict()
 
 export type AttachedJobUpsert = z.infer<typeof AttachedJobUpsertSchema>
@@ -508,7 +518,9 @@ export const AttachedJobPatchSchema = z.object({
      * same value so a stale process cannot mutate a newer key-reuse run.
      * Date.now()/startedAt is not unique enough for concurrent supervisors.
      */
-    expectedRunId: z.string().min(1).max(64).optional()
+    expectedRunId: z.string().min(1).max(64).optional(),
+    wakeOnTerminal: z.boolean().optional(),
+    wakePrompt: z.string().max(2000).nullable().optional()
 }).strict()
 
 export type AttachedJobPatch = z.infer<typeof AttachedJobPatchSchema>

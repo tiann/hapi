@@ -45,6 +45,52 @@ describe('parseJobArgs', () => {
         expect(parsed.command).toEqual(['bash', '-c', 'echo hi'])
     })
 
+    it('parses wake-on-terminal flags', () => {
+        const parsed = parseJobArgs([
+            'run',
+            'sid',
+            'drain',
+            '--label=rsync',
+            '--wake-on-terminal',
+            '--wake-prompt=Next chunk',
+            '--',
+            'true'
+        ])
+        expect(parsed.wakeOnTerminal).toBe(true)
+        expect(parsed.wakePrompt).toBe('Next chunk')
+        expect(parsed.command).toEqual(['true'])
+    })
+
+    it('parses --wake-on-terminal and --wake-prompt on update (dogfood arm-later)', () => {
+        const parsed = parseJobArgs([
+            'update',
+            'sid',
+            'oos-llm-from-studio',
+            '--done',
+            '1',
+            '--total',
+            '2',
+            '--wake-on-terminal',
+            '--wake-prompt',
+            'delete studio dupes'
+        ])
+        expect(parsed.action).toBe('update')
+        expect(parsed.wakeOnTerminal).toBe(true)
+        expect(parsed.wakePrompt).toBe('delete studio dupes')
+        expect(parsed.done).toBe(1)
+        expect(parsed.total).toBe(2)
+    })
+
+    it('rejects --wake-prompt without a value', () => {
+        expect(() => parseJobArgs([
+            'update',
+            'sid',
+            'k',
+            '--wake-on-terminal',
+            '--wake-prompt'
+        ])).toThrow(/--wake-prompt requires a value/)
+    })
+
     it('rejects bad status', () => {
         expect(() => parseJobArgs(['update', 's', 'k', '--status', 'nope'])).toThrow(SessionJobError)
     })

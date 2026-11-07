@@ -28,6 +28,8 @@ export type RunSessionJobOptions = SessionJobClientOptions & {
     total?: number
     unit?: string
     detail?: string
+    wakeOnTerminal?: boolean
+    wakePrompt?: string
     /** Injected for tests. */
     spawnImpl?: typeof spawn
     setIntervalImpl?: typeof setInterval
@@ -200,7 +202,9 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         ...(options.total !== undefined ? { total: options.total } : {}),
         ...(options.remaining !== undefined ? { remaining: options.remaining } : {}),
         ...(options.unit !== undefined ? { unit: options.unit } : {}),
-        ...(options.detail !== undefined ? { detail: options.detail } : {})
+        ...(options.detail !== undefined ? { detail: options.detail } : {}),
+        ...(options.wakeOnTerminal !== undefined ? { wakeOnTerminal: options.wakeOnTerminal } : {}),
+        ...(options.wakePrompt !== undefined ? { wakePrompt: options.wakePrompt } : {})
     }
 
     // Cache sessionId for the run. JWT is refreshed in-place before hub's 4h

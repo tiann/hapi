@@ -33,6 +33,8 @@ export type ParsedJobArgs = {
     heartbeatSec?: number
     runId?: string
     expectedRunId?: string
+    wakeOnTerminal?: boolean
+    wakePrompt?: string
     command?: string[]
 }
 
@@ -55,12 +57,17 @@ ${chalk.bold('Agent contract:')}
   Do not wrap hapi-restart-hub / stack-switch in job run (hub down → zombie running meter).
 
 ${chalk.bold('Usage:')}
-  hapi job run <session> <job-key> --label <text> [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]
-  hapi job set <session> <job-key> --label <text> [--started-at MS] [--run-id UUID] [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
-  hapi job update <session> <job-key> [--expected-run-id UUID] [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--detail ...]
+  hapi job run <session> <job-key> --label <text> [--wake-on-terminal] [--wake-prompt <text>] [--heartbeat-sec 300] [progress flags] -- <cmd> [args...]
+  hapi job set <session> <job-key> --label <text> [--wake-on-terminal] [--wake-prompt <text>] [--started-at MS] [--run-id UUID] [--remaining N] [--done N --total N] [--unit tracks] [--detail ...]
+  hapi job update <session> <job-key> [--expected-run-id UUID] [--remaining N] [--done N] [--total N] [--status running|completed|failed] [--wake-on-terminal] [--wake-prompt <text>] [--detail ...]
                        [--clear-remaining|--clear-done|--clear-total|--clear-unit|--clear-detail]
   hapi job clear <session> <job-key> [--expected-run-id UUID]
   hapi job list <session>
+
+${chalk.bold('Wake on terminal (tiann/hapi#1489, default off):')}
+  --wake-on-terminal   When the job hits completed/failed, hub resumes the owning
+                       session and posts a prompt so an idle agent can continue.
+  --wake-prompt TEXT   Optional prescription appended to the wake message.
 
 ${chalk.bold('Progress UI:')}
   remaining           → "N units left · 2h"
@@ -245,6 +252,21 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             }
             continue
         }
+        if (arg === '--wake-on-terminal') {
+            result.wakeOnTerminal = true
+            continue
+        }
+        if (arg === '--wake-prompt') {
+            result.wakePrompt = flagArgs[++i]
+            if (result.wakePrompt === undefined) {
+                throw new SessionJobError('bad_args', '--wake-prompt requires a value')
+            }
+            continue
+        }
+        if (arg.startsWith('--wake-prompt=')) {
+            result.wakePrompt = arg.slice('--wake-prompt='.length)
+            continue
+        }
         if (arg.startsWith('-')) {
             throw new SessionJobError('bad_args', `unexpected flag: ${arg}`)
         }
@@ -419,7 +441,9 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
             ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
             ...(parsed.startedAt !== undefined ? { startedAt: parsed.startedAt } : {}),
-            ...(parsed.runId !== undefined ? { runId: parsed.runId } : {})
+            ...(parsed.runId !== undefined ? { runId: parsed.runId } : {}),
+            ...(parsed.wakeOnTerminal !== undefined ? { wakeOnTerminal: parsed.wakeOnTerminal } : {}),
+            ...(parsed.wakePrompt !== undefined ? { wakePrompt: parsed.wakePrompt } : {})
         }
         const result = await setSessionJob({
             sessionIdPrefix: parsed.sessionIdPrefix,
@@ -449,7 +473,9 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(typeof parsed.total === 'number' ? { total: parsed.total } : {}),
             ...(typeof parsed.remaining === 'number' ? { remaining: parsed.remaining } : {}),
             ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
-            ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {})
+            ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
+            ...(parsed.wakeOnTerminal !== undefined ? { wakeOnTerminal: parsed.wakeOnTerminal } : {}),
+            ...(parsed.wakePrompt !== undefined ? { wakePrompt: parsed.wakePrompt } : {})
         })
         if (exitCode !== 0) {
             process.exitCode = exitCode
@@ -467,7 +493,9 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         ...(parsed.remaining !== undefined ? { remaining: parsed.remaining } : {}),
         ...(parsed.unit !== undefined ? { unit: parsed.unit } : {}),
         ...(parsed.detail !== undefined ? { detail: parsed.detail } : {}),
-        ...(parsed.expectedRunId !== undefined ? { expectedRunId: parsed.expectedRunId } : {})
+        ...(parsed.expectedRunId !== undefined ? { expectedRunId: parsed.expectedRunId } : {}),
+        ...(parsed.wakeOnTerminal !== undefined ? { wakeOnTerminal: parsed.wakeOnTerminal } : {}),
+        ...(parsed.wakePrompt !== undefined ? { wakePrompt: parsed.wakePrompt } : {})
     }
     // Empty body is a heartbeat-only update; hub stamps heartbeatAt.
     let result

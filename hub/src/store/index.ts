@@ -56,7 +56,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 33
+const SCHEMA_VERSION: number = 34
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -381,7 +381,8 @@ export class Store {
             // upstream future-scheduled index at v26→v27;
             // upstream session_turns at v27→v28; last_user_message_at at v28→v29;
             // upstream read-state at v29→v30;
-            // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33
+            // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
+            // #1489 wake-on-terminal at v33→v34
             // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
@@ -395,6 +396,7 @@ export class Store {
             30: () => this.migrateFromV30ToV31(),
             31: () => this.migrateFromV31ToV32(),
             32: () => this.migrateFromV32ToV33(),
+            33: () => this.migrateFromV33ToV34(),
         })
 
         if (currentVersion === 0) {
@@ -603,6 +605,9 @@ export class Store {
                 unit TEXT,
                 detail TEXT,
                 run_id TEXT,
+                wake_on_terminal INTEGER NOT NULL DEFAULT 0,
+                wake_prompt TEXT,
+                wake_emitted_run_id TEXT,
                 heartbeat_at INTEGER NOT NULL,
                 started_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -1289,6 +1294,9 @@ export class Store {
                 remaining REAL,
                 unit TEXT,
                 detail TEXT,
+                wake_on_terminal INTEGER NOT NULL DEFAULT 0,
+                wake_prompt TEXT,
+                wake_emitted_run_id TEXT,
                 heartbeat_at INTEGER NOT NULL,
                 started_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -1312,6 +1320,23 @@ export class Store {
         const cols = this.db.prepare('PRAGMA table_info(session_jobs)').all() as Array<{ name: string }>
         if (cols.length > 0 && !cols.some((c) => c.name === 'run_id')) {
             this.db.exec('ALTER TABLE session_jobs ADD COLUMN run_id TEXT')
+        }
+    }
+
+    /**
+     * v33→v34: tiann/hapi#1489 — opt-in terminal wake + one-shot claim marker.
+     */
+    private migrateFromV33ToV34(): void {
+        const cols = this.db.prepare('PRAGMA table_info(session_jobs)').all() as Array<{ name: string }>
+        const names = new Set(cols.map((c) => c.name))
+        if (!names.has('wake_on_terminal')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_on_terminal INTEGER NOT NULL DEFAULT 0')
+        }
+        if (!names.has('wake_prompt')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_prompt TEXT')
+        }
+        if (!names.has('wake_emitted_run_id')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_emitted_run_id TEXT')
         }
     }
 
