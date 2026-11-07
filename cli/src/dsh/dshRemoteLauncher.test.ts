@@ -9,6 +9,8 @@ const harness = vi.hoisted(() => ({
     backend: null as Record<string, ReturnType<typeof vi.fn>> | null,
     newSessionConfig: null as unknown,
     prompts: [] as unknown[][],
+    transportClosedHandler: null as ((error: Error) => void) | null,
+    promptFailure: null as Error | null,
     resumeError: null as Error | null,
     resumeSupported: true,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
@@ -41,6 +43,10 @@ vi.mock('./utils/dshBackend', () => ({
             }),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
                 harness.prompts.push(content)
+                if (harness.promptFailure) {
+                    harness.transportClosedHandler?.(harness.promptFailure)
+                    throw harness.promptFailure
+                }
                 onUpdate({ type: 'text', text: 'answer' })
             }),
             cancelPrompt: vi.fn(async () => {}),
@@ -52,6 +58,9 @@ vi.mock('./utils/dshBackend', () => ({
                 return {}
             }),
             onStderrError: vi.fn(),
+            onTransportClosed: vi.fn((handler: (error: Error) => void) => {
+                harness.transportClosedHandler = handler
+            }),
             onPermissionRequest: vi.fn(),
             disconnect: vi.fn(async () => {})
         }
@@ -71,12 +80,16 @@ vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 
-function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: string | null = null) {
+function createSessionWithBatches(
+    batches: Array<[string, DshMode]>,
+    closeQueue = true,
+    sessionId: string | null = null
+) {
     const queue = new MessageQueue2<DshMode>((m) => JSON.stringify(m))
     for (const [message, mode] of batches) {
         queue.push(message, mode)
     }
-    queue.close()
+    if (closeQueue) queue.close()
 
     return {
         path: '/tmp/dsh-test',
@@ -92,8 +105,11 @@ function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: 
     }
 }
 
-function createSession(mode?: DshMode, sessionId: string | null = null) {
-    return createSessionWithBatches([['first', mode ?? {}]], sessionId)
+function createSession(arg?: boolean | DshMode, sessionId: string | null = null) {
+    if (typeof arg === 'boolean') {
+        return createSessionWithBatches(arg ? [['first', {}]] : [], arg, sessionId)
+    }
+    return createSessionWithBatches([['first', arg ?? {}]], true, sessionId)
 }
 
 describe('DshRemoteLauncher', () => {
@@ -101,6 +117,8 @@ describe('DshRemoteLauncher', () => {
         harness.backend = null
         harness.newSessionConfig = null
         harness.prompts = []
+        harness.transportClosedHandler = null
+        harness.promptFailure = null
         harness.resumeError = null
         harness.resumeSupported = true
         harness.modelOption = null
@@ -128,6 +146,43 @@ describe('DshRemoteLauncher', () => {
         })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
         expect(harness.backend?.disconnect).toHaveBeenCalled()
+    })
+
+    it('ends the DSH launcher when the ACP transport closes while idle', async () => {
+        const session = createSession(false)
+        const waitForMessages = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const launcher = new DshRemoteLauncher(session as never)
+        const launchPromise = launcher.launch()
+        void launchPromise.catch(() => undefined)
+        const launchResult = launchPromise.then(
+            () => ({ error: null as unknown }),
+            (error: unknown) => ({ error })
+        )
+
+        await vi.waitFor(() => expect(harness.transportClosedHandler).not.toBeNull())
+        await vi.waitFor(() => expect(waitForMessages).toHaveBeenCalled())
+        harness.transportClosedHandler!(new Error('ACP process exited (code=1, signal=null)'))
+
+        const result = await launchResult
+        expect(result.error).toBeInstanceOf(Error)
+        expect((result.error as Error).message).toContain('ACP process exited')
+        expect(harness.backend?.disconnect).toHaveBeenCalled()
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH ACP process stopped: ACP process exited (code=1, signal=null)'
+        })
+        expect(session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
+        expect(harness.prompts).toEqual([])
+    })
+
+    it('does not swallow a prompt failure caused by an ACP transport close', async () => {
+        const session = createSession()
+        harness.promptFailure = new Error('ACP transport closed')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await expect(launcher.launch()).rejects.toThrow('ACP transport closed')
+        expect(harness.backend?.disconnect).toHaveBeenCalled()
+        expect(session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
     })
 
     it('resumes an existing DSH ACP session instead of creating a new one', async () => {
