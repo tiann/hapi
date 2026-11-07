@@ -21,9 +21,10 @@ import java.time.LocalDate
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
  * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
  * non-owner gating), the General subpage it drills into (stock and under a
- * color theme preset), and the expressive choice dialogs that subpage opens
+ * color theme preset), the expressive choice dialogs that subpage opens
  * (theme swatches in light and dark, color-theme cards with accent strips,
- * language cards without swatches).
+ * language cards without swatches), and the Display subpage (session-list
+ * prefs, metadata switches, font tiers).
  */
 
 private fun bucket(
@@ -170,6 +171,31 @@ private fun SettingsHubNonOwnerPreview() {
             SettingsHubContent(
                 entries = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = false)),
                 onOpenCategory = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings display", showBackground = true, heightDp = 1700)
+@Composable
+private fun SettingsDisplayPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsDisplayContent(
+                settings = DisplaySettings(
+                    sessionPreviewLimit = 12,
+                    showActiveSessionsOnly = true,
+                    sessionListStatusMode = SessionListStatusMode.DETAILED,
+                    headerMetadata = SessionHeaderMetadata(createdAt = true),
+                    fontScale = AppFontScale.L,
+                ),
+                onSetSessionPreviewLimit = {},
+                onSetShowActiveSessionsOnly = {},
+                onSetPinInProgressSessions = {},
+                onSetSessionListStatusMode = {},
+                onSetFontScale = {},
+                onSetHeaderMetadata = {},
                 onBack = {},
             )
         }
