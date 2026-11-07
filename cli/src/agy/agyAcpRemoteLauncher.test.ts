@@ -13,6 +13,8 @@ import {
     AgyAcpRemoteLauncher,
     addAgyUsage,
     agyAcpModeForPermission,
+    agyGenerationMs,
+    agyRoundSummary,
     resolveAgyAcpModelId
 } from './agyAcpRemoteLauncher';
 
@@ -248,6 +250,13 @@ function sessionEvents(client: ReturnType<typeof makeClient>): unknown[] {
     return client.sendSessionEvent.mock.calls.map(([event]) => event);
 }
 
+function roundSummaries(client: ReturnType<typeof makeClient>): Array<Record<string, unknown> & { agy_usage: Record<string, number> }> {
+    return client.sendAgentMessage.mock.calls
+        .map(([message]) => message as { type: string; summary: Record<string, unknown> & { agy_usage: Record<string, number> } })
+        .filter((message) => message.type === 'round-summary')
+        .map((message) => message.summary);
+}
+
 describe('AgyAcpRemoteLauncher', () => {
     beforeEach(() => {
         process.stdin.isTTY = false;
@@ -384,11 +393,16 @@ describe('AgyAcpRemoteLauncher', () => {
         await launch(session, [backend]).run;
 
         const sent = client.sendAgentMessage.mock.calls.map(([message]) => message as { type: string });
-        expect(sent.map((message) => message.type)).toEqual(['message', 'token_count']);
+        // No token_count: agy's usage is not a context size.
+        expect(sent.map((message) => message.type)).toEqual(['message', 'round-summary']);
         expect(sent[1]).toMatchObject({
-            type: 'token_count',
-            model: 'gemini-4-argon-medium',
-            info: { total: { inputTokens: 160, outputTokens: 7, totalTokens: 157, cachedInputTokens: 10 } }
+            type: 'round-summary',
+            summary: {
+                provider: 'agy',
+                model: 'gemini-4-argon-medium',
+                agy_usage: { input_tokens: 150, output_tokens: 7, cache_read_tokens: 10, total_tokens: 157 },
+                duration_ms: expect.any(Number)
+            }
         });
     });
 
@@ -652,11 +666,9 @@ describe('AgyAcpRemoteLauncher steer', () => {
         await run;
 
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true });
-        const usage = client.sendAgentMessage.mock.calls
-            .map(([message]) => message as { type: string; info?: { total: { inputTokens: number; outputTokens: number } } })
-            .filter((message) => message.type === 'token_count');
-        expect(usage).toHaveLength(1);
-        expect(usage[0]!.info!.total).toMatchObject({ inputTokens: 150, outputTokens: 10 });
+        const summaries = roundSummaries(client);
+        expect(summaries).toHaveLength(1);
+        expect(summaries[0]!.agy_usage).toMatchObject({ input_tokens: 150, output_tokens: 10 });
         expect(steeringStates(client).at(-1)).toBe(false);
     });
 
@@ -816,7 +828,7 @@ describe('AgyAcpRemoteLauncher steer', () => {
         await vi.waitFor(() => expect(backend.permissionResponses.at(-1)).toEqual({ outcome: 'cancelled' }));
         expect(backend.permissionResponses).not.toContainEqual({ outcome: 'selected', optionId: 'allow' });
         // Usage the dropped steer reports later is not a new turn.
-        const usageEvents = () => client.sendAgentMessage.mock.calls.filter(([m]) => (m as { type: string }).type === 'token_count').length;
+        const usageEvents = () => roundSummaries(client).length;
         const before = usageEvents();
         backend.steerCompletions[0]!.onUsage?.({ type: 'usage', inputTokens: 9, outputTokens: 9 });
         expect(usageEvents()).toBe(before);
@@ -993,6 +1005,65 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         queue.close();
         await run;
         expect(created).toHaveLength(1);
+    });
+
+    it('leaves the tool run and the wait for an approval out of tok/s', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let approvalAnswered!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            await new Promise((resolve) => setTimeout(resolve, 40));
+            onUpdate({ type: 'tool_call', id: 't1', name: 'run_command', input: {}, status: 'in_progress' });
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            onUpdate({ type: 'tool_result', id: 't1', output: 'ok', status: 'completed' });
+            backend.permissionHandler!({
+                id: 'p1', sessionId: 'agy-conv-new', toolCallId: 'call_p1', title: 'rm -rf build', kind: 'execute',
+                rawInput: { CommandLine: 'rm -rf build' },
+                options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+            });
+            await new Promise<void>((resolve) => { approvalAnswered = resolve; });
+            onUpdate({ type: 'text', text: 'done' });
+            await new Promise((resolve) => setTimeout(resolve, 40));
+            onUpdate({ type: 'usage', inputTokens: 10, outputTokens: 30, thoughtTokens: 10 });
+        });
+        queue.push('clean up', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(Object.keys(agentState(client).requests ?? {})).toEqual(['p1']));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission)!({ id: 'p1', approved: true });
+        approvalAnswered();
+        queue.close();
+        await run;
+
+        const summary = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type: string; summary?: { duration_ms?: number; generation_ms?: number; generation_output_tokens?: number } })
+            .find((message) => message.type === 'round-summary')!.summary!;
+        expect(summary.duration_ms).toBeGreaterThanOrEqual(480);
+        // About 80 ms of generation: the 200 ms tool run and the ~200 ms
+        // approval wait are left out.
+        expect(summary.generation_ms).toBeGreaterThanOrEqual(60);
+        expect(summary.generation_ms).toBeLessThan(200);
+        expect(summary.generation_output_tokens).toBe(40);
+    });
+
+    it('times the round from sending the prompt to agy answering', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.preSendDelayMs = 150;
+        backend.postResponseDrainMs = 150;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'done' });
+            onUpdate({ type: 'usage', inputTokens: 10, outputTokens: 1 });
+        });
+        queue.push('hello', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        const summary = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type: string; summary?: { duration_ms?: number } })
+            .find((message) => message.type === 'round-summary')!.summary!;
+        expect(summary.duration_ms).toBeLessThan(100);
     });
 
     it('does not report a start failure or fall back when the session is killed while agy starts', async () => {
@@ -1233,12 +1304,20 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         queue.close();
         await run;
 
-        const usage = client.sendAgentMessage.mock.calls
-            .map(([m]) => m as { type: string; info?: { total: { inputTokens: number; outputTokens: number } } })
-            .filter((m) => m.type === 'token_count');
-        expect(usage).toHaveLength(1);
-        expect(usage[0]!.info!.total).toMatchObject({ inputTokens: 15172 + 15286, outputTokens: 44 + 14 });
-        expect(usage[0]!.info).toMatchObject({ contextTokens: 15286 });
+        const summaries = roundSummaries(client);
+        expect(summaries).toHaveLength(1);
+        expect(summaries[0]).toMatchObject({
+            provider: 'agy',
+            model: 'gemini-4-argon-medium',
+            agy_usage: {
+                input_tokens: 15172 + 15286,
+                output_tokens: 44 + 14,
+                thinking_tokens: 0,
+                cache_read_tokens: 0,
+                total_tokens: 15216 + 15300
+            },
+            duration_ms: expect.any(Number)
+        });
     });
 });
 
@@ -1351,6 +1430,37 @@ describe('agy ACP helpers', () => {
         expect(resolveAgyAcpModelId(undefined, undefined, null)).toBeNull();
     });
 
+    it('takes tool runs and waits for the user out of the generation time', () => {
+        // A tool run and, separately, a wait for an approval.
+        expect(agyGenerationMs(0, 10_000, [{ start: 1_000, end: 4_000 }, { start: 6_000, end: 7_000 }])).toBe(6_000);
+        // A steered turn: windows from both requests, in any order.
+        expect(agyGenerationMs(0, 20_000, [{ start: 12_000, end: 15_000 }, { start: 2_000, end: 8_000 }])).toBe(11_000);
+        // An approval wait inside a tool's span counts once.
+        expect(agyGenerationMs(0, 10_000, [{ start: 1_000, end: 6_000 }, { start: 2_000, end: 3_000 }, { start: 5_000, end: 8_000 }])).toBe(3_000);
+        // Cancelled mid-tool: the open window ends with the round; spans
+        // outside the round do not count.
+        expect(agyGenerationMs(1_000, 5_000, [{ start: 0, end: 2_000 }, { start: 3_000, end: null }])).toBe(1_000);
+        // No answer, or nothing left but tools.
+        expect(agyGenerationMs(0, null, [])).toBeNull();
+        expect(agyGenerationMs(null, 5_000, [])).toBeNull();
+        expect(agyGenerationMs(0, 5_000, [{ start: 0, end: 5_000 }])).toBe(0);
+    });
+
+    it('reports generation tokens, thinking included, only with a positive generation time', () => {
+        const usage = { type: 'usage' as const, inputTokens: 100, outputTokens: 40, thoughtTokens: 20 };
+        expect(agyRoundSummary(usage, 9_000, null, 3_000.4).summary).toMatchObject({
+            generation_ms: 3_000,
+            generation_output_tokens: 60
+        });
+        for (const generationMs of [null, 0, -5]) {
+            const summary = agyRoundSummary(usage, 9_000, null, generationMs).summary;
+            expect(summary).not.toHaveProperty('generation_ms');
+            expect(summary).not.toHaveProperty('generation_output_tokens');
+        }
+        expect(agyRoundSummary({ ...usage, outputTokens: 0, thoughtTokens: 0 }, 9_000, null, 3_000).summary)
+            .not.toHaveProperty('generation_ms');
+    });
+
     it('totals usage across the requests of one turn', () => {
         const first = { type: 'usage' as const, inputTokens: 10, outputTokens: 1, thoughtTokens: 2 };
         const second = { type: 'usage' as const, inputTokens: 20, outputTokens: 3, cacheReadTokens: 4 };
@@ -1362,11 +1472,7 @@ describe('agy ACP helpers', () => {
             totalTokens: undefined,
             thoughtTokens: 2,
             cacheReadTokens: 4,
-            cacheCreationTokens: undefined,
-            contextTokens: 24,
-            contextWindow: undefined
+            cacheCreationTokens: undefined
         });
-        expect(addAgyUsage(first, { ...second, contextTokens: 50, contextWindow: 1000 }))
-            .toMatchObject({ contextTokens: 50, contextWindow: 1000 });
     });
 });

@@ -24,6 +24,26 @@ function setup(mode: PermissionMode, options?: ConstructorParameters<typeof AcpP
     return { backend, client, request: (request: PermissionRequest) => onRequest!(request) }
 }
 
+function setupWithHandler(mode: PermissionMode, options?: ConstructorParameters<typeof AcpPermissionHandler>[3]) {
+    let onRequest: ((request: PermissionRequest) => void) | null = null
+    const backend = {
+        onPermissionRequest: vi.fn((h: (request: PermissionRequest) => void) => { onRequest = h }),
+        respondToPermission: vi.fn(async () => {}),
+        cancelPrompt: vi.fn(async () => {})
+    }
+    const client = {
+        updateAgentState: vi.fn(),
+        rpcHandlerManager: { registerHandler: vi.fn() }
+    }
+    const handler = new AcpPermissionHandler(
+        client as unknown as ApiSessionClient,
+        backend as unknown as AgentBackend,
+        () => mode,
+        options
+    )
+    return { backend, handler, request: (request: PermissionRequest) => onRequest!(request) }
+}
+
 const commandRequest: PermissionRequest = {
     id: 'perm-1',
     sessionId: 'acp-1',
@@ -100,6 +120,26 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         await vi.waitFor(() => expect(backend.respondToPermission).toHaveBeenCalledWith(
             'acp-1', offersAlways, { outcome: 'selected', optionId: 'once' }
         ))
+    })
+
+    it('reports how long a request waited for the user, and only those', async () => {
+        const waits: string[] = []
+        const { request, handler } = setupWithHandler('request-review', {
+            autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
+            onUserWait: (req) => {
+                waits.push(`start ${req.id}`)
+                return () => waits.push(`end ${req.id}`)
+            }
+        })
+
+        request(commandRequest)
+        await handler.cancelAll('Prompt finished')
+        await handler.cancelAll('Prompt finished')
+
+        expect(waits).toEqual(['start perm-1', 'end perm-1'])
+
+        const auto = setupWithHandler('always-proceed', { onUserWait: () => { throw new Error('not a user wait') } })
+        auto.request(commandRequest)
     })
 
     it('never auto-answers a request the agent marks as needing the user', () => {

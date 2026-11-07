@@ -340,8 +340,8 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   shows its approval requests in HAPI; `acceptEdits` and `plan` are agy's
   `accept-edits` and `plan` modes; `always-proceed` approves every request
   automatically. On ACP, mode changes apply to the next message without
-  restarting agy. Conversation titles come from agy; on ACP each turn also
-  reports its token usage.
+  restarting agy. Conversation titles come from agy; on ACP each response's
+  details show the turn's token usage.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or

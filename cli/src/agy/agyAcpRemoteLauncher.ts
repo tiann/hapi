@@ -64,11 +64,7 @@ function addOptional(a: number | undefined, b: number | undefined): number | und
     return a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
 }
 
-/**
- * Each request of a steered turn reports only its own share, so they add up.
- * The summed input is not a context size, and agy sends no `usage_update`, so
- * the context is the latest request's input.
- */
+/** Each request of a steered turn reports only its own share, so they add up. */
 export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): UsageMessage {
     if (!total) return next;
     return {
@@ -78,11 +74,61 @@ export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): Usa
         totalTokens: addOptional(total.totalTokens, next.totalTokens),
         thoughtTokens: addOptional(total.thoughtTokens, next.thoughtTokens),
         cacheReadTokens: addOptional(total.cacheReadTokens, next.cacheReadTokens),
-        cacheCreationTokens: addOptional(total.cacheCreationTokens, next.cacheCreationTokens),
-        contextTokens: next.contextTokens
-            ?? next.inputTokens + (next.cacheReadTokens ?? 0) + (next.cacheCreationTokens ?? 0),
-        contextWindow: next.contextWindow ?? total.contextWindow
+        cacheCreationTokens: addOptional(total.cacheCreationTokens, next.cacheCreationTokens)
     };
+}
+
+type TimeWindow = { start: number; end: number | null };
+
+/**
+ * agy reports no per-step timing, so generation time is the round minus the
+ * spans spent running tools or waiting for the user. Spans are clipped to the
+ * round and merged, so overlaps count once; an open span ends with the round.
+ */
+export function agyGenerationMs(sentAt: number | null, answeredAt: number | null, windows: TimeWindow[]): number | null {
+    if (sentAt === null || answeredAt === null || answeredAt <= sentAt) return null;
+    const clipped = windows
+        .map(({ start, end }) => ({ start: Math.max(start, sentAt), end: Math.min(end ?? answeredAt, answeredAt) }))
+        .filter(({ start, end }) => end > start)
+        .sort((a, b) => a.start - b.start);
+    let excluded = 0;
+    let coveredUntil = sentAt;
+    for (const { start, end } of clipped) {
+        const from = Math.max(start, coveredUntil);
+        if (end > from) excluded += end - from;
+        coveredUntil = Math.max(coveredUntil, end);
+    }
+    return answeredAt - sentAt - excluded;
+}
+
+/** The turn's response-footer record; the web reads `provider: 'agy'` summaries. */
+export function agyRoundSummary(
+    usage: UsageMessage,
+    durationMs: number | null,
+    model: string | null,
+    generationMs: number | null = null
+) {
+    // Thinking is generated too, as in OpenCode's tok/s.
+    const generatedTokens = usage.outputTokens + (usage.thoughtTokens ?? 0);
+    const generation = generationMs !== null && generationMs > 0 && generatedTokens > 0
+        ? { generation_ms: Math.round(generationMs), generation_output_tokens: generatedTokens }
+        : {};
+    return {
+        type: 'round-summary',
+        summary: {
+            provider: 'agy',
+            ...(model ? { model } : {}),
+            agy_usage: {
+                input_tokens: usage.inputTokens,
+                output_tokens: usage.outputTokens,
+                ...(usage.thoughtTokens !== undefined ? { thinking_tokens: usage.thoughtTokens } : {}),
+                ...(usage.cacheReadTokens !== undefined ? { cache_read_tokens: usage.cacheReadTokens } : {}),
+                ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {})
+            },
+            ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+            ...generation
+        }
+    } as const;
 }
 
 function normalizeEcho(text: string): string {
@@ -102,6 +148,11 @@ type AgyTurn = {
     modeHash: string;
     aborted: boolean;
     stopReason: string | null;
+    sentAt: number | null;
+    answeredAt: number | null;
+    // Tool runs and waits for the user, which are not generation time.
+    idleWindows: TimeWindow[];
+    toolWindows: Map<string, TimeWindow>;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -270,7 +321,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     // match command text.
                     autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
                     autoApproveOnce: true,
-                    requiresUser: isAgyQuestionRequest
+                    requiresUser: isAgyQuestionRequest,
+                    onUserWait: () => {
+                        const turn = this.turn;
+                        if (!turn) return () => {};
+                        const window: TimeWindow = { start: Date.now(), end: null };
+                        turn.idleWindows.push(window);
+                        return () => { window.end ??= Date.now(); };
+                    }
                 }
             );
             void backend.refreshSessionInfo(acpSessionId, session.path);
@@ -345,6 +403,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             modeHash,
             aborted: false,
             stopReason: null,
+            sentAt: null,
+            answeredAt: null,
+            idleWindows: [],
+            toolWindows: new Map(),
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -394,7 +456,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
-                    onAnswered: () => turn.answerMain()
+                    onSent: () => { turn.sentAt = Date.now(); },
+                    onAnswered: () => {
+                        turn.answeredAt = Date.now();
+                        turn.answerMain();
+                    }
                 });
                 // agy answers a cancel with a normal `cancelled` result; with no
                 // output yet, the prompt goes back to the composer.
@@ -422,7 +488,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.turn === turn) this.turn = null;
             session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
             this.turnPermissionMode = undefined;
-            if (turn.usage) this.forwardAgentMessage(turn.usage);
+            // agy's usage adds up every model call of a request, so it is not a
+            // context size: it goes to the response footer, not the context
+            // indicator (no token_count).
+            if (turn.usage) {
+                // agy's own time: HAPI's waits before sending and for late
+                // output are not part of it.
+                const durationMs = turn.sentAt !== null && turn.answeredAt !== null
+                    ? Math.max(0, turn.answeredAt - turn.sentAt)
+                    : null;
+                const generationMs = turn.sawActivity
+                    ? agyGenerationMs(turn.sentAt, turn.answeredAt, turn.idleWindows)
+                    : null;
+                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs));
+            }
             session.onThinkingChange(false);
             await this.permissionHandler?.cancelAll('Prompt finished');
             if (session.queue.size() === 0 && !this.shouldExit) {
@@ -527,8 +606,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 [{ type: 'text', text: taken.item.message }],
                 {
                     onUsage: (usage) => {
-                        // Answered after its turn ended: the turn total is already
-                        // reported, and a second usage event would read as a turn.
+                        // Answered after its turn ended: the turn's summary is already
+                        // out, and a second one would read as another turn.
                         if (this.turn !== turn) return;
                         turn.usage = addAgyUsage(turn.usage, usage);
                     }
@@ -549,7 +628,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steers.push(settled);
         turn.steersTaken += 1;
         steerCounted = true;
-        turn.steerAnswers.push(steer.answered);
+        turn.steerAnswers.push(steer.answered.then(() => {
+            if (this.turn === turn) turn.answeredAt = Date.now();
+        }));
         // agy echoes a steer (user_message_chunk) when it folds it into the
         // turn, which is the moment it belongs in the transcript; the request
         // itself is only answered when the turn ends.
@@ -637,8 +718,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             default:
                 turn.sawActivity = true;
                 turn.acknowledge();
+                this.trackToolWindow(turn, message);
                 this.forwardAgentMessage(message);
         }
+    }
+
+    private trackToolWindow(turn: AgyTurn, message: AgentMessage): void {
+        if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
+        const now = Date.now();
+        let window = turn.toolWindows.get(message.id);
+        if (!window) {
+            window = { start: now, end: null };
+            turn.toolWindows.set(message.id, window);
+            turn.idleWindows.push(window);
+        }
+        if (message.status === 'completed' || message.status === 'failed') window.end ??= now;
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
