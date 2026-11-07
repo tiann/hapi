@@ -265,6 +265,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
                 break;
+            case 'round_summary':
+                break;
             default: {
                 const _exhaustive: never = message;
                 return _exhaustive;

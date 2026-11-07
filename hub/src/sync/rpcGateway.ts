@@ -700,6 +700,10 @@ export class RpcGateway {
         return await this.machineRpc(machineId, RPC_METHODS.ListPiModelsForMachine, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
     }
 
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListPiModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
+    }
+
     async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListClaudeModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListClaudeModelsResponse
     }
