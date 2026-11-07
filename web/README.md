@@ -88,9 +88,10 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 - Context size display.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
-  - Add/delete/reorder entries; promote to composer (copy) or queue (send).
-  - Entries and attachments saved on the hub and synced across devices.
-  - Reordering affects only the current view and resets when entries refresh.
+  - Add, edit, delete, and reorder entries; copy into the composer, send immediately, or schedule delivery.
+  - Entries, attachment order, and manual entry order are saved on the hub and restored across reloads and devices.
+  - Single attachments expose removal without a drag handle; multiple attachments support keyboard, pointer, and touch reordering.
+  - The plus control beside a draft's attachments inserts more files. The attachment strip scrolls horizontally on narrow screens, keeps the plus reachable, and leaves image context menus to the browser.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)

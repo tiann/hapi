@@ -683,6 +683,7 @@ public final class ChatInteractor {
                 scheduledAt: row.scheduledAt,
                 canAct: canAct,
                 canSteer: canAct && thinking && row.scheduledAt == nil && row.status != .indeterminate,
+                canEdit: canAct && Self.canEditQueuedRow(row),
                 indeterminate: row.status == .indeterminate
             )
         }
@@ -768,6 +769,7 @@ public final class ChatInteractor {
             guard let row = await store.state.messages.first(where: { $0.id == messageId }) else {
                 return
             }
+            guard Self.canEditQueuedRow(row) else { return }
             let preview = Self.queuedPreview(row)
             let editText = preview.text.isEmpty
                 ? preview.attachmentNames.joined(separator: ", ")
@@ -822,6 +824,13 @@ public final class ChatInteractor {
 
     private static func hasServerEcho(_ row: WindowMessage) -> Bool {
         row.localId == nil || row.id != row.localId
+    }
+
+    /// Native edit is cancel + text prefill. Cancelling a scheduled message
+    /// with an attachment removes its durable attachment, so that action must
+    /// remain unavailable on native clients (matching the web guard).
+    private static func canEditQueuedRow(_ row: WindowMessage) -> Bool {
+        row.scheduledAt == nil || queuedPreview(row).attachmentNames.isEmpty
     }
 
     private struct QueuedPreview {

@@ -25,6 +25,13 @@ type SendMessageInput = {
 
 export type SendMessageAcceptance = {
     attemptId: string
+    /** Session id the Hub mutation was actually submitted to after resume. */
+    sessionId: string
+}
+
+export type SendMessageSettlement = {
+    attemptId: string
+    status: 'success' | 'error'
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
@@ -98,6 +105,7 @@ type UseSendMessageOptions = {
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
     onError?: (info: SendErrorInfo) => void
+    onSettlement?: (settlement: SendMessageSettlement) => void
     isSessionThinking?: boolean
 }
 
@@ -197,12 +205,16 @@ export function useSendMessage(
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
+    sendSettlement: SendMessageSettlement | null
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
+    const [sendSettlement, setSendSettlement] = useState<SendMessageSettlement | null>(null)
     const resolveGuardRef = useRef(false)
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
+    const settlementCallbackRef = useRef(options?.onSettlement)
+    settlementCallbackRef.current = options?.onSettlement
 
     const mutation = useMutation({
         mutationFn: async (input: SendMessageInput) => {
@@ -224,6 +236,9 @@ export function useSendMessage(
             return { successStatus }
         },
         onSuccess: (_, input, context) => {
+            const settlement = { attemptId: input.localId, status: 'success' as const }
+            setSendSettlement(settlement)
+            settlementCallbackRef.current?.(settlement)
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
@@ -233,6 +248,9 @@ export function useSendMessage(
             options?.onSuccess?.(input.sessionId)
         },
         onError: (error, input) => {
+            const settlement = { attemptId: input.localId, status: 'error' as const }
+            setSendSettlement(settlement)
+            settlementCallbackRef.current?.(settlement)
             // Attachment sends keep the legacy failed-bubble UX: the
             // composer-restore path can only re-seat text + scheduledAt,
             // not the uploaded attachment metadata.  Removing the row
@@ -347,7 +365,7 @@ export function useSendMessage(
             scheduledAt,
             deliveryMode,
         })
-        return { attemptId: localId }
+        return { attemptId: localId, sessionId: targetSessionId }
     }
 
     const retryMessage = (localId: string): boolean => {
@@ -387,5 +405,6 @@ export function useSendMessage(
         sendMessage,
         retryMessage,
         isSending: mutation.isPending || isResolving,
+        sendSettlement,
     }
 }

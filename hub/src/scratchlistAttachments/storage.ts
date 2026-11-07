@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -123,7 +123,11 @@ export async function moveScratchlistAttachmentFilesForSession(
     namespace: string,
     oldSessionId: string,
     newSessionId: string,
-    attachments: ScratchlistAttachmentMetadata[]
+    attachments: ScratchlistAttachmentMetadata[],
+    options: {
+        throwOnFailure?: boolean
+        preserveSourcePaths?: ReadonlySet<string>
+    } = {},
 ): Promise<ScratchlistAttachmentMetadata[]> {
     if (oldSessionId === newSessionId || attachments.length === 0) {
         return attachments
@@ -131,40 +135,80 @@ export async function moveScratchlistAttachmentFilesForSession(
     const oldPrefix = sessionStoragePrefix(namespace, oldSessionId)
     const newPrefix = sessionStoragePrefix(namespace, newSessionId)
     const moved: ScratchlistAttachmentMetadata[] = []
-    for (const att of attachments) {
-        const storageKey = parseHubScratchlistAttachmentPath(att.path)
-        if (!storageKey || !storageKey.startsWith(oldPrefix)) {
-            moved.push(att)
-            continue
-        }
-        const fileName = storageKey.slice(oldPrefix.length)
-        const newKey = `${newPrefix}${fileName}`
-        let oldPath: string
-        let newPath: string
-        try {
-            oldPath = resolveScratchlistStoragePath(hapiHome, storageKey)
-            newPath = resolveScratchlistStoragePath(hapiHome, newKey)
-        } catch {
-            moved.push(att)
-            continue
-        }
-        await mkdir(join(newPath, '..'), { recursive: true })
-        try {
-            const destExists = await stat(newPath).then((info) => info.isFile()).catch(() => false)
-            if (destExists) {
-                await rm(oldPath, { force: true })
-            } else {
-                await rename(oldPath, newPath)
+    const completedMoves: Array<{
+        oldPath: string
+        newPath: string
+        destinationExisted: boolean
+        sourcePreserved: boolean
+    }> = []
+    try {
+        for (const att of attachments) {
+            const storageKey = parseHubScratchlistAttachmentPath(att.path)
+            if (!storageKey || !storageKey.startsWith(oldPrefix)) {
+                moved.push(att)
+                continue
             }
-        } catch {
-            // best effort — still rewrite metadata so quota/resolve use the new id
+            const fileName = storageKey.slice(oldPrefix.length)
+            const newKey = `${newPrefix}${fileName}`
+            let oldPath: string
+            let newPath: string
+            try {
+                oldPath = resolveScratchlistStoragePath(hapiHome, storageKey)
+                newPath = resolveScratchlistStoragePath(hapiHome, newKey)
+            } catch (error) {
+                if (options.throwOnFailure) throw error
+                moved.push(att)
+                continue
+            }
+            await mkdir(join(newPath, '..'), { recursive: true })
+            const destExists = await stat(newPath).then((info) => info.isFile()).catch(() => false)
+            const sourcePreserved = options.preserveSourcePaths?.has(att.path) ?? false
+            if (destExists) {
+                if (!sourcePreserved && !options.throwOnFailure) {
+                    await rm(oldPath, { force: true })
+                }
+            } else {
+                try {
+                    if (sourcePreserved) await copyFile(oldPath, newPath)
+                    else await rename(oldPath, newPath)
+                } catch (error) {
+                    if (options.throwOnFailure) throw error
+                    // best effort — still rewrite metadata so quota/resolve use the new id
+                }
+            }
+            completedMoves.push({
+                oldPath,
+                newPath,
+                destinationExisted: destExists,
+                sourcePreserved,
+            })
+            moved.push({
+                ...att,
+                path: toHubScratchlistAttachmentPath(newKey),
+            })
         }
-        moved.push({
-            ...att,
-            path: toHubScratchlistAttachmentPath(newKey),
-        })
+        if (options.throwOnFailure) {
+            // Defer target-wins source cleanup until every file move/copy succeeds so a
+            // later failure can leave all metadata pointing at valid old paths.
+            await Promise.allSettled(completedMoves
+                .filter((move) => move.destinationExisted && !move.sourcePreserved)
+                .map((move) => rm(move.oldPath, { force: true })))
+        }
+        return moved
+    } catch (error) {
+        if (options.throwOnFailure) {
+            await Promise.allSettled(completedMoves
+                .filter((move) => !move.destinationExisted && !move.sourcePreserved)
+                .reverse()
+                .map(async (move) => {
+                    await rename(move.newPath, move.oldPath)
+                }))
+            await Promise.allSettled(completedMoves
+                .filter((move) => !move.destinationExisted && move.sourcePreserved)
+                .map((move) => rm(move.newPath, { force: true })))
+        }
+        throw error
     }
-    return moved
 }
 
 export async function deleteScratchlistSessionAttachmentDir(
@@ -192,6 +236,15 @@ export function estimateBase64Bytes(base64: string): number {
 
 function sessionStoragePrefix(namespace: string, sessionId: string): string {
     return `${sanitizeSegment(namespace)}/${sanitizeSegment(sessionId)}/`
+}
+
+export function isScratchlistAttachmentPathForSession(
+    hubPath: string,
+    namespace: string,
+    sessionId: string,
+): boolean {
+    const storageKey = parseHubScratchlistAttachmentPath(hubPath)
+    return storageKey?.startsWith(sessionStoragePrefix(namespace, sessionId)) ?? false
 }
 
 /**

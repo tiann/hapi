@@ -349,6 +349,7 @@ export function ImagePreview(props: {
                     role="dialog"
                     aria-modal="true"
                     aria-label={activePreview.label}
+                    data-image-preview-viewer=""
                     // Keep preview gestures from starting an ancestor's attachment drag.
                     onPointerDown={stopEvent}
                 >

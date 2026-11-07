@@ -21,7 +21,12 @@ import {
     shouldShowSessionSidebar,
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
-import { SessionChat } from '@/components/SessionChat'
+import {
+    ScratchlistSendCleanupProvider,
+    SessionChat,
+    usePendingScratchlistSendCleanup,
+    useScratchlistSendSettlementObserver,
+} from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { SidebarShowButton } from '@/components/SidebarToggle'
 import { NewSession } from '@/components/NewSession'
@@ -365,7 +370,9 @@ function SessionsPage() {
                     />
                 ) : null}
                 <div className="flex-1 min-h-0">
-                    <Outlet />
+                    <ScratchlistSendCleanupProvider api={api}>
+                        <Outlet />
+                    </ScratchlistSendCleanupProvider>
                 </div>
             </div>
             </div>
@@ -671,6 +678,7 @@ function SessionPage() {
         }
     }, [api, navigate, queryClient, session])
 
+    const observeScratchlistSettlement = useScratchlistSendSettlementObserver()
     const resolveVoiceSessionId = useCallback(async (currentSessionId: string) => {
         if (!api) throw new Error('API unavailable')
         return resolveVoiceSession(api, currentSessionId)
@@ -689,13 +697,14 @@ function SessionPage() {
         if (!isOnSessionPage(router.state.location.pathname, sessionId)) return
         handleSessionResolved(resolvedSessionId)
     }, [handleSessionResolved, router, sessionId])
-
     const {
         sendMessage,
         retryMessage,
         isSending,
+        sendSettlement,
     } = useSendMessage(api, sessionId, {
         isSessionThinking: session?.thinking ?? false,
+        onSettlement: observeScratchlistSettlement,
         onSuccess: (sentSessionId) => {
             clearDraftsAfterSend(sentSessionId, sessionId)
             // 中文注释：一旦用户已经在 Hapi 内继续这个 Codex 会话，就清除"刚从 Codex 导入"的标记。
@@ -761,6 +770,7 @@ function SessionPage() {
             // 'no-session' and 'pending' don't need toast - either invalid state or expected behavior
         }
     })
+    const trackScratchlistSend = usePendingScratchlistSendCleanup(api, sendSettlement)
 
     // Get agent type from session metadata for slash commands
     const agentType = session?.metadata?.flavor ?? 'claude'
@@ -938,6 +948,8 @@ function SessionPage() {
             isSyncingTail={messagesSyncingTail}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
+            sendSettlement={sendSettlement}
+            onScratchlistSendAccepted={trackScratchlistSend}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}
