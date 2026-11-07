@@ -8,6 +8,7 @@ import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hoo
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { getPinInProgressSessionsModeOptions, usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
 import { MAX_SESSION_PREVIEW_LIMIT, MIN_SESSION_PREVIEW_LIMIT, normalizeSessionPreviewLimit, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { useSessionHeaderMetadata, type SessionHeaderMetadataKey } from '@/hooks/useSessionHeaderMetadata'
@@ -141,6 +142,7 @@ export default function SettingsDisplayPage() {
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const { pinInProgressSessions, setPinInProgressSessions } = usePinInProgressSessions()
+    const { pinInProgressSessionsMode, setPinInProgressSessionsMode } = usePinInProgressSessionsMode()
     const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
     const { openExternalLinksInNewTab, setOpenExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
@@ -181,7 +183,17 @@ export default function SettingsDisplayPage() {
             <SettingsSection title={t('settings.display.sessions')}>
                 <SessionPreviewLimitControl />
                 <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
-                <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
+                <div data-testid="pin-in-progress-settings">
+                    <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
+                    <SettingsChoiceGroup
+                        label={t('settings.display.pinInProgressSessions.mode')}
+                        description={t('settings.display.pinInProgressSessions.mode.desc')}
+                        value={pinInProgressSessionsMode}
+                        options={getPinInProgressSessionsModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                        disabled={!pinInProgressSessions}
+                        onChange={setPinInProgressSessionsMode}
+                    />
+                </div>
                 <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
                 <SettingsChoiceGroup
