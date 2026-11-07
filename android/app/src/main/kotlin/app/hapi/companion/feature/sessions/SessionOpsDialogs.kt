@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import app.hapi.companion.R
@@ -51,18 +52,39 @@ fun RenameSessionDialog(
     )
 }
 
-/** Delete confirmation — destructive and irreversible on the hub. */
+/**
+ * Delete confirmation — destructive and irreversible on the hub.
+ *
+ * Web `SessionHeader`: when the session holds scratchlist entries the
+ * description additionally warns that deleting it cascades to them
+ * ("This will also delete N scratchlist entries." — attachment-only entries
+ * count too); at [scratchlistCount] 0 (or no wired store) the base copy alone
+ * shows, with no scratchlist mention. Only the chat screen (web: the session
+ * detail header) passes a count — the list-page delete stays bare, as on web.
+ */
 @Composable
 fun DeleteSessionDialog(
     sessionTitle: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    scratchlistCount: Int = 0,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.sessions_delete_title)) },
         text = {
-            Text(stringResource(R.string.sessions_delete_message, sessionTitle))
+            val base = stringResource(R.string.sessions_delete_message, sessionTitle)
+            Text(
+                if (scratchlistCount > 0) {
+                    "$base " + pluralStringResource(
+                        R.plurals.sessions_delete_scratchlist_entries,
+                        scratchlistCount,
+                        scratchlistCount,
+                    )
+                } else {
+                    base
+                },
+            )
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
@@ -93,5 +115,13 @@ private fun RenameSessionDialogPreview() {
 private fun DeleteSessionDialogPreview() {
     HapiTheme {
         DeleteSessionDialog(sessionTitle = "Fixture sweep", onConfirm = {}, onDismiss = {})
+    }
+}
+
+@Preview
+@Composable
+private fun DeleteSessionDialogWithScratchlistPreview() {
+    HapiTheme {
+        DeleteSessionDialog(sessionTitle = "Fixture sweep", scratchlistCount = 3, onConfirm = {}, onDismiss = {})
     }
 }
