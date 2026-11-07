@@ -14,6 +14,7 @@ import { CompanionPairing } from '@/components/settings/CompanionPairing'
 import { PushNotificationsControl } from '@/components/settings/PushNotificationsControl'
 import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { queryKeys } from '@/lib/query-keys'
+import { SearchHistorySettings } from '@/components/settings/SearchHistorySettings'
 
 const locales: ReadonlyArray<{ value: Locale; label: string }> = [
     { value: 'en', label: 'English' },
@@ -86,6 +87,7 @@ export default function SettingsGeneralPage() {
             <SettingsSection title={t('settings.language.label')}>
                 <SettingsChoiceGroup hideLabel label={t('settings.language.label')} value={locale} options={locales} onChange={setLocale} />
             </SettingsSection>
+            <SearchHistorySettings />
             <SettingsSection title={t('settings.notifications.title')}>
                 <PushNotificationsControl />
             </SettingsSection>
