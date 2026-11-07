@@ -132,7 +132,13 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        // Typed refusal (not a bare Error) so routes can answer a typed 409
+        // instead of a generic 500. Upstream #2126 types this refusal as
+        // ArchiveCleanupError('unconfirmed'); assert that family here.
+        const rejection = await engine.archiveSession(sessionId).catch((e: unknown) => e)
+        expect(rejection).toBeInstanceOf(ArchiveCleanupError)
+        expect((rejection as ArchiveCleanupError).status).toBe(409)
+        expect((rejection as ArchiveCleanupError).code).toBe('archive-cleanup-unconfirmed')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
