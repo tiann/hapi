@@ -384,6 +384,19 @@ describe('responsive settings pages', () => {
         expect(setCodexExplorationCollapsed).toHaveBeenCalledWith(false)
     })
 
+    it('renders the collapse-reasoning switch with its streaming behavior', () => {
+        renderPage(<SettingsChatPage />)
+        expect(screen.getByRole('checkbox', { name: 'Collapse reasoning by default' })).not.toBeChecked()
+        expect(screen.getByText('Keep AI reasoning messages collapsed, including while streaming.')).toBeInTheDocument()
+    })
+
+    it('renders the updated collapse-reasoning copy in Chinese', () => {
+        localStorage.setItem('hapi-lang', 'zh-CN')
+        renderPage(<SettingsChatPage />)
+        expect(screen.getByRole('checkbox', { name: '思考默认折叠' })).not.toBeChecked()
+        expect(screen.getByText('AI 思考内容默认保持折叠，流式输出期间也不会自动展开。')).toBeInTheDocument()
+    })
+
     it('renders About metadata on its own route page', () => {
         renderPage(<SettingsAboutPage />)
         expect(screen.queryByText('Companion')).not.toBeInTheDocument()

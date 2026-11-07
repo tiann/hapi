@@ -91,12 +91,19 @@ describe('ReasoningGroup', () => {
         vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
     })
 
-    it('is collapsed by default', () => {
+    it('expands historical reasoning when the preference is disabled', () => {
+        const { container } = renderGroup()
+        expect(isCollapsed(container)).toBe(false)
+    })
+
+    it('collapses historical reasoning when the preference is enabled', () => {
+        window.localStorage.setItem(STORAGE_KEY, 'true')
         const { container } = renderGroup()
         expect(isCollapsed(container)).toBe(true)
     })
 
-    it('expands on click', () => {
+    it('can be expanded manually while the preference is enabled', () => {
+        window.localStorage.setItem(STORAGE_KEY, 'true')
         const { container } = renderGroup()
         const scroll = container.querySelector('.aui-reasoning-scroll') as HTMLDivElement
         expect(scroll.tabIndex).toBe(-1)
@@ -128,14 +135,8 @@ describe('ReasoningGroup', () => {
         expect(isCollapsed(container)).toBe(true)
     })
 
-    it('collapses an auto-expanded streaming block when the preference is enabled from another tab', () => {
-        const { container, rerender } = renderGroup()
-        setStreaming()
-        rerender(
-            <ReasoningGroup>
-                <div data-testid="reasoning-content">thinking text</div>
-            </ReasoningGroup>
-        )
+    it('collapses mounted historical reasoning when the preference is enabled from another tab', () => {
+        const { container } = renderGroup()
         expect(isCollapsed(container)).toBe(false)
 
         const scroll = container.querySelector('.aui-reasoning-scroll') as HTMLDivElement
@@ -154,6 +155,19 @@ describe('ReasoningGroup', () => {
 
         expect(isCollapsed(container)).toBe(true)
         expect(onNestedScrollFollowChange).toHaveBeenLastCalledWith(true)
+    })
+
+    it('expands mounted historical reasoning when the preference is disabled from another tab', () => {
+        window.localStorage.setItem(STORAGE_KEY, 'true')
+        const { container } = renderGroup()
+        expect(isCollapsed(container)).toBe(true)
+
+        act(() => {
+            window.localStorage.removeItem(STORAGE_KEY)
+            window.dispatchEvent(new StorageEvent('storage', { key: STORAGE_KEY }))
+        })
+
+        expect(isCollapsed(container)).toBe(false)
     })
 
     it('opens a streaming reasoning panel at the latest content and follows new output at the bottom', () => {
@@ -290,7 +304,7 @@ describe('ReasoningGroup', () => {
         const { container } = renderGroup()
 
         expect(container.querySelector('.animate-pulse')).toBeNull()
-        expect(isCollapsed(container)).toBe(true)
+        expect(isCollapsed(container)).toBe(false)
     })
 
     it('uses the reasoning part status for the running indicator', () => {
