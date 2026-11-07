@@ -7,6 +7,7 @@ import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/check
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalTools'
+import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import {
     getCodexAgentActivity,
@@ -1098,31 +1099,14 @@ const GoalResultView: ToolViewComponent = (props) => {
         : <GenericResultView {...props} />
 }
 
-// OpenCode reports its built-in tools by lowercase id. Map the ones whose
-// result is plain text onto the equivalent view registered under the
-// Claude-style name. Skill, todowrite, patch and question are left out: their
+// Skill, todowrite, patch and question deliberately stay unaliased: their
 // dedicated views read Claude-shaped input or result fields.
-const OPENCODE_RESULT_VIEW_ALIASES: Readonly<Record<string, string>> = {
-    bash: 'Bash',
-    glob: 'Glob',
-    grep: 'Grep',
-    list: 'LS',
-    write: 'Write',
-    edit: 'Edit',
-    webfetch: 'WebFetch',
-    websearch: 'WebSearch',
-    task: 'Task'
-}
-
 export function getToolResultViewComponent(toolName: string): ToolViewComponent {
     if (isGoalToolName(toolName)) return GoalResultView
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }
-    const aliased = Object.hasOwn(OPENCODE_RESULT_VIEW_ALIASES, toolName)
-        ? OPENCODE_RESULT_VIEW_ALIASES[toolName]
-        : undefined
     return toolResultViewRegistry[toolName]
-        ?? (aliased ? toolResultViewRegistry[aliased] : undefined)
+        ?? toolResultViewRegistry[resolveToolNameAlias(toolName)]
         ?? GenericResultView
 }
