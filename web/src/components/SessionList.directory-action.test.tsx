@@ -251,6 +251,42 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('menuitemcheckbox', { name: /^Date/ })).toHaveAttribute('aria-checked', 'true')
     })
 
+    it('keeps the selected session visible when the date range excludes it', () => {
+        const recent = makeSession({
+            id: 'recent-selected-time-filter',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/recent-time', name: 'Recent selected-time row' }
+        })
+        const selected = makeSession({
+            id: 'selected-outside-time-filter',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/selected-time', name: 'Selected outside range' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[recent, selected]}
+                selectedSessionId={selected.id}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Recent selected-time row/ })).toBeInTheDocument()
+    })
+
     it('highlights today without requiring hover or session activity', () => {
         const old = makeSession({
             id: 'old',

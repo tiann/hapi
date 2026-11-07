@@ -251,8 +251,12 @@ export function getSessionTimeRange(start: string, end: string): SessionTimeRang
     return { start: startDate.getTime(), end: endDate.getTime() }
 }
 
-export function sessionMatchesTimeRange(session: SessionSummary, range: SessionTimeRange | null): boolean {
-    if (!range) return true
+export function sessionMatchesTimeRange(
+    session: SessionSummary,
+    range: SessionTimeRange | null,
+    selectedSessionId?: string | null
+): boolean {
+    if (!range || session.id === selectedSessionId) return true
     if (range.start !== null && session.updatedAt < range.start) return false
     if (range.end !== null && session.updatedAt >= range.end) return false
     return true
@@ -1689,8 +1693,8 @@ export function SessionList(props: {
     const timeScopedSessions = useMemo(
         () => timeRange === null
             ? allSessions
-            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange)),
-        [allSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId)),
+        [allSessions, selectedSessionId, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const searchScoreIndex = useMemo(
         () => hasTextQuery
@@ -1707,7 +1711,7 @@ export function SessionList(props: {
                 const unreadFiltered = listView.unreadOnly
                     ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
                     : byStatus
-                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange))
+                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
             }
             if (!isFiltering) return allSessions
             const matched = hasTextQuery && searchScoreIndex
@@ -1801,7 +1805,7 @@ export function SessionList(props: {
         : null
 
     const contentSearchCandidateSessions = useMemo(() => {
-        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange))
+        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
         if (listView.unreadOnly) {
             filtered = filterUnreadSessionsOnly(
                 filtered,
