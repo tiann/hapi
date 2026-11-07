@@ -26,6 +26,12 @@ export interface FileSearchOptions {
     limit: number
 }
 
+function createAbortError(): Error {
+    const error = new Error('Request aborted')
+    error.name = 'AbortError'
+    return error
+}
+
 function getBinaryPath(): string {
     const platformName = platform();
     const binaryName = platformName === 'win32' ? 'rg.exe' : 'rg';
@@ -84,8 +90,12 @@ export function selectFileSearchPaths(paths: Iterable<string>, query: string, li
     return matches
 }
 
-export function runFileSearch(args: string[], options: FileSearchOptions): Promise<RipgrepResult> {
+export function runFileSearch(args: string[], options: FileSearchOptions, signal?: AbortSignal): Promise<RipgrepResult> {
     const binaryPath = getBinaryPath();
+    if (signal?.aborted) {
+        return Promise.reject(createAbortError())
+    }
+
     const limit = Math.max(1, options.limit)
     return new Promise((resolve, reject) => {
         const child = spawn(binaryPath, args, {
@@ -99,6 +109,21 @@ export function runFileSearch(args: string[], options: FileSearchOptions): Promi
         const matchedPaths: string[] = [];
         let stderr = '';
         let settled = false;
+        let aborted = false;
+
+        const abortHandler = () => {
+            aborted = true
+            if (child.exitCode === null && !child.killed) {
+                child.kill()
+            }
+        }
+
+        const cleanupSignal = () => {
+            signal?.removeEventListener('abort', abortHandler)
+        }
+
+        signal?.addEventListener('abort', abortHandler, { once: true })
+        if (signal?.aborted) abortHandler()
 
         child.stderr.on('data', (data) => {
             stderr += data.toString();
@@ -118,6 +143,11 @@ export function runFileSearch(args: string[], options: FileSearchOptions): Promi
             if (settled) return;
             settled = true;
             lines.close();
+            cleanupSignal()
+            if (aborted) {
+                reject(createAbortError())
+                return
+            }
             resolve({
                 exitCode: code || 0,
                 stdout: matchedPaths.length > 0 ? `${matchedPaths.join('\n')}\n` : '',
@@ -129,6 +159,11 @@ export function runFileSearch(args: string[], options: FileSearchOptions): Promi
             if (settled) return;
             settled = true;
             lines.close();
+            cleanupSignal()
+            if (aborted) {
+                reject(createAbortError())
+                return
+            }
             reject(err);
         });
     });

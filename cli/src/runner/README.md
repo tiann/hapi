@@ -272,6 +272,7 @@ Graceful runner shutdown.
   - `spawn-happy-session` - spawn new session
   - `stop-session` - stop session by ID
   - `stop-runner` - request shutdown
+- `rpc-cancel` - cancel an in-flight `rpc-request` by request ID
 
 Application payloads are plain JSON authenticated with `CLI_API_TOKEN`.
 Transport protection depends on the hub URL: use HTTPS for remote access;

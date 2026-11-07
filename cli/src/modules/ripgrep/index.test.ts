@@ -60,4 +60,12 @@ describe('ripgrep low-level wrapper', () => {
         expect(paths).toHaveLength(1)
         expect(matchesFileSearchPath(paths[0], query)).toBe(true)
     })
+
+    it('should reject before spawning when file search is already aborted', async () => {
+        const controller = new AbortController()
+        controller.abort()
+
+        await expect(runFileSearch(['--files'], { query: 'src', limit: 1 }, controller.signal))
+            .rejects.toMatchObject({ name: 'AbortError' })
+    })
 })

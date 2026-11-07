@@ -12,6 +12,38 @@ vi.mock('@/modules/ripgrep/index', () => ({
     runFileSearch: runFileSearchMock,
 }))
 
+describe('ripgrep RPC handlers', () => {
+    it('passes AbortError through without logging it as a ripgrep failure', async () => {
+        const rootDir = await createTempDir('hapi-ripgrep-abort')
+        const logs: unknown[] = []
+        try {
+            const manager = new RpcHandlerManager({
+                scopePrefix: 'session-test',
+                logger: (...args) => logs.push(args)
+            })
+            registerRipgrepHandlers(manager, rootDir)
+
+            const abortError = new Error('Request aborted')
+            abortError.name = 'AbortError'
+            runFileSearchMock.mockRejectedValueOnce(abortError)
+
+            const response = await manager.handleRequest({
+                method: 'session-test:ripgrep',
+                params: JSON.stringify({
+                    args: ['--files'],
+                    cwd: rootDir,
+                    fileSearch: { query: 'src', limit: 1 }
+                }),
+                requestId: 'ripgrep-cancel'
+            })
+
+            expect(response).toBe(JSON.stringify({ error: 'Request aborted' }))
+            expect(logs).toEqual([])
+        } finally {
+            await rm(rootDir, { recursive: true, force: true })
+        }
+    })
+})
 async function createTempDir(prefix: string): Promise<string> {
     const path = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`)
     await mkdir(path, { recursive: true })

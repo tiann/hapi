@@ -4864,12 +4864,12 @@ export class SyncEngine {
         }
     }
 
-    async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
+    async statFiles(sessionId: string, paths: string[], signal?: AbortSignal): Promise<RpcStatFilesResponse> {
         try {
-            return await this.rpcGateway.statFiles(sessionId, paths)
+            return await this.rpcGateway.statFiles(sessionId, paths, signal)
         } catch (error) {
             return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
-                this.rpcGateway.statWorkspaceFiles(machineId, { cwd, paths })
+                this.rpcGateway.statWorkspaceFiles(machineId, { cwd, paths }, signal)
             )
         }
     }
@@ -4882,12 +4882,12 @@ export class SyncEngine {
         return await this.rpcGateway.deleteUploadFile(sessionId, path)
     }
 
-    async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
+    async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions, signal?: AbortSignal): Promise<RpcCommandResponse> {
         try {
-            return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+            return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch, signal)
         } catch (error) {
             return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
-                this.rpcGateway.runWorkspaceRipgrep(machineId, { args, cwd: fallbackCwd, fileSearch })
+                this.rpcGateway.runWorkspaceRipgrep(machineId, { args, cwd: fallbackCwd, fileSearch }, signal)
             )
         }
     }
