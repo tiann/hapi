@@ -77,4 +77,75 @@ class LastSeenStoreTest {
         assertEquals(0, store.lastSeenAt("s1"))
         assertTrue(store.state.value.pending.isEmpty())
     }
+
+    // ------------------------------------------------- explicit unread marks --
+
+    @Test
+    fun `markUnread enqueues a durable explicit-unread request and reads optimistic`() = runTest {
+        val dir = Files.createTempDirectory("read-state").toFile()
+        val store = LastSeenStore(backgroundScope, dir, "alice")
+        store.markSeen("s1", 4) // caught up at the head before the explicit mark
+        val row = summary("s1").copy(contentRevision = 4)
+        assertFalse(LastSeenStore.isUnread(row, store.state.value))
+
+        store.markUnread("s1", row.readState)
+        // Optimistic (web `effective`): the pending intent at the observed
+        // version marks the row unread before the hub acknowledges.
+        assertTrue(LastSeenStore.isUnread(row, store.state.value))
+        assertEquals("unread", store.state.value.pending["s1"]?.request?.type)
+
+        // Durable: the outbox — mark included — survives a cold restart.
+        val cold = LastSeenStore(backgroundScope, dir, "alice")
+        assertTrue(LastSeenStore.isUnread(row, cold.state.value))
+        assertEquals("unread", cold.state.value.pending["s1"]?.request?.type)
+    }
+
+    @Test
+    fun `an explicit-unread mark clears when the screen acknowledges the head`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        val observed = SessionReadState(readRevision = 4, version = 2)
+        store.markUnread("s1", observed)
+        val row = summary("s1").copy(contentRevision = 4)
+        assertTrue(LastSeenStore.isUnread(row, store.state.value))
+
+        // Viewing the session enqueues a read at the observed head: the
+        // explicit mark's own acknowledge replaces it.
+        store.markSeen("s1", 4, observed)
+        assertFalse(LastSeenStore.isUnread(row, store.state.value))
+        assertEquals("read", store.state.value.pending["s1"]?.request?.type)
+    }
+
+    @Test
+    fun `markAllSeen stamps every unread row and returns the pre-sweep count`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        val read = summary("read").copy(contentRevision = 9)
+        val manual = summary("manual").copy(contentRevision = 8)
+        val fresh = summary("fresh").copy(contentRevision = 7)
+        store.markSeen("read", 9) // already seen at the head
+        store.markUnread("manual") // explicit mark on a caught-up row
+
+        val count = store.markAllSeen(listOf(read, manual, fresh, fresh))
+        assertEquals(2, count)
+        assertFalse(LastSeenStore.isUnread(read, store.state.value))
+        assertFalse(LastSeenStore.isUnread(manual, store.state.value))
+        assertFalse(LastSeenStore.isUnread(fresh, store.state.value))
+        // Everything seen — a second sweep is a no-op returning 0.
+        assertEquals(0, store.markAllSeen(listOf(read, manual, fresh)))
+    }
+
+    @Test
+    fun `unread count collapses repeated ids and honors explicit marks`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        store.markUnread("b")
+        store.markSeen("c", 2)
+        val sessions = listOf(
+            summary("a").copy(contentRevision = 1),
+            summary("a").copy(contentRevision = 3), // same id, newer view — one row
+            summary("b").copy(contentRevision = 2),
+            summary("c").copy(contentRevision = 2),
+        )
+        // a: unseen content; b: explicit mark; c: stamped at its head.
+        assertEquals(2, LastSeenStore.unreadSessionCount(sessions, store.state.value))
+        assertEquals(0, LastSeenStore.unreadSessionCount(emptyList(), store.state.value))
+    }
 }
