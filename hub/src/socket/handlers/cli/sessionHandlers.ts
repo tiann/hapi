@@ -73,6 +73,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'opencodeClearOperation',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
+    'forkTitleSeed',
+    'forkTitleGenerationAttemptedAt',
     'promptTitle'
 ] as const
 

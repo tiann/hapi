@@ -65,6 +65,10 @@ export const MetadataSchema = z.object({
     // launcher recreation or session resume.
     acpManualTitle: z.boolean().optional(),
     summary: MetadataSummarySchema.optional(),
+    // Exact provisional title owned by fork initialization, never a manual name.
+    forkTitleSeed: MetadataSummarySchema.optional(),
+    // Claim automatic fork generation once across REST/native readiness/restarts.
+    forkTitleGenerationAttemptedAt: z.number().optional(),
     // Hub-owned marker: the automatic first-turn title fallback has been
     // attempted for this session. It prevents silent retries after failures.
     titleSuggestionAutoAttemptedAt: z.number().int().positive().optional(),

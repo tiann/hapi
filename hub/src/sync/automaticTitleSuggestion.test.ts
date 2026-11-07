@@ -66,6 +66,20 @@ describe('AutomaticTitleSuggestionService', () => {
         expect(summary.cache.getSession(summary.session.id)?.metadata?.titleSuggestionAutoAttemptedAt).toBeUndefined()
     })
 
+    it('does not request or reserve a provider attempt when the title is locked', async () => {
+        let calls = 0
+        const { cache, session, automatic } = setup({
+            provider: { suggest: async () => { calls += 1; return 'Unexpected title' } }
+        })
+        await cache.renameSession(session.id, undefined, true)
+
+        automatic.onTurnStarted(session.id)
+        await automatic.onTurnCompleted(session.id)
+
+        expect(calls).toBe(0)
+        expect(cache.getSession(session.id)?.metadata?.titleSuggestionAutoAttemptedAt).toBeUndefined()
+    })
+
     it('records a failed attempt and does not retry automatically', async () => {
         let calls = 0
         const { cache, session, automatic } = setup({

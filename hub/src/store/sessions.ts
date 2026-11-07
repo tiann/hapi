@@ -81,6 +81,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'codexResumePending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
+    'forkTitleSeed',
+    'forkTitleGenerationAttemptedAt',
     'promptTitle'
 ] as const
 
