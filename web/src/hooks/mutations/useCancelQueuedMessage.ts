@@ -7,6 +7,7 @@ import {
     markMessagesConsumed,
     markMessagesRequeued,
     removeOptimisticMessage,
+    removeUninvokedMessage,
 } from '@/lib/message-window-store'
 import { usePlatform } from '@/hooks/usePlatform'
 
@@ -15,8 +16,9 @@ type CancelQueuedMessageInput = {
     messageId: string
     /** localId used for optimistic removal and revert on error. */
     localId: string
-    /** Snapshot for onError revert (network failure path only).
-     *  For the invoked-race path, the server-validated row from the response is used instead. */
+    /** Shared unknown deliveries stay visible until a durable resolution is confirmed. */
+    preserveUnknown?: boolean
+    /** Snapshot for network-error recovery; consumed races use the authoritative row. */
     snapshot: DecryptedMessage
 }
 
@@ -55,7 +57,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
             // Force-dismiss (#1839): learn whether the steer already landed before
             // callers (Edit) decide to prefill. Returning synthetic `invoked` keeps
             // the existing Edit toast path and avoids a duplicate composer send.
-            if (result.status === 'busy' && input.snapshot.deliveryState === 'indeterminate') {
+            if (result.status === 'busy' && input.snapshot.deliveryState === 'indeterminate' && !input.preserveUnknown) {
                 // Restore a hidden hold BEFORE the queued-state lookup so a
                 // messages-consumed SSE during that await can still land.
                 appendOptimisticMessage(input.sessionId, {
@@ -96,7 +98,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
         },
         onSuccess: async (result, input) => {
             if (result.status === 'busy') {
-                if (input.snapshot.deliveryState === 'indeterminate') {
+                if (input.snapshot.deliveryState === 'indeterminate' && !input.preserveUnknown) {
                     // mutationFn already restored the queueDismissed hold (and may
                     // have been upgraded by a concurrent messages-consumed SSE).
                     // Do not overwrite with a fresh uninvoked snapshot.
@@ -108,6 +110,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                 appendOptimisticMessage(input.sessionId, {
                     ...input.snapshot,
                     deliveryState: 'indeterminate',
+                    ...(input.preserveUnknown ? { queueDismissed: false } : {}),
                 })
                 if (api) {
                     try {
@@ -115,6 +118,13 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                         const invoked = state.invokedLocalMessages.find((item) => item.localId === input.localId)
                         if (invoked) {
                             markMessagesConsumed(input.sessionId, [input.localId], invoked.invokedAt)
+                        } else if (!state.queuedLocalIds.includes(input.localId)
+                            && !state.indeterminateLocalIds?.includes(input.localId)) {
+                            // Another client may have abandoned/deleted the row
+                            // before this busy response restored its stale snapshot.
+                            // Keep an authoritative row restored by a concurrent SSE
+                            // event while this queued-state response was in flight.
+                            removeUninvokedMessage(input.sessionId, input.localId)
                         }
                     } catch {
                         // SSE / the next reconnect will reconcile the held row.

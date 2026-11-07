@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
 class FakeSessionListStore : SessionListStore {
@@ -222,6 +223,40 @@ class StoreSyncTargetsTest {
             sync("""{"type":"messages-consumed","sessionId":"s1","localIds":["l1"],"invokedAt":42}"""),
         )
         store.state.first { it.messages.singleOrNull()?.invokedAtOrNull == 42L }
+    }
+
+    @Test
+    fun `late global cancellation does not erase an invoked row restored by the session pipe`() = runTest {
+        val (windows, store) = openWindow(backgroundScope)
+        store.appendOptimistic(localId = "l1", text = "queued text", createdAt = 5)
+        store.updateStatus("l1", app.hapi.protocol.window.MessageStatus.Queued)
+        val router = SyncEventRouter(
+            StoreSyncTargets(FakeSessionListStore(), FakeMachineListStore(), backgroundScope, windows),
+        )
+
+        router.route(
+            sessionScope,
+            sync("""{"type":"message-cancelled","sessionId":"s1","messageId":"cancel-echo","localId":"l1"}"""),
+        )
+        router.route(
+            global,
+            sync("""{"type":"messages-consumed","sessionId":"s1","localIds":["l1"],"invokedAt":42}"""),
+        )
+        router.route(
+            sessionScope,
+            sync("""{"type":"message-received","sessionId":"s1","message":{"id":"server-m1","seq":1,"localId":"l1","createdAt":1,"invokedAt":42}}"""),
+        )
+        router.route(
+            global,
+            sync("""{"type":"message-cancelled","sessionId":"s1","messageId":"server-m1","localId":"l1"}"""),
+        )
+        advanceUntilIdle()
+        // StoreSyncTargets consumes queued SSE events in backgroundScope.
+        runCurrent()
+
+        val row = store.state.value.messages.single()
+        assertEquals("server-m1", row.id)
+        assertEquals(42L, row.invokedAtOrNull)
     }
 
     @Test

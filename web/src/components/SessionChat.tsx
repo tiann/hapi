@@ -2192,6 +2192,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 />
                             ) : null}
                             <QueuedMessagesBar
+                                canAbandon={props.session.active && props.session.metadata?.capabilities?.concurrentClients === true}
                                 sessionId={props.session.id}
                                 compactionPendingMessageIds={agentFlavor === 'codex' && props.session.active
                                     && props.session.agentState?.steeringActive === true

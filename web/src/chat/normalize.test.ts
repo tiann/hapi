@@ -12,6 +12,12 @@ function makeMessage(content: unknown): DecryptedMessage {
     }
 }
 
+it('does not render abandoned uninvoked input as an executed user message', () => {
+    const message = { ...makeMessage({ role: 'user', content: { type: 'text', text: 'uncertain' } }), deliveryState: 'abandoned' as const, invokedAt: null }
+    expect(normalizeDecryptedMessage(message)).toBeNull()
+    expect(normalizeDecryptedMessage({ ...message, invokedAt: 123 })).not.toBeNull()
+})
+
 describe('normalizeDecryptedMessage', () => {
     it('drops unsupported Claude system output records', () => {
         const message = makeMessage({

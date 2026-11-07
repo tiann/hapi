@@ -43,7 +43,7 @@ export type StoredMachine = {
     seq: number
 }
 
-export type MessageDeliveryState = 'indeterminate'
+export type MessageDeliveryState = 'indeterminate' | 'abandoned'
 
 export type StoredMessage = {
     deliveryPending?: true

@@ -192,6 +192,25 @@ Response `{"ok": true}`. Sending to an inactive session returns `409 {"error":"S
 
 Other subscribers learn the same outcome via `message-cancelled` / `messages-consumed` SSE events.
 
+**Abandon unknown delivery**: `POST /api/sessions/:id/messages/:messageId/abandon`
+with `{"confirm":true}`. Available only for an active, idle shared Codex session
+with one connected worker. The worker refreshes native history, verifies that the
+input is no longer queued, and durably records abandonment before the Hub retires
+the unresolved row. Its localId is retained for late consumption acknowledgements;
+the row remains uninvoked and is excluded from pending delivery and visible history. This does not claim native cancellation or consumption and
+never resubmits the input. The original row is retained internally for correlation;
+no new chat message or conversation note is created. Other clients receive
+`message-cancelled`; the message epoch advances.
+
+- `abandoned {localId}`: stop showing the unresolved row.
+- `invoked {message}`: consumption won the race; ingest the authoritative message.
+- `unavailable {localId}`: keep the unresolved row visible. The worker may be busy,
+  disconnected, unsupported, or unable to prove and persist the transition.
+- `not-found`: the row is already gone; reconcile locally.
+
+A lost response is retryable: a persisted worker abandonment is idempotent.
+Ordinary Cancel remains separate and still requires confirmed native removal.
+
 **Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Claude (remote mode), Pi, Codex, OpenCode v1/v2, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`, together with the agent's `steeringActive` state). OpenCode v2 requires access to its experimental native REST inbox. Durable admission keeps the row pending; an exact native inbox-delivered event or projected-input readback confirms consumption. If admission or cancellation cannot be verified, the row remains indeterminate without automatic resubmission. It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
 
 | Response | Client action |
@@ -205,6 +224,5 @@ is user-initiated only. `retried` or `already-queued` means normal queue deliver
 `invoked` carries the authoritative message; `not-found` means the row is gone.
 `retry-unavailable` leaves the row unresolved: the hub could not prove that
 retrying would avoid duplicate work. Reconcile instead of automatically retrying.
-
 
 OpenCode confirmation ownership ends when its worker exits, expires, or is replaced (machine/PID/process-start marker). The hub moves only that session's uninvoked dispatching rows to unknown delivery; queued and consumed rows remain unchanged. Closing Steer admission alone does not end an existing delivery. After a hub restart, stale persisted `steeringActive` is not sufficient to show a live confirmation wait. Unknown rows are never automatically replayed or stamped invoked; later positive consumption may still reconcile them.
