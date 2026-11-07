@@ -2867,6 +2867,46 @@ describe('selectAbortStatusMessage', () => {
         addMessage.mockRestore();
     });
 
+    it('plain Stop during post-prompt summary settlement does not leave the dequeue loop spinning on an aborted signal', async () => {
+        roundSummaryHarness.summaryImpl = ({ promptText }) => {
+            return promptText.includes('completed first prompt')
+                ? new Promise<unknown>(() => {})
+                : Promise.resolve(null);
+        };
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'completed first prompt', mode: createMode() }
+        ], { keepOpen: true });
+        // An aborted dequeue signal resolves immediately; a loop that keeps
+        // re-reading it never yields to timers. Trip the spin instead of hanging.
+        const realWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        let abortedWaits = 0;
+        vi.spyOn(session.queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal');
+            return realWait(signal);
+        });
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        while (
+            !rpcHandlers.has(RPC_METHODS.Abort)
+            || !roundSummaryHarness.summaryCalls.some(({ promptText }) => promptText.includes('completed first prompt'))
+        ) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        session.queue.push('queued second prompt', createMode());
+        const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined;
+        await abortHandler!();
+        for (let attempt = 0; attempt < 50 && !JSON.stringify(harness.promptContents).includes('queued second prompt'); attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.close();
+        await launchPromise;
+
+        expect(abortedWaits).toBeLessThan(5);
+        expect(JSON.stringify(harness.promptContents)).toContain('queued second prompt');
+        expect(harness.cancelPrompt).not.toHaveBeenCalled();
+    });
+
     it('attempts and delivers a summary after a caught prompt error', async () => {
         harness.promptImpl = async () => { throw new Error('fixture prompt failure'); };
         roundSummaryHarness.summaryImpl = async () => ({
@@ -3128,6 +3168,184 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         }
     });
 
+    it.each(['v1', 'v2'] as const)('%s preserves queued inputs until native Stop settles, then drains each batch once', async version => {
+        harness.detectedVersion = version;
+        let releaseAbort!: () => void;
+        harness.cancelPromptImpl = () => new Promise<void>(resolve => { releaseAbort = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        const batches: string[][] = [];
+        stub.session.queue.onBatchConsumed = ids => { batches.push(ids); };
+        let aborting: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('queued before Stop', createMode(), 'before');
+            aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            await vi.waitFor(() => expect(releaseAbort).toBeTypeOf('function'));
+            stub.session.queue.pushIsolated('queued during Stop', createMode(), 'during');
+            releasePrompt();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(harness.promptCount).toBe(1);
+            expect(batches).toEqual([]);
+            expect(stub.session.queue.pendingLocalIds()).toEqual(['before', 'during']);
+            releaseAbort(); await aborting;
+            await vi.waitFor(() => expect(harness.promptCount).toBe(3));
+            expect(harness.promptContents.slice(1)).toEqual([
+                [{ type: 'text', text: 'queued before Stop' }],
+                [{ type: 'text', text: 'queued during Stop' }]
+            ]);
+            expect(batches).toEqual([['before'], ['during']]);
+        } finally {
+            releaseAbort?.(); harness.cancelPromptImpl = null; await aborting;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it.each(['v1', 'v2'] as const)('%s keeps the loop running with its queued input when the native Stop is rejected', async version => {
+        harness.detectedVersion = version;
+        let rejectAbort!: () => void;
+        harness.cancelPromptImpl = () => new Promise<void>((_resolve, reject) => { rejectAbort = () => reject(new Error('cancel failed')); });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        // A loop left on the aborted dequeue signal never yields; trip the spin.
+        const realWait = stub.session.queue.waitForMessagesAndGetAsString.bind(stub.session.queue);
+        let abortedWaits = 0;
+        vi.spyOn(stub.session.queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal');
+            return realWait(signal);
+        });
+        let aborting: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('queued before Stop', createMode(), 'before');
+            aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            const rejection = expect(aborting).rejects.toThrow('cancel failed');
+            await vi.waitFor(() => expect(rejectAbort).toBeTypeOf('function'));
+            releasePrompt(); rejectAbort(); await rejection;
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            expect(harness.promptContents.slice(1)).toEqual([[{ type: 'text', text: 'queued before Stop' }]]);
+            expect(abortedWaits).toBeLessThan(5);
+        } finally {
+            rejectAbort?.(); harness.cancelPromptImpl = null; await aborting?.catch(() => {});
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it.each(['v1', 'v2'] as const)('%s clears unsent queued input on terminal switch after native cancellation', async version => {
+        harness.detectedVersion = version;
+        let releaseAbort!: () => void;
+        harness.cancelPromptImpl = () => new Promise<void>(resolve => { releaseAbort = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let switching: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('queued before switch', createMode(), 'before');
+            switching = (stub.rpcHandlers.get('switch') as () => Promise<void>)();
+            await vi.waitFor(() => expect(releaseAbort).toBeTypeOf('function'));
+            expect(stub.session.queue.pendingLocalIds()).toEqual(['before']);
+            releaseAbort(); await switching;
+            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
+            releasePrompt();
+            await runPromise;
+            expect(harness.promptCount).toBe(1);
+        } finally {
+            releaseAbort?.(); harness.cancelPromptImpl = null; await switching;
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it.each([
+        ['switch', 'Stop first'], ['switch', 'terminal first'],
+        ['exit', 'Stop first'], ['exit', 'terminal first']
+    ] as const)('v2 coalesced terminal intent clears queued input for %s with %s', async (reason, order) => {
+        harness.detectedVersion = 'v2';
+        const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase');
+        let terminalHandlers!: import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers;
+        const setup = vi.spyOn(RemoteLauncherBase.prototype as unknown as {
+            setupTerminal: (handlers: typeof terminalHandlers) => void;
+        }, 'setupTerminal').mockImplementation(handlers => { terminalHandlers = handlers; });
+        let releaseAbort!: () => void;
+        const nativeCancellation = new Promise<void>(resolve => { releaseAbort = resolve; });
+        harness.cancelPromptImpl = () => nativeCancellation;
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        const batches: string[][] = [];
+        stub.session.queue.onBatchConsumed = ids => { batches.push(ids); };
+        const reset = vi.spyOn(stub.session.queue, 'reset');
+        let first: Promise<void> | undefined;
+        let second: Promise<void> | undefined;
+        try {
+            const abort = stub.rpcHandlers.get('abort') as () => Promise<void>;
+            const terminal = reason === 'switch'
+                ? stub.rpcHandlers.get('switch') as () => Promise<void>
+                : async () => { await terminalHandlers.onExit(); };
+            stub.session.queue.push('queued before cancellation', createMode(), 'before');
+            first = order === 'Stop first' ? abort() : terminal();
+            await vi.waitFor(() => expect(harness.cancelPrompt).toHaveBeenCalledOnce());
+            second = order === 'Stop first' ? terminal() : abort();
+            stub.session.queue.push('queued during cancellation', createMode(), 'during');
+            releasePrompt();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(harness.cancelPrompt).toHaveBeenCalledOnce();
+            expect(reset).not.toHaveBeenCalled();
+            expect(batches).toEqual([]);
+            expect(harness.promptCount).toBe(1);
+            releaseAbort(); await Promise.all([first, second]);
+            expect(await runPromise).toBe(reason);
+            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
+            expect(reset).toHaveBeenCalledExactlyOnceWith({ preserveDispatchingReservations: true });
+            expect(harness.cancelPrompt).toHaveBeenCalledOnce();
+            expect(batches).toEqual([]);
+            expect(harness.promptCount).toBe(1);
+        } finally {
+            releaseAbort(); harness.cancelPromptImpl = null; await Promise.all([first, second]);
+            await stopTurn(stub, releasePrompt, runPromise); setup.mockRestore();
+        }
+    });
+
+    it.each(['switch', 'exit'] as const)('v2 coalesced terminal intent survives a %s joining the cancellation restore drain', async reason => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase');
+        let terminalHandlers!: import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers;
+        const setup = vi.spyOn(RemoteLauncherBase.prototype as unknown as {
+            setupTerminal: (handlers: typeof terminalHandlers) => void;
+        }, 'setupTerminal').mockImplementation(handlers => { terminalHandlers = handlers; });
+        let id = ''; let cancelled = false;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') id = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') { cancelled = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return String(url).endsWith('/inbox') ? Response.json({ data: cancelled ? [] : [item] }) : new Response(null, { status: 404 });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        const reset = vi.spyOn(stub.session.queue, 'reset');
+        let releaseState!: () => void;
+        let aborting: Promise<void> | undefined;
+        let leaving: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('older queued', createMode(), 'older');
+            stub.session.queue.push('correction', createMode(), 'steer');
+            await steerHandlerOf(stub)({ localId: 'steer' });
+            harness.deferSteerState = new Promise<void>(resolve => { releaseState = resolve; });
+            aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            // Native cancel and the initial reset decision have completed.
+            // This restore still owns the drain and waits for durable state.
+            await vi.waitFor(() => expect(harness.steerStateCalls).toContainEqual({ localIds: ['steer'], state: 'queued' }));
+            expect(cancelled).toBe(true);
+            expect(reset).not.toHaveBeenCalled();
+            leaving = reason === 'switch'
+                ? (stub.rpcHandlers.get('switch') as () => Promise<void>)()
+                : Promise.resolve(terminalHandlers.onExit());
+            stub.session.queue.push('newer queued', createMode(), 'newer');
+            releasePrompt();
+            releaseState(); await Promise.all([aborting, leaving]);
+            expect(await runPromise).toBe(reason);
+            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
+            expect(reset).toHaveBeenCalledExactlyOnceWith({ preserveDispatchingReservations: true });
+            expect(harness.cancelPrompt).toHaveBeenCalledOnce();
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            expect(harness.promptCount).toBe(1);
+        } finally {
+            releaseState?.(); harness.deferSteerState = null; await Promise.all([aborting, leaving]);
+            await stopTurn(stub, releasePrompt, runPromise); nativeFetch.mockRestore(); setup.mockRestore();
+        }
+    });
+
     it('v2 durably admits without ACP soft prompt and consumes only its delivered identity', async () => {
         harness.detectedVersion = 'v2';
         harness.discoveredPort = 48274;
@@ -3293,6 +3511,19 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             await steerHandlerOf(stub)({ localId: 'v2-steer' });
             expect(posts).toBe(1);
             expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            const batches: string[][] = [];
+            stub.session.queue.onBatchConsumed = ids => { batches.push(ids); };
+            stub.session.queue.push('known unsent input', createMode(), 'queued');
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            expect(stub.session.queue.pendingLocalIds()).toEqual(['queued']);
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            expect(batches).toEqual([]);
+            releasePrompt();
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            expect(harness.promptContents[1]).toEqual([{ type: 'text', text: 'known unsent input' }]);
+            expect(batches).toEqual([['queued']]);
+            expect(posts).toBe(1);
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
         } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
     });
 
@@ -3318,7 +3549,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
     });
 
-    it('v2 restores a proven cancelled input after one reset for overlapping Stops', async () => {
+    it('v2 preserves queued siblings and restores a proven cancelled steer in FIFO order across overlapping Stops', async () => {
         harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
         let id = ''; let cancelled = false;
         const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
@@ -3329,23 +3560,37 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             return String(url).endsWith('/inbox') ? Response.json({ data: cancelled ? [] : [item] }) : new Response(null, { status: 404 });
         });
         let releaseAbort!: () => void;
-        harness.cancelPromptImpl = () => new Promise<void>(resolve => { releaseAbort = resolve; });
+        let cancels = 0;
+        harness.cancelPromptImpl = async () => {
+            if (++cancels === 1) await new Promise<void>(resolve => { releaseAbort = resolve; });
+        };
         const { stub, releasePrompt, runPromise } = await startTurn();
         const reset = vi.spyOn(stub.session.queue, 'reset');
         try {
+            const batches: string[][] = [];
+            stub.session.queue.onBatchConsumed = ids => { batches.push(ids); };
+            stub.session.queue.push('older queued', createMode(), 'older');
             stub.session.queue.push('correction', createMode(), 'v2-steer');
+            stub.session.queue.push('newer queued', createMode(), 'newer');
             await steerHandlerOf(stub)({ localId: 'v2-steer' });
             const abort = stub.rpcHandlers.get('abort') as () => Promise<void>;
             const first = abort();
             await vi.waitFor(() => expect(cancelled).toBe(true));
+            stub.session.queue.push('during Stop', createMode(), 'during');
             const second = abort();
             expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
             releaseAbort();
             await Promise.all([first, second]);
-            expect(reset).toHaveBeenCalledTimes(1);
+            expect(stub.session.queue.pendingLocalIds()).toEqual(['older', 'v2-steer', 'newer', 'during']);
+            expect(reset).not.toHaveBeenCalled();
             expect(stub.session.queue.peekByLocalId('v2-steer')?.message).toBe('correction');
             expect(harness.steerStateCalls).toContainEqual({ localIds: ['v2-steer'], state: 'queued' });
             expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            expect(batches).toEqual([]);
+            releasePrompt();
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2));
+            expect(harness.promptContents[1]).toEqual([{ type: 'text', text: 'older queued\ncorrection\nnewer queued\nduring Stop' }]);
+            expect(batches).toEqual([['older', 'v2-steer', 'newer', 'during']]);
         } finally {
             releaseAbort?.(); harness.cancelPromptImpl = null; nativeFetch.mockRestore();
             await stopTurn(stub, releasePrompt, runPromise);

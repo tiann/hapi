@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { ApiClient } from '@/api/api'
 import { CodexAppServerClient } from '../codexAppServerClient'
 import { codexHome } from './registry'
+import { SharedCodexQueue } from './queue'
 import { forkArchivedCodex, performArchivedFork, type ArchivedForkJournal } from './archivedFork'
 import type { ForkArchivedCodexRequest } from '@hapi/protocol/apiTypes'
 
@@ -158,5 +159,59 @@ describe('archived fork workspace preflight', () => {
             expect(connect).not.toHaveBeenCalled()
             if (kind !== 'fresh') expect(JSON.parse(await readFile(target, 'utf8'))).toEqual(journal)
         } finally { await rm(home, { recursive: true, force: true }) }
+    })
+})
+
+
+describe('archived original batch boundaries', () => {
+    it.each(['first', 'interior', 'changed-content', 'missing-ledger', 'corrupt-ledger'] as const)('resolves %s from durable accepted content before any native fork', async kind => {
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-archived-batch-'))
+        const file = join(dir, 'source.queue.json')
+        const f = fixture()
+        let batch: { id: string; clientUserMessageId: string; input: unknown } | undefined
+        const queueClient = { request: async (method: string, params: Record<string, unknown>) => {
+            if (method === 'thread/queue/list') return { data: batch ? [batch] : [] }
+            if (method === 'thread/queue/add') {
+                batch = { id: 'native-queued', clientUserMessageId: String(params.clientUserMessageId), input: params.input }
+                return { queuedSubmission: batch }
+            }
+            if (method === 'thread/queue/update') { batch!.input = params.input; return { queuedSubmission: batch } }
+            throw new Error(`Unexpected queue mutation ${method}`)
+        } } as unknown as CodexAppServerClient
+        try {
+            const writer = new SharedCodexQueue(queueClient, 'source', file, () => {}, () => {})
+            await writer.enqueue('first-original', [{ type: 'text', text: 'first input' }], false, 'compatible')
+            await writer.enqueue('second-original', [{ type: 'text', text: 'second input' }], false, 'compatible')
+            await writer.committed(batch!.clientUserMessageId, batch!.input)
+            await writer.flush()
+            f.source.turns[1].items = [{ type: 'userMessage', clientId: batch!.clientUserMessageId, content: batch!.input }] as never
+            f.request.boundary!.localId = kind === 'interior' ? 'second-original' : 'first-original'
+            f.journal.request.boundary = structuredClone(f.request.boundary)
+            if (kind === 'changed-content') (f.source.turns[1].items[0] as unknown as { content: unknown }).content = [{ type: 'text', text: 'foreign edit' }]
+            if (kind === 'missing-ledger') await rm(file)
+            if (kind === 'corrupt-ledger') await writeFile(file, 'invalid-json')
+            const resolveBoundary = async (id: string, input: unknown) => {
+                const reader = new SharedCodexQueue(queueClient, 'source', file, () => {}, () => {})
+                await reader.load()
+                return reader.originalBoundaryId(id, input)
+            }
+            const before = await readFile(file, 'utf8').catch(() => undefined)
+            const run = () => performArchivedFork(f.client, f.request, f.journal, f.save, f.inactive, resolveBoundary)
+            if (kind === 'first') {
+                await expect(run()).resolves.toBe('child')
+                expect(f.native).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ beforeTurnId: 'turn-2' }))
+                expect(f.archived()).toBe(true)
+            } else {
+                await expect(run()).rejects.toThrow()
+                expect(f.calls.some(call => /thread\/(fork|unarchive|archive):/.test(call))).toBe(false)
+                expect(f.journal.forkIssued).toBe(false)
+            }
+            expect(await readFile(file, 'utf8').catch(() => undefined)).toBe(before)
+            if (kind !== 'missing-ledger' && kind !== 'corrupt-ledger') {
+                const persisted = JSON.parse(await readFile(file, 'utf8'))
+                expect(persisted.entries['first-original'].state).toBe('consumed')
+                expect(persisted.entries['second-original'].state).toBe('consumed')
+            }
+        } finally { await rm(dir, { recursive: true, force: true }) }
     })
 })

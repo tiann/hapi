@@ -449,7 +449,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         // Soft steer = Cursor GUI "Send" (next-opportune / soft inject): fire a
         // concurrent session/prompt without canceling the in-flight turn. Abort
@@ -616,6 +618,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         try {
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
             if (this.acpRelaunchPromise) {
                 await this.acpRelaunchPromise;
@@ -819,14 +823,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (this.softSteerWaiters.length > 0 && !this.shouldExit) {
                     const waitSignal = this.abortController.signal;
                     let releaseWait!: () => void;
+                    const drainOrAbort = new Promise<void>((resolve) => { releaseWait = resolve; });
                     const abortListener = () => releaseWait();
-                    if (!waitSignal.aborted) {
+                    if (waitSignal.aborted) {
+                        releaseWait();
+                    } else {
                         waitSignal.addEventListener('abort', abortListener, { once: true });
                     }
                     try {
                         await Promise.race([
                             Promise.allSettled([...this.softSteerWaiters]),
-                            new Promise<void>((resolve) => { releaseWait = resolve; })
+                            drainOrAbort
                         ]);
                     } finally {
                         // Repeated waits must not accumulate abort listeners.
@@ -1529,7 +1536,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.messageBuffer.addMessage(`Cursor worktree: ${worktreePath}`, 'status');
     }
 
-    private async handleAbort(): Promise<void> {
+    private async handleAbort(leavingRemote = false): Promise<void> {
         this.userAbortRequested = true;
         const backend = this.backend;
         const sessionId = this.acpSessionId ?? this.session.sessionId;
@@ -1564,8 +1571,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         await this.permissionAdapter?.cancelAll('User aborted');
         await this.extensionAdapter?.cancelAll('User aborted');
         // A soft steer may settle after Abort; preserve its reservation until
-        // the completion callback records accepted or indeterminate.
-        this.session.queue.reset({ preserveDispatchingReservations: true });
+        // the completion callback records accepted or indeterminate. Plain
+        // Stop preserves the whole pending queue; only terminal cleanup
+        // (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset({ preserveDispatchingReservations: true });
+        }
         this.promptInFlight = false;
         // Abort is the hard-stop path: drop soft-steer waiters so the prompt
         // finally cannot block the next prompt on a soft steer whose completion
@@ -1580,15 +1591,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort());
+        await this.requestExit('exit', () => this.handleAbort(true));
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 }
 

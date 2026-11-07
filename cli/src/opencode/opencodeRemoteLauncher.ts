@@ -278,7 +278,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** v2-only REST access discovered after spawn; null unless both port and OPENCODE_PASSWORD were found. */
     private v2RestInfo: { baseUrl: string; password: string } | null = null;
     private v2Steers = new Map<string, OpencodeV2SteerEntry>();
-    private v2AbortInProgress: Promise<void> | null = null;
+    private v2AbortInProgress: { promise: Promise<void>; leavingRemote: boolean } | null = null;
     private v2ResetInProgress: Promise<void> | null = null;
 
     constructor(
@@ -620,7 +620,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // handleAbort's `leavingRemote` doc comment.
             onAbort: () => this.handleAbort(false),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         this.installSteerHandler(session, acpSessionId);
         if (isV2 && this.v2RestInfo) {
@@ -632,6 +634,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         };
 
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
             const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
             if (!batch) {
@@ -2279,26 +2283,55 @@ ${messageText}`;
                 entry.backend === this.backend && entry.turnEpoch === this.steerTurnEpoch
             )
             && !this.v2AbortInProgress
-        ) return;
+        ) {
+            // The Abort entry hook already aborted the dequeue signal to wake an
+            // idle wait. This metadata-only Stop skips performAbort, which is what
+            // normally replaces the controller, so recycle it here: otherwise the
+            // loop re-reads the aborted signal forever and never reaches the
+            // queued input.
+            if (this.abortController.signal.aborted) this.abortController = new AbortController();
+            return;
+        }
 
         if (this.majorVersion !== 'v2') return this.performAbort(leavingRemote);
-        if (this.v2AbortInProgress) {
-            // One overlapping Stop/switch owns queue.reset. A later reset
-            // must not erase an input the first cancellation just restored.
+        const inProgress = this.v2AbortInProgress;
+        if (inProgress) {
+            // Native cancellation is shared, but a terminal request must never
+            // lose its queue-cleanup intent when joining an ordinary Stop.
             if (leavingRemote) {
+                inProgress.leavingRemote = true;
                 this.closeSteerGate({ detachStrandedSteers: true });
                 this.compactResultSuppressed = true;
                 this.compactAbortController?.abort();
             }
-            return this.v2AbortInProgress;
+            return inProgress.promise;
         }
         let resolve!: () => void;
         let reject!: (error: unknown) => void;
         const abort = new Promise<void>((ok, failed) => { resolve = ok; reject = failed; });
-        this.v2AbortInProgress = abort;
-        void this.performAbort(leavingRemote).then(resolve, reject);
-        try { await abort; }
-        finally { if (this.v2AbortInProgress === abort) this.v2AbortInProgress = null; }
+        const operation = { promise: abort, leavingRemote };
+        this.v2AbortInProgress = operation;
+        void this.performAbort(leavingRemote).then(() => {
+            try {
+                // A terminal request may join even after performAbort's reset
+                // decision, while a cancelled steer is restoring. Apply a
+                // promoted terminal reset once, after that shared drain.
+                if (operation.leavingRemote && !leavingRemote) {
+                    this.session.queue.reset({ preserveDispatchingReservations: true });
+                }
+                resolve();
+            } catch (error) {
+                reject(error);
+            } finally {
+                // Clear in the same synchronous settlement so a later request
+                // cannot join an already-finished operation and lose its intent.
+                if (this.v2AbortInProgress === operation) this.v2AbortInProgress = null;
+            }
+        }, error => {
+            if (this.v2AbortInProgress === operation) this.v2AbortInProgress = null;
+            reject(error);
+        });
+        return abort;
     }
 
     private async performAbort(leavingRemote: boolean): Promise<void> {
@@ -2352,11 +2385,12 @@ ${messageText}`;
                 }
             }
             await this.permissionHandler?.cancelAll('User aborted');
-            // A steer that was already dispatched may still complete after the
-            // abort; preserve its reservation so the completion callback can
-            // still commit it (or mark it indeterminate) instead of losing the
-            // input.
-            this.session.queue.reset({ preserveDispatchingReservations: true });
+            // Plain Stop preserves queued input for the next drain. Terminal
+            // cleanup resets unsent rows, but a dispatched steer still owns its
+            // reservation until a receipt proves consumption or uncertainty.
+            if (leavingRemote) {
+                this.session.queue.reset({ preserveDispatchingReservations: true });
+            }
             resetDone = true;
             finishReset();
             await Promise.all(v2Cancellations);

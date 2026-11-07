@@ -39,7 +39,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 
     async kill(): Promise<void> {
         if (!this.backend) return
-        await this.handleAbort()
+        await this.handleExitFromUi()
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -163,12 +163,17 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
-        })
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController() })
 
         while (!this.shouldExit) {
-            const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break
+            const waitSignal = this.abortController.signal
+            const batch = await this.session.queue.waitForMessagesAndGetAsString(waitSignal)
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) continue
+                if (waitSignal.aborted && !this.shouldExit) continue
                 break
             }
 
@@ -308,13 +313,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private async handleAbort(): Promise<void> {
+    private async handleAbort(leavingRemote = false): Promise<void> {
+
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
-        this.session.queue.reset()
+        // Plain Stop preserves the pending queue for the next drain; only
+        // terminal cleanup (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset()
+        }
         this.session.onThinkingChange(false)
         this.abortController.abort()
         this.abortController = new AbortController()
@@ -322,6 +332,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort())
+        await this.requestExit('exit', () => {
+            this.abortController.abort()
+            return this.handleAbort(true)
+        })
     }
 }

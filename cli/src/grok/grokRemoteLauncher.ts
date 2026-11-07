@@ -232,9 +232,13 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        })
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController() })
 
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
             const waitSignal = this.abortController.signal
             const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal)
             if (!batch) {
@@ -498,12 +502,16 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         this.currentBackendPermissionMode = 'default'
     }
 
-    private async handleAbort(): Promise<void> {
+    private async handleAbort(leavingRemote = false): Promise<void> {
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
         await this.permissionHandler?.cancelAll('User aborted')
-        this.session.queue.reset()
+        // Plain Stop preserves the pending queue for the next drain; only
+        // terminal cleanup (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset()
+        }
         this.session.onThinkingChange(false)
         this.abortController.abort()
         this.abortController = new AbortController()
@@ -511,15 +519,15 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort())
+        await this.requestExit('exit', () => this.handleAbort(true))
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort())
+        await this.requestExit('switch', () => this.handleAbort(true))
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort())
+        await this.requestExit('switch', () => this.handleAbort(true))
     }
 }
 
