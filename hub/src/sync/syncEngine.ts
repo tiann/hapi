@@ -1215,6 +1215,9 @@ export class SyncEngine {
             this.jobTerminalWakeRetryAttempts.clear()
             let pending: import('../store/types').StoredSessionJob[] = []
             try {
+                // Hub restart leaves pending:<claimId> markers with no in-flight
+                // deliverer — clear them so rows are reclaimable.
+                this.store.sessionJobs.clearAbandonedProvisionalWakeClaims()
                 pending = this.store.sessionJobs.listPendingTerminalWakes()
             } catch (error) {
                 console.warn('[session-job-wake] list pending failed', {
@@ -1369,15 +1372,39 @@ export class SyncEngine {
                 }
             }
 
-            // Prefer the live row's label/status/detail after any mid-flight transfer.
-            const liveJob = this.store.sessionJobs.get(ownerSessionId, ownerJobKey) ?? job
+            // Fence to the claimed run — key reuse mid-resume must not describe run B.
+            const liveJob = this.store.sessionJobs.get(ownerSessionId, ownerJobKey)
+            const liveClaimId = liveJob
+                ? (liveJob.runId ?? `norun:${liveJob.startedAt}`)
+                : null
+            if (
+                !liveJob
+                || liveClaimId !== claimId
+                || !liveJob.wakeOnTerminal
+                || !isTerminalJobStatus(liveJob.status)
+            ) {
+                console.warn('[session-job-wake] claimed run superseded; dropping wake', {
+                    sessionId: ownerSessionId,
+                    jobKey: ownerJobKey,
+                    claimId,
+                    liveClaimId,
+                    liveStatus: liveJob?.status,
+                    liveWake: liveJob?.wakeOnTerminal,
+                })
+                this.store.sessionJobs.releaseTerminalWake(ownerSessionId, ownerJobKey, claimId)
+                this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+                this.clearJobTerminalWakeRetry(sessionId, job.key)
+                return
+            }
+
+            // Prompt text from the claimed snapshot (run A), not a newer live generation.
             const text = buildJobTerminalWakePrompt({
-                key: liveJob.key,
-                label: liveJob.label,
-                status: liveJob.status,
-                ...(liveJob.detail !== undefined ? { detail: liveJob.detail } : {}),
-                ...(liveJob.wakePrompt !== undefined ? { wakePrompt: liveJob.wakePrompt } : {}),
-                ...(liveJob.runId !== undefined ? { runId: liveJob.runId } : {}),
+                key: job.key,
+                label: job.label,
+                status: job.status,
+                ...(job.detail !== undefined ? { detail: job.detail } : {}),
+                ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
+                ...(job.runId !== undefined ? { runId: job.runId } : {}),
             })
             // Run-scoped localId so a rare double-send after persist dedupes.
             await this.sendMessage(targetId, {
@@ -1385,6 +1412,7 @@ export class SyncEngine {
                 sentFrom: 'webapp',
                 localId: `hapi-job-wake:${ownerJobKey}:${claimId}`,
             })
+            this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
             this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
             this.clearJobTerminalWakeRetry(sessionId, job.key)
         } catch (error) {

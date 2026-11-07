@@ -312,13 +312,27 @@ export function sessionJobTerminalWakeClaimId(job: StoredSessionJob): string {
     return job.runId ?? `norun:${job.startedAt}`
 }
 
+/** Provisional in-flight marker written before resume/send; delivered marker is bare claimId. */
+export function sessionJobTerminalWakePendingId(claimId: string): string {
+    return `pending:${claimId}`
+}
+
+export function isSessionJobTerminalWakeDelivered(
+    wakeEmittedRunId: string | undefined,
+    claimId: string
+): boolean {
+    return wakeEmittedRunId === claimId
+}
+
 /**
  * Atomically claim a one-shot terminal wake for this run (#1489).
- * Returns the job when this caller owns the wake; null if already claimed,
- * opt-in is off, status is non-terminal, or the row is missing.
+ * Returns the job when this caller owns the wake; null if already delivered,
+ * another delivery is in flight, opt-in is off, status is non-terminal, or missing.
  *
- * Claim is provisional: delivery must call {@link releaseSessionJobTerminalWake}
- * on definite pre-delivery failures so a later retry can reclaim.
+ * Persists a `pending:<claimId>` marker (not the bare claimId) so hub restart can
+ * reclaim via {@link clearAbandonedProvisionalWakeClaims}. Delivery must call
+ * {@link markSessionJobTerminalWakeDelivered} after send, or
+ * {@link releaseSessionJobTerminalWake} on definite pre-delivery failures.
  */
 export function claimSessionJobTerminalWake(
     db: Database,
@@ -330,18 +344,18 @@ export function claimSessionJobTerminalWake(
     if (!existing.wakeOnTerminal) return null
     if (existing.status !== 'completed' && existing.status !== 'failed') return null
     const claimId = sessionJobTerminalWakeClaimId(existing)
-    if (existing.wakeEmittedRunId === claimId) return null
+    if (isSessionJobTerminalWakeDelivered(existing.wakeEmittedRunId, claimId)) return null
+    // In-flight provisional claim (this or another run) blocks until release/clearAbandoned.
+    if (existing.wakeEmittedRunId?.startsWith('pending:')) return null
+    const pendingId = sessionJobTerminalWakePendingId(claimId)
 
     const result = db.prepare(
         `UPDATE session_jobs SET wake_emitted_run_id = ?
          WHERE session_id = ? AND job_key = ?
            AND wake_on_terminal = 1
            AND status IN ('completed', 'failed')
-           AND (
-             wake_emitted_run_id IS NULL
-             OR wake_emitted_run_id != ?
-           )`
-    ).run(claimId, sessionId, jobKey, claimId)
+           AND wake_emitted_run_id IS NULL`
+    ).run(pendingId, sessionId, jobKey)
 
     if (result.changes === 0) return null
     return getSessionJob(db, sessionId, jobKey)
@@ -349,8 +363,8 @@ export function claimSessionJobTerminalWake(
 
 /**
  * Drop a provisional wake claim so delivery can retry after recovery
- * (runner offline, resume timeout, send failure). Only clears when the
- * stored claim still matches `expectedClaimId` — a newer run's claim is left alone.
+ * (runner offline, resume timeout, send failure). Only clears the
+ * `pending:<claimId>` marker — a delivered bare claimId is left alone.
  */
 export function releaseSessionJobTerminalWake(
     db: Database,
@@ -358,17 +372,50 @@ export function releaseSessionJobTerminalWake(
     jobKey: string,
     expectedClaimId: string
 ): boolean {
+    const pendingId = sessionJobTerminalWakePendingId(expectedClaimId)
     const result = db.prepare(
         `UPDATE session_jobs SET wake_emitted_run_id = NULL
          WHERE session_id = ? AND job_key = ?
            AND wake_emitted_run_id = ?`
-    ).run(sessionId, jobKey, expectedClaimId)
+    ).run(sessionId, jobKey, pendingId)
     return result.changes > 0
 }
 
 /**
- * Opted-in terminal jobs whose wake has not been delivered for the current
- * run (claim absent or stale). Used to requeue after runner recovery / hub start.
+ * Persist durable delivery after the wake prompt is stored. Only advances
+ * `pending:<claimId>` → bare `claimId`.
+ */
+export function markSessionJobTerminalWakeDelivered(
+    db: Database,
+    sessionId: string,
+    jobKey: string,
+    claimId: string
+): boolean {
+    const pendingId = sessionJobTerminalWakePendingId(claimId)
+    const result = db.prepare(
+        `UPDATE session_jobs SET wake_emitted_run_id = ?
+         WHERE session_id = ? AND job_key = ?
+           AND wake_emitted_run_id = ?`
+    ).run(claimId, sessionId, jobKey, pendingId)
+    return result.changes > 0
+}
+
+/**
+ * Hub restart / recovery: clear abandoned in-flight markers so
+ * {@link listPendingTerminalWakes} can reclaim them. Delivered bare claimIds stay.
+ */
+export function clearAbandonedProvisionalWakeClaims(db: Database): number {
+    const result = db.prepare(
+        `UPDATE session_jobs SET wake_emitted_run_id = NULL
+         WHERE wake_emitted_run_id LIKE 'pending:%'`
+    ).run()
+    return result.changes
+}
+
+/**
+ * Opted-in terminal jobs whose wake has not been durably delivered for the
+ * current run. Provisional `pending:*` rows are included (caller should clear
+ * abandoned markers first on hub start).
  */
 export function listPendingTerminalWakes(db: Database): StoredSessionJob[] {
     const rows = db.prepare(
@@ -378,6 +425,7 @@ export function listPendingTerminalWakes(db: Database): StoredSessionJob[] {
            AND status IN ('completed', 'failed')
            AND (
              wake_emitted_run_id IS NULL
+             OR wake_emitted_run_id LIKE 'pending:%'
              OR wake_emitted_run_id != COALESCE(run_id, 'norun:' || CAST(started_at AS TEXT))
            )
          ORDER BY updated_at ASC, job_key ASC`

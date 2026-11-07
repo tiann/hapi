@@ -293,4 +293,58 @@ describe('SyncEngine job terminal wake scheduling (#1489)', () => {
         expect(store.sessionJobs.get(target.id, 'batch')?.wakeEmittedRunId).toBe('run-xfer')
         store.close()
     })
+
+    it('drops delayed wake when key is reused by a new run mid-resume', async () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('wake-fence', { path: '/tmp', flavor: 'cursor' }, null, 'default')
+        const engine = stubEngine(store)
+        const sessions = (engine as unknown as { _sessions: Map<string, { id: string; namespace: string; active: boolean }> })._sessions
+        sessions.set(session.id, { id: session.id, namespace: 'default', active: false })
+
+        const sendCalls: string[] = []
+        let resumeGate!: () => void
+        const resumeBlocked = new Promise<void>((resolve) => {
+            resumeGate = resolve
+        })
+        ;(engine as unknown as {
+            resumeSession: (id: string) => Promise<{ type: 'success'; sessionId: string }>
+        }).resumeSession = async (id) => {
+            await resumeBlocked
+            sessions.set(id, { id, namespace: 'default', active: true })
+            return { type: 'success', sessionId: id }
+        }
+        ;(engine as unknown as {
+            sendMessage: (id: string, payload: { text: string; localId?: string | null }) => Promise<void>
+        }).sendMessage = async (_id, payload) => {
+            sendCalls.push(payload.text)
+        }
+
+        engine.upsertSessionJob(session.id, 'batch', {
+            label: 'batch-a',
+            status: 'completed',
+            runId: 'run-a',
+            wakeOnTerminal: true,
+            wakePrompt: 'Continue A',
+        })
+        // Claim starts delivery; resume is blocked until we reuse the key.
+        for (let i = 0; i < 40 && store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId !== 'pending:run-a'; i++) {
+            await new Promise((r) => setTimeout(r, 10))
+        }
+        expect(store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId).toBe('pending:run-a')
+
+        // Key reuse: new supervised run B (clears prior wake claim via upsert).
+        store.sessionJobs.upsert(session.id, 'batch', {
+            label: 'batch-b',
+            status: 'running',
+            runId: 'run-b',
+            wakeOnTerminal: false,
+        })
+        resumeGate()
+        for (let i = 0; i < 40; i++) {
+            await new Promise((r) => setTimeout(r, 10))
+        }
+        expect(sendCalls).toHaveLength(0)
+        expect(store.sessionJobs.get(session.id, 'batch')?.runId).toBe('run-b')
+        store.close()
+    })
 })

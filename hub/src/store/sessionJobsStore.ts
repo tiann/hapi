@@ -11,6 +11,8 @@ import {
     patchSessionJob,
     claimSessionJobTerminalWake,
     releaseSessionJobTerminalWake,
+    markSessionJobTerminalWakeDelivered,
+    clearAbandonedProvisionalWakeClaims,
     listPendingTerminalWakes,
     toAttachedJob,
     transferSessionJobs,
@@ -71,6 +73,16 @@ export class SessionJobsStore {
     /** Release a provisional wake claim after a recoverable delivery failure. */
     releaseTerminalWake(sessionId: string, jobKey: string, expectedClaimId: string): boolean {
         return releaseSessionJobTerminalWake(this.db, sessionId, jobKey, expectedClaimId)
+    }
+
+    /** Persist durable wake delivery after the prompt is stored. */
+    markTerminalWakeDelivered(sessionId: string, jobKey: string, claimId: string): boolean {
+        return markSessionJobTerminalWakeDelivered(this.db, sessionId, jobKey, claimId)
+    }
+
+    /** Clear abandoned `pending:*` markers after hub restart. */
+    clearAbandonedProvisionalWakeClaims(): number {
+        return clearAbandonedProvisionalWakeClaims(this.db)
     }
 
     /** Terminal + opt-in jobs still awaiting wake delivery for their current run. */
