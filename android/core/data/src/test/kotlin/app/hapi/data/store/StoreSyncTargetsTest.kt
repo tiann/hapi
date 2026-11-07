@@ -60,6 +60,14 @@ class FakeSessionListStore : SessionListStore {
         calls += "reopen:$sessionId"
         return app.hapi.protocol.wire.ReopenSessionResponse(sessionId = sessionId, resumed = true)
     }
+
+    override suspend fun updateSessionSummary(sessionId: String, text: String) {
+        calls += "summary:$sessionId:$text"
+    }
+
+    override suspend fun suggestSessionTitle(sessionId: String): String = "Suggested title"
+
+    override suspend fun titleSuggestionAvailable(): Boolean = true
 }
 
 class FakeMachineListStore : MachineListStore {

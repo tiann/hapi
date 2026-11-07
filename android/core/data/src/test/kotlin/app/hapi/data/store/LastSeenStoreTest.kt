@@ -77,4 +77,90 @@ class LastSeenStoreTest {
         assertEquals(0, store.lastSeenAt("s1"))
         assertTrue(store.state.value.pending.isEmpty())
     }
+
+    // ------------------------------------------------- explicit unread marks --
+
+    @Test
+    fun `markUnread queues an intent that relights the row before the ack`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        store.markSeen("s1", 2, SessionReadState(readRevision = 2, version = 2))
+        val row = summary("s1").copy(contentRevision = 2, readState = SessionReadState(2, false, 2))
+        assertFalse(LastSeenStore.isUnread(row, store.state.value))
+
+        store.markUnread("s1", row.readState)
+        // The queued `unread` request is the operator's newest choice at this
+        // version — the row reads unread before the server acknowledges.
+        assertEquals("unread", store.state.value.pending["s1"]?.request?.type)
+        assertTrue(LastSeenStore.isUnread(row, store.state.value))
+    }
+
+    @Test
+    fun `a caught-up viewing action replaces a queued manual-unread`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        store.markUnread("s1", SessionReadState(readRevision = 2, version = 2))
+        val row = summary("s1").copy(contentRevision = 2, readState = SessionReadState(2, false, 2))
+        assertTrue(LastSeenStore.isUnread(row, store.state.value))
+
+        store.markSeen("s1", 2, row.readState)
+        // The pending read replaced the unread intent; the row reads seen.
+        assertEquals("read", store.state.value.pending["s1"]?.request?.type)
+        assertFalse(LastSeenStore.isUnread(row, store.state.value))
+    }
+
+    @Test
+    fun `markAllSeen stamps unread rows and returns the unread count`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        store.markSeen("read", 9, SessionReadState(readRevision = 9, version = 1))
+        store.markUnread("manual", SessionReadState(readRevision = 8, version = 1))
+
+        val count = store.markAllSeen(
+            listOf(
+                summary("read").copy(contentRevision = 9, readState = SessionReadState(9, false, 1)),
+                summary("manual").copy(contentRevision = 8, readState = SessionReadState(8, true, 1)),
+                summary("fresh").copy(contentRevision = 7),
+                summary("fresh").copy(contentRevision = 7), // repeated id: seen on sight, not counted twice
+            ),
+        )
+        assertEquals(2, count)
+        assertFalse(
+            LastSeenStore.isUnread(
+                summary("manual").copy(contentRevision = 8, readState = SessionReadState(8, true, 1)),
+                store.state.value,
+            ),
+        )
+        assertFalse(LastSeenStore.isUnread(summary("fresh").copy(contentRevision = 7), store.state.value))
+        // Everything seen — a second sweep is a no-op returning 0.
+        assertEquals(0, store.markAllSeen(listOf(summary("fresh").copy(contentRevision = 7))))
+    }
+
+    @Test
+    fun `unread count collapses repeated ids and honors manual marks`() = runTest {
+        val store = LastSeenStore(backgroundScope)
+        val sessions = listOf(
+            summary("a").copy(contentRevision = 100),
+            summary("a").copy(contentRevision = 300), // same id, newer view — one entry
+            summary("b").copy(contentRevision = 200),
+        )
+        assertEquals(2, LastSeenStore.unreadSessionCount(sessions, store.state.value))
+        store.markSeen("a", 300)
+        assertEquals(1, LastSeenStore.unreadSessionCount(sessions, store.state.value))
+        // An explicit mark relights b even though its watermark caught up —
+        // a stays seen, so the count is b alone.
+        store.markSeen("b", 200)
+        store.markUnread("b")
+        assertEquals(1, LastSeenStore.unreadSessionCount(sessions, store.state.value))
+        assertEquals(0, LastSeenStore.unreadSessionCount(emptyList(), store.state.value))
+    }
+
+    @Test
+    fun `queued unread intents persist across restarts`() = runTest {
+        val dir = Files.createTempDirectory("read-state").toFile()
+        val store = LastSeenStore(backgroundScope, dir, "alice")
+        store.markUnread("s1")
+
+        val cold = LastSeenStore(backgroundScope, dir, "alice")
+        val pending = cold.state.value.pending["s1"]?.request
+        assertEquals("unread", pending?.type)
+        assertEquals(0, pending?.expectedVersion)
+    }
 }
