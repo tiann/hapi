@@ -6,6 +6,7 @@ import {
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
+    filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
     getNextSessionVisibleCount,
@@ -543,6 +544,23 @@ describe('filterActiveSessionsOnly', () => {
             makeSession({ id: 'c', active: true, metadata: { path: '/p' } })
         ]
         expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['a', 'c'])
+    })
+})
+
+describe('filterUnreadSessionsOnly', () => {
+    const sessions = [
+        makeSession({ id: 'unread', metadata: { path: '/p' } }),
+        makeSession({ id: 'read', metadata: { path: '/p' } }),
+        makeSession({ id: 'open', metadata: { path: '/p' } })
+    ]
+    const isUnread = (s: { id: string }) => s.id === 'unread'
+
+    it('keeps only unread sessions when nothing is open', () => {
+        expect(filterUnreadSessionsOnly(sessions, isUnread).map(s => s.id)).toEqual(['unread'])
+    })
+
+    it('keeps the open session visible even when read', () => {
+        expect(filterUnreadSessionsOnly(sessions, isUnread, 'open').map(s => s.id)).toEqual(['unread', 'open'])
     })
 })
 

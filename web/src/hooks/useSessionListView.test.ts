@@ -9,13 +9,13 @@ afterEach(() => {
 
 describe('useSessionListView', () => {
     it('defaults to last-message order, all sessions and active first', () => {
-        expect(readSessionListView()).toEqual({ sort: 'last-message', status: 'all', activeFirst: true })
+        expect(readSessionListView()).toEqual({ sort: 'last-message', status: 'all', activeFirst: true, unreadOnly: false })
     })
 
     it('falls back to defaults for unknown stored values', () => {
         localStorage.setItem('hapi-session-list-sort', 'activity')
         localStorage.setItem('hapi-session-list-status', 'bogus')
-        expect(readSessionListView()).toEqual({ sort: 'last-message', status: 'all', activeFirst: true })
+        expect(readSessionListView()).toEqual({ sort: 'last-message', status: 'all', activeFirst: true, unreadOnly: false })
     })
 
     it('carries the legacy active-only setting over as the Active status', () => {
@@ -25,11 +25,21 @@ describe('useSessionListView', () => {
 
     it('persists choices, storing defaults as absent keys', () => {
         const { result } = renderHook(() => useSessionListView())
-        act(() => result.current.setView({ sort: 'created', status: 'archived', activeFirst: false }))
-        expect(result.current.view).toEqual({ sort: 'created', status: 'archived', activeFirst: false })
-        expect(readSessionListView()).toEqual({ sort: 'created', status: 'archived', activeFirst: false })
+        act(() => result.current.setView({ sort: 'created', status: 'archived', activeFirst: false, unreadOnly: true }))
+        expect(result.current.view).toEqual({ sort: 'created', status: 'archived', activeFirst: false, unreadOnly: true })
+        expect(readSessionListView()).toEqual({ sort: 'created', status: 'archived', activeFirst: false, unreadOnly: true })
 
-        act(() => result.current.setView({ sort: 'last-message', status: 'all', activeFirst: true }))
+        act(() => result.current.setView({ sort: 'last-message', status: 'all', activeFirst: true, unreadOnly: false }))
+        expect(localStorage.length).toBe(0)
+    })
+
+    it('persists the unread-only filter, off by default', () => {
+        expect(readSessionListView().unreadOnly).toBe(false)
+        const { result } = renderHook(() => useSessionListView())
+        act(() => result.current.setView({ unreadOnly: true }))
+        expect(localStorage.getItem('hapi-session-list-unread-only')).toBe('true')
+        expect(readSessionListView().unreadOnly).toBe(true)
+        act(() => result.current.setView({ unreadOnly: false }))
         expect(localStorage.length).toBe(0)
     })
 

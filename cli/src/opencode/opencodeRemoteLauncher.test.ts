@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import type { OpencodeMode, PermissionMode } from './types';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { getOpencodeNativeToolInstruction } from './utils/systemPrompt';
 import type { PromptContent } from '@/agent/types';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
 
+
 const harness = vi.hoisted(() => ({
+    transcriptFetchImpl: null as null | (() => Promise<Response>),
     servePid: null as number | null,
     servePidCalls: [] as number[][],
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
@@ -13,7 +17,7 @@ const harness = vi.hoisted(() => ({
     promptCount: 0,
     promptContents: [] as PromptContent[][],
     refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
-    bridgeOptions: null as { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } } | null,
+    bridgeOptions: null as { onChangeTitle?: () => void; skillLookup?: { workingDirectory: string; flavor: string } } | null,
     events: [] as string[],
     cleanupEvents: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
@@ -225,7 +229,7 @@ vi.mock('./utils/opencodeBackend', () => ({
     }),}));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
+    buildHapiMcpBridge: async (_client: unknown, options?: { onChangeTitle?: () => void; skillLookup?: { workingDirectory: string; flavor: string } }) => {
         harness.bridgeOptions = options ?? null;
         return {
             server: { stop: () => { harness.cleanupEvents.push('cleanup:server-stop'); if (harness.serverStopError) throw harness.serverStopError; } },
@@ -291,7 +295,9 @@ vi.mock('./utils/opencodeNativeTranscript', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./utils/opencodeNativeTranscript')>();
     return { OpencodeNativeTranscript: class extends actual.OpencodeNativeTranscript {
         constructor(options: ConstructorParameters<typeof actual.OpencodeNativeTranscript>[0]) {
-            super({ ...options, fetchImpl: (async () => Response.json([])) });
+            super({ ...options, fetchImpl: async () => harness.transcriptFetchImpl
+                ? await harness.transcriptFetchImpl()
+                : Response.json([]) });
         }
     } };
 });
@@ -380,6 +386,40 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
     })
 }));
 
+const roundSummaryHarness = vi.hoisted(() => ({
+    snapshotCalls: [] as Array<{ baseUrl: string; sessionId: string }>,
+    summaryCalls: [] as Array<{ promptText: string; durationMs: number; snapshot: { messageIds: string[] } }>,
+    snapshot: { messageIds: [] } as { messageIds: string[] } | null,
+    snapshotImpl: null as null | (() => Promise<unknown>),
+    summary: {
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+        modelUsage: { 'openai/gpt-5.4': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+        numTurns: 1,
+        durationMs: 10
+    } as unknown | null,
+    summaryImpl: null as null | ((opts: { promptText: string }) => Promise<unknown>)
+}));
+
+vi.mock('./utils/opencodeRoundSummary', () => ({
+    captureOpencodeRoundSnapshot: vi.fn(async (opts: { baseUrl: string; sessionId: string }) => {
+        roundSummaryHarness.snapshotCalls.push(opts);
+        if (roundSummaryHarness.snapshotImpl) return roundSummaryHarness.snapshotImpl();
+        return roundSummaryHarness.snapshot;
+    }),
+    fetchOpencodeRoundSummary: vi.fn(async (opts: { promptText: string; durationMs: number; snapshot: { messageIds: string[] } }) => {
+        roundSummaryHarness.summaryCalls.push(opts);
+        const summary = roundSummaryHarness.summaryImpl
+            ? await roundSummaryHarness.summaryImpl(opts)
+            : harness.events.lastIndexOf('prompt:start') > harness.events.lastIndexOf('prompt:end')
+                ? null
+                : roundSummaryHarness.summary;
+        return {
+            snapshot: { messageIds: [...opts.snapshot.messageIds, 'post-' + roundSummaryHarness.summaryCalls.length] },
+            summary
+        };
+    })
+}));
+
 vi.mock('@/ui/logger', () => ({
     logger: {
         debug: vi.fn(),
@@ -440,6 +480,7 @@ function createSessionStub(
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const sentAgentMessages: unknown[] = [];
+    const deliveryEvents: string[] = [];
     const claudeSessionMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
@@ -467,12 +508,17 @@ function createSessionStub(
             }
         },
         sendAgentMessage(message: unknown) { sentAgentMessages.push(message); },
+        getMetadata() {
+            return null;
+        },
+        updateMetadata(_handler: (metadata: unknown) => unknown) {},
         sendClaudeSessionMessage(message: unknown) {
             claudeSessionMessages.push(message);
         },
         sendUserMessage(_text: string) {},
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
+            deliveryEvents.push('ready');
         },
         emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean }) {
             emitMessagesConsumedCalls.push({ localIds, options });
@@ -513,6 +559,7 @@ function createSessionStub(
         },
         sendAgentMessage(message: unknown) {
             sentAgentMessages.push(message);
+            deliveryEvents.push('agent');
         },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
@@ -520,7 +567,8 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls, steeringActiveCalls, steerIndeterminateCalls, steerStateImpl };
+    return { session, sessionEvents, sentAgentMessages, deliveryEvents, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls, steeringActiveCalls, steerIndeterminateCalls, steerStateImpl };
+
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -538,79 +586,91 @@ function createClearMode(): OpencodeMode {
     };
 }
 
-describe('opencodeRemoteLauncher inline model switch', () => {
-    afterEach(async () => {
-        harness.setModelArgs = [];
-        harness.setConfigOptionArgs = [];
-        harness.promptCount = 0;
-        harness.promptContents = [];
-        harness.refreshSessionInfoCalls = [];
-        harness.bridgeOptions = null;
-        harness.events = [];
-        harness.cleanupEvents = [];
-        harness.setModelImpl = null;
-        harness.setConfigOptionImpl = null;
-        harness.thoughtLevelOption = null;
-        harness.thoughtLevelLookups = [];
-        harness.stderrHandler = null;
-        harness.servePid = null;
-        harness.servePidCalls = [];
-        harness.hangPrompt = false;
-        harness.resolvePrompt = null;
-        harness.cancelPrompt.mockClear();
-        compactHarness.calls = [];
-        compactHarness.v2Calls = [];
-        compactHarness.v2VerifyCalls = [];
-        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
-        compactHarness.triggerImpl = null;
-        compactHarness.pollImpl = null;
-        compactHarness.operationEvents = [];
-        compactHarness.result = { ok: true };
-        compactHarness.markerSnapshotCalls = [];
-        compactHarness.markerSnapshot = { markerIds: ['before-this-request'] };
-        compactHarness.snapshotImpl = null;
-        compactHarness.resultCalls = [];
-        compactHarness.compactionResult = { status: 'success', text: '## Objective\n- Did the thing' };
-        compactHarness.triggerImpl = null;
-        compactHarness.resultImpl = null;
-        harness.promptImpl = null;
-        harness.promptOnMessage = null;
-        harness.sessionModelsMetadata = undefined;
-        harness.cancelPromptImpl = null;
-        harness.newSessionImpl = null;
-        harness.disconnectImpl = null;
-        harness.permissionCancelError = null;
-        harness.serverStopError = null;
-        harness.eventStreamOptions = [];
-        harness.eventStreamCloseCount = 0;
-        harness.stderrHandler = null;
-        harness.softSteerCalls = [];
-        harness.softSteerDispatchError = null;
-        harness.deferSoftSteerDispatch = null;
-        harness.deferSoftSteer = null;
-        harness.softSteerThrow = null;
-        harness.deferSteerState = null;
-        harness.steerStateCalls = [];
-        harness.steerStateResult = true;
-        harness.promptGeneration = 1;
-        harness.abortSoftSteersCalls = 0;
-        harness.promptRequestInFlight = null;
-        harness.detectedVersion = null;
-        harness.loopbackListeners = [];
-        harness.discoveredPort = null;
-        harness.discoveredPassword = null;
-        harness.backendPid = 4242;
-        harness.createBackendArgs = [];
-        harness.v2DiscoveryCalls = [];
-        harness.v2PasswordCalls = [];
-        inkHarness.lastRenderProps = null;
-        const backendModule = await import('./utils/opencodeBackend');
-        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
-        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
-            backendModuleFns[name]?.mockClear();
-        }
-    });
+afterEach(async () => {
+    harness.transcriptFetchImpl = null;
+    harness.setModelArgs = [];
+    harness.setConfigOptionArgs = [];
+    harness.promptCount = 0;
+    harness.promptContents = [];
+    harness.refreshSessionInfoCalls = [];
+    harness.bridgeOptions = null;
+    harness.events = [];
+    harness.cleanupEvents = [];
+    harness.setModelImpl = null;
+    harness.setConfigOptionImpl = null;
+    harness.thoughtLevelOption = null;
+    harness.thoughtLevelLookups = [];
+    harness.stderrHandler = null;
+    harness.servePid = null;
+    harness.servePidCalls = [];
+    harness.hangPrompt = false;
+    harness.resolvePrompt = null;
+    harness.cancelPrompt.mockClear();
+    compactHarness.calls = [];
+    compactHarness.v2Calls = [];
+    compactHarness.v2VerifyCalls = [];
+    compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+    compactHarness.triggerImpl = null;
+    compactHarness.pollImpl = null;
+    compactHarness.operationEvents = [];
+    compactHarness.result = { ok: true };
+    compactHarness.markerSnapshotCalls = [];
+    compactHarness.markerSnapshot = { markerIds: ['before-this-request'] };
+    compactHarness.snapshotImpl = null;
+    compactHarness.resultCalls = [];
+    compactHarness.compactionResult = { status: 'success', text: '## Objective\n- Did the thing' };
+    compactHarness.triggerImpl = null;
+    compactHarness.resultImpl = null;
+    harness.promptImpl = null;
+    harness.promptOnMessage = null;
+    harness.sessionModelsMetadata = undefined;
+    harness.cancelPromptImpl = null;
+    harness.newSessionImpl = null;
+    harness.disconnectImpl = null;
+    harness.permissionCancelError = null;
+    harness.serverStopError = null;
+    harness.eventStreamOptions = [];
+    harness.eventStreamCloseCount = 0;
+    roundSummaryHarness.snapshotCalls = [];
+    roundSummaryHarness.summaryCalls = [];
+    roundSummaryHarness.snapshot = { messageIds: [] };
+    roundSummaryHarness.snapshotImpl = null;
+    roundSummaryHarness.summary = {
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+        modelUsage: { 'openai/gpt-5.4': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+        numTurns: 1,
+        durationMs: 10
+    };
+    roundSummaryHarness.summaryImpl = null;
+    harness.softSteerCalls = [];
+    harness.softSteerDispatchError = null;
+    harness.deferSoftSteerDispatch = null;
+    harness.deferSoftSteer = null;
+    harness.softSteerThrow = null;
+    harness.deferSteerState = null;
+    harness.steerStateCalls = [];
+    harness.steerStateResult = true;
+    harness.promptGeneration = 1;
+    harness.abortSoftSteersCalls = 0;
+    harness.promptRequestInFlight = null;
+    harness.detectedVersion = null;
+    harness.loopbackListeners = [];
+    harness.discoveredPort = null;
+    harness.discoveredPassword = null;
+    harness.backendPid = 4242;
+    harness.createBackendArgs = [];
+    harness.v2DiscoveryCalls = [];
+    harness.v2PasswordCalls = [];
+    inkHarness.lastRenderProps = null;
+    const backendModule = await import('./utils/opencodeBackend');
+    const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+        backendModuleFns[name]?.mockClear();
+    }
+});
 
+
+describe('opencodeRemoteLauncher inline model switch', () => {
     it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
         let resolvePrompt: (() => void) | null = null;
         harness.promptImpl = () => new Promise<void>((resolve) => {
@@ -1832,9 +1892,25 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         expect(JSON.stringify(harness.promptContents[0])).toContain('$name');
         expect(JSON.stringify(harness.promptContents[0])).toContain('skill_lookup');
-        expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_display_image');
-        expect(JSON.stringify(harness.promptContents[0])).not.toContain('hapi_change_title');
+        expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_<tool>');
+        expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_change_title');
         expect(JSON.stringify(harness.promptContents[1])).not.toContain('skill_lookup');
+    });
+
+    it.each(['v1', 'v2'] as const)('puts the display tools block once in the first prompt only on opencode %s', async (version) => {
+        harness.detectedVersion = version;
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() },
+            { message: 'second', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        const header = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.';
+        expect(JSON.stringify(harness.promptContents[0]).split(header)).toHaveLength(2);
+        expect(JSON.stringify(harness.promptContents[0])).toContain('tools.hapi.<tool>');
+        expect(JSON.stringify(harness.promptContents[0])).toContain('do not display those again unless the user asks');
+        expect(JSON.stringify(harness.promptContents[1])).not.toContain(header);
     });
 
     it('spawns the ACP backend with an explicit --port/--hostname from allocateFreePort', async () => {
@@ -1943,7 +2019,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await opencodeRemoteLauncher(session as never);
 
         expect(harness.bridgeOptions).toEqual({
-            enableChangeTitle: false,
+            onChangeTitle: expect.any(Function),
             skillLookup: { workingDirectory: '/tmp/hapi-opencode-test', flavor: 'opencode' }
         });
         expect(harness.refreshSessionInfoCalls).toEqual([
@@ -2169,7 +2245,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(content[0]?.text).toContain('You are in plan mode');
         expect(content[0]?.text).toContain('Do not execute tools');
         expect(content[0]?.text).toContain('design the fix');
-        expect(content[0]?.text).not.toContain('hapi_change_title');
+        expect(content[0]?.text).toContain('hapi_change_title');
     });
 
     it('registers a listOpencodeModels RPC handler that returns the backend cache', async () => {
@@ -2616,6 +2692,275 @@ describe('selectAbortStatusMessage', () => {
 
         expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
     });
+
+    it('sends the round summary before ready after a prompt settles', async () => {
+        const { session, sentAgentMessages, sessionEvents, deliveryEvents } = createSessionStub([{ message: 'round prompt', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1);
+        expect(roundSummaryHarness.summaryCalls).toEqual([expect.objectContaining({ promptText: expect.stringContaining('round prompt') })]);
+        expect(sentAgentMessages).toEqual([expect.objectContaining({ type: 'round-summary' })]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+        expect(deliveryEvents).toEqual(['agent', 'ready']);
+    });
+
+    it('reuses the previous post-fetch snapshot instead of blocking a second prompt on another pre-fetch', async () => {
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        const { session } = createSessionStub([
+            { message: 'first round', mode: createMode() },
+            { message: 'second round', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.summaryCalls.map((call) => call.snapshot.messageIds)).toEqual([[], ['post-1']]);
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1);
+        expect(roundSummaryHarness.summaryCalls).toHaveLength(2);
+    });
+
+    it('recaptures after an explicit compact invalidates the previous post-fetch snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = [];
+        roundSummaryHarness.summaryCalls = [];
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([
+            { message: 'first round', mode: createMode('ollama/x') },
+            { message: '', mode: createCompactMode('ollama/x') },
+            { message: 'second round', mode: createMode('ollama/x') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(compactHarness.calls).toHaveLength(1);
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(2);
+        expect(roundSummaryHarness.summaryCalls.map((call) => call.snapshot.messageIds)).toEqual([[], []]);
+    });
+
+    it('keeps prompt completion and ready when post-fetch summary aggregation fails', async () => {
+        roundSummaryHarness.summary = null;
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'no summary', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+    it('keeps the dequeued prompt and ready when pre-prompt snapshot metadata throws', async () => {
+        roundSummaryHarness.snapshotImpl = async () => {
+            throw new TypeError('malformed optional message metadata');
+        };
+        const promptCountBefore = harness.promptCount;
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([
+            { message: 'prompt survives malformed snapshot', mode: createMode() }
+        ]);
+
+        try {
+            await opencodeRemoteLauncher(session as never);
+        } finally {
+            roundSummaryHarness.snapshotImpl = null;
+        }
+
+        expect(harness.promptCount).toBe(promptCountBefore + 1);
+        expect(JSON.stringify(harness.promptContents)).toContain('prompt survives malformed snapshot');
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+    it('keeps ready unblocked when a summary fetch never settles', async () => {
+        roundSummaryHarness.summaryImpl = () => new Promise<unknown>(() => {});
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'stalled summary', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+    it('preserves queued prompts when Stop arrives during post-prompt native transcript refresh', async () => {
+        const transcriptRead: { release: (() => void) | null } = { release: null };
+        let readHeld = false;
+        harness.transcriptFetchImpl = async () => {
+            if (!readHeld && harness.events.includes('prompt:end')) {
+                readHeld = true;
+                return new Promise<Response>((resolve) => {
+                    transcriptRead.release = () => resolve(Response.json([]));
+                });
+            }
+            return Response.json([]);
+        };
+        const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first prompt before transcript read', mode: createMode() }
+        ], { keepOpen: true });
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        while (!transcriptRead.release || !rpcHandlers.has(RPC_METHODS.Abort)) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.push('queued after transcript read', createMode());
+        await (rpcHandlers.get(RPC_METHODS.Abort) as () => Promise<void>)();
+        transcriptRead.release();
+        for (let attempt = 0; attempt < 50 && !JSON.stringify(harness.promptContents).includes('queued after transcript read'); attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.close();
+        await launchPromise;
+        try {
+            expect(JSON.stringify(harness.promptContents)).toContain('queued after transcript read');
+            expect(harness.cancelPrompt).not.toHaveBeenCalled();
+            expect(addMessage).not.toHaveBeenCalledWith('Turn aborted', 'status');
+        } finally {
+            addMessage.mockRestore();
+        }
+    });
+
+    it('excludes native transcript read latency from round prompt duration', async () => {
+        let clock = 0;
+        const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+        harness.promptImpl = async () => { clock = 25; };
+        harness.transcriptFetchImpl = async () => {
+            if (harness.events.includes('prompt:end')) clock = 5025;
+            return Response.json([]);
+        };
+        const { session } = createSessionStub([{ message: 'duration before transcript read', mode: createMode() }]);
+        try {
+            await opencodeRemoteLauncher(session as never);
+            expect(roundSummaryHarness.summaryCalls[0]?.durationMs).toBe(25);
+        } finally {
+            now.mockRestore();
+        }
+    });
+
+    it('plain Stop during post-prompt summary settlement preserves the queued next prompt without reporting a false abort', async () => {
+        roundSummaryHarness.summaryImpl = ({ promptText }) => {
+            return promptText.includes('completed first prompt')
+                ? new Promise<unknown>(() => {})
+                : Promise.resolve(null);
+        };
+        const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'completed first prompt', mode: createMode() }
+        ], { keepOpen: true });
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        while (
+            !rpcHandlers.has(RPC_METHODS.Abort)
+            || !roundSummaryHarness.summaryCalls.some(({ promptText }) => promptText.includes('completed first prompt'))
+        ) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(harness.events).toContain('prompt:end');
+
+        session.queue.push('queued second prompt', createMode());
+        const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await abortHandler!();
+        for (let attempt = 0; attempt < 50 && !JSON.stringify(harness.promptContents).includes('queued second prompt'); attempt++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        session.queue.close();
+        await launchPromise;
+
+        expect(JSON.stringify(harness.promptContents)).toContain('queued second prompt');
+        expect(harness.cancelPrompt).not.toHaveBeenCalled();
+        expect(addMessage).not.toHaveBeenCalledWith('Turn aborted', 'status');
+        addMessage.mockRestore();
+    });
+
+    it('attempts and delivers a summary after a caught prompt error', async () => {
+        harness.promptImpl = async () => { throw new Error('fixture prompt failure'); };
+        roundSummaryHarness.summaryImpl = async () => ({
+            usage: { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+            modelUsage: { 'openai/gpt-5.4': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+            numTurns: 1,
+            durationMs: 10
+        });
+        const { session, agentMessages, sessionEvents } = createSessionStub([{ message: 'error summary', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+        expect(roundSummaryHarness.snapshotCalls.length).toBeGreaterThan(0);
+        expect(roundSummaryHarness.summaryCalls.length).toBeGreaterThan(0);
+
+        expect(agentMessages).toEqual([
+            expect.objectContaining({ type: 'error' }),
+            expect.objectContaining({ type: 'round-summary' })
+        ]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+    });
+
+
+    it('keeps native instructions for the first actual prompt after a snapshot Abort', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        harness.promptContents = []
+        let snapshotCount = 0
+        let releaseFirstSnapshot: ((value: unknown) => void) | null = null
+        roundSummaryHarness.snapshotImpl = () => {
+            snapshotCount += 1
+            return snapshotCount === 1
+                ? new Promise<unknown>((resolve) => { releaseFirstSnapshot = resolve })
+                : Promise.resolve({ messageIds: [] })
+        }
+        const { session, rpcHandlers } = createSessionStub([{ message: 'aborted before prompt', mode: createMode() }], { keepOpen: true })
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+
+        const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined
+        expect(abortHandler).toBeDefined()
+        await abortHandler!()
+        session.queue.push('actual second prompt', createMode())
+        releaseFirstSnapshot!({ messageIds: [] })
+        session.queue.close()
+        await launchPromise
+
+        expect(harness.promptCount).toBe(1)
+        const text = (harness.promptContents[0] as Array<{ type: string; text?: string }>)[0]?.text
+        expect(text).toContain(getOpencodeNativeToolInstruction())
+        expect(text).toContain('actual second prompt')
+    })
+
+    it('does not start a backend prompt when Switch arrives during the blocking pre-prompt snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        let releaseSnapshot: ((value: unknown) => void) | null = null
+        roundSummaryHarness.snapshotImpl = () => new Promise<unknown>((resolve) => { releaseSnapshot = resolve })
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([{ message: 'snapshot switch', mode: createMode() }])
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+
+        const switchHandler = rpcHandlers.get(RPC_METHODS.Switch) as (() => Promise<void>) | undefined
+        expect(switchHandler).toBeDefined()
+        await switchHandler!()
+        releaseSnapshot!({ messageIds: [] })
+        session.queue.close()
+        await launchPromise
+
+        expect(harness.promptCount).toBe(0)
+        expect(sessionEvents).toEqual([])
+    })
+
+    it('does not start a backend prompt when Abort arrives during the blocking pre-prompt snapshot', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        let releaseSnapshot: ((value: unknown) => void) | null = null
+        roundSummaryHarness.snapshotImpl = () => new Promise<unknown>((resolve) => { releaseSnapshot = resolve })
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([{ message: 'snapshot abort', mode: createMode() }])
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined
+        expect(abortHandler).toBeDefined()
+        await abortHandler!()
+        releaseSnapshot!({ messageIds: [] })
+        session.queue.close()
+        await launchPromise
+
+        expect(harness.promptCount).toBe(0)
+        expect(sessionEvents).toEqual([{ type: 'ready' }])
+    })
 });
 
 function indeterminateError(message: string): Error {
@@ -2811,6 +3156,100 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         } finally {
             nativeFetch.mockRestore();
             await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('keeps inbox receipts and retry progress live while v2 cancellation drains, then closes the stream', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 48274;
+        harness.discoveredPassword = 'synthetic-password';
+        const actual = await vi.importActual<typeof import('./utils/opencodeEventStream')>('./utils/opencodeEventStream');
+        const eventStreamModule = await import('./utils/opencodeEventStream');
+        let controller!: ReadableStreamDefaultController<Uint8Array>;
+        let streamCancelled = false;
+        const stream = new ReadableStream<Uint8Array>({
+            start(value) { controller = value; },
+            cancel() { streamCancelled = true; }
+        });
+        const push = (type: string, data: Record<string, unknown>) => {
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type, data })}\n\n`));
+        };
+        const retry = (attempt: number) => push('session.retry.scheduled', {
+            sessionID: 'acp-session-1', attempt, error: { message: 'Fixture rate limit' }
+        });
+        let subscriptionClosed = false;
+        vi.mocked(eventStreamModule.subscribeToOpencodeEvents).mockImplementationOnce(options => {
+            expect(options).toMatchObject({ mode: 'v2', sessionId: 'acp-session-1' });
+            const subscription = actual.subscribeToOpencodeEvents({
+                ...options,
+                fetchImpl: async () => new Response(stream, { headers: { 'content-type': 'text/event-stream' } })
+            });
+            return { close() { subscriptionClosed = true; subscription.close(); } };
+        });
+        let inputId = '';
+        let deleteStarted = false;
+        let delivered = false;
+        let releaseDelete!: () => void;
+        const deleting = new Promise<void>(resolve => { releaseDelete = resolve; });
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') inputId = JSON.parse(String(init.body)).id;
+            if (init?.method === 'DELETE') {
+                deleteStarted = true;
+                await deleting;
+                return new Response(null, { status: 204 });
+            }
+            const item = { id: inputId, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            if (init?.method === 'POST') return Response.json({ data: item });
+            return Response.json({ data: String(url).endsWith('/inbox') ? delivered ? [] : [item]
+                : { id: inputId, sessionID: 'acp-session-1', type: 'user', text: 'correction' } });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let switching: Promise<void> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await expect(steerHandlerOf(stub)({ localId: 'v2-steer' })).resolves.toEqual({ steered: true });
+            retry(2);
+            push('session.inbox.enqueued', { sessionID: 'acp-session-1', inboxID: inputId,
+                item: { type: 'user', payload: { text: 'correction' } } });
+            retry(2);
+            await vi.waitFor(() => expect(stub.claudeSessionMessages).toHaveLength(1));
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+
+            switching = (stub.rpcHandlers.get('switch') as () => Promise<void>)();
+            await vi.waitFor(() => expect(deleteStarted).toBe(true));
+            releasePrompt();
+            stub.session.queue.close();
+            await vi.waitFor(() => expect(harness.events).toContain('prompt:end'));
+            expect(subscriptionClosed).toBe(false);
+            expect(harness.cleanupEvents).not.toContain('cleanup:disconnect');
+
+            // The real parser still feeds both launcher consumers while the
+            // native DELETE and foreground drain await the delivery outcome.
+            retry(3);
+            push('session.step.started', { sessionID: 'acp-session-1' });
+            retry(2);
+            await vi.waitFor(() => expect(stub.claudeSessionMessages).toHaveLength(3));
+            expect(stub.claudeSessionMessages.map(message => (message as { retryAttempt: number }).retryAttempt)).toEqual([1, 2, 1]);
+            delivered = true;
+            push('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: inputId });
+            push('session.inbox.delivered', { sessionID: 'acp-session-1', inboxID: inputId });
+            await vi.waitFor(() => expect(stub.emitMessagesConsumedCalls).toEqual([
+                { localIds: ['v2-steer'], options: { steered: true } }
+            ]));
+            releaseDelete();
+            await Promise.all([switching, runPromise]);
+            expect(subscriptionClosed).toBe(true);
+            expect(streamCancelled).toBe(true);
+            expect(harness.cleanupEvents).toContain('cleanup:disconnect');
+            expect(stub.emitMessagesConsumedCalls).toHaveLength(1);
+            expect(harness.softSteerCalls).toEqual([]);
+        } finally {
+            delivered = true;
+            releaseDelete();
+            releasePrompt();
+            stub.session.queue.close();
+            await Promise.all([switching, runPromise]);
+            nativeFetch.mockRestore();
         }
     });
 
@@ -3100,6 +3539,57 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         } finally {
             releaseDelete?.(); releaseStop?.(); harness.cancelPromptImpl = null; await stopping;
             nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('cancels and detaches a deferred steer when Stop follows foreground completion', async () => {
+        let releaseSteer!: () => void;
+        harness.deferSoftSteer = new Promise<void>(resolve => { releaseSteer = resolve; });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'steer');
+            await expect(steerHandlerOf(stub)({ localId: 'steer' })).resolves.toEqual({ steered: true });
+            releasePrompt();
+            await vi.waitFor(() => expect(stub.steeringActiveCalls.at(-1)).toBe(false));
+            expect(stub.sessionEvents.filter(event => event.type === 'ready')).toEqual([]);
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            expect(harness.cancelPrompt).toHaveBeenCalledWith('acp-session-1');
+            expect(harness.abortSoftSteersCalls).toBe(1);
+            await vi.waitFor(() => expect(stub.steerIndeterminateCalls).toContainEqual(['steer']));
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+        } finally {
+            releaseSteer(); harness.deferSoftSteer = null;
+            stub.session.queue.close(); await runPromise;
+        }
+    });
+
+    it('reconciles a retained unknown v2 steer when Stop follows foreground completion', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let id = ''; let visible = false; let deleted = false; let posts = 0;
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+            if (init?.method === 'POST') { posts++; id = JSON.parse(String(init.body)).id; throw new Error('response lost'); }
+            if (init?.method === 'DELETE') { deleted = true; return new Response(null, { status: 204 }); }
+            const item = { id, sessionID: 'acp-session-1', type: 'user', delivery: 'steer', payload: { text: 'correction' } };
+            return String(url).endsWith('/inbox') ? Response.json({ data: visible && !deleted ? [item] : [] }) : new Response(null, { status: 404 });
+        });
+        roundSummaryHarness.summaryImpl = () => new Promise<unknown>(() => {});
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        try {
+            stub.session.queue.push('correction', createMode(), 'v2-steer');
+            await expect(steerHandlerOf(stub)({ localId: 'v2-steer' })).resolves.toEqual({ steered: false, error: 'Steer outcome is being reconciled' });
+            expect(stub.steerIndeterminateCalls).toContainEqual(['v2-steer']);
+            releasePrompt();
+            await vi.waitFor(() => expect(roundSummaryHarness.summaryCalls).toHaveLength(1));
+            visible = true;
+            await (stub.rpcHandlers.get('abort') as () => Promise<void>)();
+            expect(deleted).toBe(true);
+            expect(posts).toBe(1);
+            expect(stub.emitMessagesConsumedCalls).toEqual([]);
+            expect(harness.steerStateCalls).not.toContainEqual({ localIds: ['v2-steer'], state: 'queued' });
+            expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
+            expect(stub.session.queue.cancelByLocalId('v2-steer')).toBe(true);
+        } finally {
+            nativeFetch.mockRestore(); stub.session.queue.close(); await runPromise;
         }
     });
 
@@ -4691,8 +5181,42 @@ function backendCreateArgsIncludePortFlags(): boolean {
 }
 
 describe('opencodeRemoteLauncher v2 flavor wiring', () => {
+    it('collects a v2 round through the discovered authenticated API before ready', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        const { session, sentAgentMessages, sessionEvents, deliveryEvents } = createSessionStub([{ message: 'v2 round', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(roundSummaryHarness.snapshotCalls).toEqual([expect.objectContaining({
+            baseUrl: 'http://127.0.0.1:41234', api: { version: 'v2', password: 'fixture-password' }
+        })]);
+        expect(roundSummaryHarness.summaryCalls).toEqual([expect.objectContaining({
+            baseUrl: 'http://127.0.0.1:41234', api: { version: 'v2', password: 'fixture-password' }
+        })]);
+        expect(sentAgentMessages).toEqual([expect.objectContaining({ type: 'round-summary' })]);
+        expect(sessionEvents).toEqual([{ type: 'ready' }]);
+        expect(deliveryEvents).toEqual(['agent', 'ready']);
+    });
+
+    it('preserves the v2 prompt and ready when API discovery fails', async () => {
+        harness.detectedVersion = 'v2';
+        const { session, sentAgentMessages, sessionEvents } = createSessionStub([{ message: 'v2 without discovery', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(JSON.stringify(harness.promptContents)).toContain('v2 without discovery');
+        expect(roundSummaryHarness.snapshotCalls).toEqual([]);
+        expect(roundSummaryHarness.summaryCalls).toEqual([]);
+        expect(sentAgentMessages).toEqual([]);
+        expect(sessionEvents).toContainEqual({ type: 'ready' });
+    });
+
+
     beforeEach(() => {
         harness.eventStreamOptions = [];
+
     });
 
     afterEach(async () => {
@@ -4707,6 +5231,8 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         harness.servePid = null;
         harness.servePidCalls = [];
         harness.events = [];
+        harness.eventStreamOptions = [];
+        harness.eventStreamCloseCount = 0;
         harness.sessionModelsMetadata = undefined;
         harness.promptCount = 0;
         harness.promptImpl = null;
@@ -4723,6 +5249,28 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
             backendModuleFns[name]?.mockClear();
         }
+    });
+
+    it.each(['v1', 'v2'] as const)('%s: preserves manual title precedence after backend selection', async (version) => {
+        harness.detectedVersion = version;
+        harness.discoveredPort = 41234;
+        const { session, claudeSessionMessages } = createSessionStub([{ message: 'hello', mode: createMode() }]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        const backend = vi.mocked(createOpencodeBackend).mock.results.at(-1)?.value;
+        const listener = vi.mocked(backend!.setSessionInfoUpdateListener).mock.calls[0]?.[0];
+        expect(listener).toBeTypeOf('function');
+        expect(harness.bridgeOptions?.onChangeTitle).toBeTypeOf('function');
+        const initialCount = claudeSessionMessages.length;
+        listener!({ sessionId: 'acp-session-1', title: 'Native Title' });
+        expect(claudeSessionMessages).toHaveLength(initialCount + 1);
+        expect(claudeSessionMessages.at(-1)).toMatchObject({ type: 'summary', summary: 'Native Title' });
+
+        harness.bridgeOptions!.onChangeTitle!();
+        listener!({ sessionId: 'acp-session-1', title: 'Later Native Title' });
+        expect(claudeSessionMessages).toHaveLength(initialCount + 1);
     });
 
     it('v2: reports one automatic application start without changing turn thinking for preparation', async () => {

@@ -1,5 +1,5 @@
 /**
- * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages,
+ * Opt-in resume (wake) + wait-active + POST /api/sessions/:id/messages,
  * plus read-only inspectPeer (GET session + messages, never resume)
  * and setPeerPermissionMode (POST /api/sessions/:id/permission-mode).
  *
@@ -16,6 +16,7 @@ import {
     getPermissionModesForFlavor,
     isObject,
     isSteeringSupportedForSession,
+    hasActiveSteeringTurn,
     type MessageDeliveryMode,
 } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
@@ -31,6 +32,7 @@ export type PingPeerErrorCode =
     | 'auth_failed'
     | 'not_found'
     | 'ambiguous'
+    | 'inactive'
     | 'resume_failed'
     | 'timeout'
     | 'send_failed'
@@ -70,6 +72,7 @@ export type PingPeerSessionSummary = {
         name?: string
         flavor?: string | null
         path?: string | null
+        machineId?: string | null
         lifecycleState?: string | null
         piSessionId?: string
         cursorSessionId?: string | null
@@ -85,6 +88,11 @@ export type PingPeerOptions = {
     sessionId?: string
     message: string
     deliveryMode?: PeerDeliveryMode
+    /**
+     * Resume an inactive target before sending. Default false: inactive
+     * targets are refused so stale/unrelated peers are not relaunched.
+     */
+    wake?: boolean
     waitActiveSecs?: number
     /**
      * Fresh spawn: poll until active instead of POST /resume on the first
@@ -106,6 +114,12 @@ export type PingPeerResult = {
     name: string
     resumed: boolean
     delivery: 'accepted' | 'steered' | 'invoked'
+    /**
+     * Auto only: why an `accepted` receipt did not steer. Distinguishes a steer
+     * that was never attempted from one the hub rejected or that stayed
+     * unconfirmed. The accepted message itself is never resent.
+     */
+    steerNote?: string
     /**
      * Known client submit identity for the peer row (`ping-peer-` prefix).
      * The recipient runtime's consumption ACK is the only delivery proof;
@@ -132,6 +146,13 @@ export type ListPeerSessionsOptions = {
     limit?: number
     /** Hub sort before limit truncation. Peer discovery defaults to newest updatedAt. */
     order?: 'updatedAt'
+    /** Include inactive sessions (default false: hub filters to active before limit). */
+    includeInactive?: boolean
+}
+
+/** Peer list row: hub session summary plus the resolved machine label. */
+export type PeerSessionListEntry = PingPeerSessionSummary & {
+    machineLabel?: string
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -253,7 +274,7 @@ async function listSessions(
     apiUrl: string,
     jwt: string,
     http: AxiosInstance,
-    options: { limit?: number; order?: 'updatedAt' } = {}
+    options: { limit?: number; order?: 'updatedAt'; activeOnly?: boolean } = {}
 ): Promise<PingPeerSessionSummary[]> {
     const params: Record<string, string | number> = {}
     if (options.limit !== undefined) {
@@ -261,6 +282,9 @@ async function listSessions(
     }
     if (options.order !== undefined) {
         params.order = options.order
+    }
+    if (options.activeOnly) {
+        params.active = 'true'
     }
     const response = await http.get(
         `${apiUrl}/api/sessions`,
@@ -413,8 +437,10 @@ async function sendMessage(
     message: string,
     localId: string,
     http: AxiosInstance,
-    deliveryMode: MessageDeliveryMode
-): Promise<PingPeerResult['delivery']> {
+    deliveryMode: MessageDeliveryMode,
+    autoSteerFallback = false,
+    onProgress?: (message: string) => void
+): Promise<{ delivery: PingPeerResult['delivery']; steerNote?: string }> {
     // The existing queued-message steer action accepts localId as well as id.
     // Both modes retain the peer identity so only runtime ACKs prove delivery.
     const response = await http.post(
@@ -433,7 +459,8 @@ async function sendMessage(
     if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
         // HTTP success means hub-accepted, not proof the row is still queued:
         // the recipient runtime's consumption ACK may race this response.
-        if (deliveryMode === 'queue') return 'accepted'
+        if (deliveryMode === 'queue') return { delivery: 'accepted' }
+        let hubRejection: string | null = null
         try {
             const steer = await http.post(
                 `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(localId)}/steer`,
@@ -441,14 +468,34 @@ async function sendMessage(
                 { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true }
             )
             if (steer.status >= 200 && steer.status < 300) {
-                if (steer.data?.status === 'steered') return 'steered'
+                if (steer.data?.status === 'steered') return { delivery: 'steered' }
                 // The target consumed the message before the steer request.
                 // Do not claim it was inserted into the active turn.
-                if (steer.data?.status === 'invoked') return 'invoked'
+                if (steer.data?.status === 'invoked') return { delivery: 'invoked' }
             }
-            throw new Error(typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`)
+            const rejection: string = typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`
+            // Only a refusal before any native request is dispatched is definitive:
+            // an HTTP 4xx, or a Hub 'failed' reply without a localId. A 'failed' reply
+            // that carries a localId means the native steer was requested, and its
+            // timeout or "being reconciled" outcome leaves delivery unresolved.
+            const refusedBeforeDispatch = (steer.status >= 400 && steer.status < 500)
+                || (steer.status >= 200 && steer.status < 300
+                    && steer.data?.status === 'failed' && steer.data?.localId == null)
+            if (refusedBeforeDispatch) hubRejection = rejection
+            throw new Error(rejection)
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error)
+            // POST acceptance already owns one row; never resend after a failed or uncertain steer.
+            // Auto keeps the queued receipt but reports why the steer did not happen.
+            if (autoSteerFallback) {
+                const steerNote = hubRejection !== null
+                    ? `steer rejected by hub: ${detail}`
+                    : `steer not confirmed; delivery unresolved: ${detail}`
+                onProgress?.(hubRejection !== null
+                    ? `${steerNote}; message stays queued as ${localId}`
+                    : `${steerNote}; message accepted as ${localId}`)
+                return { delivery: 'accepted', steerNote }
+            }
             throw new PingPeerError(
                 'send_failed',
                 `Message accepted (localId=${localId}), but steer was not confirmed: ${detail}. ` +
@@ -467,25 +514,81 @@ async function sendMessage(
     throw new PingPeerError('send_failed', `send failed: ${detail}`)
 }
 
+/**
+ * Best-effort machineId → hostname map from GET /api/machines (online
+ * machines only). Labels are decoration; failures leave rows unlabeled.
+ */
+async function fetchMachineLabels(
+    apiUrl: string,
+    jwt: string,
+    http: AxiosInstance
+): Promise<Map<string, string>> {
+    const labels = new Map<string, string>()
+    try {
+        const response = await http.get(`${apiUrl}/api/machines`, {
+            headers: authHeaders(jwt),
+            timeout: 10_000,
+            validateStatus: () => true
+        })
+        if (response.status < 200 || response.status >= 300) {
+            return labels
+        }
+        const machines = Array.isArray(response.data?.machines) ? response.data.machines : []
+        for (const machine of machines) {
+            if (!isObject(machine) || typeof machine.id !== 'string') continue
+            const metadata = isObject(machine.metadata) ? machine.metadata : null
+            const label = typeof metadata?.displayName === 'string' && metadata.displayName.trim()
+                ? metadata.displayName.trim()
+                : typeof metadata?.host === 'string' && metadata.host.trim()
+                    ? metadata.host.trim()
+                    : null
+            if (label) {
+                labels.set(machine.id, label)
+            }
+        }
+    } catch {
+        // Unlabeled rows still carry the machine id prefix.
+    }
+    return labels
+}
+
+function resolveMachineLabel(machineId: string | null | undefined, labels: Map<string, string>): string | undefined {
+    if (!machineId) return undefined
+    return labels.get(machineId) ?? machineId.slice(0, 8)
+}
+
 export async function listPeerSessions(
     options: ListPeerSessionsOptions = {}
-): Promise<PingPeerSessionSummary[]> {
+): Promise<PeerSessionListEntry[]> {
     assertPeerToolsEnabled()
     const apiUrl = resolveApiUrl(options.apiUrl)
     const accessToken = resolveAccessToken(options.accessToken)
     const http = options.http ?? axios
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    return listSessions(apiUrl, jwt, http, {
-        limit: options.limit ?? 200,
-        order: options.order ?? 'updatedAt'
-    })
+    const [sessions, machineLabels] = await Promise.all([
+        listSessions(apiUrl, jwt, http, {
+            limit: options.limit ?? 200,
+            order: options.order ?? 'updatedAt',
+            activeOnly: !options.includeInactive
+        }),
+        fetchMachineLabels(apiUrl, jwt, http)
+    ])
+    return sessions.map((session) => ({
+        ...session,
+        machineLabel: resolveMachineLabel(session.metadata?.machineId, machineLabels)
+    }))
 }
 
 export type FormatPeerSessionsListOptions = {
     /** Max rows to print (default 30). */
     maxRows?: number
-    /** Omit this session id (the caller) from the shortlist. */
+    /**
+     * Omit this session id (the caller) from the shortlist. When the caller
+     * row is present, peers on its machine / cwd are marked for conflict triage.
+     */
     excludeSessionId?: string
+    /** The list was fetched with inactive sessions included. */
+    includeInactive?: boolean
     /**
      * When the fetch was intentionally bounded, signal overflow without claiming
      * an exact omitted count from the sample.
@@ -525,27 +628,43 @@ export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string
         : collapsed
 }
 
+const PEER_LIST_FOOTER =
+    'Directory, not a recipient list: message only peers tied to your task; ' +
+    'inspect_peer an unfamiliar peer before messaging it, and never broadcast.'
+
 /**
  * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
  * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
  */
 export function formatPeerSessionsList(
-    sessions: PingPeerSessionSummary[],
+    sessions: PeerSessionListEntry[],
     options: FormatPeerSessionsListOptions = {}
 ): string {
     const maxRows = options.maxRows ?? 30
     const excludeId = options.excludeSessionId?.trim() ?? ''
+    const caller = excludeId ? sessions.find((session) => session.id === excludeId) : undefined
     const filtered = excludeId
         ? sessions.filter((session) => session.id !== excludeId)
         : sessions
     if (filtered.length === 0) {
-        return 'No peer sessions found on this hub/namespace.'
+        return options.includeInactive
+            ? 'No peer sessions found on this hub/namespace.'
+            : 'No active peer sessions found on this hub/namespace.'
     }
+    const callerMachineId = caller?.metadata?.machineId ?? null
+    const callerPath = caller?.metadata?.path ?? null
     const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
-        const flavor = session.metadata?.flavor ?? '?'
+        const meta = session.metadata
+        const flavor = meta?.flavor ?? '?'
         const name = resolvePeerSessionLabel(session)
-        return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
+        const state = session.active ? (session.thinking ? 'busy' : 'idle') : 'inactive'
+        const sameMachine = Boolean(callerMachineId) && meta?.machineId === callerMachineId
+        const machine = session.machineLabel ?? meta?.machineId?.slice(0, 8) ?? '?'
+        const sameCwd = sameMachine && Boolean(callerPath) && meta?.path === callerPath
+        const marks = [sameMachine ? 'same-machine' : null, sameCwd ? 'same-cwd' : null].filter(Boolean)
+        return `  ${session.id}  ${state}  flavor=${flavor}  machine=${machine}  cwd=${meta?.path ?? '?'}`
+            + `${marks.length > 0 ? `  [${marks.join(', ')}]` : ''}  ${name}`
     })
     const omitted = sorted.length - rows.length
     if (options.hasMore) {
@@ -553,26 +672,39 @@ export function formatPeerSessionsList(
     } else if (omitted > 0) {
         rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
     }
+    rows.push(PEER_LIST_FOOTER)
     return rows.join('\n')
 }
 
-function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
-    if (!session.active) {
-        return 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it'
-    }
-    if (!isSteeringSupportedForSession(session.metadata)) {
-        return 'Steering is only supported for Claude, Pi, Codex, and Cursor ACP sessions; no message sent'
-    }
-    if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) {
-        return 'Steering is only available for remote sessions; no message sent'
-    }
-    const steeringActive = session.metadata?.flavor === 'pi'
-        ? session.thinking
-        : session.agentState?.steeringActive === true
-    if (!steeringActive) {
-        return 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn'
-    }
+type SteeringIneligibility = 'inactive' | 'unsupported' | 'local' | 'idle'
+
+function getSteeringIneligibility(session: PingPeerSessionSummary): SteeringIneligibility | null {
+    if (!session.active) return 'inactive'
+    if (!isSteeringSupportedForSession(session.metadata)) return 'unsupported'
+    if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) return 'local'
+    if (!hasActiveSteeringTurn(session)) return 'idle'
     return null
+}
+
+// Explicit steer refuses before sending, so these texts say no message was sent.
+const EXPLICIT_STEER_REFUSAL: Record<SteeringIneligibility, string> = {
+    inactive: 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it',
+    unsupported: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions; no message sent',
+    local: 'Steering is only available for remote sessions; no message sent',
+    idle: 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn'
+}
+
+// Auto has already accepted the message, so its notes must not claim otherwise.
+const AUTO_NOT_ATTEMPTED: Record<SteeringIneligibility, string> = {
+    inactive: 'target is inactive',
+    unsupported: 'target does not support steering',
+    local: 'target is controlled locally',
+    idle: 'target is idle'
+}
+
+function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
+    const ineligibility = getSteeringIneligibility(session)
+    return ineligibility === null ? null : EXPLICIT_STEER_REFUSAL[ineligibility]
 }
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
@@ -618,7 +750,15 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
             return session
         }
         if (requestedDeliveryMode === 'steer') {
-            throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue to resume it')
+            throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it')
+        }
+        if (!options.wake) {
+            throw new PingPeerError(
+                'inactive',
+                `target ${matched.id} is inactive; no message sent. `
+                + 'Do not wake peers for FYI, status, or done notes. '
+                + 'Pass wake=true (CLI: --wake) only when the user asked or the handed-off work requires this peer to act.'
+            )
         }
         onProgress?.(progressMessage)
         await resumeSession(apiUrl, jwt, matched.id, http)
@@ -652,11 +792,12 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         }
     }
 
-    // Use the live snapshot, not the discovery list. Auto initially steers only
-    // Codex targets; other flavors retain queue unless steer is explicit.
+    // Share supported-provider turn policy. Explicitly awakened/new peers queue
+    // their message rather than opportunistically steering the resumed turn.
     const steeringError = getSteeringUnavailableReason(live)
+    const ineligibility = getSteeringIneligibility(live)
     const deliveryMode: MessageDeliveryMode = requestedDeliveryMode === 'auto'
-        ? (live.metadata?.flavor === 'codex' && steeringError === null ? 'steer' : 'queue')
+        ? (matched.active && !resumed && steeringError === null ? 'steer' : 'queue')
         : requestedDeliveryMode
     if (deliveryMode === 'steer' && steeringError !== null) {
         throw new PingPeerError('bad_args', steeringError)
@@ -664,14 +805,20 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
 
     onProgress?.(`sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''})...`)
     const localId = createPeerMessageLocalId()
-    const delivery = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode)
+    const sent = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode, requestedDeliveryMode === 'auto', onProgress)
+    // Auto queued without trying: say why, so a caller can tell it from a steer that failed.
+    const steerNote = sent.steerNote ?? (requestedDeliveryMode === 'auto' && deliveryMode === 'queue'
+        ? `steer not attempted: ${resumed ? 'target was just resumed' : !matched.active ? 'target was not active' : ineligibility ? AUTO_NOT_ATTEMPTED[ineligibility] : 'steering unavailable'}`
+        : undefined)
+    if (steerNote && sent.steerNote === undefined) onProgress?.(`${steerNote}; message queued`)
 
     return {
         sessionId: matched.id,
         name,
         resumed,
         localId,
-        delivery
+        delivery: sent.delivery,
+        ...(steerNote ? { steerNote } : {})
     }
 }
 
@@ -685,6 +832,8 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
             return 2
         case 'resume_failed':
             return 3
+        case 'inactive':
+            return 5
         case 'timeout':
         case 'send_failed':
         case 'apply_failed':
@@ -719,6 +868,8 @@ export type InspectPeerResult = {
     thinking: boolean
     flavor: string | null
     path: string | null
+    /** Hostname (or machine id prefix) the peer runs on. */
+    machine: string | null
     lifecycleState: string | null
     updatedAt: number | null
     messages: InspectPeerMessage[]
@@ -830,7 +981,10 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
     const matched = resolveSessionByPrefix(sessions, prefix)
     const live = await getSession(apiUrl, jwt, matched.id, http)
     const meta = live.metadata ?? matched.metadata ?? null
-    const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
+    const [messages, machineLabels] = await Promise.all([
+        fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http),
+        fetchMachineLabels(apiUrl, jwt, http)
+    ])
 
     return {
         sessionId: matched.id,
@@ -839,6 +993,7 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
         thinking: Boolean(live.thinking),
         flavor: typeof meta?.flavor === 'string' ? meta.flavor : null,
         path: typeof meta?.path === 'string' ? meta.path : null,
+        machine: resolveMachineLabel(meta?.machineId, machineLabels) ?? null,
         lifecycleState: typeof meta?.lifecycleState === 'string' ? meta.lifecycleState : null,
         updatedAt: typeof live.updatedAt === 'number'
             ? live.updatedAt
@@ -859,6 +1014,7 @@ export function formatInspectPeerReport(result: InspectPeerResult): string {
         `active: ${result.active}`,
         `thinking: ${result.thinking}`,
         `lifecycle: ${result.lifecycleState ?? '(none)'}`,
+        `machine: ${result.machine ?? '(unknown)'}`,
         `cwd: ${result.path ?? '(unknown)'}`,
         `updatedAt: ${result.updatedAt ?? '(unknown)'}`,
         `messages (text snippets, newest page): ${result.messages.length}`

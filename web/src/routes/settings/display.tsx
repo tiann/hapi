@@ -6,6 +6,7 @@ import { getFontScaleOptions, useFontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
+import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
 import { getPinInProgressSessionsModeOptions, usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
 import { getSessionProjectSortModeOptions, useSessionProjectSortMode } from '@/hooks/useSessionProjectSortMode'
@@ -144,6 +145,7 @@ export default function SettingsDisplayPage() {
     const { pinInProgressSessions, setPinInProgressSessions } = usePinInProgressSessions()
     const { pinInProgressSessionsMode, setPinInProgressSessionsMode } = usePinInProgressSessionsMode()
     const { sessionProjectSortMode, setSessionProjectSortMode } = useSessionProjectSortMode()
+    const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
     const { openExternalLinksInNewTab, setOpenExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
     const { preferences: sessionHeaderMetadata, setPreference: setSessionHeaderMetadata } = useSessionHeaderMetadata()
@@ -201,6 +203,7 @@ export default function SettingsDisplayPage() {
                     options={getSessionProjectSortModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setSessionProjectSortMode}
                 />
+                <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
                 <SettingsChoiceGroup
                     label={t('settings.display.sessionListStatus')}
