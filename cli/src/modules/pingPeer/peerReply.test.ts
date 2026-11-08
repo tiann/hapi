@@ -125,9 +125,10 @@ describe('forwardPeerReply', () => {
         expect(await forwarded([stopped, stopped])).toEqual(['Peer [Peer](/sessions/peer-1) stopped without replying.'])
     })
 
-    it('does not forward earlier output when the peer stops before reading the task', async () => {
-        const stopped = { thinking: false, invoked: false, active: false, reply: 'answer to an earlier task', replyAfterTask: true }
-        expect(await forwarded([stopped, stopped])).toEqual(['Peer [Peer](/sessions/peer-1) stopped before it read the task.'])
+    it('keeps waiting when the peer goes offline before reading the task', async () => {
+        const offline = { thinking: false, invoked: false, active: false, reply: 'answer to an earlier task', replyAfterTask: true }
+        expect(await forwarded([offline, offline, offline, done('answer'), done('answer')]))
+            .toEqual(['Reply from peer [Peer](/sessions/peer-1):\n\nanswer'])
     })
 
     it('reports a canceled task instead of forwarding an unrelated answer', async () => {

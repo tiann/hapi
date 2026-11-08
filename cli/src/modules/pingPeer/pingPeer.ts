@@ -1266,7 +1266,9 @@ export async function forwardPeerReply(options: ForwardPeerReplyOptions): Promis
             latest = consumed && next !== -1 ? after.slice(next).filter(isText).at(-1) : undefined
             laterPrompts = after.filter(isLaterPrompt).length
             const ended = consumed && !session.thinking && last?.role === 'ready'
-            endedPolls = ended || !session.active ? endedPolls + 1 : 0
+            // The hub keeps an unconsumed peer task for replay, so a peer that went offline before reading it
+            // may still run it after a resume: only a stop after consumption ends the watch.
+            endedPolls = consumed && (ended || !session.active) ? endedPolls + 1 : 0
             idlePolls = consumed && !session.thinking ? idlePolls + 1 : 0
         } catch {
             endedPolls = 0
@@ -1283,9 +1285,7 @@ export async function forwardPeerReply(options: ForwardPeerReplyOptions): Promis
                 + `The peer then took ${laterPrompts} more message(s), a steer or a later task, before its turn ended. Its latest reply:\n\n${latest.text}`
         : reply
             ? `Reply from peer ${link}:\n\n${reply.text}`
-            : consumed
-                ? `Peer ${link} stopped without replying.`
-                : `Peer ${link} stopped before it read the task.`
+            : `Peer ${link} stopped without replying.`
     // One localId across retries so a resend after a lost response is not stored twice.
     const localId = createPeerMessageLocalId()
     for (let attempt = 1; ; attempt++) {
