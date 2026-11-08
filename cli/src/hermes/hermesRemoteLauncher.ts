@@ -1,5 +1,6 @@
 import React from 'react'
 import { RPC_METHODS } from '@hapi/protocol'
+import type { PermissionMode } from '@hapi/protocol/types'
 import { logger } from '@/ui/logger'
 import { convertAgentMessage } from '@/agent/messageConverter'
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle'
@@ -14,6 +15,14 @@ import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionH
 import { createHermesBackend } from './utils/hermesBackend'
 import type { HermesSession } from './session'
 
+/** Hermes ACP edit-approval axis (acp_adapter/modes.py). Sensitive paths still
+ * emit request_permission in every mode — the HAPI-side bridge decides those. */
+const HERMES_EDIT_MODE_BY_PERMISSION: Record<string, string> = {
+    default: 'default',
+    'safe-yolo': 'accept_edits',
+    yolo: 'dont_ask'
+}
+
 export class HermesRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createHermesBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
@@ -21,6 +30,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null
     /** Server default captured at session creation, before any override. */
     private initialBackendModel: string | null = null
+    private lastAppliedEditMode: string | null = null
+    private displayPermissionMode: PermissionMode | undefined
 
     constructor(
         private readonly session: HermesSession,
@@ -162,11 +173,17 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         }
         markReady(acpSessionId)
 
+        // Auto-approval consults the LIVE session mode: a mid-turn switch to
+        // yolo starts auto-approving request_permission immediately, while the
+        // Hermes-side edit mode (session/set_mode) catches up at the next turn
+        // boundary below.
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             backend,
-            () => undefined
+            () => this.session.getPermissionMode() as PermissionMode | undefined
         )
+        this.applyDisplayMode(this.session.getPermissionMode() as PermissionMode | undefined)
+        await this.applyHermesEditMode(backend, acpSessionId, this.session.getPermissionMode() as PermissionMode | undefined)
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
@@ -177,6 +194,11 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             if (!batch) {
                 if (this.abortController.signal.aborted && !this.shouldExit) continue
                 break
+            }
+
+            this.applyDisplayMode(batch.mode.permissionMode)
+            if (batch.mode.permissionMode !== undefined) {
+                await this.applyHermesEditMode(backend, acpSessionId, batch.mode.permissionMode)
             }
 
             const requestedModel = batch.mode.model
@@ -274,6 +296,44 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 const _exhaustive: never = message
                 return _exhaustive
             }
+        }
+    }
+
+    /** Mirrors the effective permission mode into the terminal log so remote
+     *  sessions show what the bridge will auto-approve (kimi-style). */
+    private applyDisplayMode(permissionMode: PermissionMode | undefined): void {
+        if (permissionMode && permissionMode !== this.displayPermissionMode) {
+            this.displayPermissionMode = permissionMode
+            this.messageBuffer.addMessage(`[MODE:${permissionMode}]`, 'system')
+        }
+    }
+
+    /**
+     * Push the HAPI permission mode onto Hermes's edit-approval axis via
+     * `session/set_mode` (default / accept_edits / dont_ask). Only the edit
+     * axis lives in Hermes; dangerous-command approvals always arrive as
+     * request_permission and are decided by the HAPI permission bridge. No-op
+     * when the mode is unchanged; failures degrade to a status note because
+     * the bridge still honors the mode on the HAPI side.
+     */
+    private async applyHermesEditMode(
+        backend: ReturnType<typeof createHermesBackend>,
+        acpSessionId: string,
+        permissionMode: PermissionMode | undefined
+    ): Promise<void> {
+        const editMode = HERMES_EDIT_MODE_BY_PERMISSION[permissionMode ?? 'default'] ?? 'default'
+        if (editMode === this.lastAppliedEditMode) return
+        try {
+            await backend.setMode(acpSessionId, editMode, { syncThoughtLevel: false })
+            this.lastAppliedEditMode = editMode
+            logger.debug(`[hermes-acp] Applied edit mode via set_mode: ${editMode}`)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[hermes-acp] set_mode failed', { message })
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Hermes edit mode switch failed: ${message}`
+            })
         }
     }
 

@@ -2,14 +2,12 @@ import chalk from 'chalk'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
+import { HERMES_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 import type { CommandDefinition } from './types'
 
 export function parseHermesCommandOptions(commandArgs: string[]) {
-    const options = parseRemoteAgentCommandOptions(commandArgs, [], ['remote'])
-    if (commandArgs.includes('--yolo')) {
-        throw new Error('Hermes permission policy is configured by the Hermes agent')
-    }
+    const options = parseRemoteAgentCommandOptions(commandArgs, HERMES_PERMISSION_MODES, ['remote'])
     if (options.effort || options.modelReasoningEffort) {
         throw new Error('Hermes effort is configured by the Hermes agent')
     }

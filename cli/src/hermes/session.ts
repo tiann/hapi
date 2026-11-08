@@ -1,6 +1,7 @@
 import { ApiClient, ApiSessionClient } from '@/lib'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
+import type { PermissionMode } from '@hapi/protocol/types'
 import type { HermesMode } from './types'
 
 /** Remote-only HAPI session wrapper for the Hermes ACP server. */
@@ -14,6 +15,8 @@ export class HermesSession extends AgentSessionBase<HermesMode> {
         logPath: string
         /** Spawn-time model override (opaque ACP config-option value). */
         model?: string
+        /** Spawn-time permission mode (defaults to 'default' upstream). */
+        permissionMode?: PermissionMode
         sessionId?: string | null
         messageQueue: MessageQueue2<HermesMode>
         onModeChange: (mode: 'local' | 'remote') => void
@@ -26,6 +29,7 @@ export class HermesSession extends AgentSessionBase<HermesMode> {
             logPath: opts.logPath,
             sessionId: opts.sessionId ?? null,
             model: opts.model,
+            permissionMode: opts.permissionMode,
             messageQueue: opts.messageQueue,
             onModeChange: opts.onModeChange,
             mode: 'remote',
@@ -44,6 +48,10 @@ export class HermesSession extends AgentSessionBase<HermesMode> {
 
     setModel = (model: string | null): void => {
         this.model = model;
+    };
+
+    setPermissionMode = (mode: PermissionMode): void => {
+        this.permissionMode = mode;
     };
 
     sendAgentMessage = (message: unknown): void => {

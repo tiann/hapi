@@ -389,13 +389,13 @@ describe('buildCliArgs', () => {
         ])
     })
 
-    it('builds a remote Hermes runner command with resume and model, without policy flags', () => {
+    it('builds a remote Hermes runner command with resume, model, and permission mode', () => {
         const args = buildCliArgs('hermes', {
             directory: '/tmp',
             resumeSessionId: 'hermes-session-1',
             model: 'newapi:glm-5.3',
             startingMode: 'remote',
-            permissionMode: 'read-only',
+            permissionMode: 'yolo',
             effort: 'high'
         }, true)
         expect(args).toEqual([
@@ -403,7 +403,8 @@ describe('buildCliArgs', () => {
             '--resume', 'hermes-session-1',
             '--hapi-starting-mode', 'remote',
             '--started-by', 'runner',
-            '--model', 'newapi:glm-5.3'
+            '--model', 'newapi:glm-5.3',
+            '--permission-mode', 'yolo'
         ])
     })
 

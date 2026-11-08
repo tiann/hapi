@@ -12,11 +12,18 @@ describe('parseHermesCommandOptions', () => {
         })
     })
 
-    it('accepts native resume and model options while rejecting unsupported permission controls', () => {
+    it('accepts native resume and model options plus the permission modes', () => {
         expect(parseHermesCommandOptions(['--resume', 'native-id', '--model', 'newapi:glm-5.3']))
             .toMatchObject({ resumeSessionId: 'native-id', model: 'newapi:glm-5.3', startingMode: 'remote' })
-        expect(() => parseHermesCommandOptions(['--yolo']))
-            .toThrow('permission policy')
+        expect(parseHermesCommandOptions(['--yolo']))
+            .toMatchObject({ permissionMode: 'yolo', startingMode: 'remote' })
+        expect(parseHermesCommandOptions(['--permission-mode', 'safe-yolo']))
+            .toMatchObject({ permissionMode: 'safe-yolo', startingMode: 'remote' })
+        // Hermes has no read-only mode — its edit-approval axis cannot honor it.
+        expect(() => parseHermesCommandOptions(['--permission-mode', 'read-only']))
+            .toThrow('Invalid --permission-mode value')
+        expect(() => parseHermesCommandOptions(['--permission-mode', 'bypassPermissions']))
+            .toThrow('Invalid --permission-mode value')
     })
 
     it('rejects effort overrides owned by the Hermes agent', () => {

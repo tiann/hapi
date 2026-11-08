@@ -23,6 +23,8 @@ const harness = vi.hoisted(() => ({
         currentModelId: string | null
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
+    setModeCalls: [] as Array<{ sessionId: string; modeId: string; syncThoughtLevel?: boolean }>,
+    setModeError: null as Error | null,
     configOptionError: null as Error | null,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
@@ -65,6 +67,11 @@ vi.mock('./utils/hermesBackend', () => ({
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
                 harness.setConfigOptionCalls.push({ sessionId, configId, value })
                 if (harness.configOptionError) throw harness.configOptionError
+                return {}
+            }),
+            setMode: vi.fn(async (sessionId: string, modeId: string, opts?: { syncThoughtLevel?: boolean }) => {
+                harness.setModeCalls.push({ sessionId, modeId, syncThoughtLevel: opts?.syncThoughtLevel })
+                if (harness.setModeError) throw harness.setModeError
                 return {}
             }),
             onStderrError: vi.fn(),
@@ -134,6 +141,8 @@ describe('HermesRemoteLauncher', () => {
         harness.modelOption = null
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
+        harness.setModeCalls = []
+        harness.setModeError = null
         harness.configOptionError = null
         harness.newSessionBlocker = null
     })
@@ -219,6 +228,54 @@ describe('HermesRemoteLauncher', () => {
         expect(session.client.sendClaudeSessionMessage).toHaveBeenCalledWith(
             expect.objectContaining({ type: 'summary', summary: 'Fix the flaky test' })
         )
+    })
+
+    it('applies the session permission mode onto the Hermes edit-approval axis at startup', async () => {
+        const session = createSession()
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // The fake session reports 'default'; set_mode is issued once without
+        // thought-level syncing (hermes edit modes are not effort values).
+        expect(harness.setModeCalls).toEqual([
+            { sessionId: 'hermes-session-1', modeId: 'default', syncThoughtLevel: false }
+        ])
+    })
+
+    it('switches the edit mode per-turn when the queued mode requests yolo', async () => {
+        const session = createSessionWithBatches([
+            ['first', { permissionMode: 'yolo' }],
+            ['second', { permissionMode: 'yolo' }],
+            ['third', { permissionMode: 'safe-yolo' }]
+        ])
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // Startup default, then yolo (dont_ask) once — repeated yolo turns do
+        // not re-issue set_mode — and finally safe-yolo (accept_edits).
+        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual([
+            'default',
+            'dont_ask',
+            'accept_edits'
+        ])
+    })
+
+    it('degrades gracefully when session/set_mode fails', async () => {
+        const session = createSessionWithBatches([['first', { permissionMode: 'yolo' }]])
+        const launcher = new HermesRemoteLauncher(session as never)
+        harness.setModeError = new Error('method not found: session/set_mode')
+
+        await launcher.launch()
+
+        // The turn still runs: HAPI-side auto-approval honors the mode even
+        // when the Hermes edit axis cannot be switched.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('edit mode switch failed')
+        })
     })
 
     it('discovers the current model from the model config option', async () => {

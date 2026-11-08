@@ -8,6 +8,7 @@ import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
+import type { PermissionMode } from '@hapi/protocol/types'
 import type { AgentState } from '@/api/types'
 import { HermesRemoteLauncher } from './hermesRemoteLauncher'
 import { HermesSession } from './session'
@@ -22,6 +23,8 @@ export async function runHermes(opts: {
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
+    /** Spawn-time permission mode (default / safe-yolo / yolo). */
+    permissionMode?: PermissionMode
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -57,18 +60,20 @@ export async function runHermes(opts: {
     // turns carry no model field), null = the picker's explicit "Default"
     // reset, string = a concrete model. Only the config RPC ever sets null.
     let currentModel: string | null | undefined = opts.model
+    let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default'
 
     const syncSessionMode = () => {
         const active = sessionRef.current
         if (!active) return
         active.setModel(currentModel ?? null)
+        active.setPermissionMode(currentPermissionMode)
         active.pushKeepAlive()
     }
 
     session.onUserMessage((message, localId) => {
         queue.push(
             formatMessageWithAttachments(message.content.text, message.content.attachments),
-            hermesModeForPreference(currentModel),
+            hermesModeForPreference(currentModel, currentPermissionMode),
             localId
         )
     })
@@ -82,6 +87,7 @@ export async function runHermes(opts: {
         effortMode: 'ignore',
         onApply: (config) => {
             if (config.model !== undefined) currentModel = config.model
+            if (config.permissionMode !== undefined) currentPermissionMode = config.permissionMode
         },
         onAfterApply: syncSessionMode
     })
@@ -102,6 +108,7 @@ export async function runHermes(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
+        permissionMode: currentPermissionMode,
         sessionId: opts.resumeSessionId ?? sessionInfo.metadata?.hermesSessionId,
         messageQueue: queue,
         onModeChange: () => {},

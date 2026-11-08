@@ -37,6 +37,12 @@ export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 
+// Hermes has no read-only equivalent — its ACP mode axis is edit-approval only
+// (default / accept_edits / dont_ask) — so the conservative read-only mode is
+// intentionally not offered.
+export const HERMES_PERMISSION_MODES = ['default', 'safe-yolo', 'yolo'] as const
+export type HermesPermissionMode = typeof HERMES_PERMISSION_MODES[number]
+
 export const COPILOT_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
 
@@ -143,9 +149,10 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         return []
     }
     if (flavor === 'hermes') {
-        // Hermes manages its own approval policy (approvals.mode + hardline
-        // floor); HAPI has no native permission mode to project onto it.
-        return []
+        // Hermes's ACP mode axis only covers edit approval; dangerous-command
+        // approvals always surface as session/request_permission, which HAPI's
+        // permission bridge auto-approves per the selected mode.
+        return HERMES_PERMISSION_MODES
     }
     if (flavor === 'copilot') {
         return COPILOT_PERMISSION_MODES

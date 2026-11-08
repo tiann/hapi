@@ -141,4 +141,19 @@ describe('runHermes', () => {
         const sessionArg = harness.launcherConstructor.mock.calls[0]?.[0] as { sessionId?: string | null }
         expect(sessionArg.sessionId).toBe('hermes-session-1')
     })
+
+    it('seeds the spawn permission mode into the session state', async () => {
+        await runHermes({
+            existingSessionId: 'hapi-session-hermes',
+            startedBy: 'terminal',
+            startingMode: 'remote',
+            permissionMode: 'yolo',
+            workingDirectory: '/tmp/project'
+        })
+
+        const sessionArg = harness.launcherConstructor.mock.calls[0]?.[0] as {
+            getPermissionMode?: () => string | undefined
+        }
+        expect(sessionArg.getPermissionMode?.()).toBe('yolo')
+    })
 })
