@@ -105,6 +105,10 @@ extension AgentFlavor {
             return [.default, .plan, .ask, .debug, .autoReview, .yolo]
         case .pi:
             return []
+        case .hermes:
+            // Hermes owns its approval policy (approvals.mode + hardline
+            // floor); HAPI has no native permission mode to project onto it.
+            return []
         case .claude, .other:
             return [.default, .acceptEdits, .auto, .bypassPermissions, .plan]
         }

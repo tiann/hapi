@@ -8,6 +8,7 @@ import CursorMono from '@lobehub/icons/es/Cursor/components/Mono'
 import DeepSeekColor from '@lobehub/icons/es/DeepSeek/components/Color'
 import GeminiColor from '@lobehub/icons/es/Gemini/components/Color'
 import GrokMono from '@lobehub/icons/es/Grok/components/Mono'
+import HermesAgentMono from '@lobehub/icons/es/HermesAgent/components/Mono'
 import KimiMono from '@lobehub/icons/es/Kimi/components/Mono'
 import OpenCodeMono from '@lobehub/icons/es/OpenCode/components/Mono'
 import type { IconType } from '@lobehub/icons/es/types'
@@ -25,6 +26,7 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
     cursor: CursorMono,
     gemini: GeminiColor,
     grok: GrokMono,
+    hermes: HermesAgentMono,
     kimi: KimiMono,
     opencode: OpenCodeMono,
 }
