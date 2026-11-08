@@ -15,15 +15,20 @@ describe('parseJobArgs', () => {
             'beets',
             '--label',
             'beets import',
+            '--progress=fraction',
             '--remaining',
             '12',
+            '--total',
+            '100',
             '--unit=tracks'
         ])
         expect(parsed.action).toBe('set')
         expect(parsed.sessionIdPrefix).toBe('abcd1234')
         expect(parsed.jobKey).toBe('beets')
         expect(parsed.label).toBe('beets import')
+        expect(parsed.progress).toBe('fraction')
         expect(parsed.remaining).toBe(12)
+        expect(parsed.total).toBe(100)
         expect(parsed.unit).toBe('tracks')
     })
 
@@ -33,6 +38,7 @@ describe('parseJobArgs', () => {
             'sid',
             'drain',
             '--label=rsync',
+            '--progress=unknown',
             '--heartbeat-sec=60',
             '--',
             'bash',
@@ -41,6 +47,7 @@ describe('parseJobArgs', () => {
         ])
         expect(parsed.action).toBe('run')
         expect(parsed.label).toBe('rsync')
+        expect(parsed.progress).toBe('unknown')
         expect(parsed.heartbeatSec).toBe(60)
         expect(parsed.command).toEqual(['bash', '-c', 'echo hi'])
     })
@@ -51,6 +58,7 @@ describe('parseJobArgs', () => {
             'sid',
             'drain',
             '--label=rsync',
+            '--progress=unknown',
             '--wake-on-terminal',
             '--wake-prompt=Next chunk',
             '--',
@@ -59,6 +67,34 @@ describe('parseJobArgs', () => {
         expect(parsed.wakeOnTerminal).toBe(true)
         expect(parsed.wakePrompt).toBe('Next chunk')
         expect(parsed.command).toEqual(['true'])
+    })
+
+    it('requires --progress on run/set and stamps until mode', () => {
+        expect(() => parseJobArgs([
+            'run',
+            'sid',
+            'drain',
+            '--label=rsync',
+            '--',
+            'true'
+        ])).toThrow(/requires --progress/)
+
+        const until = parseJobArgs([
+            'run',
+            'sid',
+            'dogfood',
+            '--label=countdown',
+            '--progress=until',
+            '--until=2099-01-01T00:00:00.000Z',
+            '--',
+            'sleep',
+            '1'
+        ])
+        expect(until.progress).toBe('until')
+        expect(until.untilMs).toBe(Date.parse('2099-01-01T00:00:00.000Z'))
+        expect(until.remaining).toBeGreaterThan(0)
+        expect(until.total).toBe(until.remaining)
+        expect(until.unit).toBe('s')
     })
 
     it('parses --wake-on-terminal and --wake-prompt on update (dogfood arm-later)', () => {
@@ -101,6 +137,7 @@ describe('parseJobArgs', () => {
             'sid',
             'beets',
             '--label=beets',
+            '--progress=unknown',
             '--started-at=1785304595000'
         ])
         expect(parsed.startedAt).toBe(1_785_304_595_000)
@@ -121,6 +158,7 @@ describe('parseJobArgs', () => {
             'sid',
             'beets',
             '--label=beets',
+            '--progress=unknown',
             '--heartbeat-sec=300'
         ])).toThrow(/--heartbeat-sec is only valid with job run/)
         expect(() => parseJobArgs([
@@ -134,7 +172,7 @@ describe('parseJobArgs', () => {
     it.each([
         ['list', ['list', 'sid', '--label=x'], /job list does not accept mutation flags/],
         ['clear+status', ['clear', 'sid', 'beets', '--status', 'completed'], /job clear only accepts --expected-run-id/],
-        ['run+status', ['run', 'sid', 'beets', '--label=x', '--status', 'completed', '--', 'true'], /--status is not valid with job run/],
+        ['run+status', ['run', 'sid', 'beets', '--label=x', '--progress=unknown', '--status', 'completed', '--', 'true'], /--status is not valid with job run/],
         ['clear+cmd', ['clear', 'sid', 'beets', '--', 'rm', '-rf', '/'], /-- <cmd> is only valid with job run/]
     ] as const)('rejects unsupported flags for %s', (_name, argv, pattern) => {
         expect(() => parseJobArgs([...argv])).toThrow(pattern)
@@ -162,6 +200,7 @@ describe('parseJobArgs', () => {
             'sid',
             'beets',
             '--label=beets',
+            '--progress=unknown',
             '--run-id=11111111-1111-1111-1111-111111111111'
         ])
         expect(setParsed.runId).toBe('11111111-1111-1111-1111-111111111111')
@@ -196,6 +235,7 @@ describe('parseJobArgs', () => {
             'sid',
             'beets',
             '--label=beets',
+            '--progress=unknown',
             '--expected-run-id=11111111-1111-1111-1111-111111111111'
         ])).toThrow(/--expected-run-id is only valid with job update or clear/)
     })

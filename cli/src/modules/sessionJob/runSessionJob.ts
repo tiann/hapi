@@ -17,6 +17,7 @@ import {
     type SessionJobClientOptions,
     type SessionJobResolvedClient
 } from './sessionJob'
+import { stampUntilProgress } from './jobProgressMode'
 
 export type RunSessionJobOptions = SessionJobClientOptions & {
     jobKey: string
@@ -28,6 +29,8 @@ export type RunSessionJobOptions = SessionJobClientOptions & {
     total?: number
     unit?: string
     detail?: string
+    /** When set, heartbeats re-stamp remaining from wall clock (progress until). */
+    untilMs?: number
     wakeOnTerminal?: boolean
     wakePrompt?: string
     /** Injected for tests. */
@@ -240,16 +243,27 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
 
     let loggedHeartbeatFailure = false
     let inflightHeartbeat: Promise<unknown> = Promise.resolve()
+    const startedAtMs = now()
     const heartbeat = setIntervalFn(() => {
         // Never PATCH status:running on the heartbeat — a late in-flight
         // request must not resurrect running after the terminal write.
         // Fence with runId so a superseded run cannot touch a key reuse.
         // Do not re-send --detail: MCP/CLI progress updates would otherwise be
         // clobbered by the next timer tick with the launch-time string.
+        const untilBody = options.untilMs !== undefined
+            ? (() => {
+                const stamped = stampUntilProgress(options.untilMs!, now(), startedAtMs)
+                return {
+                    remaining: stamped.remaining,
+                    total: stamped.total,
+                    unit: options.unit ?? stamped.unit
+                }
+            })()
+            : {}
         inflightHeartbeat = updateSessionJob({
             ...clientOpts,
             jobKey: options.jobKey,
-            body: { expectedRunId: runId }
+            body: { expectedRunId: runId, ...untilBody }
         }).catch((error: unknown) => {
             // Best-effort — exit path still marks terminal status. Log once so
             // a broken supervisor is visible (stuck chip with dead PID is worse).

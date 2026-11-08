@@ -57,18 +57,27 @@ Treat this like `ping_peer` / `inspect_peer`: it is first-class HAPI tooling, no
 
 Prefer `"$HAPI_SESSION_ID"` only when it matches the operator chat URL uuid. Remote Cursor runner: pass `/sessions/<id>` explicitly (see "Which session id").
 
-#### Alive-only / indeterminate (subtle striped bar — no %)
+#### Progress mode (required on `run` / `set`)
 
-Plain `job run` **without** `--done` / `--total` / `--remaining`:
+`--progress` is **required** on create. Omission used to default to indeterminate stripes and hid known-duration countdowns (dogfood postmortem 2026-11-08). Pick deliberately:
+
+| Mode | Flags | List chrome |
+|------|-------|-------------|
+| `unknown` | no counts / no `--until` | `running · elapsed` + indeterminate stripes |
+| `fraction` | `--remaining N --total M` **or** `--done N --total M` | determinate fill |
+| `until` | `--until <ISO-8601\|epoch-ms>` | determinate countdown (`s`); `job run` heartbeats re-stamp `remaining` |
+
+#### Alive-only / indeterminate (`--progress unknown`)
 
 ```bash
 hapi job run "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
+  --progress unknown \
   --detail 'phase: …' \
   -- ./beets-import.sh
 ```
 
-List shows `running · elapsed` plus a **subtle indeterminate** progress bar: a real track with soft diagonal stripes that drift slowly (HTML5 `<progress>` indeterminate vibe, quiet contrast). Means "still moving," claims **zero percent**. Not spinner-only, not an empty track, not a fake partial fill, and not a loud chunk marquee. Use this when you do not have a continuous count writer.
+List shows `running · elapsed` plus a **subtle indeterminate** progress bar: a real track with soft diagonal stripes that drift slowly (HTML5 `<progress>` indeterminate vibe, quiet contrast). Means "still moving," claims **zero percent**. Use this when size is **genuinely unknown** — not for a wall-clock deadline (use `--progress until`).
 
 #### Fraction / display bar (0→100%)
 
@@ -78,14 +87,15 @@ List shows `running · elapsed` plus a **subtle indeterminate** progress bar: a 
 # WRONG — looks like a progress bar; stays frozen at the launch stamp (often 0/N)
 # under live heartbeats while the child actually works.
 hapi job run "$HAPI_SESSION_ID" beets \
-  --label 'beets import' --done 0 --total 1787 -- \
+  --label 'beets import' --progress fraction --done 0 --total 1787 -- \
   ./beets-import.sh
 ```
 
-**Required** for a fraction bar — pick one:
+**Required** for a moving fraction bar — pick one:
 
 1. **Estate helper (when on PATH):** `hapi-job-run-metered` — refuses to start a fraction meter unless the child is piped through a feeder from t=0 (see operator runbook `hapi-session-job-progress` / `hapi-job-feed-jsonl`).
-2. **Portable:** `hapi job run` **without** launch counts, plus a continuous updater (`hapi job update` / MCP `session_job` `update`, or a JSONL feeder) from the first progress event through exit.
+2. **Portable:** `hapi job run --progress unknown` (or fraction only if you update), plus a continuous updater (`hapi job update` / MCP `session_job` `update`, or a JSONL feeder) from the first progress event through exit.
+3. **Known deadline:** `--progress until --until 2026-11-09T21:20:14Z` (heartbeats keep `remaining` honest).
 
 ```bash
 # Preferred when installed (estate PATH):
@@ -94,8 +104,13 @@ hapi-job-run-metered "$HAPI_SESSION_ID" beets \
   -- ./beets-import.sh   # must emit progress the feeder understands
 
 # Portable shape (same contract):
-hapi job run "$HAPI_SESSION_ID" beets --label 'beets import' -- ./beets-import.sh &
+hapi job run "$HAPI_SESSION_ID" beets --label 'beets import' --progress unknown -- ./beets-import.sh &
 # …and from t=0, something continuously: hapi job update … --done N --total 1787
+
+# Dogfood / countdown window:
+hapi job run "$HAPI_SESSION_ID" dogfood-1424-48h \
+  --label 'dogfood #1424 48h' --progress until --until 2026-11-09T21:20:14Z \
+  --wake-on-terminal -- sleep 999999
 ```
 
 Non-JSONL children need an adapter (line regex → `job update`, dual writer, or fall back to alive-only). Do not invent a fake percent.
