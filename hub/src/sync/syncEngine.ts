@@ -290,8 +290,14 @@ export class SyncEngine {
             if (event.type === 'message-received') {
                 if (isUserInputMessage(event.message.content)) {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
-                    this.recordPromptTitle(event.sessionId, event.message.content)
                 }
+                // A web-spawned ACP session's first prompt often reaches the
+                // hub only as a transcript echo from the CLI (the queued row
+                // itself never emits message-received). Echoes must not count
+                // as fresh user activity, but the provisional title is
+                // display-only and gated on the session being untitled, so
+                // they may still seed it.
+                this.recordPromptTitle(event.sessionId, event.message.content)
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
                     this.sessionCache.refreshConversationContent(event.sessionId)
@@ -796,10 +802,17 @@ export class SyncEngine {
 
         this.sessionCache.handleSessionEnd(payload)
         this.markSteerDispatchesUncertain(this.sessionCache.getSession(payload.sid))
-        if (payload.reason === 'completed') {
-            this.titleTurnCompletedIds.add(payload.sid)
-            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
-        }
+        // ACP flavors (dsh, kimi, cursor, copilot, agy) emit no claude-style
+        // ready event, so a turn whose thinking transition was never observed
+        // stays open forever — production traces show a quarter of short-lived
+        // dsh sessions ending with titleSuggestionTurn.completed=false and no
+        // title at all. Ending the session is the last reliable turn boundary,
+        // so run the best-effort title fallback for every reason, not just
+        // clean completions. Generation itself stays gated on the store rows
+        // (answered prompt), so an aborted turn yields no title, not a wrong
+        // one.
+        this.titleTurnCompletedIds.add(payload.sid)
+        void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
