@@ -1705,6 +1705,35 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
         await run;
     });
 
+    it('does not let a late echo from the previous turn expose the next prompt to a steer match', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        let release!: () => void;
+        backend.promptScripts.push(async () => {});
+        backend.promptScripts.push(async () => {
+            await new Promise<void>((resolve) => { release = resolve; });
+        });
+        queue.push('first task', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        queue.push('run the tests and then lint', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        // A stray echo from the previous turn arrives first.
+        backend.echo!('an earlier steer');
+        queue.push('lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+        backend.echo!('run the tests and then lint');
+        expect(consumedSteer(client, 'steer-1')).toBe(false);
+
+        backend.echo!('lint');
+        expect(consumedSteer(client, 'steer-1')).toBe(true);
+        release();
+        backend.steerCompletions[0]!.resolve('end_turn');
+        queue.close();
+        await run;
+    });
+
     it('keeps an early-answered steer confirmed once echoed, even after a Stop', async () => {
         const backend = new FakeAgyBackend();
         const { queue, client, run, release } = await heldTurn(backend);

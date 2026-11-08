@@ -700,6 +700,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const turn = this.turn;
         if (!turn) return;
         turn.acknowledge();
+        // Text that does not continue the prompt (a stray echo, or agy
+        // skipping the prompt's echo) is checked against the steers, and the
+        // prompt's own echo is still recognized when it comes.
         const prompt = turn.promptEcho;
         if (!prompt.done) {
             const echoed = normalizeEcho(`${prompt.echo} ${text}`);
@@ -708,7 +711,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 prompt.done = echoed === prompt.text;
                 return;
             }
-            prompt.done = true;
         }
         // An echo may arrive in several chunks, so each steer matches on the
         // text echoed since it was sent, and the longest match wins when one
