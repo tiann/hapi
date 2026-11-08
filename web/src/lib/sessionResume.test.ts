@@ -214,6 +214,41 @@ describe('sessionResume', () => {
         }), 4)).toBe(true)
     })
 
+    it('resolveAgentSessionIdFromMetadata returns hermesSessionId for hermes flavor', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'hermes',
+            hermesSessionId: 'hermes-daemon-session-1'
+        })).toBe('hermes-daemon-session-1')
+    })
+
+    it('does not infer a Hermes resume id from stale cross-flavor metadata', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'hermes',
+            claudeSessionId: 'stale-claude-id'
+        })).toBeUndefined()
+    })
+
+    it('inactiveSessionCanResume allows hermes resume when hermesSessionId exists', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'hermes',
+                hermesSessionId: 'hermes-daemon-session-1',
+            },
+        }), 5)).toBe(true)
+    })
+
+    it('inactiveSessionCanResume rejects hermes with messages but no hermesSessionId', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'hermes' },
+        }), 3)).toBe(false)
+    })
+
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },

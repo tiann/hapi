@@ -23,6 +23,12 @@ export function resolveAgentSessionIdFromMetadata(
         case 'copilot': return metadata.copilotSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
         case 'dsh': return metadata.dshSessionId ?? undefined
+        // Hermes persists gateway sessions in its daemon state store; HAPI
+        // resumes through ACP `session/resume` keyed by hermesSessionId.
+        // Mirrors hub resolveAgentResumeId: never fall through to a stale
+        // cross-flavor id (the default claude branch would otherwise hide
+        // the Reopen affordance for every archived Hermes session).
+        case 'hermes': return metadata.hermesSessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }
