@@ -1,4 +1,4 @@
-import { getAgyModelLabel, getClaudeModelChoices, getClaudeModelLabel } from '@hapi/protocol'
+import { getAgyModelChoices, getAgyModelLabel, getClaudeModelChoices, getClaudeModelLabel } from '@hapi/protocol'
 import type { ClaudeModelSummary } from '@hapi/protocol/apiTypes'
 import { MODEL_OPTIONS } from '@/components/NewSession/types'
 import { CURSOR_AUTO_MODEL_LABEL } from '@/lib/cursorModelOptions'
@@ -111,10 +111,9 @@ function getAgyModelOptions(currentModel?: string | null, customOptions?: ModelO
     const machineOptions = (customOptions ?? []).filter((option) => Boolean(option.value))
     const options = machineOptions.length > 0
         ? machineOptions
-        : MODEL_OPTIONS.agy.filter((m) => m.value !== 'auto').map((m) => ({
-            value: m.value,
-            label: m.label
-        }))
+        : getAgyModelChoices(MODEL_OPTIONS.agy.filter((m) => m.value !== 'auto').map((m) => ({
+            modelId: m.value, name: m.label
+        }))).map((m) => ({ value: m.modelId, label: m.name }))
     // A session can be running a model the machine no longer lists. It stays
     // selectable; the lookup only keeps a known preset readable.
     return withCurrentModelOption(options, currentModel, getAgyModelLabel)

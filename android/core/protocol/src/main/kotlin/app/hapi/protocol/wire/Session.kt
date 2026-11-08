@@ -59,6 +59,8 @@ data class Session(
     val permissionMode: String? = null,
     val collaborationMode: String? = null,
     val copilotAgentMode: String? = null,
+    val contentRevision: Long? = null,
+    val readState: SessionReadState? = null,
 )
 
 /**

@@ -1,123 +1,99 @@
-import { describe, expect, it } from 'bun:test'
+import { expect, it } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getUsageSummary } from '../sync/usageService'
-import { Store } from './index'
+import { join } from 'node:path'
+import { Store } from '.'
 
-describe('Store V29→V30 migration: ACP usage columns', () => {
-    it('upgrades a base V29 database before the usage scan', () => {
-        const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v29-to-v30-'))
-        const dbPath = join(directory, 'test.db')
-        let store: Store | undefined
+it('upgrades timestamp-era history to a read baseline exactly once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-read-migration-'))
+    try {
+        const path = join(dir, 'hub.db')
+        const before = new Store(path)
+        const id = before.sessions.getOrCreateSession('s', {}, null, 'default').id
+        const reply = { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'history' } } }
+        before.messages.addMessage(id, reply, 'old')
+        before.close()
+        const legacy = new Database(path)
+        for (const column of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            legacy.exec(`ALTER TABLE sessions DROP COLUMN ${column}`)
+        }
+        legacy.exec('ALTER TABLE messages DROP COLUMN content_revision; PRAGMA user_version = 29;')
+        legacy.close()
+        const migrated = new Store(path)
+        expect(migrated.sessions.getSession(id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
+        expect(migrated.sessions.getSession(id)?.contentRevision).toBe(0)
+        expect(migrated.messages.getMessages(id)).toHaveLength(1)
+        migrated.messages.addMessage(id, reply, 'new')
+        migrated.close()
+        const restarted = new Store(path)
+        expect(restarted.sessions.getSession(id)?.contentRevision).toBe(1)
+        expect(restarted.sessions.getSession(id)?.readState?.readRevision).toBe(0)
+        restarted.close()
+    } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
+})
+it('creates and backfills search tables when upgrading a base v30 database', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-search-v30-migration-'))
+    try {
+        const path = join(dir, 'hub.db')
+        const before = new Store(path)
+        const session = before.sessions.getOrCreateSession('search-v30', { path: '/tmp/search-v30' }, null, 'default')
+        before.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'upgrade searchable text' } })
+        before.close()
+        const legacy = new Database(path)
+        legacy.exec(`
+            DROP TABLE message_content_search_short;
+            DROP TABLE message_content_search_lookup;
+            DROP TABLE message_content_search;
+            PRAGMA user_version = 30;
+        `)
+        legacy.close()
+        const migrated = new Store(path)
         try {
-            store = new Store(dbPath)
-            const session = store.sessions.getOrCreateSession(
-                'migration-v29-usage',
-                { path: '/tmp', host: 'test', flavor: 'claude' },
-                null,
-                'default'
-            )
-            store.messages.addMessage(session.id, {
-                role: 'agent',
-                content: {
-                    type: 'output',
-                    data: {
-                        type: 'assistant',
-                        message: {
-                            id: 'migration-usage-1',
-                            usage: { input_tokens: 10, output_tokens: 2 }
-                        }
-                    }
-                }
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+            expect(version.user_version).toBe(32)
+            expect(migrated.messages.searchContent('searchable', 'default')[0]?.sessionId).toBe(session.id)
+        } finally { migrated.close() }
+    } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
+})
+
+it('upgrades a genuine v26 schema without read-state or search table shortcuts', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-v26-current-migration-'))
+    try {
+        const path = join(dir, 'hub.db')
+        const before = new Store(path)
+        const session = before.sessions.getOrCreateSession('v26-current', { path: '/tmp/v26-current' }, null, 'default')
+        before.close()
+        const legacy = new Database(path)
+        legacy.exec(`
+            DROP TABLE session_turns;
+            DROP TABLE message_content_search_short;
+            DROP TABLE message_content_search_lookup;
+            DROP TABLE message_content_search;
+            ALTER TABLE messages DROP COLUMN content_revision;
+            ALTER TABLE sessions DROP COLUMN manual_unread;
+            ALTER TABLE sessions DROP COLUMN read_state_version;
+            ALTER TABLE sessions DROP COLUMN read_revision;
+            ALTER TABLE sessions DROP COLUMN content_revision;
+            ALTER TABLE sessions DROP COLUMN last_user_message_at;
+            PRAGMA user_version = 26;
+        `)
+        legacy.close()
+        const migrated = new Store(path)
+        try {
+            const internalDb = (migrated as unknown as { db: Database }).db
+            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+            expect(version.user_version).toBe(32)
+            expect(migrated.sessions.getSession(session.id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
+            migrated.messages.addMessage(session.id, {
+                role: 'user', content: { type: 'text', text: 'genuine v26 searchable text' }
             })
-            store.close()
-            store = undefined
-
-            const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
-            db.exec(`
-                ALTER TABLE usage_events DROP COLUMN context_only;
-                ALTER TABLE usage_events DROP COLUMN cost;
-                ALTER TABLE usage_events DROP COLUMN cost_currency;
-                INSERT INTO usage_events (
-                    session_id, source_key, source_seq, created_at, agent, kind,
-                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
-                ) VALUES (
-                    '${session.id}', 'stale', 1, 1, 'claude', 'delta', 1, 1, 0, 0
-                );
-                INSERT INTO usage_scan_state (session_id, message_epoch, last_seq)
-                VALUES ('${session.id}', 0, 1);
-                PRAGMA user_version = 29;
-            `)
-            db.close()
-
-            store = new Store(dbPath)
-            const internalDb = (store as unknown as { db: Database }).db
-            const columns = new Set(
-                (internalDb.prepare('PRAGMA table_info(usage_events)').all() as Array<{ name: string }>)
-                    .map((column) => column.name)
-            )
-            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-
-            expect(version.user_version).toBe(30)
-            expect(columns.has('context_only')).toBe(true)
-            expect(columns.has('cost')).toBe(true)
-            expect(columns.has('cost_currency')).toBe(true)
-            expect((internalDb.prepare('SELECT COUNT(*) AS count FROM usage_events').get() as { count: number }).count).toBe(0)
-            expect((internalDb.prepare('SELECT COUNT(*) AS count FROM usage_scan_state').get() as { count: number }).count).toBe(0)
-
-            const summary = getUsageSummary(store, 'default', 'all')
-            expect(summary.totals.requests).toBe(1)
-            expect(summary.totals.inputTokens).toBe(10)
-            expect(summary.totals.outputTokens).toBe(2)
-        } finally {
-            store?.close()
-            rmSync(directory, { recursive: true, force: true })
-        }
-    })
-
-    it('rebuilds stale usage indexes when a v29 database already has the new columns', () => {
-        const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v29-recovery-'))
-        const dbPath = join(directory, 'test.db')
-        let store: Store | undefined
-        try {
-            store = new Store(dbPath)
-            const session = store.sessions.getOrCreateSession(
-                'migration-v29-recovery',
-                { path: '/tmp', host: 'test', flavor: 'claude' },
-                null,
-                'default'
-            )
-            store.close()
-            store = undefined
-
-            const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
-            db.exec(`
-                INSERT INTO usage_events (
-                    session_id, source_key, source_seq, created_at, agent, kind,
-                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                    context_only, cost, cost_currency
-                ) VALUES (
-                    '${session.id}', 'stale', 1, 1, 'claude', 'delta',
-                    1, 1, 0, 0, 0, 2.5, 'USD'
-                );
-                INSERT INTO usage_scan_state (session_id, message_epoch, last_seq)
-                VALUES ('${session.id}', 0, 1);
-                PRAGMA user_version = 29;
-            `)
-            db.close()
-
-            store = new Store(dbPath)
-            const internalDb = (store as unknown as { db: Database }).db
-            const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-
-            expect(version.user_version).toBe(30)
-            expect((internalDb.prepare('SELECT COUNT(*) AS count FROM usage_events').get() as { count: number }).count).toBe(0)
-            expect((internalDb.prepare('SELECT COUNT(*) AS count FROM usage_scan_state').get() as { count: number }).count).toBe(0)
-        } finally {
-            store?.close()
-            rmSync(directory, { recursive: true, force: true })
-        }
-    })
+            const read = migrated.sessions.updateReadState(session.id, 'default', {
+                type: 'unread', expectedVersion: 0
+            })
+            expect(read?.readState).toEqual({ readRevision: 0, manualUnread: true, version: 1 })
+            expect(migrated.messages.searchContent('genuine v26', 'default')[0]?.sessionId).toBe(session.id)
+        } finally { migrated.close() }
+    } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
 })

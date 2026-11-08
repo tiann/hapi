@@ -97,7 +97,7 @@ type AcpInitializeResult = {
     agentCapabilities?: {
         loadSession?: boolean;
         promptCapabilities?: unknown;
-        sessionCapabilities?: unknown;
+        sessionCapabilities?: Record<string, unknown>;
     };
 };
 
@@ -295,7 +295,9 @@ export class AcpSdkBackend implements AgentBackend {
                 ? {
                     loadSession: response.agentCapabilities.loadSession === true,
                     promptCapabilities: response.agentCapabilities.promptCapabilities,
-                    sessionCapabilities: response.agentCapabilities.sessionCapabilities
+                    sessionCapabilities: isObject(response.agentCapabilities.sessionCapabilities)
+                        ? response.agentCapabilities.sessionCapabilities
+                        : undefined
                 }
                 : undefined
         };
@@ -326,6 +328,12 @@ export class AcpSdkBackend implements AgentBackend {
 
     supportsLoadSession(): boolean {
         return this.initializeResult?.agentCapabilities?.loadSession === true;
+    }
+
+    /** DSH's current ACP profile exposes `session/resume` under this capability. */
+    supportsSessionResume(): boolean {
+        const capabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
+        return Boolean(capabilities && Object.prototype.hasOwnProperty.call(capabilities, 'resume'));
     }
 
     getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
@@ -426,6 +434,37 @@ export class AcpSdkBackend implements AgentBackend {
 
         const loadedSessionId = isObject(response) ? asString(response.sessionId) : null;
         const sessionId = loadedSessionId ?? config.sessionId;
+        this.activeSessionId = sessionId;
+        this.captureSessionMetadata(sessionId, response);
+        return sessionId;
+    }
+
+    /**
+     * Resume a persisted session through DSH's ACP extension. Unlike
+     * `session/load`, DSH returns config options without replaying history;
+     * HAPI's Hub remains the transcript source for the chat UI.
+     */
+    async resumeSession(config: AgentSessionConfig & { sessionId: string }): Promise<string> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        const response = await withRetry(
+            () => this.transport!.sendRequest('session/resume', {
+                sessionId: config.sessionId,
+                cwd: config.cwd,
+                mcpServers: config.mcpServers
+            }),
+            {
+                ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                onRetry: (error, attempt, nextDelayMs) => {
+                    logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
+                }
+            }
+        );
+
+        const resumedSessionId = isObject(response) ? asString(response.sessionId) : null;
+        const sessionId = resumedSessionId ?? config.sessionId;
         this.activeSessionId = sessionId;
         this.captureSessionMetadata(sessionId, response);
         return sessionId;
@@ -707,6 +746,13 @@ export class AcpSdkBackend implements AgentBackend {
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
         } finally {
+            // Cursor (#2267/#2268): drain any session updates already queued with
+            // the native response, then seal a done footer before the quiet
+            // window so finished-shell harness text cannot bury it in one flush.
+            await this.sessionUpdateQueue;
+            if (this.options.flavor === 'cursor') {
+                this.messageHandler?.sealDoneNotifySummaryIfPresent();
+            }
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
@@ -987,6 +1033,17 @@ export class AcpSdkBackend implements AgentBackend {
 
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
+    }
+
+    /**
+     * Drop buffered speech on the current message handler without emitting.
+     * Cursor post-done silence (#2267): call while the silence gate still
+     * applies, before opening the next HAPI prompt, so prompt()'s pre-swap
+     * drain cannot resurrect a suppressed harness-resume live snapshot.
+     */
+    async discardPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.discardBuffers();
     }
 
     /**
