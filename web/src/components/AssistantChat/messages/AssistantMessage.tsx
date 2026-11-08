@@ -27,6 +27,10 @@ export function HappyAssistantMessage() {
     const showSessionSummaryInChat = useSessionSummaryInChat()
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
+    const sourceMessageIds = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.sourceMessageIds
+    })
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
@@ -63,9 +67,9 @@ export function HappyAssistantMessage() {
 
     const history = ctx.metadata?.capabilities?.conversationHistory
     const showForkCurrent = Boolean(
-        history?.forkCurrent
+        (history?.forkCurrent || ctx.allowInactiveFork)
         && ctx.isLatestCompletedBoundary?.(messageId)
-        && !ctx.disabled
+        && (!ctx.disabled || ctx.allowInactiveFork === true)
         && ctx.onForkConversation
     )
 
@@ -77,6 +81,7 @@ export function HappyAssistantMessage() {
         <MessagePrimitive.Root
             id={elementId}
             data-hapi-message-role="assistant"
+            data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className={`happy-message ${rootClass} scroll-mt-4`}
         >
             {isCliOutput

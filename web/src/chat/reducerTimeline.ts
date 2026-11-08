@@ -572,14 +572,20 @@ export function reduceTimeline(
                     && !(block.kind === 'cli-output' && block.source === 'user')
                 let firstIndex = -1
                 for (let index = blocks.length - 1; index >= 0; index -= 1) {
-                    if (!isSummaryTarget(blocks[index])) break
+                    const block = blocks[index]
+                    if (block.kind === 'user-text' || (block.kind === 'cli-output' && block.source === 'user')) break
+                    // Ignore trailing notices, but never cross a rendered response
+                    // boundary after locating the latest assistant group.
+                    if (block.kind === 'agent-event') {
+                        if (firstIndex !== -1) break
+                        continue
+                    }
+                    if (!isSummaryTarget(block)) break
                     firstIndex = index
                 }
                 if (firstIndex !== -1) {
-                    const firstBlock = blocks[firstIndex]
-                    if (isSummaryTarget(firstBlock)) {
-                        firstBlock.roundSummary = summary
-                    }
+                    const summaryTarget = blocks[firstIndex]
+                    if (isSummaryTarget(summaryTarget)) summaryTarget.roundSummary = summary
                 }
                 continue
             }
@@ -878,6 +884,10 @@ export function reduceTimeline(
                     if (streamId) {
                         const existing = textBlocksByStreamId.get(streamId)
                         if (existing) {
+                            existing.sourceMessageIds ??= []
+                            if (!existing.sourceMessageIds.includes(msg.id)) {
+                                existing.sourceMessageIds.push(msg.id)
+                            }
                             existing.text = c.text
                             existing.usage = msg.usage
                             existing.model = msg.model
@@ -889,13 +899,11 @@ export function reduceTimeline(
 
                     const block: AgentTextBlock = {
                         kind: 'agent-text',
-                        // Streamed snapshots under one stream id arrive as
-                        // separate message rows that the window keeps swapping
-                        // for newer rows. Deriving the id from the stream id
-                        // (unique per stream) keeps the block identity stable
-                        // across snapshots so the rendered component is
-                        // updated in place instead of being remounted.
+                        // Stream-stable identity keeps the rendered component
+                        // mounted while retaining every raw message ID for
+                        // content-search navigation.
                         id: streamId ?? `${msg.id}:${idx}`,
+                        sourceMessageIds: [msg.id],
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -932,6 +940,10 @@ export function reduceTimeline(
                     if (streamId) {
                         const existing = reasoningBlocksByStreamId.get(streamId)
                         if (existing) {
+                            existing.sourceMessageIds ??= []
+                            if (!existing.sourceMessageIds.includes(msg.id)) {
+                                existing.sourceMessageIds.push(msg.id)
+                            }
                             existing.text = c.text
                             existing.usage = msg.usage
                             existing.model = msg.model
@@ -941,13 +953,17 @@ export function reduceTimeline(
                         }
                     }
 
+                    // Claude Code stores thinking with an empty body when the
+                    // content is not displayed. An empty block renders nothing
+                    // but still splits adjacent tool calls out of their group.
+                    if (c.text.trim().length === 0) continue
+
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',
-                        // Same as agent-text above: a stream-stable id keeps
-                        // the reasoning panel mounted while its snapshots
-                        // arrive, so the smooth streaming continues from the
-                        // previous text instead of replaying from a remount.
+                        // Keep the reasoning panel mounted across snapshots,
+                        // while preserving every source row for search jumps.
                         id: streamId ?? `${msg.id}:${idx}`,
+                        sourceMessageIds: [msg.id],
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,

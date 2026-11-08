@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { CodexModelsResponse, CodexModelSummary } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
+import { resolveModelCatalogArgs } from '@/codex/utils/modelCatalog';
 import { resolveCodexHome } from '@/codex/utils/codexHome';
 import { getErrorMessage } from './rpcResponses';
 
@@ -114,7 +115,10 @@ async function catalogFingerprint(): Promise<string> {
     const rootConfig = config?.toString('utf8').split(/^\s*\[/m, 1)[0] ?? '';
     const rawPath = rootConfig.match(/^\s*model_catalog_json\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')/m)?.[1];
     let catalogPath: string | undefined;
-    if (rawPath) {
+    const override = resolveModelCatalogArgs();
+    if (override.length) {
+        catalogPath = JSON.parse(override[1].slice('model_catalog_json='.length)) as string;
+    } else if (rawPath) {
         catalogPath = rawPath.startsWith('"') ? JSON.parse(rawPath) as string : rawPath.slice(1, -1);
     }
     const catalog = catalogPath ? await readOptionalFile(resolve(home, catalogPath)) : null;

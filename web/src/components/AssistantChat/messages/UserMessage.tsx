@@ -16,6 +16,10 @@ export function HappyUserMessage() {
     const messageId = useAuiState((s) => s.message.id)
     const threadIsRunning = useAuiState((s) => s.thread.isRunning)
     const elementId = getConversationMessageAnchorId(messageId)
+    const sourceMessageIds = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.sourceMessageIds
+    })
     const text = useAuiState((s) => {
         if (s.message.role !== 'user') return ''
         return s.message.content.find((part): part is TextMessagePart => part.type === 'text')?.text ?? ''
@@ -63,11 +67,14 @@ export function HappyUserMessage() {
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
 
-    const history = ctx.metadata?.capabilities?.conversationHistory
+    const history = ctx.allowInactiveFork
+        ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
+        : ctx.metadata?.capabilities?.conversationHistory
     const hasNativePoint = typeof localId === 'string'
         && localId.length > 0
         && ctx.metadata?.conversationHistoryPoints?.[localId] === true
     const isLatestBoundary = ctx.isLatestCompletedBoundary?.(messageId) === true
+    const forkEnabled = !ctx.disabled || ctx.allowInactiveFork === true
     // A user-only finished turn can be the latest completed boundary while
     // another turn runs. Branch before that user turn, never from the live tail.
     const runningCodex = threadIsRunning && ctx.metadata?.flavor === 'codex'
@@ -75,14 +82,14 @@ export function HappyUserMessage() {
         history?.forkCurrent
         && isLatestBoundary
         && !runningCodex
-        && !ctx.disabled
+        && forkEnabled
         && ctx.onForkConversation
     )
     const showHistoricalFork = Boolean(
         history?.forkAtMessage
         && hasNativePoint
         && (!isLatestBoundary || runningCodex)
-        && !ctx.disabled
+        && forkEnabled
         && ctx.onForkConversation
     )
     const showFork = showCurrentFork || showHistoricalFork
@@ -98,6 +105,7 @@ export function HappyUserMessage() {
             <MessagePrimitive.Root
                 id={elementId}
                 data-hapi-message-role="user"
+                data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
                 className="happy-message scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <div className="ml-auto w-full max-w-[92%]">
@@ -116,6 +124,7 @@ export function HappyUserMessage() {
             id={elementId}
             data-hapi-message-role="user"
             data-hapi-message-status={status}
+            data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
             <div className={getUserBubbleClassName(status)}>

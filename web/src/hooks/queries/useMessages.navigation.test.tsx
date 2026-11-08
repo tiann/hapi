@@ -37,9 +37,12 @@ const store = vi.hoisted(() => {
 vi.mock('@/lib/message-window-store', () => ({
     activateMessageWindow: vi.fn(),
     cancelOlderMessageLoad: vi.fn(),
+    fetchNewerMessages: vi.fn(),
     fetchOlderMessages: vi.fn(),
     getMessageWindowState: vi.fn(() => store.state),
+    loadMessageContext: vi.fn(),
     setMessageViewMode: store.setMessageViewMode,
+    setMessageWindowTargetLock: vi.fn(),
     subscribeMessageWindow: vi.fn(() => () => {}),
     syncTailMessages: store.syncTailMessages,
 }))

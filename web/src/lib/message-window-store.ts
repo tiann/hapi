@@ -25,7 +25,18 @@ export type OlderLoadOutcome =
         error: Error
     }
 
+/** Result of walking a context window forward toward the session head. */
+export type NewerLoadOutcome =
+    | { kind: 'loaded'; added: number }
+    /** The window reached the head; tail mode is now a valid transition. */
+    | { kind: 'caught-up'; added: number }
+    | {
+        kind: 'stopped'
+        reason: 'unavailable' | 'busy' | 'invalidated' | 'epoch-reset' | 'exhausted' | 'failed'
+    }
+
 export type MessageWindowState = {
+    readThroughRevision?: number
     sessionId: string
     messages: DecryptedMessage[]
     hasMore: boolean
@@ -36,6 +47,16 @@ export type MessageWindowState = {
     isLoadingMore: boolean
     warning: string | null
     viewMode: MessageViewMode
+    // A history window may be intentionally retained while its latest-tail
+    // cursor is invalid. Consumers must treat that window as provisional
+    // until the next tail reconciliation completes.
+    requiresLatestReset: boolean
+    /**
+     * A search/context window stops short of the session head. True while
+     * newer messages exist between the loaded window and that head, so the
+     * reader can keep going forward instead of only paging backward.
+     */
+    hasMoreNewer: boolean
     messagesVersion: number
     historyVersion: number
     /** Number of explicit history navigations currently in flight (0 when idle). */
@@ -53,7 +74,7 @@ export const VISIBLE_WINDOW_SIZE = 400
 export const HISTORY_WINDOW_SIZE = 600
 export const INITIAL_PAGE_SIZE = 20
 const AGENT_RUN_WINDOW_SIZE = 800
-const OLDER_LOAD_WINDOW_SIZE = 800
+export const OLDER_LOAD_WINDOW_SIZE = 800
 // While an explicit navigation is in flight the window keeps both ends of
 // the transcript — the head the jump is about to show and the live tail that
 // feeds the StatusBar — with an explicit gap marker between them, bounded so
@@ -95,6 +116,11 @@ type InternalState = MessageWindowState & {
      * or the no-trim branch would outlive the load that armed it.
      */
     provisionalBoundaryGeneration: number | null
+    // Newest row actually loaded by a context jump. newestPosition* holds the
+    // session head so tail sync stays correct; this is the forward-paging
+    // cursor for the gap between the two.
+    contextNewestAt: number | null
+    contextNewestSeq: number | null
     requiresLatestReset: boolean
     requiresAuthoritativeReset: boolean
     navigationLeaseCount: number
@@ -120,7 +146,10 @@ type PersistedMessageWindowState = {
     newestPositionSeq: number | null
     historyBoundaryAt: number | null
     historyBoundarySeq: number | null
+    contextNewestAt: number | null
+    contextNewestSeq: number | null
     epoch: number | null
+    requiresLatestReset: boolean
 }
 
 type TailSyncController = {
@@ -134,6 +163,7 @@ type TailSyncController = {
 const states = new Map<string, InternalState>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
+const messageWindowTargetLocks = new Set<string>()
 const appliedRewindLocalIds = new Map<string, Set<string>>()
 
 const NOTIFY_THROTTLE_MS = 150
@@ -238,7 +268,10 @@ function persistState(sessionId: string, state: InternalState): void {
             newestPositionSeq: state.newestPositionSeq,
             historyBoundaryAt: state.historyBoundaryAt,
             historyBoundarySeq: state.historyBoundarySeq,
-            epoch: state.epoch
+            contextNewestAt: state.contextNewestAt,
+            contextNewestSeq: state.contextNewestSeq,
+            epoch: state.epoch,
+            requiresLatestReset: state.requiresLatestReset
         }
         sessionStorage.setItem(getStorageKey(sessionId), JSON.stringify(persisted))
     } catch {
@@ -302,6 +335,9 @@ function createState(sessionId: string): InternalState {
         historyBoundaryAt: null,
         historyBoundarySeq: null,
         provisionalBoundaryGeneration: null,
+        contextNewestAt: null,
+        contextNewestSeq: null,
+        hasMoreNewer: false,
         requiresLatestReset: false,
         requiresAuthoritativeReset: false,
         navigationLeaseCount: 0,
@@ -340,9 +376,16 @@ function hydrateState(sessionId: string): InternalState | null {
         const oldest = readPosition(parsed.oldestPositionAt, parsed.oldestPositionSeq)
         const newest = readPosition(parsed.newestPositionAt, parsed.newestPositionSeq)
         const historyBoundary = readPosition(parsed.historyBoundaryAt, parsed.historyBoundarySeq)
+        const contextNewest = readPosition(parsed.contextNewestAt, parsed.contextNewestSeq)
         const epoch = typeof parsed.epoch === 'number' && Number.isInteger(parsed.epoch) && parsed.epoch >= 0
             ? parsed.epoch
             : null
+        // Older v2 entries did not persist this bit. Treat non-empty legacy
+        // windows as provisional once so a historical context cannot be
+        // mistaken for the current tail after a reload.
+        const requiresLatestReset = typeof parsed.requiresLatestReset === 'boolean'
+            ? parsed.requiresLatestReset
+            : parsed.messages.length > 0 && (newest === null || epoch === null)
         const requiresAuthoritativeReset = parsed.messages.length > 0 && (newest === null || epoch === null)
         return buildState(createState(sessionId), {
             messages: mergeMessages([], parsed.messages.map(restoreMessage)),
@@ -353,8 +396,15 @@ function hydrateState(sessionId: string): InternalState | null {
             newestPositionSeq: newest?.seq ?? null,
             historyBoundaryAt: historyBoundary?.at ?? null,
             historyBoundarySeq: historyBoundary?.seq ?? null,
+            contextNewestAt: contextNewest?.at ?? null,
+            contextNewestSeq: contextNewest?.seq ?? null,
+            // Reading forward resumes after a reload only while the restored
+            // window still stops short of the head.
+            hasMoreNewer: contextNewest !== null
+                && newest !== null
+                && comparePosition(contextNewest, newest) < 0,
             epoch,
-            requiresLatestReset: requiresAuthoritativeReset,
+            requiresLatestReset,
             requiresAuthoritativeReset
         })
     } catch {
@@ -458,6 +508,7 @@ function getNewestCursor(state: InternalState): MessagePosition | null {
 function buildState(
     previous: InternalState,
     updates: Partial<Pick<InternalState,
+        | 'readThroughRevision'
         | 'messages'
         | 'hasMore'
         | 'epoch'
@@ -472,6 +523,9 @@ function buildState(
         | 'historyBoundaryAt'
         | 'historyBoundarySeq'
         | 'provisionalBoundaryGeneration'
+        | 'contextNewestAt'
+        | 'contextNewestSeq'
+        | 'hasMoreNewer'
         | 'requiresLatestReset'
         | 'requiresAuthoritativeReset'
         | 'navigationLeaseCount'
@@ -860,18 +914,58 @@ function mergeIntoWindow(
     }
     if (headTailWindow) return next
     if (droppedNewest) {
-        const newest = derivePosition(kept, 'newest')
-        next = buildState(next, {
-            requiresLatestReset: true,
-            newestPositionAt: newest?.at ?? null,
-            newestPositionSeq: newest?.seq ?? null
-        })
-        return next
+        return markNewestTrimmed(previous, next, kept)
     }
     return buildState(next, {
         hasMore: true,
         oldestPositionAt: oldestKept?.at ?? next.oldestPositionAt,
         oldestPositionSeq: oldestKept?.seq ?? next.oldestPositionSeq
+    })
+}
+
+// Rows were trimmed off the newest end. An ordinary window records its
+// retained newest row and waits for a tail resync. A context window (search
+// jump) deliberately keeps the authoritative session head in newestPosition*;
+// replacing it with the retained boundary would make forward reading believe
+// it had caught up with itself, so clamp the forward cursor instead.
+function markNewestTrimmed(
+    previous: InternalState,
+    next: InternalState,
+    kept: DecryptedMessage[]
+): InternalState {
+    const forwardCursor = readPosition(previous.contextNewestAt, previous.contextNewestSeq)
+    // A hit already inside the rendered window skips loadMessageContext, so it
+    // has no cursor yet. Once older paging trims newer rows off such a
+    // search-locked window those messages become unreachable, so seed the
+    // cursor here from what is retained.
+    const searchLocked = messageWindowTargetLocks.has(previous.sessionId)
+    if (forwardCursor || searchLocked) {
+        const contiguousNewest = derivePosition(
+            kept.filter((message) => (
+                !isQueuedForInvocation(message) && !optimisticMessage(message)
+            )),
+            'newest'
+        )
+        const clamped = !forwardCursor
+            ? contiguousNewest
+            : contiguousNewest && comparePosition(contiguousNewest, forwardCursor) < 0
+                ? contiguousNewest
+                : forwardCursor
+        const head = readPosition(previous.newestPositionAt, previous.newestPositionSeq)
+        return buildState(next, {
+            requiresLatestReset: true,
+            contextNewestAt: clamped?.at ?? previous.contextNewestAt,
+            contextNewestSeq: clamped?.seq ?? previous.contextNewestSeq,
+            hasMoreNewer: clamped !== null
+                && head !== null
+                && comparePosition(clamped, head) < 0
+        })
+    }
+    const newest = derivePosition(kept, 'newest')
+    return buildState(next, {
+        requiresLatestReset: true,
+        newestPositionAt: newest?.at ?? null,
+        newestPositionSeq: newest?.seq ?? null
     })
 }
 
@@ -889,13 +983,7 @@ function trimReleasedProvisionalWindow(previous: InternalState): InternalState {
         return previous
     }
     if (historyMode) {
-        const newest = derivePosition(kept, 'newest')
-        return buildState(previous, {
-            messages: kept,
-            requiresLatestReset: true,
-            newestPositionAt: newest?.at ?? null,
-            newestPositionSeq: newest?.seq ?? null
-        })
+        return markNewestTrimmed(previous, buildState(previous, { messages: kept }), kept)
     }
     return buildState(previous, {
         messages: kept,
@@ -959,6 +1047,8 @@ function applyLatestResponse(
             : responseOldest ?? previousOldest
     return buildState(previous, {
         messages: kept,
+        readThroughRevision: Math.max(previous.readThroughRevision ?? 0, response.page.readThroughRevision ?? 0,
+            ...kept.map(message => message.contentRevision ?? 0)),
         hasMore: response.page.hasMore || (!options.replaceServerRows && previous.hasMore) || dropped.length > 0,
         epoch: response.page.epoch,
         oldestPositionAt: oldest?.at ?? null,
@@ -968,6 +1058,10 @@ function applyLatestResponse(
         tailRevision: previous.tailRevision + 1,
         requiresLatestReset: false,
         requiresAuthoritativeReset: false,
+        // An authoritative latest window replaces the context entirely.
+        ...(options.replaceServerRows
+            ? { contextNewestAt: null, contextNewestSeq: null, hasMoreNewer: false }
+            : {}),
         isLoadingMore: options.replaceServerRows ? false : previous.isLoadingMore,
         olderGeneration: options.replaceServerRows
             ? previous.olderGeneration + 1
@@ -1176,6 +1270,8 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                     ? (comparePosition(nextAfter, currentNewest) >= 0 ? nextAfter : currentNewest)
                     : nextAfter ?? currentNewest
                 return buildState(merged, {
+                    readThroughRevision: Math.max(merged.readThroughRevision ?? 0, response.page.readThroughRevision ?? 0,
+                        ...merged.messages.map(message => message.contentRevision ?? 0)),
                     epoch: response.page.epoch,
                     newestPositionAt: newest?.at ?? null,
                     newestPositionSeq: newest?.seq ?? null,
@@ -1305,11 +1401,21 @@ function enterTailMode(previous: InternalState): InternalState {
         navigationLeaseCount: previous.navigationLeaseCount,
         navigationHistoryLeaseCount: previous.navigationHistoryLeaseCount,
         olderGeneration: invalidateInFlight ? previous.olderGeneration + 1 : previous.olderGeneration,
-        isLoadingMore: invalidateInFlight ? false : previous.isLoadingMore
+        isLoadingMore: invalidateInFlight ? false : previous.isLoadingMore,
+        // The context window is being left behind; its forward cursor must not
+        // outlive it, or a later hit that is already inside the latest window
+        // would page from the old historical position and splice disconnected
+        // messages in ahead of the tail.
+        contextNewestAt: null,
+        contextNewestSeq: null,
+        hasMoreNewer: false
     })
 }
 
 export function activateMessageWindow(sessionId: string): void {
+    if (messageWindowTargetLocks.has(sessionId)) {
+        return
+    }
     let requestedLatest = false
     updateState(sessionId, (previous) => {
         const { kept } = trimPreservingQueued(previous.messages, VISIBLE_WINDOW_SIZE, 'append')
@@ -1366,6 +1472,9 @@ export function syncTailMessages(
     sessionId: string,
     options: { ensureAfterCurrent?: boolean } = {}
 ): Promise<void> {
+    if (messageWindowTargetLocks.has(sessionId)) {
+        return Promise.resolve()
+    }
     let controller = tailSyncControllers.get(sessionId)
     if (!controller) {
         controller = {
@@ -1405,6 +1514,40 @@ export function syncTailMessages(
     }
     controller.trailingRequested = true
     return waitForTailSyncDrain(sessionId, controller, observed)
+}
+
+/**
+ * Mark a session as being opened for a specific historical search target.
+ * Background reconnect/SSE refreshes must not reclaim that window before the
+ * targeted context has rendered.
+ */
+export function setMessageWindowTargetLock(sessionId: string, locked: boolean): void {
+    if (locked) {
+        messageWindowTargetLocks.add(sessionId)
+        cancelTailSync(sessionId)
+        return
+    }
+    messageWindowTargetLocks.delete(sessionId)
+}
+
+/**
+ * Drop an in-flight latest-page reconciliation when a targeted history load
+ * takes ownership of the window. The request itself cannot always be aborted
+ * after fetch has started, but invalidating its generation prevents its large
+ * response from replacing the historical context when it eventually arrives.
+ */
+export function cancelTailSync(sessionId: string): void {
+    const controller = tailSyncControllers.get(sessionId)
+    const state = getState(sessionId)
+    if (!controller?.running && !state.isSyncingTail) {
+        return
+    }
+    tailSyncControllers.delete(sessionId)
+    updateState(sessionId, (previous) => buildState(previous, {
+        syncGeneration: previous.syncGeneration + 1,
+        isSyncingTail: false,
+        warning: null
+    }), true)
 }
 
 export async function fetchOlderMessages(
@@ -1473,17 +1616,11 @@ export async function fetchOlderMessages(
         }
 
         if (initial.epoch !== null && response.page.epoch !== initial.epoch) {
-            updateState(sessionId, (previous) => {
-                if (previous.olderGeneration !== generation) return previous
-                return buildState(previous, {
-                    isLoadingMore: false,
-                    epoch: null,
-                    newestPositionAt: null,
-                    newestPositionSeq: null,
-                    requiresLatestReset: true,
-                    requiresAuthoritativeReset: true
-                })
-            })
+            const current = getState(sessionId)
+            if (current.olderGeneration !== generation) {
+                return { kind: 'stopped', reason: 'invalidated' }
+            }
+            markMessageWindowForLatestReset(sessionId, current.messages)
             await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
             return { kind: 'stopped', reason: 'epoch-reset' }
         }
@@ -1548,6 +1685,9 @@ export async function fetchOlderMessages(
                 merged = trimmed
             }
             historyVersion = nextHistoryVersion
+            // Cursor clamping and head preservation now happen inside
+            // mergeIntoWindow, so every path that trims from the newest end
+            // behaves the same.
             return buildState(merged, {
                 hasMore: response.page.hasMore,
                 epoch: response.page.epoch,
@@ -1614,6 +1754,284 @@ export async function fetchOlderMessages(
     }
 }
 
+/**
+ * Replace the server portion of the window with a bounded context around a
+ * search hit. This avoids walking hundreds of older pages just to reveal one
+ * message, while keeping queued/optimistic local rows visible.
+ */
+export async function loadMessageContext(
+    api: ApiClient,
+    sessionId: string,
+    messageId: string
+): Promise<boolean> {
+    // HappyThread may call this from a child layout effect. Yield to the next
+    // task so the parent useMessages layout effect can register the initial
+    // tail sync before we inspect the window and start a competing context
+    // request.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    let initial = getState(sessionId)
+    const activeTailSync = tailSyncControllers.get(sessionId)
+    if (initial.isSyncingTail || activeTailSync?.running) {
+        if (activeTailSync?.running) {
+            await waitForTailSyncDrain(sessionId, activeTailSync, activeTailSync.running)
+        }
+        initial = getState(sessionId)
+    }
+    if (initial.isSyncingTail || initial.isLoadingMore) {
+        return false
+    }
+
+    const requestBaseline = new Map(initial.messages.map((message) => [message.id, message]))
+    const generation = initial.olderGeneration + 1
+    updateState(sessionId, (previous) => buildState(previous, {
+        olderGeneration: generation,
+        isLoadingMore: true,
+        warning: null
+    }), true)
+
+    try {
+        const response = await api.getMessageContext(sessionId, messageId)
+        if (getState(sessionId).olderGeneration !== generation) {
+            return false
+        }
+
+        if (!response) {
+            updateState(sessionId, (previous) => {
+                if (previous.olderGeneration !== generation) return previous
+                return buildState(previous, {
+                    // The cached window may predate appends or a rewind. Force
+                    // the next tail sync to replace it instead of leaving a
+                    // stale suffix rendered behind the dismissed jump.
+                    requiresLatestReset: previous.messages.length > 0 || previous.requiresLatestReset,
+                    isLoadingMore: false,
+                    warning: null
+                })
+            }, true)
+            return false
+        }
+
+        const retained = response.messages.filter(shouldRetainWindowMessage)
+        if (!retained.some((message) => message.id === messageId)) {
+            updateState(sessionId, (previous) => {
+                if (previous.olderGeneration !== generation) return previous
+                return buildState(previous, {
+                    requiresLatestReset: previous.messages.length > 0 || previous.requiresLatestReset,
+                    isLoadingMore: false,
+                    warning: 'The searched message is no longer available'
+                })
+            }, true)
+            return false
+        }
+
+        let applied = false
+        updateState(sessionId, (previous) => {
+            if (previous.olderGeneration !== generation) return previous
+
+            const preservedLocalMessages = previous.messages.filter((message) => (
+                optimisticMessage(message) || isQueuedForInvocation(message)
+            ))
+            const concurrentMessages = previous.messages.filter((message) => (
+                requestBaseline.get(message.id) !== message
+            ))
+            const merged = mergeMessages(
+                mergeMessages(preservedLocalMessages, retained),
+                concurrentMessages
+            )
+            const { kept } = trimPreservingQueued(merged, OLDER_LOAD_WINDOW_SIZE, 'prepend')
+            applied = true
+            // The window stops well short of the head. Keep newestPosition* on
+            // the head for tail sync, and track the window's own newest row
+            // separately so the reader can page forward across the gap.
+            // Derive from the contiguous context rows only. `kept` also holds
+            // rows that arrived over SSE while the request was in flight, and
+            // the hub deliberately appends pending prompts to the context
+            // response out-of-band ("pending rows must not change the bounded
+            // context's pagination cursor", messageService.ts). Either would
+            // push the cursor past the window and strand the history between.
+            const contiguous = retained.filter((message) => (
+                !isQueuedForInvocation(message) && !optimisticMessage(message)
+            ))
+            const contextNewest = derivePosition(contiguous, 'newest')
+            const snapshotHead = pagePosition(
+                response.page.snapshotHeadAt,
+                response.page.snapshotHeadSeq
+            )
+            return buildState(previous, {
+                messages: kept,
+                hasMore: response.page.hasMore,
+                epoch: response.page.epoch,
+                viewMode: 'history',
+                oldestPositionAt: response.page.nextBeforeAt,
+                oldestPositionSeq: response.page.nextBeforeSeq,
+                newestPositionAt: response.page.snapshotHeadAt,
+                newestPositionSeq: response.page.snapshotHeadSeq,
+                contextNewestAt: contextNewest?.at ?? null,
+                contextNewestSeq: contextNewest?.seq ?? null,
+                hasMoreNewer: contextNewest !== null
+                    && snapshotHead !== null
+                    && comparePosition(contextNewest, snapshotHead) < 0,
+                requiresLatestReset: true,
+                isLoadingMore: false,
+                historyVersion: previous.historyVersion + 1,
+                warning: null
+            })
+        }, true)
+        return applied
+    } catch (error) {
+        if (getState(sessionId).olderGeneration !== generation) {
+            return false
+        }
+        updateState(sessionId, (previous) => {
+            if (previous.olderGeneration !== generation) return previous
+            return buildState(previous, {
+                isLoadingMore: false,
+                warning: error instanceof Error ? error.message : 'Failed to load the searched message'
+            })
+        }, true)
+        return false
+    }
+}
+
+/**
+ * Load one bounded page of messages after a context window's newest row.
+ *
+ * A search jump leaves the window stranded in the middle of the session: the
+ * head is recorded for tail sync, but nothing fills the gap between the two,
+ * so scrolling down used to dead-end. This walks that gap forward a page at a
+ * time, and reports when the window has finally caught up with the head.
+ */
+export async function fetchNewerMessages(
+    api: ApiClient,
+    sessionId: string,
+    options: {
+        /**
+         * Resolves the row the reader is anchored to, read at apply time
+         * rather than request time. Forward paging trims from the old end, and
+         * the reader can scroll during a slow page — a value captured when the
+         * request started would protect the row they have already left.
+         */
+        resolvePreserveMessageId?: () => string | null
+    } = {}
+): Promise<NewerLoadOutcome> {
+    const initial = getState(sessionId)
+    if (initial.isSyncingTail || initial.isLoadingMore) {
+        return { kind: 'stopped', reason: 'busy' }
+    }
+    if (!initial.hasMoreNewer) {
+        return { kind: 'stopped', reason: 'exhausted' }
+    }
+    const after = readPosition(initial.contextNewestAt, initial.contextNewestSeq)
+    if (!after) {
+        return { kind: 'stopped', reason: 'unavailable' }
+    }
+
+    const generation = initial.olderGeneration + 1
+    updateState(sessionId, (previous) => buildState(previous, {
+        olderGeneration: generation,
+        isLoadingMore: true,
+        warning: null
+    }))
+
+    try {
+        const response = await api.getMessages(sessionId, {
+            afterAt: after.at,
+            afterSeq: after.seq,
+            limit: PAGE_SIZE
+        })
+        if (getState(sessionId).olderGeneration !== generation) {
+            return { kind: 'stopped', reason: 'invalidated' }
+        }
+        if (initial.epoch !== null && response.page.epoch !== initial.epoch) {
+            // The history changed under us; the same authoritative refresh the
+            // older path uses also releases the search lock.
+            const current = getState(sessionId)
+            markMessageWindowForLatestReset(sessionId, current.messages)
+            await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
+            return { kind: 'stopped', reason: 'epoch-reset' }
+        }
+
+        const retained = response.messages.filter(shouldRetainWindowMessage)
+        let added = 0
+        updateState(sessionId, (previous) => {
+            if (previous.olderGeneration !== generation) return previous
+            const merged = mergeMessages(previous.messages, retained)
+            // Trim from the old end: the reader is moving forward, so the
+            // newly appended rows are the ones that must survive — unless the
+            // reader is anchored in the rows that would go, in which case keep
+            // the window longer rather than moving them.
+            const preserveMessageId = options.resolvePreserveMessageId?.() ?? null
+            const anchorIndex = preserveMessageId
+                ? merged.findIndex((message) => (
+                    message.id === preserveMessageId
+                    || message.localId === preserveMessageId
+                ))
+                : -1
+            const trimLimit = anchorIndex >= 0
+                ? Math.max(HISTORY_WINDOW_SIZE, merged.length - anchorIndex)
+                : HISTORY_WINDOW_SIZE
+            const { kept } = trimPreservingQueued(merged, trimLimit, 'append')
+            added = kept.length - previous.messages.length
+            // Advance from the page's own boundary rather than the merged
+            // window: an SSE row appended at the live head would otherwise
+            // look like we had caught up, skipping everything in between.
+            const contextNewest = pagePosition(
+                response.page.nextAfterAt,
+                response.page.nextAfterSeq
+            ) ?? derivePosition(retained, 'newest') ?? after
+            const oldest = derivePosition(kept, 'oldest')
+            // The session can grow after the context was loaded, so trust the
+            // head this response reports over the one recorded back then. A
+            // page that says there is more is never "caught up", whatever an
+            // older head would imply.
+            const responseHead = pagePosition(
+                response.page.snapshotHeadAt,
+                response.page.snapshotHeadSeq
+            )
+            const recordedHead = readPosition(
+                previous.newestPositionAt,
+                previous.newestPositionSeq
+            )
+            const head = responseHead && recordedHead
+                ? (comparePosition(responseHead, recordedHead) > 0 ? responseHead : recordedHead)
+                : responseHead ?? recordedHead
+            const caughtUp = !response.page.hasMore
+            return buildState(previous, {
+                messages: kept,
+                isLoadingMore: false,
+                // Trimming the old end means older paging is live again even if
+                // the context page had already reached the start.
+                hasMore: previous.hasMore || kept.length < merged.length,
+                oldestPositionAt: oldest?.at ?? previous.oldestPositionAt,
+                oldestPositionSeq: oldest?.seq ?? previous.oldestPositionSeq,
+                contextNewestAt: contextNewest?.at ?? previous.contextNewestAt,
+                contextNewestSeq: contextNewest?.seq ?? previous.contextNewestSeq,
+                // Keep the freshest head so later comparisons do not regress.
+                ...(head ? { newestPositionAt: head.at, newestPositionSeq: head.seq } : {}),
+                hasMoreNewer: !caughtUp,
+                historyVersion: previous.historyVersion + 1,
+                warning: null
+            })
+        }, true)
+
+        const settled = getState(sessionId)
+        return settled.hasMoreNewer
+            ? { kind: 'loaded', added }
+            : { kind: 'caught-up', added }
+    } catch (error) {
+        if (getState(sessionId).olderGeneration !== generation) {
+            return { kind: 'stopped', reason: 'invalidated' }
+        }
+        updateState(sessionId, (previous) => {
+            if (previous.olderGeneration !== generation) return previous
+            return buildState(previous, {
+                isLoadingMore: false,
+                warning: error instanceof Error ? error.message : 'Failed to load newer messages'
+            })
+        }, true)
+        return { kind: 'stopped', reason: 'failed' }
+    }
+}
+
 export function cancelOlderMessageLoad(sessionId: string): void {
     updateState(sessionId, (previous) => {
         if (!previous.isLoadingMore) {
@@ -1634,6 +2052,9 @@ export function cancelOlderMessageLoad(sessionId: string): void {
 }
 
 export function setMessageViewMode(sessionId: string, mode: MessageViewMode): void {
+    if (mode === 'tail') {
+        messageWindowTargetLocks.delete(sessionId)
+    }
     updateState(sessionId, (previous) => {
         if (mode === 'history') {
             return previous.viewMode === 'history'
@@ -1770,6 +2191,8 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
             ? incomingNewest
             : currentNewest
         merged = buildState(merged, {
+            readThroughRevision: merged.readThroughRevision === undefined ? undefined
+                : Math.max(merged.readThroughRevision, ...incoming.map(message => message.contentRevision ?? 0)),
             newestPositionAt: newest?.at ?? null,
             newestPositionSeq: newest?.seq ?? null
         })
@@ -1796,6 +2219,7 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
 }
 
 export function clearMessageWindow(sessionId: string): void {
+    messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
     clearPersistedState(sessionId)
     const previous = states.get(sessionId)
@@ -1811,11 +2235,17 @@ function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedM
     const previous = states.get(sessionId)
     if (!previous) return
 
+    // A rewind/invalidation is authoritative and must refresh even when a
+    // historical search target previously paused background tail sync.
+    messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
     clearPersistedState(sessionId)
     setState(sessionId, buildState(previous, {
         messages,
         epoch: null,
+        contextNewestAt: null,
+        contextNewestSeq: null,
+        hasMoreNewer: false,
         oldestPositionAt: null,
         oldestPositionSeq: null,
         newestPositionAt: null,
@@ -1878,7 +2308,7 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
     const source = getState(fromSessionId)
     const target = getState(toSessionId)
     const seeded = buildState(createState(toSessionId), {
-        messages: [...source.messages],
+        messages: source.messages.map(message => ({ ...message, contentRevision: undefined })),
         hasMore: source.hasMore,
         tailRevision: source.tailRevision,
         oldestPositionAt: source.oldestPositionAt,
@@ -1965,16 +2395,24 @@ export function removeOptimisticMessage(sessionId: string, localId: string): voi
 }
 
 export function markMessagesIndeterminate(sessionId: string, localIds: string[]): void {
+    markUnconfirmedDelivery(sessionId, localIds, false)
+}
+
+export function markMessagesDispatching(sessionId: string, localIds: string[]): void {
+    markUnconfirmedDelivery(sessionId, localIds, true)
+}
+
+function markUnconfirmedDelivery(sessionId: string, localIds: string[], dispatching: boolean): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (previous) => {
         let changed = false
         const messages = previous.messages.map((message) => {
-            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === 'indeterminate') {
-                return message
-            }
+            if (!message.localId || !idSet.has(message.localId) || typeof message.invokedAt === 'number'
+                || (message.deliveryState === 'indeterminate' && Boolean(message.deliveryPending) === dispatching)) return message
             changed = true
-            return { ...message, deliveryState: 'indeterminate' as const }
+            const { deliveryPending: _deliveryPending, ...unconfirmed } = message
+            return { ...unconfirmed, deliveryState: 'indeterminate' as const, ...(dispatching ? { deliveryPending: true as const } : {}) }
         })
         return changed ? buildState(previous, { messages }) : previous
     }, true)
@@ -1996,6 +2434,7 @@ export function markMessagesRequeued(sessionId: string, localIds: string[]): voi
             changed = true
             const {
                 deliveryState: _deliveryState,
+                deliveryPending: _deliveryPending,
                 queueDismissed: _queueDismissed,
                 ...requeued
             } = message
@@ -2022,10 +2461,11 @@ export function markMessagesConsumed(
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
             const needsSteered = steered === true && message.steered !== true
-            const needsClearDismiss = message.queueDismissed === true
+            const needsClearDismiss = message.queueDismissed === true || message.deliveryState !== undefined || message.deliveryPending === true
             if (!needsStatus && !needsInvokedAt && !needsSteered && !needsClearDismiss) return message
             changed = true
-            const { deliveryState: _deliveryState, queueDismissed: _queueDismissed, ...withoutClientHold } = message
+            const { deliveryState: _deliveryState,
+                deliveryPending: _deliveryPending, queueDismissed: _queueDismissed, ...withoutClientHold } = message
             return {
                 ...withoutClientHold,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),
