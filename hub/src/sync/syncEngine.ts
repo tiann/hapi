@@ -2551,11 +2551,16 @@ export class SyncEngine {
         await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
     }
 
-    async deleteSession(sessionId: string): Promise<void> {
-        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
-        if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
+    private assertSessionDeletable(sessionId: string, namespace?: string): void {
+        const session = namespace ? this.sessionCache.getSessionByNamespace(sessionId, namespace) : this.sessionCache.getSession(sessionId)
+        if (session?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+        if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId, namespace)) {
             throw new Error('Archived fork is pending; reconcile it before deleting the source')
         }
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        this.assertSessionDeletable(sessionId)
         await this.sessionCache.deleteSession(sessionId)
         this.titleTurnCompletedIds.delete(sessionId)
         this.automaticTitleSuggestionService.forgetSession(sessionId)
@@ -2563,6 +2568,7 @@ export class SyncEngine {
     }
 
     async deleteArchivedSessions(sessionIds: string[], namespace: string): Promise<void> {
+        for (const sessionId of sessionIds) this.assertSessionDeletable(sessionId, namespace)
         await this.sessionCache.deleteArchivedSessions(sessionIds, namespace)
         for (const sessionId of new Set(sessionIds)) {
             this.titleTurnCompletedIds.delete(sessionId)

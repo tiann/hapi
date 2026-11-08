@@ -586,7 +586,6 @@ function ProjectGroupHeader(props: {
         <>
             <div
                 {...longPressHandlers}
-                data-session-scroll-anchor={!collapsible || undefined}
                 tabIndex={0}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
@@ -2081,18 +2080,22 @@ export function SessionList(props: {
         const groupTitle = showMachineFilterBar && activeMachineFilter === null
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
+        // Same keyed wrapper as renderDirectoryGroup so the header (and its
+        // open dialog / pending group action) survives the switch when a
+        // member drops out of the pinned sections.
         return (
-            <ProjectGroupHeader
-                key={group.key}
-                group={group}
-                actionSessions={actionGroupsByKey.get(group.key) ?? []}
-                groupTitle={groupTitle}
-                isCollapsed={false}
-                onToggle={() => {}}
-                collapsible={false}
-                onNewSessionInDirectory={onNewSessionInDirectory}
-                api={api}
-            />
+            <div key={group.key} data-session-scroll-anchor>
+                <ProjectGroupHeader
+                    group={group}
+                    actionSessions={actionGroupsByKey.get(group.key) ?? []}
+                    groupTitle={groupTitle}
+                    isCollapsed={false}
+                    onToggle={() => {}}
+                    collapsible={false}
+                    onNewSessionInDirectory={onNewSessionInDirectory}
+                    api={api}
+                />
+            </div>
         )
     }
 
@@ -2765,8 +2768,8 @@ export function SessionList(props: {
                     count: activeSessionTotal,
                     bucketKeys: ['active', 'idle'],
                 })}
-                {groups.map(renderDirectoryGroup)}
-                {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                {/* One keyed array: a group moving between the two keeps its header instance. */}
+                {[...groups.map(renderDirectoryGroup), ...actionOnlyGroups.map(renderActionOnlyGroupHeader)]}
             </SessionListScrollAnchor>
             </div>
             </div>

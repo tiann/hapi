@@ -40,6 +40,20 @@ describe('alive incremental events', () => {
         } finally { store.close() }
     })
 
+    it('preserves the entire archived group while a member has a history action in flight', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, { of: () => ({ to: () => ({ emit() {} }) }) } as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const sessions = ['archived-idle', 'archived-reopening'].map(name => engine.getOrCreateSession(
+                name, { path: '/tmp/project', host: 'localhost', lifecycleState: 'archived' }, null, 'default'
+            ))
+            ;(engine as unknown as { historyActionsInFlight: Set<string> }).historyActionsInFlight.add(sessions[1]!.id)
+            await expect(engine.deleteArchivedSessions(sessions.map(session => session.id), 'default'))
+                .rejects.toThrow('Archived fork is pending')
+            for (const session of sessions) expect(store.sessions.getSession(session.id)).not.toBeNull()
+        } finally { engine.stop() }
+    })
+
     it('replays durable immediate prompts on every attach until consumed', () => {
         const store = new Store(':memory:')
         const emitted: Array<{ body?: { t?: string; message?: { localId?: string | null } } }> = []

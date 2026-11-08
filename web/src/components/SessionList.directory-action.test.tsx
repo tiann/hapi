@@ -1240,6 +1240,47 @@ describe('SessionList project group context menu (tiann/hapi#881)', () => {
         expect(screen.getByRole('menuitem', { name: /Delete Group/ })).toBeDisabled()
     })
 
+    it('keeps the Archive All dialog open when an action-only header becomes a directory group', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        const running = (id: string) => makeSession({
+            id,
+            active: true,
+            metadata: { path: '/work/hapi', name: id, flavor: 'codex', lifecycleState: 'running' },
+        })
+        const queryClient = new QueryClient()
+        const tree = (sessions: SessionSummary[]) => (
+            <QueryClientProvider client={queryClient}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={sessions}
+                            selectedSessionId={null}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={false}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+        const { rerender } = render(tree([running('a'), running('b')]))
+
+        fireEvent.contextMenu(screen.getByTitle('/work/hapi'))
+        fireEvent.click(screen.getByRole('menuitem', { name: /Archive All Sessions/ }))
+        expect(screen.getByRole('button', { name: 'Archive All' })).toBeInTheDocument()
+
+        // First member archived via SSE: the group now renders rows again.
+        rerender(tree([
+            makeSession({ id: 'a', active: false, metadata: { path: '/work/hapi', name: 'a', flavor: 'codex', lifecycleState: 'archived' } }),
+            running('b'),
+        ]))
+
+        expect(screen.getByRole('button', { name: 'Archive All' })).toBeInTheDocument()
+    })
+
     it('enables Delete Group only when every session in the group is archived', () => {
         renderList([
             makeSession({
