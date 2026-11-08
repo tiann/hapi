@@ -108,7 +108,7 @@ describe('claudeRemote async message handling', () => {
                 hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => nextCallCount++ === 0
-                    ? { message: 'Review this project', mode: { permissionMode: 'default' } }
+                    ? { message: 'Review this project', mode: { permissionMode: 'manual' } }
                     : null,
                 onReady: () => {},
                 isAborted: () => false,
@@ -147,7 +147,7 @@ describe('claudeRemote async message handling', () => {
                 hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => nextCallCount++ === 0
-                    ? { message: 'Review this project', mode: { permissionMode: 'default' } }
+                    ? { message: 'Review this project', mode: { permissionMode: 'manual' } }
                     : null,
                 onReady: async () => {
                     readyStarted = true;
@@ -175,7 +175,7 @@ describe('claudeRemote async message handling', () => {
     it('continues consuming assistant messages even when next user message is pending', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
-        const pendingNext = deferred<{ message: string; mode: { permissionMode: 'default' } } | null>();
+        const pendingNext = deferred<{ message: string; mode: { permissionMode: 'manual' } } | null>();
         const received: SDKMessage[] = [];
 
         const sdkMessages: SDKMessage[] = [
@@ -220,7 +220,7 @@ describe('claudeRemote async message handling', () => {
             nextMessage: async () => {
                 nextCallCount += 1;
                 if (nextCallCount === 1) {
-                    return { message: 'A', mode: { permissionMode: 'default' } };
+                    return { message: 'A', mode: { permissionMode: 'manual' } };
                 }
                 return await pendingNext.promise;
             },
@@ -291,7 +291,7 @@ describe('claudeRemote async message handling', () => {
             nextMessage: async () => {
                 nextCallCount += 1;
                 if (nextCallCount === 1) {
-                    return { message: 'A', mode: { permissionMode: 'default' } };
+                    return { message: 'A', mode: { permissionMode: 'manual' } };
                 }
                 throw new Error('next message failed');
             },
@@ -362,7 +362,7 @@ describe('claudeRemote async message handling', () => {
             nextMessage: async () => {
                 nextCallCount += 1;
                 if (nextCallCount === 1) {
-                    return { message: 'A', mode: { permissionMode: 'default' } };
+                    return { message: 'A', mode: { permissionMode: 'manual' } };
                 }
                 throw new claudeSdk.AbortError('aborted');
             },
@@ -430,7 +430,7 @@ describe('claudeRemote /compact result reporting', () => {
                 nextMessage: async () => {
                     nextCallCount += 1;
                     if (nextCallCount === 1) {
-                        return { message: '/compact', mode: { permissionMode: 'default' } };
+                        return { message: '/compact', mode: { permissionMode: 'manual' } };
                     }
                     return null;
                 },
@@ -724,7 +724,7 @@ describe('claudeRemote /compact result reporting', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => {
                     nextCallCount += 1;
-                    if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'default' } };
+                    if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'manual' } };
                     return null;
                 },
                 onReady: () => {},
@@ -780,8 +780,8 @@ describe('claudeRemote /compact result reporting', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => {
                     nextCallCount += 1;
-                    if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'default' } };
-                    if (nextCallCount === 2) return { message: '/compact', mode: { permissionMode: 'default' } };
+                    if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'manual' } };
+                    if (nextCallCount === 2) return { message: '/compact', mode: { permissionMode: 'manual' } };
                     return null;
                 },
                 onReady: (completionEvent, compactSummary) => {
@@ -828,7 +828,7 @@ describe('claudeRemote /compact result reporting', () => {
                 claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => nextCallCount++ === 0
-                    ? { message: '/compact', mode: { permissionMode: 'default' } }
+                    ? { message: '/compact', mode: { permissionMode: 'manual' } }
                     : null,
                 onReady: (completionEvent) => {
                     wireOrder.push(...queued.splice(0));
@@ -929,7 +929,7 @@ describe('claudeRemote compact summary promotion', () => {
                 nextMessage: async () => {
                     nextCallCount += 1;
                     if (nextCallCount === 1) {
-                        return { message: '/compact', mode: { permissionMode: 'default' } };
+                        return { message: '/compact', mode: { permissionMode: 'manual' } };
                     }
                     return null;
                 },
@@ -1002,7 +1002,7 @@ describe('claudeRemote compact summary promotion', () => {
             claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
             canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
             nextMessage: async () => nextCallCount++ === 0
-                ? { message: '/compact', mode: { permissionMode: 'default' } }
+                ? { message: '/compact', mode: { permissionMode: 'manual' } }
                 : null,
             onReady: () => {},
             isAborted: () => false,
@@ -1068,8 +1068,8 @@ describe('claudeRemote compact summary promotion', () => {
             nextMessage: async () => {
                 nextCallCount += 1;
                 return nextCallCount === 1
-                    ? { message: '/compact', mode: { permissionMode: 'default' } }
-                    : { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                    ? { message: '/compact', mode: { permissionMode: 'manual' } }
+                    : { message: 'must stay queued', mode: { permissionMode: 'manual' } };
             },
             onReady: () => {
                 readyCount += 1;
@@ -1133,10 +1133,10 @@ describe('claudeRemote compact summary promotion', () => {
             canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
             nextMessage: async () => {
                 nextCallCount += 1;
-                if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
+                if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'manual' } };
                 if (nextCallCount === 2) {
                     wireOrder.push('next prompt consumed');
-                    return { message: 'after compact', mode: { permissionMode: 'default' } };
+                    return { message: 'after compact', mode: { permissionMode: 'manual' } };
                 }
                 return null;
             },
@@ -1201,8 +1201,8 @@ describe('claudeRemote compact summary promotion', () => {
             canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
             nextMessage: async () => {
                 nextCallCount += 1;
-                if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
-                return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'manual' } };
+                return { message: 'must stay queued', mode: { permissionMode: 'manual' } };
             },
             onReady: (completionEvent) => {
                 readyCount += 1;
@@ -1268,8 +1268,8 @@ describe('claudeRemote compact summary promotion', () => {
                 nextMessage: async () => {
                     nextCallCount += 1;
                     return nextCallCount === 1
-                        ? { message: '/compact', mode: { permissionMode: 'default' } }
-                        : { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                        ? { message: '/compact', mode: { permissionMode: 'manual' } }
+                        : { message: 'must stay queued', mode: { permissionMode: 'manual' } };
                 },
                 onReady: (completionEvent) => {
                     readyEvents.push(completionEvent);
@@ -1317,8 +1317,8 @@ describe('claudeRemote compact summary promotion', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => {
                     nextCallCount += 1;
-                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
-                    return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'manual' } };
+                    return { message: 'must stay queued', mode: { permissionMode: 'manual' } };
                 },
                 onReady: async () => {
                     throw new Error('ready failed');
@@ -1375,7 +1375,7 @@ describe('claudeRemote compact summary promotion', () => {
                 sessionId: 's-9', path: transcriptDir, mcpServers: {}, claudeEnvVars: {},
                 claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
-                nextMessage: async () => ({ message: '/compact', mode: { permissionMode: 'default' } }),
+                nextMessage: async () => ({ message: '/compact', mode: { permissionMode: 'manual' } }),
                 onReady: async () => {
                     throw new Error('ready failed after prompt end');
                 },
@@ -1433,8 +1433,8 @@ describe('claudeRemote compact summary promotion', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async () => {
                     nextCallCount += 1;
-                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'default' } };
-                    return { message: 'must stay queued', mode: { permissionMode: 'default' } };
+                    if (nextCallCount === 1) return { message: '/compact', mode: { permissionMode: 'manual' } };
+                    return { message: 'must stay queued', mode: { permissionMode: 'manual' } };
                 },
                 onReady: () => {
                     readyCount += 1;
@@ -1491,7 +1491,7 @@ describe('claudeRemote compact summary promotion', () => {
                     nextMessage: async () => {
                         nextCallCount += 1;
                         if (nextCallCount === 1) {
-                            return { message: '/compact', mode: { permissionMode: 'default' } };
+                            return { message: '/compact', mode: { permissionMode: 'manual' } };
                         }
                         return null;
                     },
@@ -1531,12 +1531,12 @@ describe('claudeRemote compact summary promotion', () => {
 
 describe('claudeRemote native permission mode', () => {
     // A process launched natively in acceptEdits/bypassPermissions never calls
-    // canCallTool, so switching the session back to Default mid-session would
+    // canCallTool, so switching the session back to Manual mid-session would
     // silently keep auto-approving tools.
     it.each([
-        ['default', 'default'],
-        ['acceptEdits', 'default'],
-        ['bypassPermissions', 'default'],
+        ['manual', 'manual'],
+        ['acceptEdits', 'manual'],
+        ['bypassPermissions', 'manual'],
         ['plan', 'plan'],
         ['auto', 'auto'],
     ] as const)('launches Claude for %s with --permission-mode %s', async (sessionMode, nativeMode) => {
@@ -1579,7 +1579,7 @@ describe('claudeRemote live permission mode', () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const setPermissionMode = vi.fn(async () => {});
-        let listener: ((mode: 'default' | 'auto' | 'acceptEdits' | 'bypassPermissions') => void) | null = null;
+        let listener: ((mode: 'manual' | 'auto' | 'acceptEdits' | 'bypassPermissions') => void) | null = null;
         const setPermissionModeListener = vi.fn((next: typeof listener) => {
             listener = next;
         });
@@ -1605,7 +1605,7 @@ describe('claudeRemote live permission mode', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 setPermissionModeListener,
                 nextMessage: async () => nextCallCount++ === 0
-                    ? { message: 'A', mode: { permissionMode: 'default' } }
+                    ? { message: 'A', mode: { permissionMode: 'manual' } }
                     : null,
                 onReady: () => {},
                 isAborted: () => false,
@@ -1613,7 +1613,7 @@ describe('claudeRemote live permission mode', () => {
                 onMessage: () => {}
             });
 
-            expect(setPermissionMode.mock.calls).toEqual([['auto'], ['default']]);
+            expect(setPermissionMode.mock.calls).toEqual([['auto'], ['manual']]);
             expect(setPermissionModeListener).toHaveBeenLastCalledWith(null);
         } finally {
             queryMock.mockReset();
@@ -1623,10 +1623,10 @@ describe('claudeRemote live permission mode', () => {
 });
 
 describe('claudeRemote rejected permission mode', () => {
-    async function run(stream: (listener: (mode: 'default' | 'auto' | 'bypassPermissions') => void) => SDKMessage[], startMode: 'default' | 'auto', setPermissionMode: (mode: string) => Promise<void>) {
+    async function run(stream: (listener: (mode: 'manual' | 'auto' | 'bypassPermissions') => void) => SDKMessage[], startMode: 'manual' | 'auto', setPermissionMode: (mode: string) => Promise<void>) {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
-        let listener: ((mode: 'default' | 'auto' | 'bypassPermissions') => void) | null = null;
+        let listener: ((mode: 'manual' | 'auto' | 'bypassPermissions') => void) | null = null;
         const onPermissionModeRejected = vi.fn();
         queryMock.mockReturnValueOnce({
             setPermissionMode,
@@ -1667,7 +1667,7 @@ describe('claudeRemote rejected permission mode', () => {
             set('bypassPermissions');
             set('auto');
             return [{ type: 'result', subtype: 'success' } as unknown as SDKMessage];
-        }, 'default', async () => {
+        }, 'manual', async () => {
             throw new Error('Cannot set permission mode to auto: auto mode disabled by settings');
         });
         expect(rejected.mock.calls).toEqual([['bypassPermissions', 'Cannot set permission mode to auto: auto mode disabled by settings']]);
@@ -1679,7 +1679,7 @@ describe('claudeRemote rejected permission mode', () => {
             set('bypassPermissions');
             set('auto');
             return [{ type: 'result', subtype: 'success' } as unknown as SDKMessage];
-        }, 'default', async (mode) => {
+        }, 'manual', async (mode) => {
             if (mode === 'auto') {
                 throw new Error('auto unavailable');
             }
@@ -1687,12 +1687,12 @@ describe('claudeRemote rejected permission mode', () => {
         expect(rejected.mock.calls).toEqual([['bypassPermissions', 'auto unavailable']]);
     });
 
-    it('reports when Claude starts in default instead of auto', async () => {
+    it('reports when Claude starts in manual instead of auto', async () => {
         const rejected = await run(() => [
             { type: 'system', subtype: 'init', permissionMode: 'default' } as unknown as SDKMessage,
             { type: 'result', subtype: 'success' } as unknown as SDKMessage
         ], 'auto', async () => {});
-        expect(rejected).toHaveBeenCalledWith('default', expect.stringContaining('auto'));
+        expect(rejected).toHaveBeenCalledWith('manual', expect.stringContaining('auto'));
     });
 });
 
@@ -1725,7 +1725,7 @@ describe('claudeRemote live effort', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 setEffortApplier,
                 nextMessage: async () => nextCallCount++ === 0
-                    ? { message: 'A', mode: { permissionMode: 'default', effort: 'high' } }
+                    ? { message: 'A', mode: { permissionMode: 'manual', effort: 'high' } }
                     : null,
                 onReady: () => {},
                 isAborted: () => false,

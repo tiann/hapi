@@ -458,9 +458,9 @@ class NewSessionLogicTest {
 
     @Test
     fun `resolve preferred launch settings validates static lists and coerces stale values`() {
-        // Nothing stored → sentinels (shared-mode flavors resolve 'default').
+        // Nothing stored → sentinels (shared-mode flavors resolve their base mode).
         assertEquals(
-            PreferredLaunchSettings(permissionMode = "default"),
+            PreferredLaunchSettings(permissionMode = "manual"),
             NewSessionLogic.resolvePreferredLaunchSettings("claude", null),
         )
 
@@ -473,7 +473,7 @@ class NewSessionLogicTest {
             ),
         )
         assertEquals(
-            PreferredLaunchSettings(permissionMode = "default"),
+            PreferredLaunchSettings(permissionMode = "manual"),
             NewSessionLogic.resolvePreferredLaunchSettings(
                 "claude",
                 PreferredLaunchSettings(model = "removed-model", effort = "ultra", permissionMode = "bogus"),

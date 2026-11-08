@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, isKnownFlavor, isLiveLifecycleState, isPermissionModeAllowedForFlavor, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -3764,11 +3764,15 @@ export class SyncEngine {
         }
 
         const metadataPermissionMode = session.metadata?.preferredPermissionMode
-        const preferredPermissionMode = metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
+        const requestedPermissionMode = metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
             ? metadataPermissionMode
             : opts?.permissionMode
                 ?? session.permissionMode
                 ?? metadataPermissionMode
+        // A mode stored before a catalog rename (Claude `default` → `manual`) starts in the flavor's base mode.
+        const preferredPermissionMode = requestedPermissionMode && isPermissionModeAllowedForFlavor(requestedPermissionMode, flavor)
+            ? requestedPermissionMode
+            : undefined
         const resumedStartingMode =
             (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
                 ? 'pty'

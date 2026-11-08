@@ -77,7 +77,7 @@ describe('claudeRemote/query real seam', () => {
             nextMessage: async () => {
                 nextCallCount += 1
                 if (nextCallCount === 1) {
-                    return { message: 'A', mode: { permissionMode: 'default' } }
+                    return { message: 'A', mode: { permissionMode: 'manual' } }
                 }
                 throw new Error('next message failed')
             },

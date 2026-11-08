@@ -44,7 +44,7 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
         model: String = "auto",
         effort: String = "auto",
         modelReasoningEffort: String = "default",
-        permissionMode: PermissionMode = .default,
+        permissionMode: PermissionMode? = nil,
         yolo: Bool = false,
         sessionType: SpawnSessionType = .simple,
         worktreeName: String = "",
@@ -58,7 +58,7 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
         self.model = model
         self.effort = effort
         self.modelReasoningEffort = modelReasoningEffort
-        self.permissionMode = permissionMode
+        self.permissionMode = permissionMode ?? basePermissionMode(forFlavor: agent.rawValue)
         self.yolo = yolo
         self.sessionType = sessionType
         self.worktreeName = worktreeName
@@ -90,7 +90,7 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
         modelReasoningEffort = try container.decodeIfPresent(String.self, forKey: .modelReasoningEffort)
             ?? "default"
         permissionMode = try container.decodeIfPresent(PermissionMode.self, forKey: .permissionMode)
-            ?? .default
+            ?? basePermissionMode(forFlavor: agent.rawValue)
         yolo = try container.decodeIfPresent(Bool.self, forKey: .yolo) ?? false
         sessionType = try container.decodeIfPresent(SpawnSessionType.self, forKey: .sessionType)
             ?? .simple
@@ -460,7 +460,7 @@ public enum NewSessionLogic {
             worktreeName: draft.worktreeName
         )
         if !base.agent.permissionModes.contains(base.permissionMode) {
-            base.permissionMode = .default
+            base.permissionMode = basePermissionMode(forFlavor: base.agent.rawValue)
         }
         return base
     }

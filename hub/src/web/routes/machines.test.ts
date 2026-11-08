@@ -251,13 +251,13 @@ describe('machines routes', () => {
             body: JSON.stringify({
                 directory: '/tmp/project',
                 agent: 'claude',
-                permissionMode: 'default'
+                permissionMode: 'manual'
             })
         })
 
         expect(response.status).toBe(200)
         expect(capturedAgent).toBe('claude')
-        expect(capturedPermissionMode).toBe('default')
+        expect(capturedPermissionMode).toBe('manual')
     })
 
     it('preserves explicit yolo boolean when permissionMode is omitted', async () => {

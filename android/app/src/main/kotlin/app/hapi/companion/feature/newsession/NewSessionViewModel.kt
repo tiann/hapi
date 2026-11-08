@@ -384,7 +384,7 @@ class NewSessionViewModel(
                 model = "auto",
                 effort = "auto",
                 modelReasoningEffort = "default",
-                permissionMode = "default",
+                permissionMode = PermissionModes.baseForFlavor(agent).wireId,
                 serviceTier = "standard",
                 collaborationMode = "default",
                 copilotAgentMode = "interactive",
@@ -548,7 +548,7 @@ class NewSessionViewModel(
                 effort = resolved.effort,
                 modelReasoningEffort = resolved.modelReasoningEffort,
                 permissionMode = if (usesSharedPermissionModeState(agent)) {
-                    resolved.permissionMode ?: "default"
+                    resolved.permissionMode ?: PermissionModes.baseForFlavor(agent).wireId
                 } else {
                     current.permissionMode
                 },

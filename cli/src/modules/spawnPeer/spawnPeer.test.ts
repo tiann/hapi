@@ -1689,7 +1689,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
         await spawnPeer({
             directory: '/tmp/project',
             message: 'brief',
-            permissionMode: 'default',
+            permissionMode: 'manual',
             machineId: MACHINE_ID,
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
@@ -1700,7 +1700,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
             directory: '/tmp/project',
             agent: 'claude',
             sessionType: 'simple',
-            permissionMode: 'default',
+            permissionMode: 'manual',
             model: 'sonnet'
         })
         expect(spawnedBody).not.toHaveProperty('yolo')

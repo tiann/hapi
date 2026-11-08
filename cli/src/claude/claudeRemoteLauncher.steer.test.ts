@@ -100,7 +100,7 @@ function createClientStub() {
     }
 }
 
-const DEFAULT_MODE: EnhancedMode = { permissionMode: 'default' }
+const DEFAULT_MODE: EnhancedMode = { permissionMode: 'manual' }
 
 async function startTurn() {
     const client = createClientStub()
@@ -121,7 +121,7 @@ async function startTurn() {
         startedBy: 'runner',
         startingMode: 'remote',
         hookSettingsPath: '/tmp/hook.json',
-        permissionMode: 'default'
+        permissionMode: 'manual'
     })
     queue.push('Run the tests', DEFAULT_MODE, 'first')
     const launched = claudeRemoteLauncher(session as any)

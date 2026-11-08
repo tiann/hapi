@@ -8,7 +8,7 @@ import type { EnhancedMode } from './loop'
 // mode change) must still seed modeHash/mode. Before the fix it left
 // modeHash=null, so the NEXT mode switch passed the `(modeHash && hash !==
 // modeHash)` check and was fed into a process spawned with the old
-// --permission-mode — e.g. an 'auto' turn silently running as 'default'
+// --permission-mode — e.g. an 'auto' turn silently running as 'manual'
 // (tiann/hapi permission "Auto 完全无效" report).
 const harness = vi.hoisted(() => ({
     // One entry per claudeRemote() call that actually received an initial
@@ -130,7 +130,7 @@ function createSession(client: ReturnType<typeof createClientStub>) {
         startedBy: 'runner',
         startingMode: 'remote',
         hookSettingsPath: '/tmp/hook.json',
-        permissionMode: 'default'
+        permissionMode: 'manual'
     })
     return { session, queue }
 }
@@ -151,12 +151,12 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
         const { session, queue } = createSession(client)
 
         try {
-            // default -> auto -> default: the middle switch parks 'two', so the
+            // manual -> auto -> manual: the middle switch parks 'two', so the
             // second attempt starts from `pending`. The third message then
             // switches modes again and must NOT be fed into the auto process.
-            queue.push('one', { permissionMode: 'default' }, 'local-1')
+            queue.push('one', { permissionMode: 'manual' }, 'local-1')
             queue.push('two', { permissionMode: 'auto' }, 'local-2')
-            queue.push('three', { permissionMode: 'default' }, 'local-3')
+            queue.push('three', { permissionMode: 'manual' }, 'local-3')
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             }
@@ -164,9 +164,9 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
             await claudeRemoteLauncher(session as any)
 
             expect(harness.spawns).toEqual([
-                { permissionMode: 'default', effort: undefined, messages: ['one'] },
+                { permissionMode: 'manual', effort: undefined, messages: ['one'] },
                 { permissionMode: 'auto', effort: undefined, messages: ['two'] },
-                { permissionMode: 'default', effort: undefined, messages: ['three'] }
+                { permissionMode: 'manual', effort: undefined, messages: ['three'] }
             ])
         } finally {
             session.stopKeepAlive()
@@ -208,14 +208,14 @@ describe('claudeRemoteLauncher live effort changes', () => {
         }
 
         await run([
-            ['one', { permissionMode: 'default', effort: 'high' }],
-            ['two', { permissionMode: 'default', effort: 'low' }],
-            ['three', { permissionMode: 'default' }]
+            ['one', { permissionMode: 'manual', effort: 'high' }],
+            ['two', { permissionMode: 'manual', effort: 'low' }],
+            ['three', { permissionMode: 'manual' }]
         ], 'three')
 
         expect(applied).toEqual(['low', null])
         expect(harness.spawns).toEqual([
-            { permissionMode: 'default', effort: 'high', messages: ['one', 'two', 'three'] }
+            { permissionMode: 'manual', effort: 'high', messages: ['one', 'two', 'three'] }
         ])
     })
 
@@ -223,13 +223,13 @@ describe('claudeRemoteLauncher live effort changes', () => {
         harness.effortApplier = async () => false
 
         await run([
-            ['one', { permissionMode: 'default', effort: 'high' }],
-            ['two', { permissionMode: 'default', effort: 'low' }]
+            ['one', { permissionMode: 'manual', effort: 'high' }],
+            ['two', { permissionMode: 'manual', effort: 'low' }]
         ], 'two')
 
         expect(harness.spawns).toEqual([
-            { permissionMode: 'default', effort: 'high', messages: ['one'] },
-            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+            { permissionMode: 'manual', effort: 'high', messages: ['one'] },
+            { permissionMode: 'manual', effort: 'low', messages: ['two'] }
         ])
     })
 
@@ -244,14 +244,14 @@ describe('claudeRemoteLauncher live effort changes', () => {
         }
 
         await run([
-            ['one', { permissionMode: 'default', effort: 'high' }],
-            ['two', { permissionMode: 'default', effort: 'low' }]
+            ['one', { permissionMode: 'manual', effort: 'high' }],
+            ['two', { permissionMode: 'manual', effort: 'low' }]
         ], 'two')
 
         expect(applied).toEqual(['low'])
         expect(harness.spawns).toEqual([
-            { permissionMode: 'default', effort: 'high', messages: ['one'] },
-            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+            { permissionMode: 'manual', effort: 'high', messages: ['one'] },
+            { permissionMode: 'manual', effort: 'low', messages: ['two'] }
         ])
     })
 
@@ -260,14 +260,14 @@ describe('claudeRemoteLauncher live effort changes', () => {
         harness.effortApplier = applier
 
         await run([
-            ['one', { permissionMode: 'default', effort: 'high' }],
-            ['two', { permissionMode: 'default', effort: 'low', model: 'claude-sonnet-5-5' }]
+            ['one', { permissionMode: 'manual', effort: 'high' }],
+            ['two', { permissionMode: 'manual', effort: 'low', model: 'claude-sonnet-5-5' }]
         ], 'two')
 
         expect(applier).not.toHaveBeenCalled()
         expect(harness.spawns).toEqual([
-            { permissionMode: 'default', effort: 'high', messages: ['one'] },
-            { permissionMode: 'default', effort: 'low', messages: ['two'] }
+            { permissionMode: 'manual', effort: 'high', messages: ['one'] },
+            { permissionMode: 'manual', effort: 'low', messages: ['two'] }
         ])
     })
 })

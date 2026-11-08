@@ -22,6 +22,7 @@ enum class PermissionMode(
     val tone: PermissionModeTone,
 ) {
     Default("default", "Default", PermissionModeTone.Neutral),
+    Manual("manual", "Manual", PermissionModeTone.Neutral),
     AcceptEdits("acceptEdits", "Accept Edits", PermissionModeTone.Warning),
     Auto("auto", "Auto", PermissionModeTone.Warning),
     BypassPermissions("bypassPermissions", "Yolo", PermissionModeTone.Danger),
@@ -50,7 +51,7 @@ object PermissionModes {
 
     /** `CLAUDE_PERMISSION_MODES`. */
     val CLAUDE = listOf(
-        PermissionMode.Default, PermissionMode.AcceptEdits, PermissionMode.Auto,
+        PermissionMode.Manual, PermissionMode.AcceptEdits, PermissionMode.Auto,
         PermissionMode.BypassPermissions, PermissionMode.Plan,
     )
 
@@ -103,6 +104,10 @@ object PermissionModes {
     /** `isPermissionModeAllowedForFlavor`. */
     fun isAllowedForFlavor(mode: PermissionMode, flavor: String?): Boolean =
         mode in forFlavor(flavor)
+
+    /** `getBasePermissionModeForFlavor`: Claude calls its base mode `manual`. */
+    fun baseForFlavor(flavor: String?): PermissionMode =
+        if (forFlavor(flavor) === CLAUDE) PermissionMode.Manual else PermissionMode.Default
 }
 
 /** `CODEX_COLLABORATION_MODES` + labels. */

@@ -99,7 +99,7 @@ async function startRemote(firstMessage = 'Run the tests') {
         nextMessage: async () => {
             if (!delivered) {
                 delivered = true;
-                return { message: firstMessage, mode: { permissionMode: 'default' } };
+                return { message: firstMessage, mode: { permissionMode: 'manual' } };
             }
             return null;
         },
@@ -224,7 +224,7 @@ describe('claudeRemote steering', () => {
             nextMessage: async () => {
                 if (delivered) return null;
                 delivered = true;
-                return { message: 'Run the tests', mode: { permissionMode: 'default' } };
+                return { message: 'Run the tests', mode: { permissionMode: 'manual' } };
             },
             onReady: () => {},
             isAborted: () => false,

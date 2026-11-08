@@ -32,7 +32,7 @@ object PermissionModeChipRule {
     fun displayMode(rawMode: String?, flavor: String?): PermissionMode? {
         val mode = PermissionMode.fromWireId(rawMode) ?: return null
         if (!PermissionModes.isAllowedForFlavor(mode, flavor)) return null
-        if (mode == PermissionMode.Default && flavor != "copilot") return null
+        if (mode == PermissionModes.baseForFlavor(flavor) && flavor != "copilot") return null
         return mode
     }
 }

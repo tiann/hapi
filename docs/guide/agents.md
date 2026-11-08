@@ -12,7 +12,7 @@ agent's integration; their supported syntax varies by agent.
 
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |
 |-------|---------|-------------|:-----:|:------:|------------------|:------:|
-| Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
+| Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `manual` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
 | Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `autoReview` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |

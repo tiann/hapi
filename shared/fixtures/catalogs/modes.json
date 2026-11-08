@@ -24,8 +24,8 @@
         ],
         "claude": [
             {
-                "label": "Default",
-                "mode": "default",
+                "label": "Manual",
+                "mode": "manual",
                 "tone": "neutral"
             },
             {

@@ -12,10 +12,10 @@ import kotlin.test.assertNull
  */
 class PermissionModeChipTest {
 
-    @Test fun defaultHidesEverywhereExceptCopilot() {
-        assertNull(PermissionModeChipRule.displayMode("default", "claude"))
+    @Test fun baseModeHidesEverywhereExceptCopilot() {
+        assertNull(PermissionModeChipRule.displayMode("manual", "claude"))
         assertNull(PermissionModeChipRule.displayMode("default", "codex"))
-        assertNull(PermissionModeChipRule.displayMode("default", null))
+        assertNull(PermissionModeChipRule.displayMode("manual", null))
         assertEquals(PermissionMode.Default, PermissionModeChipRule.displayMode("default", "copilot"))
     }
 

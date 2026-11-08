@@ -18,7 +18,7 @@ const responseSchema = z.object({
     id: z.string(),
     approved: z.boolean(),
     reason: z.string().optional(),
-    mode: z.enum(['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan']).optional(),
+    mode: z.enum(['manual', 'acceptEdits', 'auto', 'bypassPermissions', 'plan']).optional(),
     allowTools: z.array(z.string()).optional(),
     answers: z.union([
         z.record(z.string(), z.array(z.string().min(1)).min(1)),

@@ -77,11 +77,11 @@ describe('parsePlan', () => {
         });
     });
 
-    it('should parse /plan off as default mode', () => {
+    it('should parse /plan off as manual mode', () => {
         const result = parsePlan('/plan off');
         expect(result).toEqual({
             isPlan: true,
-            mode: 'default',
+            mode: 'manual',
             prompt: undefined
         });
     });

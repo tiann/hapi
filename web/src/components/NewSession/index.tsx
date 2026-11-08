@@ -2,7 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, ty
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
-import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getBasePermissionModeForFlavor, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -173,7 +173,7 @@ export function NewSession(props: {
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
-    const [nativePermissionMode, setNativePermissionMode] = useState<PermissionMode>('default')
+    const [nativePermissionMode, setNativePermissionMode] = useState<PermissionMode>(() => getBasePermissionModeForFlavor(agent))
     const [grokPermissionMode, setGrokPermissionMode] = useState<GrokPermissionMode>('default')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -240,7 +240,7 @@ export function NewSession(props: {
         setEffort('auto')
         setModelReasoningEffort('default')
         setGrokPermissionMode('default')
-        setNativePermissionMode('default')
+        setNativePermissionMode(getBasePermissionModeForFlavor(agent))
         setServiceTier('standard')
         setCollaborationMode('default')
         setCopilotAgentMode('interactive')
@@ -364,7 +364,7 @@ export function NewSession(props: {
             ) {
                 const bridged = legacyYoloBridge.enabled
                     ? resolveHapiYoloPermissionMode(targetAgent)
-                    : 'default'
+                    : getBasePermissionModeForFlavor(targetAgent)
                 if (bridged) {
                     setNativePermissionMode(bridged)
                 }
@@ -1123,7 +1123,7 @@ export function NewSession(props: {
         setModelReasoningEffort(preferred.modelReasoningEffort)
         setServiceTier(agent === 'codex' ? preferred.serviceTier ?? 'standard' : 'standard')
         if (usesSharedPermissionMode) {
-            setNativePermissionMode(preferred.permissionMode ?? 'default')
+            setNativePermissionMode(preferred.permissionMode ?? getBasePermissionModeForFlavor(agent))
         }
         if (agent === 'grok' && !editedPermissionRef.current) {
             const hubMode = hubPermissionModeRef.current

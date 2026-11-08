@@ -85,7 +85,7 @@ struct CatalogTests {
     }
 
     @Test func claudeSetIsTheFallbackForNilAndUnknownFlavors() {
-        let expected: [PermissionMode] = [.default, .acceptEdits, .auto, .bypassPermissions, .plan]
+        let expected: [PermissionMode] = [.manual, .acceptEdits, .auto, .bypassPermissions, .plan]
         #expect(permissionModes(forFlavor: "claude") == expected)
         #expect(permissionModes(forFlavor: nil) == expected)
         #expect(permissionModes(forFlavor: "some-future-agent") == expected)
@@ -109,12 +109,13 @@ struct CatalogTests {
 
     // MARK: - Labels, tones, raw values (modes.ts data tables)
 
-    @Test func permissionModeCatalogHasThirteenEntries() {
-        #expect(PermissionMode.allCases.count == 13)
+    @Test func permissionModeCatalogHasFourteenEntries() {
+        #expect(PermissionMode.allCases.count == 14)
     }
 
     @Test func labelsMatchModesTs() {
         #expect(PermissionMode.default.label == "Default")
+        #expect(PermissionMode.manual.label == "Manual")
         #expect(PermissionMode.acceptEdits.label == "Accept Edits")
         #expect(PermissionMode.bypassPermissions.label == "Yolo")
         #expect(PermissionMode.autoReview.label == "Auto")

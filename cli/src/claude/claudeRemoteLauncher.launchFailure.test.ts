@@ -104,7 +104,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
 
     it('restores the dequeued message into the queue when claudeRemote throws before onReady', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-        queue.push('hello', { permissionMode: 'default' });
+        queue.push('hello', { permissionMode: 'manual' });
 
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -143,7 +143,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
 
     it('does not restore /compact after its SDK result was accepted', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-        queue.push('/compact', { permissionMode: 'default' });
+        queue.push('/compact', { permissionMode: 'manual' });
 
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -173,7 +173,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
 
     it('sends the result carrier before compact completion and ready', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-        queue.push('/compact', { permissionMode: 'default' });
+        queue.push('/compact', { permissionMode: 'manual' });
 
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -227,8 +227,8 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         // with the same two items in the same order with their own localIds
         // intact.
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-        queue.push('first', { permissionMode: 'default' }, 'local-id-1');
-        queue.push('second', { permissionMode: 'default' }, 'local-id-2');
+        queue.push('first', { permissionMode: 'manual' }, 'local-id-1');
+        queue.push('second', { permissionMode: 'manual' }, 'local-id-2');
 
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -368,7 +368,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         // "a message was actually delivered this attempt", not only on
         // "onReady fired this attempt".
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-        queue.push('/clear', { permissionMode: 'default' });
+        queue.push('/clear', { permissionMode: 'manual' });
 
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -435,7 +435,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         // this oscillation would reset the streak every other attempt and the
         // cap would never fire.
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
-        queue.pushIsolateAndClear('/compact', { permissionMode: 'default' });
+        queue.pushIsolateAndClear('/compact', { permissionMode: 'manual' });
 
         const client = makeClient();
         const session = makeSession(queue, client);
