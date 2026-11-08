@@ -456,6 +456,71 @@ describe('ScratchlistPanel', () => {
         expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull()
     })
 
+    it('keeps idle draft text selectable with the native touch menu without starting a row drag', () => {
+        vi.useFakeTimers()
+        try {
+            persistScratchlist(SID, [makeEntry({ id: 'native-idle-menu', text: 'select this draft' })])
+            renderPanel()
+            expandPanel()
+
+            const text = screen.getByTestId('scratchlist-entry-text')
+            expect(text).toHaveClass('select-text')
+            expect(text).toHaveClass('w-fit')
+            expect(text).not.toHaveClass('w-full')
+            fireTouchEvent(text, 'touchstart', [
+                { identifier: 1, clientX: 10, clientY: 10 },
+            ])
+            act(() => vi.advanceTimersByTime(500))
+
+            const row = text.closest('li')
+            expect(row).not.toHaveAttribute('data-dragging')
+            const event = createEvent.contextMenu(text)
+            fireEvent(text, event)
+
+            expect(event.defaultPrevented).toBe(false)
+            expect(screen.queryByTestId('scratchlist-action-menu')).toBeNull()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('keeps a short click on row whitespace available for inline editing', () => {
+        persistScratchlist(SID, [makeEntry({ id: 'whitespace-edit', text: 'short note' })])
+        renderPanel()
+        expandPanel()
+
+        fireEvent.click(screen.getByTestId('scratchlist-entry'))
+
+        expect(screen.getByRole('textbox', { name: 'Edit scratchlist entry' })).toBeInTheDocument()
+    })
+
+    it('starts row drag from More actions on long press without opening its menu on release', () => {
+        vi.useFakeTimers()
+        try {
+            persistScratchlist(SID, [makeEntry({ id: 'more-drag', text: 'drag from the right edge' })])
+            renderPanel()
+            expandPanel()
+
+            const row = screen.getByTestId('scratchlist-entry')
+            const more = within(row).getByRole('button', { name: 'More actions' })
+            fireTouchEvent(more, 'touchstart', [
+                { identifier: 1, clientX: 280, clientY: 20 },
+            ])
+            act(() => vi.advanceTimersByTime(450))
+            expect(row).toHaveAttribute('data-dragging', '')
+
+            fireTouchEvent(more, 'touchend', [], [
+                { identifier: 1, clientX: 280, clientY: 60 },
+            ])
+            fireEvent.click(more)
+            expect(screen.queryByRole('menu')).toBeNull()
+
+            fireEvent.click(more)
+            expect(screen.getByRole('menu')).toBeInTheDocument()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
     it('preserves the native context menu while inline editing', () => {
         persistScratchlist(SID, [makeEntry({ id: 'native-menu', text: 'edit me' })])
         renderPanel()
@@ -574,6 +639,34 @@ describe('ScratchlistPanel', () => {
             entry,
             { type: 'preset', preset: '+5m' },
         ))
+    })
+
+    it('closes Send now immediately while the queued mutation is still starting', async () => {
+        const { ScratchlistDrawer } = await import('./ScratchlistPanel')
+        const entry = makeEntry({ id: 'slow-send-entry', text: 'send this slowly' })
+        let finish!: (value: boolean) => void
+        const onSend = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawer
+                    entries={[entry]}
+                    sessionId={SID}
+                    api={{} as never}
+                    onUpdate={vi.fn()}
+                    onReorder={vi.fn()}
+                    onDelete={vi.fn()}
+                    onSend={onSend}
+                />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Send now' }))
+
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith(entry))
+        expect(screen.queryByRole('menu')).toBeNull()
+        await act(async () => { finish(true) })
     })
 
     it('omits resume-dependent send actions when no active-session sender is available', async () => {

@@ -150,6 +150,18 @@ for (const mobile of [false, true]) {
                     if (request.method() === 'POST' && new URL(request.url()).pathname === `/api/sessions/${sessionId}/messages`) payloads.push(request.postDataJSON())
                 }
                 page.on('request', recordMessage)
+                let releaseOptimisticUpload: (() => void) | null = null
+                let optimisticUploadStarted = false
+                const optimisticUploadGate = new Promise<void>((resolve) => {
+                    releaseOptimisticUpload = resolve
+                })
+                if (scenario === 'images') {
+                    await page.route(`**/api/sessions/${sessionId}/upload`, async route => {
+                        optimisticUploadStarted = true
+                        await optimisticUploadGate
+                        await route.continue()
+                    }, { times: 1 })
+                }
                 if (scenario === 'mixed') {
                     // Staging fails before any send. The original durable draft must remain.
                     let stagingFailed = false
@@ -178,6 +190,14 @@ for (const mobile of [false, true]) {
                     await picker.getByRole('button', { name: 'Schedule send', exact: true }).click()
                 } else {
                     await page.getByRole('menuitem', { name: 'Send now', exact: true }).click()
+                }
+                if (scenario === 'images') {
+                    await expect.poll(() => optimisticUploadStarted).toBe(true)
+                    const optimisticQueue = page.getByRole('status', { name: /1 queued message pending invocation/ })
+                    await expect(optimisticQueue).toContainText(marker)
+                    await expect(page.getByRole('menuitem', { name: 'Send now', exact: true })).toHaveCount(0)
+                    await page.screenshot({ path: testInfo.outputPath('send-now-optimistic-before-staging-completes.png') })
+                    releaseOptimisticUpload?.()
                 }
                 await expect.poll(() => payloads.length).toBe(1)
                 if (scenario !== 'scheduled') {

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useSendMessage, type SendMessageAcceptance } from './useSendMessage'
 import { ApiError, type ApiClient } from '@/api/client'
+import type { AttachmentMetadata } from '@/types/api'
 
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: vi.fn(),
@@ -20,6 +21,14 @@ vi.mock('@/hooks/usePlatform', () => ({
 
 vi.mock('@/lib/messages', () => ({
     makeClientSideId: vi.fn(() => 'local-id-1'),
+}))
+
+vi.mock('@/lib/scratchlistAttachmentFlow', () => ({
+    prepareScratchlistAttachmentsForSend: vi.fn(async (
+        _api: unknown,
+        _sessionId: string,
+        attachments: AttachmentMetadata[],
+    ) => ({ attachments, staged: [] })),
 }))
 
 function createWrapper() {
@@ -148,6 +157,57 @@ describe('useSendMessage', () => {
         await waitFor(() => {
             expect(updateMock).toHaveBeenCalledWith('session-A', 'local-id-1', 'queued')
         })
+    })
+
+    it('shows the optimistic queued row before scratchlist attachment staging finishes', async () => {
+        const preparation = deferred<{ attachments: AttachmentMetadata[]; staged: AttachmentMetadata[] }>()
+        const { prepareScratchlistAttachmentsForSend } = await import('@/lib/scratchlistAttachmentFlow')
+        vi.mocked(prepareScratchlistAttachmentsForSend).mockReturnValueOnce(preparation.promise)
+        const sendMock = vi.fn(async () => {})
+        const api = createMockApi(sendMock)
+        const { appendOptimisticMessage } = await import('@/lib/message-window-store')
+        const hubAttachment: AttachmentMetadata = {
+            id: '11111111-1111-4111-8111-111111111111',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 1024,
+            path: 'hapi-hub:scratchlist/default/session-A/11111111-1111-4111-8111-111111111111-photo.png',
+        }
+        const stagedAttachment = { ...hubAttachment, path: '/uploads/photo.png' }
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A'),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            void result.current.sendMessage('queued with image', [hubAttachment], null, 'queue')
+        })
+
+        await waitFor(() => expect(appendOptimisticMessage).toHaveBeenCalledWith(
+            'session-A',
+            expect.objectContaining({
+                status: 'sending',
+                content: expect.objectContaining({
+                    content: expect.objectContaining({ attachments: [hubAttachment] }),
+                }),
+            }),
+        ))
+        expect(sendMock).not.toHaveBeenCalled()
+
+        await act(async () => {
+            preparation.resolve({ attachments: [stagedAttachment], staged: [stagedAttachment] })
+            await preparation.promise
+        })
+
+        await waitFor(() => expect(sendMock).toHaveBeenCalledWith(
+            'session-A',
+            'queued with image',
+            'local-id-1',
+            [stagedAttachment],
+            null,
+            'queue',
+        ))
     })
 
     it('forwards delivery mode and retains it on the optimistic message', async () => {

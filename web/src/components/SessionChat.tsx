@@ -97,7 +97,6 @@ import {
     finalizeMigratedScratchlistParkCleanup,
     prepareScratchlistParkAttachments,
     stageScratchlistAttachmentsForComposeSend,
-    prepareScratchlistAttachmentsForSend,
     type PendingParkAttachment,
     type ScratchlistParkResult,
 } from '@/lib/scratchlistAttachmentFlow'
@@ -1230,31 +1229,16 @@ function SessionChatInner(props: SessionChatProps) {
         scheduledAt: number | null,
     ): Promise<boolean> => {
         const attachments = stripPreviewUrls(entry.attachments ?? [])
-        let sendAttachments: AttachmentMetadata[]
-        let staged: AttachmentMetadata[]
-        try {
-            const prepared = await prepareScratchlistAttachmentsForSend(
-                props.api, props.session.id, attachments, scheduledAt,
-            )
-            sendAttachments = prepared.attachments
-            staged = prepared.staged
-        } catch {
-            return false
-        }
-
+        // Start the mutation before staging Hub attachments so the optimistic
+        // queued row appears immediately. useSendMessage stages the durable
+        // scrub-list blobs inside the mutation and cleans them up on failure.
         const accepted = await props.onSend(
             entry.text,
-            sendAttachments.length > 0 ? sendAttachments : undefined,
+            attachments.length > 0 ? attachments : undefined,
             scheduledAt,
             'queue',
         )
-        if (!accepted) {
-            await Promise.allSettled(staged.map((attachment) => props.api.deleteUploadFile(
-                props.session.id,
-                attachment.path,
-            )))
-            return false
-        }
+        if (!accepted) return false
 
         // Keep the durable draft and its Hub attachments until the matching
         // mutation settles successfully. The tracker removes the row after

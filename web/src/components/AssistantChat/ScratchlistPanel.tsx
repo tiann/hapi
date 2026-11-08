@@ -229,7 +229,13 @@ type TouchDragState = {
 function isScratchlistActionTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return true
     if (target.closest('[data-scratchlist-action]')) return true
-    return Boolean(target.closest('textarea, input, select, a'))
+    return Boolean(target.closest('textarea, input, select, a, [data-scratchlist-text]'))
+}
+
+function isScratchlistDragBlockedTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return true
+    if (target.closest('[data-scratchlist-drag-trigger]')) return false
+    return isScratchlistActionTarget(target)
 }
 
 function getScratchlistDropTarget(
@@ -597,11 +603,11 @@ function ScratchlistInventory({
     ) => {
         if (!action || disabled || actionPendingEntryId || attachmentUploadPendingRef.current) return
         setActionPendingEntryId(entry.id)
+        closeMenu()
         try {
             await action(entry)
         } finally {
             setActionPendingEntryId(null)
-            closeMenu()
         }
     }, [actionPendingEntryId, closeMenu, disabled])
 
@@ -611,7 +617,7 @@ function ScratchlistInventory({
         // portals still bubble contextmenu events through the scratchlist row,
         // so the fullscreen viewer needs its own marker here as well.
         if (event.target instanceof Element && event.target.closest(
-            'textarea, input, select, a, [data-image-preview-trigger], [data-image-preview-viewer], [data-scratchlist-attachment-id]',
+            'textarea, input, select, a, [data-scratchlist-text], [data-image-preview-trigger], [data-image-preview-viewer], [data-scratchlist-attachment-id]',
         )) {
             return
         }
@@ -796,7 +802,7 @@ function ScratchlistInventory({
     }, [editingEntryId, editingText])
 
     const handlePointerDown = useCallback((entry: ScratchlistEntry, event: ReactPointerEvent<HTMLLIElement>) => {
-        if (disabled || editingEntryId || event.pointerType === 'touch' || event.button !== 0 || isScratchlistActionTarget(event.target)) return
+        if (disabled || editingEntryId || event.pointerType === 'touch' || event.button !== 0 || isScratchlistDragBlockedTarget(event.target)) return
         const previous = pointerDragRef.current
         if (previous) clearPointerDrag(previous)
 
@@ -836,7 +842,7 @@ function ScratchlistInventory({
     }, [finishPointerGesture])
 
     const handleTouchStart = useCallback((entry: ScratchlistEntry, event: ReactTouchEvent<HTMLLIElement>) => {
-        if (disabled || editingEntryId || isScratchlistActionTarget(event.target)) return
+        if (disabled || editingEntryId || isScratchlistDragBlockedTarget(event.target)) return
         touchContextMenuRef.current = true
         window.setTimeout(() => {
             touchContextMenuRef.current = false
@@ -1059,6 +1065,10 @@ function ScratchlistInventory({
                         onTouchMove={handleTouchMove}
                         onTouchEnd={(event) => finishTouchGesture(event, true)}
                         onTouchCancel={(event) => finishTouchGesture(event, false)}
+                        onClick={(event) => {
+                            if (isScratchlistActionTarget(event.target)) return
+                            startEditing(entry)
+                        }}
                         onContextMenu={(event) => handleContextMenu(entry, event)}
                         className={`group relative flex shrink-0 min-h-9 select-none flex-col gap-1 rounded-md bg-[var(--app-bg)] px-2 py-1.5 transition-[background-color,opacity,box-shadow] hover:bg-[var(--app-subtle-bg)] focus-within:bg-[var(--app-subtle-bg)] ${
                             isDragging ? 'touch-none cursor-grabbing bg-[var(--app-subtle-bg)] opacity-90 ring-2 ring-inset ring-[var(--app-badge-warning-border)]' : 'touch-pan-y'
@@ -1135,7 +1145,7 @@ function ScratchlistInventory({
                                             onReorder(entry.id, targetIndex)
                                         }}
                                         disabled={disabled}
-                                        className="min-h-6 min-w-0 w-full cursor-text rounded text-left text-sm leading-6 text-[var(--app-fg)] outline-none line-clamp-4 whitespace-pre-wrap break-words focus-visible:ring-1 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="min-h-6 min-w-12 w-fit max-w-full cursor-text select-text rounded text-left text-sm leading-6 text-[var(--app-fg)] outline-none line-clamp-4 whitespace-pre-wrap break-words focus-visible:ring-1 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-60"
                                     >
                                         {entry.text}
                                     </button>
@@ -1144,6 +1154,7 @@ function ScratchlistInventory({
                             <button
                                 type="button"
                                 data-scratchlist-action="menu"
+                                data-scratchlist-drag-trigger=""
                                 data-scratchlist-copy-success={copySuccessEntryId === entry.id ? '' : undefined}
                                 aria-haspopup="menu"
                                 aria-expanded={menuState?.entryId === entry.id}
@@ -1152,6 +1163,10 @@ function ScratchlistInventory({
                                 onClick={(event) => {
                                     event.preventDefault()
                                     event.stopPropagation()
+                                    if (suppressClickRef.current) {
+                                        suppressClickRef.current = false
+                                        return
+                                    }
                                     const rect = event.currentTarget.getBoundingClientRect()
                                     openMenu(entry, rect.right, rect.bottom, 'end')
                                 }}

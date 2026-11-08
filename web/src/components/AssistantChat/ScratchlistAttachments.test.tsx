@@ -100,6 +100,17 @@ describe('scratchlist attachment controls', () => {
         expect(onAdd).toHaveBeenCalledTimes(1)
     })
 
+    it('matches the file chip height and centers the square add control beside every attachment type', () => {
+        render(<ScratchlistAttachments attachments={[photo, file]} onRemove={vi.fn()} onReorder={vi.fn()}
+            onAdd={vi.fn()} addLabel="Insert attachments" />)
+        const strip = screen.getByTestId('scratchlist-attachments')
+        const add = screen.getByTestId('scratchlist-insert-attachment-plus')
+        const fileChip = screen.getByTestId('scratchlist-attachment-file')
+        expect(strip).toHaveClass('items-center')
+        expect(fileChip).toHaveClass('h-10')
+        expect(add).toHaveClass('h-10', 'w-10')
+    })
+
     it('ignores sorting when disabled', () => {
         render(<ScratchlistAttachments attachments={[photo, file]} disabled onRemove={vi.fn()} onReorder={vi.fn()} />)
         expect(screen.queryByTestId('scratchlist-attachment-drag-handle')).not.toBeInTheDocument()

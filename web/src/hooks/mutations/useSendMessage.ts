@@ -12,6 +12,7 @@ import {
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { getRetryDeliveryMode } from '@/lib/messageDelivery'
+import { prepareScratchlistAttachmentsForSend } from '@/lib/scratchlistAttachmentFlow'
 
 type SendMessageInput = {
     sessionId: string
@@ -221,14 +222,33 @@ export function useSendMessage(
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(
-                input.sessionId,
-                input.text,
-                input.localId,
-                input.attachments,
-                input.scheduledAt,
-                input.deliveryMode,
-            )
+            let prepared: Awaited<ReturnType<typeof prepareScratchlistAttachmentsForSend>> | null = null
+            try {
+                if (input.attachments && input.attachments.length > 0) {
+                    prepared = await prepareScratchlistAttachmentsForSend(
+                        api,
+                        input.sessionId,
+                        input.attachments,
+                        input.scheduledAt ?? null,
+                    )
+                }
+                await api.sendMessage(
+                    input.sessionId,
+                    input.text,
+                    input.localId,
+                    prepared?.attachments ?? input.attachments,
+                    input.scheduledAt,
+                    input.deliveryMode,
+                )
+            } catch (error) {
+                if (prepared && prepared.staged.length > 0) {
+                    await Promise.allSettled(prepared.staged.map((attachment) => api.deleteUploadFile(
+                        input.sessionId,
+                        attachment.path,
+                    )))
+                }
+                throw error
+            }
         },
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const

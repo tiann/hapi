@@ -235,7 +235,7 @@ export function ScratchlistAttachments(props: Props) {
     return <div>
         <div
             ref={container}
-            className="mt-0.5 mb-1 flex min-w-0 max-w-full items-start gap-2 overflow-x-auto overscroll-x-contain pb-1 pr-1 [scrollbar-width:thin]"
+            className="mt-0.5 mb-1 flex min-w-0 max-w-full items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 pr-1 [scrollbar-width:thin]"
             data-testid="scratchlist-attachments"
             onWheel={scrollHorizontally}
             style={{ touchAction: 'pan-x pan-y' }}
@@ -248,7 +248,7 @@ export function ScratchlistAttachments(props: Props) {
                     data-scratchlist-attachment-id={attachment.id}
                     data-scratchlist-action="attachment"
                     data-scratchlist-attachment-dragging={draggingId === attachment.id || undefined}
-                    className={`${isImage ? 'group relative h-16 w-24 shrink-0 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]' : `relative flex min-w-0 max-w-[min(18rem,70vw)] shrink-0 items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] py-2 pr-2 text-base text-[var(--app-fg)] ${canReorder ? 'pl-2' : 'pl-3'}`} ${draggingId === attachment.id ? 'opacity-60' : ''}`}
+                    className={`${isImage ? 'group relative h-16 w-24 shrink-0 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]' : `relative flex h-10 min-w-0 max-w-[min(18rem,70vw)] shrink-0 items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] pr-2 text-base text-[var(--app-fg)] ${canReorder ? 'pl-2' : 'pl-3'}`} ${draggingId === attachment.id ? 'opacity-60' : ''}`}
                     onPointerDown={(event) => { if (!(event.target as Element).closest('button')) start(event, attachment.id) }}
                     onContextMenu={(event) => { if (drag.current?.id === attachment.id || suppressClick.current === attachment.id) { event.preventDefault(); event.stopPropagation() } }}>
                     {src ? <ImagePreview src={src} fileName={attachment.filename} label={attachment.filename} fileSize={attachment.size}
@@ -289,7 +289,7 @@ export function ScratchlistAttachments(props: Props) {
                         event.stopPropagation()
                         props.onAdd?.()
                     }}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors hover:border-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors hover:border-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
                     <PlusIcon className="h-4 w-4" />
                 </button>
