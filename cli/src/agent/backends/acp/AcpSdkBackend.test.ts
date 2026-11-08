@@ -1209,7 +1209,7 @@ describe('AcpSdkBackend', () => {
         expect(latest?.costCurrency).toBe('USD');
     });
 
-    it('forwards a cost-only usage_update without context fields', async () => {
+    it('forwards a cost-only usage_update with the previous turn context', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
         backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
@@ -1228,24 +1228,31 @@ describe('AcpSdkBackend', () => {
         };
 
         const messages: AgentMessage[] = [];
+        const updates = [
+            { sessionUpdate: 'usage_update', used: 1_000, size: 8_000 },
+            { sessionUpdate: 'usage_update', cost: { amount: 0.4, currency: 'USD' } }
+        ];
         backendInternal.transport = {
             sendRequest: async () => {
-                backendInternal.handleSessionUpdate({
-                    sessionId: 'session-1',
-                    update: { sessionUpdate: 'usage_update', cost: { amount: 0.4, currency: 'USD' } }
-                });
+                backendInternal.handleSessionUpdate({ sessionId: 'session-1', update: updates.shift() });
                 await sleep(5);
                 return { stopReason: 'end_turn' };
             },
             close: async () => {}
         };
 
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], () => {});
         await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
 
         const usageMessages = messages.filter(
             (m): m is Extract<AgentMessage, { type: 'usage' }> => m.type === 'usage'
         );
-        expect(usageMessages.at(-1)).toEqual(expect.objectContaining({ cost: 0.4, costCurrency: 'USD' }));
+        expect(usageMessages.at(-1)).toEqual(expect.objectContaining({
+            cost: 0.4,
+            costCurrency: 'USD',
+            contextTokens: 1_000,
+            contextWindow: 8_000
+        }));
     });
 
     it('preserves context fields when a state_update carries only tokens', async () => {

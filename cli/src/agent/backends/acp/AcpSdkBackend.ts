@@ -138,6 +138,8 @@ export class AcpSdkBackend implements AgentBackend {
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
+    /** Last reported context, kept across prompts for cost-only updates. */
+    private lastKnownContext: Pick<AcpUsageUpdate, 'contextTokens' | 'contextWindow'> | null = null;
     private sessionUpdateQueue: Promise<void> = Promise.resolve();
     /**
      * Most recent prompt()'s onUpdate. Child handlers emit through it, and
@@ -784,16 +786,7 @@ export class AcpSdkBackend implements AgentBackend {
                     // errored turns), but we did see ACP usage updates during
                     // the turn. Emit a context-only usage so the status bar
                     // reflects the current context size and cumulative cost.
-                    onUpdate({
-                        type: 'usage',
-                        inputTokens: 0,
-                        outputTokens: 0,
-                        contextTokens: latestUsageUpdate.contextTokens,
-                        contextWindow: latestUsageUpdate.contextWindow,
-                        ...(latestUsageUpdate.cost
-                            ? { cost: latestUsageUpdate.cost.amount, costCurrency: latestUsageUpdate.cost.currency }
-                            : {})
-                    });
+                    onUpdate(this.buildContextUsageMessage(latestUsageUpdate));
                 }
                 if (stopReason) {
                     onUpdate({ type: 'turn_complete', stopReason });
@@ -1321,6 +1314,12 @@ export class AcpSdkBackend implements AgentBackend {
             tokenUsage: tokenUsage ?? previous?.tokenUsage ?? null,
             cost: cost ?? previous?.cost ?? null
         };
+        if (contextTokens !== null || contextWindow !== null) {
+            this.lastKnownContext = {
+                contextTokens: this.latestUsageUpdate.contextTokens,
+                contextWindow: this.latestUsageUpdate.contextWindow
+            };
+        }
         if (tokenUsage && !this.promptUsageCallback && this.usageUpdateListener) {
             // A turn completed outside prompt() (e.g. Cursor harness-resumed
             // work): no prompt finalization will consume these tokens, so
@@ -1353,6 +1352,22 @@ export class AcpSdkBackend implements AgentBackend {
         };
     }
 
+    private buildContextUsageMessage(update: AcpUsageUpdate): AgentMessage {
+        // A cost-only update carries no context; repeat the last known context
+        // so the status bar does not read the zero-token event as empty context.
+        const context = update.contextTokens !== undefined || update.contextWindow !== undefined
+            ? update
+            : this.lastKnownContext;
+        return {
+            type: 'usage',
+            inputTokens: 0,
+            outputTokens: 0,
+            contextTokens: context?.contextTokens,
+            contextWindow: context?.contextWindow,
+            ...(update.cost ? { cost: update.cost.amount, costCurrency: update.cost.currency } : {})
+        };
+    }
+
     private hasForwardedUsage(update: AcpUsageUpdate): boolean {
         return this.lastForwardedUsageUpdate !== null
             && this.lastForwardedUsageUpdate.contextTokens === update.contextTokens
@@ -1369,24 +1384,12 @@ export class AcpSdkBackend implements AgentBackend {
             return;
         }
 
-        if (
-            this.lastForwardedUsageUpdate
-            && this.lastForwardedUsageUpdate.contextTokens === update.contextTokens
-            && this.lastForwardedUsageUpdate.contextWindow === update.contextWindow
-            && sameCost(this.lastForwardedUsageUpdate.cost, update.cost)
-        ) {
+        if (this.hasForwardedUsage(update)) {
             return;
         }
 
         this.lastForwardedUsageUpdate = update;
-        const message: AgentMessage = {
-            type: 'usage',
-            inputTokens: 0,
-            outputTokens: 0,
-            contextTokens: update.contextTokens,
-            contextWindow: update.contextWindow,
-            ...(update.cost ? { cost: update.cost.amount, costCurrency: update.cost.currency } : {})
-        };
+        const message = this.buildContextUsageMessage(update);
 
         if (this.promptUsageCallback) {
             this.promptUsageCallback(message);
