@@ -19,6 +19,88 @@ function fakeChild(exitCode: number, deferExit = false) {
 }
 
 describe('runSessionJob', () => {
+    it('until heartbeats re-stamp remaining against explicit window startedAt', async () => {
+        const windowStart = Date.parse('2098-12-01T00:00:00.000Z')
+        const until = Date.parse('2099-01-01T00:00:00.000Z')
+        const nowMs = Date.parse('2098-12-15T00:00:00.000Z')
+        const http = {
+            post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),
+            get: vi.fn(async () => ({
+                status: 200,
+                data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] }
+            })),
+            put: vi.fn(async (_url: string, body: { startedAt?: number }) => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'dogfood',
+                        label: 'dogfood',
+                        status: 'running',
+                        heartbeatAt: 1,
+                        startedAt: body.startedAt ?? 1,
+                        updatedAt: 1
+                    }
+                }
+            })),
+            patch: vi.fn(async () => ({
+                status: 200,
+                data: {
+                    job: {
+                        key: 'dogfood',
+                        label: 'dogfood',
+                        status: 'running',
+                        heartbeatAt: 2,
+                        startedAt: windowStart,
+                        updatedAt: 2
+                    }
+                }
+            }))
+        }
+
+        const timers: Array<() => void> = []
+        const child = fakeChild(0, true)
+        const running = runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'dogfood',
+            label: 'dogfood',
+            command: ['sleep', '999999'],
+            untilMs: until,
+            startedAtMs: windowStart,
+            remaining: Math.ceil((until - nowMs) / 1000),
+            total: Math.ceil((until - windowStart) / 1000),
+            unit: 's',
+            heartbeatMs: 10,
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            nowImpl: () => nowMs,
+            spawnImpl: (() => child) as never,
+            setIntervalImpl: ((fn: () => void) => {
+                timers.push(fn)
+                return 1 as unknown as NodeJS.Timeout
+            }) as never,
+            clearIntervalImpl: (() => undefined) as never
+        })
+
+        await vi.waitFor(() => expect(http.put).toHaveBeenCalled())
+        expect(http.put.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+            startedAt: windowStart,
+            remaining: Math.ceil((until - nowMs) / 1000),
+            total: Math.ceil((until - windowStart) / 1000)
+        }))
+
+        timers[0]!()
+        await vi.waitFor(() => expect(http.patch).toHaveBeenCalled())
+        expect(http.patch.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+            remaining: Math.ceil((until - nowMs) / 1000),
+            total: Math.ceil((until - windowStart) / 1000),
+            unit: 's'
+        }))
+
+        child.exit()
+        await expect(running).resolves.toBe(0)
+    })
+
     it('sets running, heartbeats, then marks completed on exit 0', async () => {
         const http = {
             post: vi.fn(async () => ({ status: 200, data: { token: 'jwt' } })),

@@ -31,6 +31,12 @@ export type RunSessionJobOptions = SessionJobClientOptions & {
     detail?: string
     /** When set, heartbeats re-stamp remaining from wall clock (progress until). */
     untilMs?: number
+    /**
+     * Window start for until-mode total (until − startedAt). Defaults to supervisor
+     * launch time. Pass the original window start on mid-window re-attach so the
+     * bar does not reset to "time left from this restart."
+     */
+    startedAtMs?: number
     wakeOnTerminal?: boolean
     wakePrompt?: string
     /** Injected for tests. */
@@ -195,7 +201,8 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     }
 
     // Hub stamps startedAt when runId starts a new generation (runner/hub
-    // clocks may skew). runId is the unique generation fence.
+    // clocks may skew) unless the caller passes an explicit window start.
+    // runId is the unique generation fence.
     const runId = randomUUID()
     const body: AttachedJobUpsert = {
         label: options.label,
@@ -206,6 +213,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         ...(options.remaining !== undefined ? { remaining: options.remaining } : {}),
         ...(options.unit !== undefined ? { unit: options.unit } : {}),
         ...(options.detail !== undefined ? { detail: options.detail } : {}),
+        ...(options.startedAtMs !== undefined ? { startedAt: options.startedAtMs } : {}),
         ...(options.wakeOnTerminal !== undefined ? { wakeOnTerminal: options.wakeOnTerminal } : {}),
         ...(options.wakePrompt !== undefined ? { wakePrompt: options.wakePrompt } : {})
     }
@@ -243,7 +251,9 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
 
     let loggedHeartbeatFailure = false
     let inflightHeartbeat: Promise<unknown> = Promise.resolve()
-    const startedAtMs = now()
+    // Until-mode total = until − windowStart. Prefer explicit startedAtMs so a
+    // mid-window move keeps the original 48h (etc.) denominator.
+    const untilWindowStartMs = options.startedAtMs ?? now()
     const heartbeat = setIntervalFn(() => {
         // Never PATCH status:running on the heartbeat — a late in-flight
         // request must not resurrect running after the terminal write.
@@ -252,7 +262,7 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
         // clobbered by the next timer tick with the launch-time string.
         const untilBody = options.untilMs !== undefined
             ? (() => {
-                const stamped = stampUntilProgress(options.untilMs!, now(), startedAtMs)
+                const stamped = stampUntilProgress(options.untilMs!, now(), untilWindowStartMs)
                 return {
                     remaining: stamped.remaining,
                     total: stamped.total,

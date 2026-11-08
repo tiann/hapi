@@ -93,24 +93,25 @@ hapi job run "$HAPI_SESSION_ID" beets \
 
 **Required** for a moving fraction bar — pick one:
 
-1. **Estate helper (when on PATH):** `hapi-job-run-metered` — refuses to start a fraction meter unless the child is piped through a feeder from t=0 (see operator runbook `hapi-session-job-progress` / `hapi-job-feed-jsonl`).
-2. **Portable:** `hapi job run --progress unknown` (or fraction only if you update), plus a continuous updater (`hapi job update` / MCP `session_job` `update`, or a JSONL feeder) from the first progress event through exit.
-3. **Known deadline:** `--progress until --until 2026-11-09T21:20:14Z` (heartbeats keep `remaining` honest).
+1. **Portable (upstream):** `hapi job run --progress unknown` while the child runs, plus a continuous updater (`hapi job update` / MCP `session_job` `update`, or your own JSONL→update feeder) from the first progress event through exit. Or `--progress fraction` **only if** that updater keeps `--done`/`--remaining` moving.
+2. **Known deadline:** `--progress until --until <ISO>` (heartbeats re-stamp `remaining`; optional `--started-at <epoch-ms>` = window start on mid-window re-attach).
+3. **Optional estate helper** (not part of upstream HAPI): some operators ship `hapi-job-run-metered` locally to refuse fraction meters without a feeder. Do not assume it exists on PATH for every HAPI install.
 
 ```bash
-# Preferred when installed (estate PATH):
-hapi-job-run-metered "$HAPI_SESSION_ID" beets \
-  --label 'beets import' --total 1787 --unit units \
-  -- ./beets-import.sh   # must emit progress the feeder understands
-
-# Portable shape (same contract):
+# Portable fraction (updater required from t=0):
 hapi job run "$HAPI_SESSION_ID" beets --label 'beets import' --progress unknown -- ./beets-import.sh &
 # …and from t=0, something continuously: hapi job update … --done N --total 1787
 
-# Dogfood / countdown window:
+# Dogfood / countdown window (numeric sleep N without until is refused):
 hapi job run "$HAPI_SESSION_ID" dogfood-1424-48h \
   --label 'dogfood #1424 48h' --progress until --until 2026-11-09T21:20:14Z \
   --wake-on-terminal -- sleep 999999
+
+# Mid-window re-attach — keep the original 48h denominator:
+WINDOW_START_MS=$(( $(date -u -d '2026-11-07T21:20:14Z' +%s) * 1000 ))
+hapi job run "$HAPI_SESSION_ID" dogfood-1424-48h \
+  --label 'dogfood #1424 48h' --progress until --until 2026-11-09T21:20:14Z \
+  --started-at "$WINDOW_START_MS" --wake-on-terminal -- sleep 999999
 ```
 
 Non-JSONL children need an adapter (line regex → `job update`, dual writer, or fall back to alive-only). Do not invent a fake percent.
@@ -123,6 +124,7 @@ Do **not**:
 
 - MCP `session_job` `set` or one-shot CLI `set` + background the real work (no heartbeat).
 - `hapi job run --done 0 --total N -- cmd` with **no** continuous count writer (**frozen 0/N under a live heartbeat** — the common agent footgun).
+- `hapi job run --progress unknown -- sleep 150747` (or any numeric `sleep N`) — that is a known-duration countdown; CLI refuses it. Use `--progress until --until …` (or `sleep infinity` under `unknown`).
 - Wrap `hapi-restart-hub` / `hapi-use-worktree` / `hapi-use-driver` / `hapi-watch-activate-driver` inside `hapi job run`. The hub is down exactly when the terminal `completed`/`failed` PATCH must land → `ECONNREFUSED` → zombie `running` meter (CLI refuses these argv tokens). Run remat/work under the job; run the hub restart **after** the job exits (same shape as soup remat `#205`).
 - Claim done / invite archive while a zombie `running` meter remains.
 
@@ -142,7 +144,7 @@ Hub does **not** auto-clear silent jobs (quiet legitimate long runners must not 
 
 Tool name: `session_job` (Claude: `mcp__hapi__session_job`; Codex: `functions.hapi__session_job`; OpenCode/ACP: `hapi_session_job`).
 
-**`action=set` is refused** over MCP. Start the meter with Shell + `hapi job run` / `hapi-job-run-metered` (above). Then you may:
+**`action=set` is refused** over MCP. Start the meter with Shell + `hapi job run` (above). Then you may:
 
 ```json
 { "action": "update", "jobKey": "beets", "done": 1638, "total": 1787 }
@@ -217,7 +219,7 @@ This does **not** treat heartbeats as thinking. Default remains off until dogfoo
 Rules:
 
 - Prefer **remaining+total** (via continuous `update`) when the operator cares about "how much left" and you know the denominator.
-- Prefer **done+total** (via `hapi-job-run-metered` or continuous `update`) when you want visible byte-style progress.
+- Prefer **done+total** (via continuous `update` / your feeder) when you want visible byte-style progress.
 - Do **not** put `--done`/`--total` on bare `job run` and walk away — that freezes the launch stamp under live heartbeats.
 - Do not send **remaining alone** expecting the bar to move — include `total` or use `done`/`total`.
 - If you only know a stage name, put it in `--detail` and keep heartbeating — do **not** fake `total=100`.

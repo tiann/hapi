@@ -4,6 +4,7 @@
  * countdowns (2026-11-08 dogfood postmortem). Mode must be chosen on purpose.
  */
 
+import { basename } from 'node:path'
 import { SessionJobError } from './sessionJob'
 
 export const JOB_PROGRESS_MODES = ['unknown', 'fraction', 'until'] as const
@@ -117,10 +118,44 @@ export function stampUntilProgress(
     startedAtMs: number = nowMs
 ): { remaining: number; total: number; unit: string } {
     const totalSec = Math.max(1, Math.ceil((untilMs - startedAtMs) / 1000))
-    const remainingSec = Math.max(0, Math.ceil((untilMs - nowMs) / 1000))
+    // Clamp to the window: remaining cannot exceed total (mid-window attach /
+    // clock skew) and cannot go negative after the deadline.
+    const remainingSec = Math.max(
+        0,
+        Math.min(totalSec, Math.ceil((untilMs - nowMs) / 1000))
+    )
     return {
         remaining: remainingSec,
         total: totalSec,
         unit: 's'
     }
+}
+
+/**
+ * `sleep <positive-int>` encodes a known wall duration. Bare/alive-only attach
+ * was the 2026-11-08 dogfood footgun (stripes / frozen one-shot remaining).
+ * `sleep infinity` stays allowed under `--progress unknown`.
+ */
+export function commandLooksLikeNumericSleep(command: string[]): boolean {
+    if (command.length < 2) return false
+    const bin = basename(command[0]!)
+    if (bin !== 'sleep') return false
+    const arg = command[1]!.trim()
+    if (!/^\d+$/.test(arg)) return false
+    return Number(arg) > 0
+}
+
+export function assertNumericSleepUsesUntil(
+    progress: JobProgressMode,
+    command: string[]
+): void {
+    if (!commandLooksLikeNumericSleep(command)) return
+    if (progress === 'until') return
+    throw new SessionJobError(
+        'bad_args',
+        'numeric `sleep N` is a known-duration countdown — use '
+        + '`--progress until --until <ISO|epoch>` (heartbeats keep the bar honest). '
+        + '`sleep infinity` is OK with `--progress unknown`; do not encode a deadline '
+        + 'as sleep-seconds under unknown/fraction (dogfood postmortem 2026-11-08).'
+    )
 }

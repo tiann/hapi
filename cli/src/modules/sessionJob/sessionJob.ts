@@ -35,7 +35,7 @@ export const SESSION_JOB_RUN_RECIPE =
     'hapi job run <session-id> <job-key> --label "<label>" --progress unknown|fraction|until … -- <cmd>…'
     + ' (required --progress: unknown=stripes; fraction=remaining+total|done+total;'
     + ' until=--until <iso> with auto remaining on heartbeats).'
-    + ' Fraction without a continuous updater freezes — prefer hapi-job-run-metered.'
+    + ' Fraction without a continuous updater freezes — keep updating done/remaining.'
     + ' (use "$HAPI_SESSION_ID" only when it matches the operator /sessions/<id> chat row;'
     + ' remote Cursor: pass the URL uuid explicitly)'
 

@@ -15,6 +15,7 @@ import { formatJobLine } from '@/modules/sessionJob/formatJobLine'
 import { runSessionJob } from '@/modules/sessionJob/runSessionJob'
 import {
     assertCreateProgressMode,
+    assertNumericSleepUsesUntil,
     type JobProgressMode,
     parseUntilTimestamp,
     stampUntilProgress
@@ -60,8 +61,9 @@ ${chalk.bold('Agent contract:')}
   ${chalk.bold('run/set require --progress')} unknown|fraction|until (explicit affordance).
   unknown → indeterminate stripes (no counts). fraction → remaining+total or done+total.
   until → --until <ISO|epoch>; remaining/total derived (job run heartbeats re-stamp remaining).
-  Fraction without a continuous updater freezes under heartbeats — prefer
-  ${chalk.bold('hapi-job-run-metered')} or continuous ${chalk.bold('job update')}.
+  Fraction without a continuous updater freezes under heartbeats — keep
+  ${chalk.bold('job update')}ing done/remaining (or use --progress unknown).
+  Numeric ${chalk.bold('sleep N')} requires ${chalk.bold('--progress until')}.
   Never invent a fake percent.
   Do not wrap hapi-restart-hub / stack-switch in job run (hub down → zombie running meter).
 
@@ -90,6 +92,8 @@ ${chalk.bold('startedAt / elapsed:')}
   PATCH rejects startedAt. PUT/set without --started-at keeps the existing clock.
   Late attach or wrong clock: ${chalk.bold('set --started-at <epoch-ms>')} (explicit PUT),
   or clear then set with --started-at (works on older hubs that ignored PUT corrections).
+  Mid-window countdown re-attach: ${chalk.bold('run --progress until --until … --started-at <window-start-ms>')}
+  so heartbeat total stays until−start (not "time left from this restart").
   Manual babysitter wrappers: mint one UUID per run (${chalk.bold('set --run-id <uuid>')}),
   then pass the same value on every heartbeat (${chalk.bold('update --expected-run-id <uuid>')})
   and on clear (${chalk.bold('clear --expected-run-id <uuid>')}) so a key-reuse cannot
@@ -331,8 +335,23 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
         throw new SessionJobError('bad_args', `unexpected arg: ${arg}`)
     }
 
-    if (result.startedAt !== undefined && result.action !== undefined && result.action !== 'set') {
-        throw new SessionJobError('bad_args', '--started-at is only valid with job set')
+    if (result.startedAt !== undefined && result.action !== undefined) {
+        if (result.action === 'set') {
+            // ok — correct historical clock / window start
+        } else if (result.action === 'run' && result.progress === 'until') {
+            // ok — mid-window countdown: heartbeats keep total = until - startedAt
+        } else if (result.action === 'run') {
+            throw new SessionJobError(
+                'bad_args',
+                '--started-at on job run is only valid with --progress until '
+                + '(pass the window start so total stays honest across re-attach)'
+            )
+        } else {
+            throw new SessionJobError(
+                'bad_args',
+                '--started-at is only valid with job set, or job run --progress until'
+            )
+        }
     }
 
     if (
@@ -416,6 +435,9 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             result.total = stamped.total
             result.unit = result.unit ?? stamped.unit
         }
+        if (result.action === 'run' && result.command) {
+            assertNumericSleepUsesUntil(result.progress!, result.command)
+        }
     }
 
     return result
@@ -472,10 +494,6 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         throw new SessionJobError('bad_args', 'missing job key')
     }
 
-    if (parsed.startedAt !== undefined && parsed.action !== 'set') {
-        throw new SessionJobError('bad_args', '--started-at is only valid with job set')
-    }
-
     if (parsed.action === 'clear') {
         const result = await clearSessionJob({
             sessionIdPrefix: parsed.sessionIdPrefix,
@@ -525,6 +543,9 @@ export async function handleJobCommand(args: string[]): Promise<void> {
         if (!parsed.command || parsed.command.length === 0) {
             throw new SessionJobError('bad_args', 'run requires a command after --')
         }
+        if (parsed.startedAt !== undefined && !Number.isFinite(parsed.startedAt)) {
+            throw new SessionJobError('bad_args', '--started-at must be epoch milliseconds')
+        }
         const exitCode = await runSessionJob({
             sessionIdPrefix: parsed.sessionIdPrefix,
             jobKey: parsed.jobKey,
@@ -539,6 +560,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
             ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
             ...(parsed.untilMs !== undefined ? { untilMs: parsed.untilMs } : {}),
+            ...(parsed.startedAt !== undefined ? { startedAtMs: parsed.startedAt } : {}),
             ...(parsed.wakeOnTerminal !== undefined ? { wakeOnTerminal: parsed.wakeOnTerminal } : {}),
             ...(parsed.wakePrompt !== undefined ? { wakePrompt: parsed.wakePrompt } : {})
         })

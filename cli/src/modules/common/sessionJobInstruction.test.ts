@@ -17,7 +17,8 @@ describe('sessionJobInstruction', () => {
         expect(SESSION_JOB_INSTRUCTION).toMatch(/action=list on start\/resume/i)
         expect(SESSION_JOB_INSTRUCTION).toMatch(/before done\/archive/i)
         expect(SESSION_JOB_INSTRUCTION).toMatch(/never ask the operator/i)
-        expect(SESSION_JOB_INSTRUCTION).toContain('hapi-job-run-metered')
+        expect(SESSION_JOB_INSTRUCTION).toContain('--progress until')
+
         expect(SESSION_JOB_INSTRUCTION).toMatch(/--progress unknown\|fraction\|until/)
         expect(SESSION_JOB_INSTRUCTION).toMatch(/frozen 0\/N/)
         expect(SESSION_JOB_INSTRUCTION).toMatch(/--progress until/)

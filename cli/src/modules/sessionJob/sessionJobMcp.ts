@@ -50,7 +50,8 @@ export const SESSION_JOB_TOOL_DESCRIPTION = [
     SESSION_JOB_RUN_RECIPE,
     '(auto-heartbeats + completed/failed on exit). Idle agents cannot heartbeat.',
     'This MCP tool: action=update (progress/status), action=clear, action=list only.',
-    'Fraction counts need continuous update/feeder (or hapi-job-run-metered); omit counts when unknown.',
+    'Fraction counts need continuous update/feeder; omit counts when unknown (use --progress unknown).',
+
     'Never invent a percent or ETA. Not for todos, thinking, or short tool calls.',
 ].join(' ')
 

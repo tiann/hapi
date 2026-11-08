@@ -143,6 +143,40 @@ describe('parseJobArgs', () => {
         expect(parsed.startedAt).toBe(1_785_304_595_000)
     })
 
+    it('allows --started-at on until run and stamps full-window total', () => {
+        const until = Date.now() + 48 * 3600 * 1000
+        const windowStart = until - 48 * 3600 * 1000
+        const parsed = parseJobArgs([
+            'run',
+            'sid',
+            'dogfood',
+            '--label=countdown',
+            '--progress=until',
+            `--until=${until}`,
+            `--started-at=${windowStart}`,
+            '--',
+            'sleep',
+            '999999'
+        ])
+        expect(parsed.startedAt).toBe(windowStart)
+        expect(parsed.total).toBe(48 * 3600)
+        expect(parsed.remaining).toBeLessThanOrEqual(parsed.total!)
+        expect(parsed.remaining).toBeGreaterThan(47 * 3600)
+    })
+
+    it('rejects numeric sleep under --progress unknown', () => {
+        expect(() => parseJobArgs([
+            'run',
+            'sid',
+            'dogfood',
+            '--label=countdown',
+            '--progress=unknown',
+            '--',
+            'sleep',
+            '150747'
+        ])).toThrow(/--progress until/)
+    })
+
     it('rejects --started-at on update', () => {
         expect(() => parseJobArgs([
             'update',
@@ -150,6 +184,19 @@ describe('parseJobArgs', () => {
             'beets',
             '--started-at=1785304595000'
         ])).toThrow(/--started-at is only valid with job set/)
+    })
+
+    it('rejects --started-at on unknown run', () => {
+        expect(() => parseJobArgs([
+            'run',
+            'sid',
+            'k',
+            '--label=x',
+            '--progress=unknown',
+            '--started-at=1785304595000',
+            '--',
+            'true'
+        ])).toThrow(/only valid with --progress until/)
     })
 
     it('rejects --heartbeat-sec on non-run actions', () => {
