@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -140,6 +140,11 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         return KIMI_PERMISSION_MODES
     }
     if (flavor === 'dsh') {
+        return []
+    }
+    if (flavor === 'hermes') {
+        // Hermes manages its own approval policy (approvals.mode + hardline
+        // floor); HAPI has no native permission mode to project onto it.
         return []
     }
     if (flavor === 'copilot') {

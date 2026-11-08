@@ -119,6 +119,18 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
+    if (target.flavor === 'hermes') {
+        const { runHermes } = await import('@/hermes/runHermes')
+        await runHermes({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            startingMode: 'remote'
+        })
+        return
+    }
+
     if (target.flavor === 'opencode') {
         const { runOpencode } = await import('@/opencode/runOpencode')
         await runOpencode({

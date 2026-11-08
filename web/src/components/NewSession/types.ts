@@ -39,6 +39,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
         { value: 'auto', label: 'Default' },
     ],
     dsh: [],
+    // Hermes models are opaque runtime-discovered ids (ListHermesModels),
+    // so the static launch-time preset list is empty like DSH.
+    hermes: [],
     cursor: [],
     kimi: [
         { value: 'auto', label: 'Default' },

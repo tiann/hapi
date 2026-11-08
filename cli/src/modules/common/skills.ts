@@ -58,6 +58,9 @@ function getAgentConfigDir(flavor?: string): string {
         case 'dsh':
             // DSH resolves its harness home from $DSH_HOME, then ~/.dsh.
             return process.env.DSH_HOME || join(getHomeDirectory(), '.dsh');
+        case 'hermes':
+            // Hermes resolves its home from $HERMES_HOME, then ~/.hermes.
+            return process.env.HERMES_HOME || join(getHomeDirectory(), '.hermes');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -81,6 +84,10 @@ function getUserSkillsRoots(flavor?: string): string[] {
             break;
         case 'dsh':
             // Mirrors DSH's own skill-filesystem provider: $DSH_HOME/skills.
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'hermes':
+            // Mirrors Hermes' skills dir: $HERMES_HOME/skills.
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
     }
@@ -110,6 +117,10 @@ function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
         case 'dsh':
             // Mirrors DSH's own skill-filesystem provider: <project>/.dsh/skills.
             roots.push(join(directory, '.dsh', 'skills'));
+            break;
+        case 'hermes':
+            // Hermes loads trusted-root skills from <project>/.hermes/skills.
+            roots.push(join(directory, '.hermes', 'skills'));
             break;
     }
     return roots;

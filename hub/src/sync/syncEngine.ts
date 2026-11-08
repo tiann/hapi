@@ -3704,6 +3704,9 @@ export class SyncEngine {
         // Current DSH ACP profiles resume persisted sessions through their
         // `session/resume` method. Never fall through to a stale cross-flavor id.
         if (flavor === 'dsh') return metadata.dshSessionId ?? null
+        // Hermes persists gateway sessions in its own state store; HAPI resumes
+        // through ACP `session/resume`. Never fall through to a stale cross-flavor id.
+        if (flavor === 'hermes') return metadata.hermesSessionId ?? null
 
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }

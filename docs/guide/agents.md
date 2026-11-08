@@ -20,6 +20,7 @@ agent's integration; their supported syntax varies by agent.
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
+| Hermes | `hapi hermes` | ACP (`hermes acp`) | — | ✓ | Managed by Hermes agent | ✓ |
 | Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `plan` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
@@ -30,7 +31,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, Antigravity, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, Antigravity, DeepSeek Harness, and Hermes remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable. Hermes' ACP adapter similarly resumes through `session/resume` (replaying its transcript, which HAPI suppresses in favor of its own Hub history) and exposes models as `category: "model"` config options applied with `session/set_config_option`.
 
 ### Permission modes
 
@@ -38,7 +39,7 @@ Permission modes are per-agent — each flavor exposes its own set (see the matr
 
 ### Local and remote mode
 
-Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Pi, and Antigravity accept input only through HAPI's remote interface.
+Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Hermes, Pi, and Antigravity accept input only through HAPI's remote interface.
 
 - **Remote → local:** continue in the terminal. If it shows the remote-control screen, press double-space to return to local input.
 - **Local → remote:** send a message from the web UI or phone; HAPI handles the handoff.
@@ -52,7 +53,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Hermes resume restores the native gateway session through `session/resume`; the history replay it emits is suppressed because the Hub transcript is the UI source. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
 ### Displaying images
 
@@ -375,6 +376,35 @@ project's `.dsh/skills`, and the shared `~/.agents/skills` / `.agents/skills`
 directories. Since the ACP composition accepts no client-supplied MCP servers,
 HAPI's `skill_lookup` bridge is not available to DSH sessions; a skill named in
 the prompt is loaded by DSH through its own `skill` tool and catalog.
+
+## Hermes
+
+`hapi hermes` uses the shared ACP transport with the `hermes` CLI's `acp`
+subcommand (`hermes acp`). The Hermes ACP adapter connects to (and, when
+absent, automatically starts) the local Hermes gateway daemon, so a normal
+Hermes installation on the runner machine is the only prerequisite. Configure a
+different entrypoint with `HAPI_HERMES_ACP_COMMAND` or a JSON argument array
+with `HAPI_HERMES_ACP_ARGS_JSON`; an overridden command receives no default
+arguments.
+
+Hermes sessions are remote-only. HAPI stores the native Hermes gateway session
+id and restores it with `session/resume` after a restart or archive; the
+adapter replays the session transcript on resume and HAPI suppresses that
+replay, keeping its own Hub message history as the source for the chat UI.
+Model selection is available: the gateway's model catalog is exposed through
+the session RPC `ListHermesModels` (ids are opaque `provider:model` strings)
+and applied per turn with ACP `session/set_config_option`. Effort pickers are
+not exposed in v1; Hermes' `thought_level` config option can wire one up later.
+Pending one-shot permission requests remain answerable in the standard HAPI
+UI, but the Hermes agent owns the overall approval policy, so no HAPI
+permission modes are offered. Hermes names its gateway sessions natively;
+those names surface as the HAPI session title.
+
+HAPI's `$` skill menu for Hermes sessions reads the same skill roots Hermes
+itself uses: `$HERMES_HOME/skills` (`~/.hermes/skills` by default), the
+project's `.hermes/skills`, and the shared `~/.agents/skills` / `.agents/skills`
+directories. HAPI does not bridge MCP servers to Hermes in v1; slash commands
+are routed by the Hermes gateway rather than read from files.
 
 ## Other agents
 

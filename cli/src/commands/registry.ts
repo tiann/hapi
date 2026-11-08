@@ -4,6 +4,7 @@ import { authCommand } from './auth'
 import { claudeCommand } from './claude'
 import { codexCommand } from './codex'
 import { dshCommand } from './dsh'
+import { hermesCommand } from './hermes'
 import { cursorCommand } from './cursor'
 import { connectCommand } from './connect'
 import { runnerCommand } from './runner'
@@ -49,6 +50,7 @@ const COMMANDS: CommandDefinition[] = [
     connectCommand,
     codexCommand,
     dshCommand,
+    hermesCommand,
     cursorCommand,
     removedGeminiCommand,
     grokCommand,

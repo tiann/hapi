@@ -159,7 +159,7 @@ export function createMachinesRoutes(
         // Validate startingMode against the resolved agent (hub default may be
         // AGY/DSH even when the request omitted agent).
         if (
-            (effectiveAgent === 'agy' || effectiveAgent === 'dsh')
+            (effectiveAgent === 'agy' || effectiveAgent === 'dsh' || effectiveAgent === 'hermes')
             && startingMode
             && startingMode !== 'remote'
         ) {
