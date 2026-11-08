@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite'
 import { Store } from './index'
 import { randomUUID } from 'node:crypto'
 import { SessionIdentityConflictError } from './sessions'
+import { sessionDeletionEpoch } from './sessionInvalidation'
 
 function makeStore(): Store {
     return new Store(':memory:')
@@ -1375,10 +1376,16 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
                 id
             )
         }
-        store.messages.addMessage(archivedIds[0]!, { text: 'cascade child' })
+        store.messages.addMessage(archivedIds[0]!, { role: 'user', content: { type: 'text', text: 'cascade child' } })
+        const db = (store as unknown as { db: Database }).db
+        const lookupRows = () => (db.prepare('SELECT COUNT(*) AS n FROM message_content_search_lookup').get() as { n: number }).n
+        expect(lookupRows()).toBeGreaterThan(0)
+        const epochBefore = sessionDeletionEpoch()
 
         const deleted = store.sessions.deleteArchivedSessions(archivedIds, 'default')
         expect(deleted?.map((session) => session.id).sort()).toEqual(archivedIds.sort())
+        expect(lookupRows()).toBe(0)
+        expect(sessionDeletionEpoch()).toBeGreaterThan(epochBefore)
         expect(store.sessions.getSession('atomic-a')).toBeNull()
         expect(store.sessions.getSession('atomic-b')).toBeNull()
         expect(store.messages.getMessages(archivedIds[0]!)).toEqual([])

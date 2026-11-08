@@ -7,7 +7,7 @@ import { preserveSessionTitle } from './sessionTitleLock'
 import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
-import { removeMessageContentSearchForSession } from './messageContentSearch'
+import { removeMessageContentSearchForSession, removeMessageContentSearchForSessions } from './messageContentSearch'
 
 function runInTransaction<T>(db: Database, operation: () => T): T {
     return db.inTransaction ? operation() : db.transaction(operation)()
@@ -983,12 +983,15 @@ export function deleteArchivedSessions(
         })
         if (!allArchived) return null
 
+        // Same derived-row cleanup and access-memo invalidation as deleteSession.
+        removeMessageContentSearchForSessions(db, uniqueIds)
         const deletedRows = db.prepare(
             `DELETE FROM sessions WHERE namespace = ? AND id IN (${placeholders}) RETURNING id`
         ).all(namespace, ...uniqueIds) as Array<{ id: string }>
         if (deletedRows.length !== uniqueIds.length) {
             throw new Error('Failed to delete archived sessions')
         }
+        bumpSessionDeletionEpoch()
         return rows.map(toStoredSession)
     })()
 }

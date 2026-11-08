@@ -70,7 +70,7 @@ describe('isSessionArchived', () => {
 })
 
 describe('isSessionArchivable', () => {
-    it('accepts live sessions and split-brain rows still marked running', () => {
+    it('accepts live sessions and inactive rows still marked running or idle', () => {
         const splitBrain = makeSession({
             id: 'sb',
             active: false,
@@ -78,6 +78,11 @@ describe('isSessionArchivable', () => {
         })
         expect(isSessionArchivable(running('a'))).toBe(true)
         expect(isSessionArchivable(splitBrain)).toBe(true)
+        expect(isSessionArchivable(makeSession({
+            id: 'idle',
+            active: false,
+            metadata: { path: '/p', lifecycleState: 'idle' }
+        }))).toBe(true)
         expect(isSessionArchivable(archived('c'))).toBe(false)
         expect(isSessionArchivable(completedStub('d'))).toBe(false)
     })
