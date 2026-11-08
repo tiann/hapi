@@ -395,6 +395,7 @@ describe('pingPeer', () => {
             name: 'Spawned',
             resumed: false,
             delivery: 'accepted',
+            flavor: 'cursor',
             steerNote: expect.stringMatching(/^steer not attempted: /),
             localId: expect.stringMatching(/^ping-peer-/),
         })

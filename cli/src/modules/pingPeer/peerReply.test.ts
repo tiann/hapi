@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AxiosInstance } from 'axios'
-import { forwardPeerReply, spawnPeer } from './pingPeer'
+import { forwardPeerReply } from './pingPeer'
 
 const peer = { id: 'peer-1', active: true, metadata: { name: 'Peer' } }
 
@@ -8,6 +8,8 @@ type Poll = {
     thinking: boolean
     invoked: boolean
     reply?: string
+    /** Output of the turn a steered task joined, before the task was picked up. */
+    earlier?: string
     replyAfterTask?: boolean
     later?: string
     batched?: boolean
@@ -15,7 +17,7 @@ type Poll = {
     active?: boolean
 }
 
-function hub(options: { spawn?: unknown; polls?: Poll[]; scheduled?: string; canceled?: boolean; offPage?: boolean } = {}) {
+function hub(options: { polls?: Poll[]; scheduled?: string; canceled?: boolean; offPage?: boolean } = {}) {
     const posts: Array<{ url: string; body: any }> = []
     const polls = [...(options.polls ?? [])]
     let current = polls[0]
@@ -23,7 +25,6 @@ function hub(options: { spawn?: unknown; polls?: Poll[]; scheduled?: string; can
         post: async (url: string, body: any) => {
             posts.push({ url, body })
             if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
-            if (url.endsWith('/spawn')) return { status: 200, data: options.spawn }
             if (url.endsWith('/queued-state')) return { status: 200, data: { queuedLocalIds: [], indeterminateLocalIds: [], invokedLocalMessages: options.offPage ? [{ localId: 'task-1', invokedAt: 10 }] : [] } }
             return { status: 200, data: { ok: true } }
         },
@@ -35,6 +36,7 @@ function hub(options: { spawn?: unknown; polls?: Poll[]; scheduled?: string; can
                 const c = current!
                 const before: any[] = []
                 const after: any[] = []
+                if (c.earlier) before.push({ id: 'u0', localId: 'task-0', invoked: true, content: text('user', 'earlier task') }, { id: 'r0', content: text('agent', c.earlier) })
                 if (c.reply) (c.invoked || c.replyAfterTask ? after : before).push({ id: 'r', content: text('agent', c.reply) })
                 if (c.batched) after.unshift({ id: 'u1', localId: 'task-1b', batched: true, content: text('user', 'and this') })
                 if (c.later) after.push({ id: 'u2', localId: 'task-2', invoked: true, content: text('user', 'next task') }, { id: 'r2', content: text('agent', c.later) })
@@ -72,28 +74,6 @@ async function forwarded(polls: Poll[], scheduled?: string, canceled?: boolean, 
     return posts.filter((p) => p.url.endsWith('/sessions/caller/messages')).map((p) => p.body.text)
 }
 
-describe('spawnPeer', () => {
-    it('spawns on the given machine and sends the task', async () => {
-        const { posts, auth } = hub({ spawn: { type: 'success', sessionId: 'peer-1' } })
-        await spawnPeer({ ...auth, machineId: 'm1', directory: '/repo', agent: 'codex', message: 'task' })
-        expect(posts.find((p) => p.url.endsWith('/machines/m1/spawn'))?.body).toEqual({ directory: '/repo', agent: 'codex' })
-        expect(posts.find((p) => p.url.endsWith('/sessions/peer-1/messages'))?.body).toEqual({ text: 'task', localId: expect.any(String) })
-    })
-
-    it('reports a failed spawn', async () => {
-        const { auth } = hub({ spawn: { type: 'error', message: 'runner offline' } })
-        await expect(spawnPeer({ ...auth, machineId: 'm1', directory: '/repo', message: 'task' }))
-            .rejects.toThrow('spawn failed: runner offline')
-    })
-
-    it('refuses agents whose replies cannot be forwarded', async () => {
-        const { posts, auth } = hub()
-        await expect(spawnPeer({ ...auth, machineId: 'm1', directory: '/repo', agent: 'pi', message: 'task' }))
-            .rejects.toThrow('pi sessions do not report turn ends')
-        expect(posts).toEqual([])
-    })
-})
-
 describe('forwardPeerReply', () => {
     const done = (reply?: string): Poll => ({ thinking: false, invoked: true, reply, ready: true })
 
@@ -119,6 +99,11 @@ describe('forwardPeerReply', () => {
             'Reply from peer [Peer](/sessions/peer-1):\n\nanswer 1\n\n'
             + 'The peer then took 1 more message(s), a steer or a later task, before its turn ended. Its latest reply:\n\nanswer 2'
         ])
+    })
+
+    it('forwards the end of the turn a steered task joined, not output from before it', async () => {
+        const steered = { ...done('answer with the steer'), earlier: 'progress on the earlier task' }
+        expect(await forwarded([steered, steered])).toEqual(['Reply from peer [Peer](/sessions/peer-1):\n\nanswer with the steer'])
     })
 
     it('treats prompts consumed with the task as one turn', async () => {

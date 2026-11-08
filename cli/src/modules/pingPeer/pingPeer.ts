@@ -1134,7 +1134,7 @@ export async function setPeerPermissionMode(options: SetPeerPermissionModeOption
     }
 }
 
-// ── spawn_peer + reply forwarding ───────────────────────────────────────────
+// ── Peer reply forwarding ───────────────────────────────────────────
 
 const REPLY_POLL_MS = 10_000
 const REPLY_TIMEOUT_MS = 6 * 60 * 60 * 1000
@@ -1147,16 +1147,6 @@ const PEER_REPLY_FLAVORS = new Set(['claude', 'codex', 'cursor', 'opencode', 'co
 
 export function supportsPeerReply(flavor: string | null | undefined): boolean {
     return PEER_REPLY_FLAVORS.has(flavor ?? 'claude')
-}
-
-export type SpawnPeerOptions = {
-    machineId: string
-    directory: string
-    agent?: string
-    message: string
-    apiUrl?: string
-    accessToken?: string
-    http?: AxiosInstance
 }
 
 async function fetchTaskState(
@@ -1201,29 +1191,6 @@ async function fetchRowsAfter(
         cursor = page.next
     }
     return rows
-}
-
-/** Start a fresh session on the caller's machine, then deliver its first message via `pingPeer`. */
-export async function spawnPeer(options: SpawnPeerOptions): Promise<PingPeerResult> {
-    assertPeerToolsEnabled()
-    if (!supportsPeerReply(options.agent)) {
-        throw new PingPeerError('bad_args', `${options.agent} sessions do not report turn ends, so their replies cannot be forwarded`)
-    }
-    const apiUrl = resolveApiUrl(options.apiUrl)
-    const accessToken = resolveAccessToken(options.accessToken)
-    const http = options.http ?? axios
-    const jwt = await exchangeJwt(apiUrl, accessToken, http)
-    const response = await http.post(
-        `${apiUrl}/api/machines/${encodeURIComponent(options.machineId)}/spawn`,
-        { directory: options.directory, agent: options.agent },
-        { headers: authHeaders(jwt), timeout: 120_000, validateStatus: () => true }
-    )
-    const sessionId = response.data?.type === 'success' ? response.data.sessionId : null
-    if (typeof sessionId !== 'string') {
-        const detail = response.data?.message ?? response.data?.error ?? `HTTP ${response.status}`
-        throw new PingPeerError('send_failed', `spawn failed: ${detail}`)
-    }
-    return pingPeer({ sessionIdPrefix: sessionId, message: options.message, apiUrl, accessToken, http })
 }
 
 export type ForwardPeerReplyOptions = {

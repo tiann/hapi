@@ -179,9 +179,17 @@ function createHapiMcpServer(
         title: z.string().trim().min(1).max(255).optional().describe('Optional display title or filename'),
     });
 
-    const forwardReply = (task: { sessionId: string; localId: string }) => {
+    /** Start reply forwarding when asked; returns the note for the tool result. */
+    const forwardReplyIfRequested = (
+        waitForReply: boolean | undefined,
+        task: { sessionId: string; localId?: string; flavor?: string | null }
+    ): string => {
+        if (!waitForReply) return '';
+        if (!task.localId) return '; the delivered message could not be identified, so check the reply with inspect_peer';
+        if (!supportsPeerReply(task.flavor)) return `; ${task.flavor} peers do not report turn ends, so check the reply with inspect_peer`;
         forwardPeerReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: client.sessionId })
             .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error));
+        return '; its reply will be posted here';
     };
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
@@ -215,6 +223,7 @@ function createHapiMcpServer(
                 'Permission mode for the new session. Omit to use hub/stock default (yolo). '
                 + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
             ),
+        waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
@@ -415,15 +424,7 @@ function createHapiMcpServer(
                     deliveryMode: args.deliveryMode,
                     wake: args.wake === true,
                 });
-                const forwarding = args.waitForReply && supportsPeerReply(result.flavor);
-                if (forwarding) {
-                    forwardReply(result);
-                }
-                const replyNote = forwarding
-                    ? '; its reply will be posted here'
-                    : args.waitForReply
-                        ? `; ${result.flavor} peers do not report turn ends, so check the reply with inspect_peer`
-                        : '';
+                const replyNote = forwardReplyIfRequested(args.waitForReply, result);
                 return {
                     content: [
                         {
@@ -468,6 +469,7 @@ function createHapiMcpServer(
             effort?: string
             sessionType?: 'simple' | 'worktree'
             permissionMode?: string
+            waitForReply?: boolean
         }) => {
             logger.debug('[hapiMCP] spawn_peer:', args.directory, args.machine ? `machine=${args.machine}` : '');
             try {
@@ -499,7 +501,7 @@ function createHapiMcpServer(
                     content: [
                         {
                             type: 'text' as const,
-                            text: `Spawned ${result.sessionId} (${result.name})`,
+                            text: `Spawned ${result.sessionId} (${result.name})${forwardReplyIfRequested(args.waitForReply, result)}`,
                         },
                     ],
                     isError: false,
