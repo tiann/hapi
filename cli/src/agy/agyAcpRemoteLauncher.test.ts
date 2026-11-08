@@ -1569,3 +1569,225 @@ describe('agy ACP helpers', () => {
         });
     });
 });
+
+describe('AgyAcpRemoteLauncher steer state matrix', () => {
+    type Handlers = Map<string, (payload?: unknown) => Promise<unknown>>;
+    const rpc = (client: ReturnType<typeof makeClient>, method: string) =>
+        (client.rpcHandlerManager.handlers as Handlers).get(method)!;
+    const lost = () => {
+        const error = new Error('ACP transport closed');
+        Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+        return error;
+    };
+    const consumedSteer = (client: ReturnType<typeof makeClient>, localId: string) =>
+        client.emitMessagesConsumed.mock.calls.some(([ids, opts]) =>
+            (ids as string[])[0] === localId && (opts as { steered?: boolean } | undefined)?.steered === true);
+
+    async function heldTurn(backend: FakeAgyBackend, prompt = 'run the tests') {
+        const { session, queue, client } = makeSession();
+        let release!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'tool_call', id: 't1', name: 'run_command', input: {}, status: 'in_progress' });
+            await new Promise<void>((resolve) => { release = resolve; });
+        });
+        queue.push(prompt, REVIEW, 'first');
+        const { run, created } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        return { session, queue, client, run, created, release: () => release() };
+    }
+
+    it('refuses to steer a control command and keeps it queued', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        queue.pushIsolated('/compact', REVIEW, 'control');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'control' }))
+            .toEqual({ steered: false, error: 'Control commands cannot be steered' });
+        expect(backend.steerPrompts).toEqual([]);
+        expect(queue.size()).toBe(1);
+        release();
+        queue.close();
+        await run;
+    });
+
+    it('refuses to steer a message that is no longer queued', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'gone' }))
+            .toEqual({ steered: false, error: 'Message not in queue' });
+        expect(backend.steerPrompts).toEqual([]);
+        release();
+        queue.close();
+        await run;
+    });
+
+    it('holds a steer whose delivery state the hub could not record, without sending it', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        client.setSteerDeliveryState.mockResolvedValueOnce(false);
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' }))
+            .toEqual({ steered: false, error: 'Steer state is indeterminate' });
+        expect(backend.steerPrompts).toEqual([]);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        release();
+        queue.close();
+        await run;
+    });
+
+    it.each([
+        ['starting the request', 'start'],
+        ['writing the request', 'dispatch']
+    ])('holds a steer when agy is lost while %s', async (_label, stage) => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        if (stage === 'start') backend.steerStartError = lost();
+        else backend.steerDispatchError = lost();
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' }))
+            .toEqual({ steered: false, error: 'Steer outcome is being reconciled' });
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        expect(consumedSteer(client, 'steer-1')).toBe(false);
+        expect(queue.size()).toBe(0);
+        release();
+        queue.close();
+        await run;
+    });
+
+    it('keeps a steer queued that arrives while agy restarts', async () => {
+        const { session, queue, client } = makeSession();
+        const first = new FakeAgyBackend();
+        const second = new FakeAgyBackend();
+        let started!: () => void;
+        const { run } = launch(session, [first, second]);
+        queue.push('one', REVIEW, 'a');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        first.alive = false;
+        second.initializeGate = new Promise((resolve) => { started = resolve; });
+        queue.push('two', REVIEW, 'b');
+        await vi.waitFor(() => expect(second.calls).toEqual(['initialize']));
+
+        queue.push('also lint', REVIEW, 'steer-1');
+        const result = await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' }) as { steered: boolean };
+        expect(result.steered).toBe(false);
+        expect(second.steerPrompts).toEqual([]);
+        expect(queue.size()).toBe(1);
+
+        started();
+        await vi.waitFor(() => expect(second.prompts).toEqual([
+            [{ type: 'text', text: 'two' }],
+            [{ type: 'text', text: 'also lint' }]
+        ]));
+        queue.close();
+        await run;
+    });
+
+    it('keeps an early-answered steer confirmed once echoed, even after a Stop', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        queue.push('also lint', REVIEW, 'steer-1');
+        queue.push('and format', REVIEW, 'steer-2');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-2' })).toEqual({ steered: true });
+        backend.steerCompletions[0]!.resolve('end_turn');
+        backend.echo!('run the tests');
+        backend.echo!('also lint');
+        backend.onCancel = () => {
+            release();
+            backend.steerCompletions[1]!.resolve('cancelled');
+        };
+        await rpc(client, RPC_METHODS.Abort)();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(consumedSteer(client, 'steer-1')).toBe(true);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalledWith(['steer-1']);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-2']);
+        queue.close();
+        await run;
+    });
+
+    it('keeps a steer that agy rejects after a Stop queued', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+        backend.onCancel = () => {
+            release();
+            backend.steerCompletions[0]!.reject(Object.assign(new Error('Invalid params'), { code: -32602 }));
+        };
+        await rpc(client, RPC_METHODS.Abort)();
+        // Back in the queue, it runs as the next turn.
+        await vi.waitFor(() => expect(backend.prompts).toEqual([
+            [{ type: 'text', text: 'run the tests' }],
+            [{ type: 'text', text: 'also lint' }]
+        ]));
+        expect(consumedSteer(client, 'steer-1')).toBe(false);
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalled();
+        queue.close();
+        await run;
+    });
+
+    it('keeps the main prompt when Stop leaves a steer agy may have taken', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        let cancelled!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            await new Promise<void>((resolve) => { cancelled = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('build it', REVIEW, 'first');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+        backend.onCancel = () => {
+            cancelled();
+            backend.steerCompletions[0]!.resolve('cancelled');
+        };
+        await rpc(client, RPC_METHODS.Abort)();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        // agy may have folded the steer into the main prompt, so neither goes
+        // back to the composer: the steer is held, the prompt stays delivered.
+        expect(sessionEvents(client)).not.toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['first']);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        queue.close();
+        await run;
+    });
+
+    it('holds an open steer when agy ignores the cancel and is restarted', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client } = makeSession();
+        backend.promptScripts.push(async () => {
+            await new Promise<void>((_resolve, reject) => {
+                backend.onDisconnect = () => reject(lost());
+            });
+        });
+        queue.push('stuck', REVIEW, 'first');
+        const { run } = launch(session, [backend], { cancelHardStopMs: 80 });
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+        backend.steerCompletions[0]!.answer();
+
+        await rpc(client, RPC_METHODS.Abort)();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        expect(consumedSteer(client, 'steer-1')).toBe(false);
+        queue.close();
+        await run;
+    });
+
+    it('holds an open steer when the session is killed mid-turn', async () => {
+        const backend = new FakeAgyBackend();
+        const { session, queue, client, run, release } = await heldTurn(backend);
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({ steered: true });
+        backend.onCancel = () => release();
+        backend.onDisconnect = () => backend.steerCompletions[0]!.reject(lost());
+
+        await session.kill();
+        queue.close();
+        await run;
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        expect(consumedSteer(client, 'steer-1')).toBe(false);
+    });
+});
