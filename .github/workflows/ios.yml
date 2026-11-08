@@ -51,6 +51,7 @@ jobs:
                   HAPI_TEST_RESULT_BUNDLE_PATH: ${{ runner.temp }}/iphone-transcript.xcresult
               run: ios/scripts/test-transcript.sh
             - name: iPad navigation and layout regression tests
+              if: ${{ !cancelled() }}
               env:
                   HAPI_TEST_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2
                   HAPI_TEST_RESULT_BUNDLE_PATH: ${{ runner.temp }}/ipad-regression.xcresult

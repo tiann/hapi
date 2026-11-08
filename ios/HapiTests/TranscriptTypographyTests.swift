@@ -117,6 +117,10 @@ final class TranscriptTypographyTests: XCTestCase {
         ]
     }
 
+    private func elapsedMilliseconds(since start: TimeInterval) -> Int {
+        Int(((ProcessInfo.processInfo.systemUptime - start) * 1_000).rounded())
+    }
+
     private func attachDiagnosticTrace(_ samples: [[String: Any]], anchorID: String,
                                        expectedOffset: CGFloat) {
         let record: [String: Any] = [
@@ -212,14 +216,15 @@ final class TranscriptTypographyTests: XCTestCase {
         }
 
         let previousSize = try XCTUnwrap(driver.typography).bodySize
+        let elapsedStart = ProcessInfo.processInfo.systemUptime
         driver.size = .accessibility5
-        var elapsedMilliseconds = 0
         var observedTypographyChange = false
         for _ in 0..<100 {
             try? await Task.sleep(for: .milliseconds(20))
-            elapsedMilliseconds += 20
-            diagnostics.append(diagnosticSample(anchorID: anchorID, driver: driver, view: view,
-                                                phase: "wait-for-typography", elapsedMilliseconds: elapsedMilliseconds))
+            diagnostics.append(diagnosticSample(
+                anchorID: anchorID, driver: driver, view: view, phase: "wait-for-typography",
+                elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+            ))
             if (driver.typography?.bodySize ?? 0) > previousSize {
                 observedTypographyChange = true
                 break
@@ -230,21 +235,25 @@ final class TranscriptTypographyTests: XCTestCase {
         // Preserve the original assertion timing while sampling the 160 ms settle window.
         for _ in 0..<8 {
             try? await Task.sleep(for: .milliseconds(20))
-            elapsedMilliseconds += 20
-            diagnostics.append(diagnosticSample(anchorID: anchorID, driver: driver, view: view,
-                                                phase: "settle-before-assertion", elapsedMilliseconds: elapsedMilliseconds))
+            diagnostics.append(diagnosticSample(
+                anchorID: anchorID, driver: driver, view: view, phase: "settle-before-assertion",
+                elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+            ))
         }
         let grown = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
         let assertionOffset = view.contentOffset.y - grown.frame.minY
-        diagnostics.append(diagnosticSample(anchorID: anchorID, driver: driver, view: view,
-                                            phase: "assertion", elapsedMilliseconds: elapsedMilliseconds))
+        diagnostics.append(diagnosticSample(
+            anchorID: anchorID, driver: driver, view: view, phase: "assertion",
+            elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+        ))
 
         // This is diagnostic observation only. It does not delay or repair layout.
         for _ in 0..<100 {
             try? await Task.sleep(for: .milliseconds(20))
-            elapsedMilliseconds += 20
-            diagnostics.append(diagnosticSample(anchorID: anchorID, driver: driver, view: view,
-                                                phase: "post-assertion", elapsedMilliseconds: elapsedMilliseconds))
+            diagnostics.append(diagnosticSample(
+                anchorID: anchorID, driver: driver, view: view, phase: "post-assertion",
+                elapsedMilliseconds: elapsedMilliseconds(since: elapsedStart)
+            ))
         }
 
         XCTAssertEqual(assertionOffset, deepOffset, accuracy: 1)
