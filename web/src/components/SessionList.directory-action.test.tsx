@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
-import { ToastProvider } from '@/lib/toast-context'
+import { ToastProvider, useToast } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
 
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
@@ -1279,6 +1279,53 @@ describe('SessionList project group context menu (tiann/hapi#881)', () => {
         ]))
 
         expect(screen.getByRole('button', { name: 'Archive All' })).toBeInTheDocument()
+    })
+
+    it('reports an Archive All failure after the group header unmounts', async () => {
+        let rejectArchive: (error: Error) => void = () => {}
+        const api = {
+            archiveSession: vi.fn(() => new Promise<void>((_resolve, reject) => { rejectArchive = reject })),
+        } as unknown as ApiClient
+        const session = makeSession({
+            id: 'a',
+            active: true,
+            metadata: { path: '/work/hapi', name: 'a', flavor: 'codex', lifecycleState: 'running' },
+        })
+        function ToastTitles() {
+            return <div data-testid="toasts">{useToast().toasts.map((toast) => toast.title).join('|')}</div>
+        }
+        const queryClient = new QueryClient()
+        const tree = (sessions: SessionSummary[]) => (
+            <QueryClientProvider client={queryClient}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <ToastTitles />
+                        <SessionList
+                            sessions={sessions}
+                            selectedSessionId={null}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={false}
+                            api={api}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+        const { rerender } = render(tree([session]))
+
+        fireEvent.contextMenu(screen.getByTitle('/work/hapi'))
+        fireEvent.click(screen.getByRole('menuitem', { name: /Archive All Sessions/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'Archive All' }))
+        await waitFor(() => expect(api.archiveSession).toHaveBeenCalledWith('a'))
+
+        // A filter or SSE update removes the whole group while cleanup is pending.
+        rerender(tree([]))
+        await act(async () => { rejectArchive(new Error('cleanup unconfirmed')) })
+
+        expect(screen.getByTestId('toasts')).toHaveTextContent('Archive could not be confirmed')
     })
 
     it('enables Delete Group only when every session in the group is archived', () => {

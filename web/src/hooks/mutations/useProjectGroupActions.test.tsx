@@ -59,7 +59,7 @@ afterEach(() => {
 })
 
 describe('useProjectGroupActions', () => {
-    it('archives only archivable sessions and stops at the first rejection', async () => {
+    it('archives only archivable sessions in order', async () => {
         const archive = vi.fn(async () => {})
         const api = { archiveSession: archive } as unknown as ApiClient
         const sessions = [runningSession('a'), archivedSession('b'), runningSession('c')]
@@ -76,6 +76,32 @@ describe('useProjectGroupActions', () => {
         expect(archive).toHaveBeenCalledTimes(2)
         expect(archive).toHaveBeenNthCalledWith(1, 'a')
         expect(archive).toHaveBeenNthCalledWith(2, 'c')
+    })
+
+    it('retries a member whose archive failed after SSE already marked it archived', async () => {
+        const archive = vi.fn(async (_id: string) => {})
+        archive.mockRejectedValueOnce(new Error('cleanup unconfirmed'))
+        const api = { archiveSession: archive } as unknown as ApiClient
+        let sessions = [runningSession('a'), runningSession('b')]
+
+        const { result, rerender } = renderHook(
+            () => useProjectGroupActions(api, sessions),
+            { wrapper: createWrapper() }
+        )
+
+        await act(async () => {
+            await expect(result.current.archiveAll()).rejects.toThrow('cleanup unconfirmed')
+        })
+        expect(result.current.hasUnconfirmedArchive).toBe(true)
+
+        sessions = [archivedSession('a'), runningSession('b')]
+        rerender()
+        await act(async () => {
+            await result.current.archiveAll()
+        })
+
+        expect(archive.mock.calls.map(([id]) => id)).toEqual(['a', 'a', 'b'])
+        expect(result.current.hasUnconfirmedArchive).toBe(false)
     })
 
     it('deletes the group through the atomic archived bulk route', async () => {

@@ -558,8 +558,11 @@ function ProjectGroupHeader(props: {
     const [menuAnchorPoint, setMenuAnchorPoint] = useState({ x: 0, y: 0 })
     const [archiveAllOpen, setArchiveAllOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
-    const { archiveAll, deleteGroup, isPending } = useProjectGroupActions(api, actionSessions)
-    const { canArchiveAll, canDelete } = getProjectGroupActionAvailability(actionSessions)
+    const { addToast } = useToast()
+    const { archiveAll, deleteGroup, isPending, hasUnconfirmedArchive } = useProjectGroupActions(api, actionSessions)
+    const availability = getProjectGroupActionAvailability(actionSessions)
+    const canArchiveAll = availability.canArchiveAll || hasUnconfirmedArchive
+    const { canDelete } = availability
     const canStartInGroupDirectory = group.directory !== 'Other'
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -656,6 +659,10 @@ function ProjectGroupHeader(props: {
                 confirmingLabel={t('dialog.archiveAll.confirming')}
                 onConfirm={archiveAll}
                 isPending={isPending}
+                allowDismissWhilePending
+                onBackgroundError={(message) => addToast({
+                    title: t('dialog.archive.error'), body: message, sessionId: '', url: ''
+                })}
                 destructive
             />
 

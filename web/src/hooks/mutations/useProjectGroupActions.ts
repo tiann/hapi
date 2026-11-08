@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@hapi/protocol/types'
@@ -18,19 +19,35 @@ export function useProjectGroupActions(
     archiveAll: () => Promise<void>
     deleteGroup: () => Promise<void>
     isPending: boolean
+    /** A previous Archive All failed; its members may already read archived. */
+    hasUnconfirmedArchive: boolean
 } {
     const queryClient = useQueryClient()
+    // SSE can mark a member archived before its archive request (runner
+    // cleanup) fails, so a retry must re-send the IDs that were not confirmed
+    // instead of re-deriving targets from metadata.
+    const [unconfirmedIds, setUnconfirmedIds] = useState<string[]>([])
 
     const archiveMutation = useMutation({
         mutationFn: async () => {
             if (!api) {
                 throw new Error('Session unavailable')
             }
-            for (const session of sessions) {
-                if (isSessionArchivable(session)) {
-                    await api.archiveSession(session.id)
+            const memberIds = new Set(sessions.map(({ id }) => id))
+            const remaining = [...new Set([
+                ...unconfirmedIds.filter((id) => memberIds.has(id)),
+                ...sessions.filter(isSessionArchivable).map(({ id }) => id),
+            ])]
+            while (remaining.length > 0) {
+                try {
+                    await api.archiveSession(remaining[0]!)
+                } catch (error) {
+                    setUnconfirmedIds(remaining)
+                    throw error
                 }
+                remaining.shift()
             }
+            setUnconfirmedIds([])
         },
         onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
     })
@@ -58,5 +75,6 @@ export function useProjectGroupActions(
         archiveAll: archiveMutation.mutateAsync,
         deleteGroup: deleteMutation.mutateAsync,
         isPending: archiveMutation.isPending || deleteMutation.isPending,
+        hasUnconfirmedArchive: unconfirmedIds.length > 0,
     }
 }
