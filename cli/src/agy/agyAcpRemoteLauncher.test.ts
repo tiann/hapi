@@ -92,6 +92,11 @@ class FakeAgyBackend {
         timing?: { onSent?: () => void; onAnswered?: () => void }
     ): Promise<void> {
         if (this.preSendDelayMs) await new Promise((resolve) => setTimeout(resolve, this.preSendDelayMs));
+        if (this.disconnected) {
+            const error = new Error('ACP transport closed');
+            Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+            throw error;
+        }
         this.prompts.push(content);
         this.promptInFlight = true;
         timing?.onSent?.();
@@ -220,11 +225,12 @@ function makeSession(sessionId: string | null = null) {
     return { session, queue, client };
 }
 
-function launch(session: AgySession, backends: FakeAgyBackend[], opts: { cancelHardStopMs?: number } = {}) {
+function launch(session: AgySession, backends: FakeAgyBackend[], opts: { cancelHardStopMs?: number; killSettleMs?: number } = {}) {
     const created: FakeAgyBackend[] = [];
     const launcher = new AgyAcpRemoteLauncher(session, {
         steerCancelGraceMs: 50,
         cancelHardStopMs: opts.cancelHardStopMs ?? 2_000,
+        killSettleMs: opts.killSettleMs,
         createBackend: () => {
             const backend = backends.shift() ?? new FakeAgyBackend();
             created.push(backend);
@@ -1829,6 +1835,56 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
         await run;
     });
 
+    it.each([
+        ['still waiting to send', 'waiting'],
+        ['draining its cancelled answer', 'draining']
+    ])('puts a prompt back before the session ends when it is killed while %s', async (_label, stage) => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        if (stage === 'waiting') {
+            backend.preSendDelayMs = 150;
+        } else {
+            backend.promptScripts.push(async () => {
+                await new Promise<void>((resolve) => { backend.onDisconnect = resolve; });
+                // HAPI still drains late output before the request fails.
+                await new Promise((resolve) => setTimeout(resolve, 150));
+                const error = new Error('ACP transport closed');
+                Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+                throw error;
+            });
+        }
+        queue.push('build it', REVIEW, 'first');
+        const { run } = launch(session, [backend]);
+        if (stage === 'waiting') await vi.waitFor(() => expect(session.thinking).toBe(true));
+        else await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+        await session.kill();
+        // The runner ends the session and closes the client right after kill().
+        const eventsAtKill = sessionEvents(client).length;
+        const consumedAtKill = client.emitMessagesConsumed.mock.calls.length;
+        expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'build it' });
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['first']);
+
+        queue.close();
+        await run;
+        expect(sessionEvents(client)).toHaveLength(eventsAtKill);
+        expect(client.emitMessagesConsumed.mock.calls).toHaveLength(consumedAtKill);
+    });
+
+    it('does not let an agy that never settles hold the session end forever', async () => {
+        const { session, queue } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(() => new Promise<void>(() => {}));
+        queue.push('build it', REVIEW, 'first');
+        launch(session, [backend], { killSettleMs: 50 });
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+
+        const startedAt = Date.now();
+        await session.kill();
+        expect(Date.now() - startedAt).toBeLessThan(1_000);
+        expect(backend.disconnected).toBe(true);
+    });
+
     it('holds an open steer when the session is killed mid-turn', async () => {
         const backend = new FakeAgyBackend();
         const { session, queue, client, run, release } = await heldTurn(backend);
@@ -1838,9 +1894,10 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
         backend.onDisconnect = () => backend.steerCompletions[0]!.reject(lost());
 
         await session.kill();
-        queue.close();
-        await run;
+        // Settled before kill() returns, since the runner ends the session then.
         expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
         expect(consumedSteer(client, 'steer-1')).toBe(false);
+        queue.close();
+        await run;
     });
 });

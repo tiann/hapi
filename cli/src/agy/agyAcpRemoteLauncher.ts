@@ -22,6 +22,8 @@ type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
 
 const STEER_CANCEL_GRACE_MS = 3_000;
 const CANCEL_HARD_STOP_MS = 10_000;
+// Bound on how long a kill waits for the running turn to settle.
+const KILL_SETTLE_MS = 5_000;
 const PROMPT_SEND_POLL_MS = 50;
 const ECHO_BUFFER_LIMIT = 64 * 1024;
 
@@ -183,6 +185,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly createBackend: () => AcpSdkBackend;
     private readonly steerCancelGraceMs: number;
     private readonly cancelHardStopMs: number;
+    private readonly killSettleMs: number;
+    private turnSettled: Promise<void> | null = null;
     private backend: AcpSdkBackend | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
     private acpSessionId: string | null = null;
@@ -198,12 +202,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         createBackend?: () => AcpSdkBackend;
         steerCancelGraceMs?: number;
         cancelHardStopMs?: number;
+        killSettleMs?: number;
     } = {}) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.createBackend = opts.createBackend ?? createAgyAcpBackend;
         this.steerCancelGraceMs = opts.steerCancelGraceMs ?? STEER_CANCEL_GRACE_MS;
         this.cancelHardStopMs = opts.cancelHardStopMs ?? CANCEL_HARD_STOP_MS;
+        this.killSettleMs = opts.killSettleMs ?? KILL_SETTLE_MS;
         this.session.setKillHandler(() => this.handleKill());
     }
 
@@ -262,7 +268,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const localIds = batch.items
                 .map((item) => item.localId)
                 .filter((localId): localId is string => Boolean(localId));
-            await this.runTurn(batch.message, batch.mode, batch.hash, localIds);
+            const turnRun = this.runTurn(batch.message, batch.mode, batch.hash, localIds);
+            this.turnSettled = turnRun.then(() => {}, () => {});
+            await turnRun;
         }
     }
 
@@ -894,8 +902,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleKill(): Promise<void> {
+        const turnSettled = this.turnSettled;
         await this.requestExit('exit', () => this.handleAbort());
         await this.backend?.disconnect();
+        // The runner ends the session and closes the client as soon as kill
+        // returns, so the turn must put its prompt back or confirm it first;
+        // a stuck agy only delays that by the bound.
+        if (turnSettled) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([
+                turnSettled,
+                new Promise<void>((resolve) => { timer = setTimeout(resolve, this.killSettleMs); })
+            ]);
+            clearTimeout(timer);
+        }
     }
 
     protected async cleanup(): Promise<void> {
