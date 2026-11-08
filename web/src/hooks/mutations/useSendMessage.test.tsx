@@ -210,6 +210,84 @@ describe('useSendMessage', () => {
         ))
     })
 
+    it('preserves staged scratchlist uploads when an accepted send response is lost', async () => {
+        const { prepareScratchlistAttachmentsForSend } = await import('@/lib/scratchlistAttachmentFlow')
+        const { updateMessageStatus } = await import('@/lib/message-window-store')
+        const hubAttachment: AttachmentMetadata = {
+            id: '22222222-2222-4222-8222-222222222222',
+            filename: 'queued-photo.png',
+            mimeType: 'image/png',
+            size: 1024,
+            path: 'hapi-hub:scratchlist/default/session-A/22222222-2222-4222-8222-222222222222-queued-photo.png',
+        }
+        const stagedAttachment = { ...hubAttachment, path: '/uploads/queued-photo.png' }
+        vi.mocked(prepareScratchlistAttachmentsForSend).mockResolvedValueOnce({
+            attachments: [stagedAttachment],
+            staged: [stagedAttachment],
+        })
+        // The Hub may persist and enqueue the message before this rejected
+        // response reaches the client, so the staged path remains referenced.
+        const sendMock = vi.fn(async () => { throw new ApiError('HTTP 502', 502) })
+        const deleteUploadFile = vi.fn(async () => ({ success: true }))
+        const api = { sendMessage: sendMock, deleteUploadFile } as unknown as ApiClient
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A'),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            void result.current.sendMessage('accepted but response lost', [hubAttachment], null, 'queue')
+        })
+
+        await waitFor(() => expect(sendMock).toHaveBeenCalledWith(
+            'session-A',
+            'accepted but response lost',
+            'local-id-1',
+            [stagedAttachment],
+            null,
+            'queue',
+        ))
+        await waitFor(() => expect(updateMessageStatus).toHaveBeenCalledWith(
+            'session-A',
+            'local-id-1',
+            'failed',
+        ))
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+    })
+
+    it('cleans staged scratchlist uploads after a definite 4xx rejection', async () => {
+        const { prepareScratchlistAttachmentsForSend } = await import('@/lib/scratchlistAttachmentFlow')
+        const hubAttachment: AttachmentMetadata = {
+            id: '33333333-3333-4333-8333-333333333333',
+            filename: 'rejected-photo.png',
+            mimeType: 'image/png',
+            size: 1024,
+            path: 'hapi-hub:scratchlist/default/session-A/33333333-3333-4333-8333-333333333333-rejected-photo.png',
+        }
+        const stagedAttachment = { ...hubAttachment, path: '/uploads/rejected-photo.png' }
+        vi.mocked(prepareScratchlistAttachmentsForSend).mockResolvedValueOnce({
+            attachments: [stagedAttachment],
+            staged: [stagedAttachment],
+        })
+        const sendMock = vi.fn(async () => { throw new ApiError('HTTP 422', 422) })
+        const deleteUploadFile = vi.fn(async () => ({ success: true }))
+        const api = { sendMessage: sendMock, deleteUploadFile } as unknown as ApiClient
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A'),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            void result.current.sendMessage('definitely rejected', [hubAttachment], null, 'queue')
+        })
+
+        await waitFor(() => expect(deleteUploadFile).toHaveBeenCalledWith(
+            'session-A',
+            stagedAttachment.path,
+        ))
+    })
     it('forwards delivery mode and retains it on the optimistic message', async () => {
         const sendMock = vi.fn(async () => {})
         const api = createMockApi(sendMock)

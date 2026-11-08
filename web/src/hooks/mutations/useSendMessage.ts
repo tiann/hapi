@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
 import {
@@ -222,16 +222,19 @@ export function useSendMessage(
             if (!api) {
                 throw new Error('API unavailable')
             }
-            let prepared: Awaited<ReturnType<typeof prepareScratchlistAttachmentsForSend>> | null = null
+            const prepared = input.attachments && input.attachments.length > 0
+                ? await prepareScratchlistAttachmentsForSend(
+                    api,
+                    input.sessionId,
+                    input.attachments,
+                    input.scheduledAt ?? null,
+                )
+                : null
+            // Once the POST starts, a client-side failure can mean the Hub
+            // accepted and queued the message before the response was lost.
+            // Keep staged uploads because the accepted row may still reference
+            // them; deleting here can leave the queued prompt unusable.
             try {
-                if (input.attachments && input.attachments.length > 0) {
-                    prepared = await prepareScratchlistAttachmentsForSend(
-                        api,
-                        input.sessionId,
-                        input.attachments,
-                        input.scheduledAt ?? null,
-                    )
-                }
                 await api.sendMessage(
                     input.sessionId,
                     input.text,
@@ -241,7 +244,12 @@ export function useSendMessage(
                     input.deliveryMode,
                 )
             } catch (error) {
-                if (prepared && prepared.staged.length > 0) {
+                const definitePreAcceptanceRejection = error instanceof ApiError
+                    && error.status >= 400
+                    && error.status < 500
+                    && error.status !== 408
+                    && error.status !== 499
+                if (definitePreAcceptanceRejection && prepared && prepared.staged.length > 0) {
                     await Promise.allSettled(prepared.staged.map((attachment) => api.deleteUploadFile(
                         input.sessionId,
                         attachment.path,
