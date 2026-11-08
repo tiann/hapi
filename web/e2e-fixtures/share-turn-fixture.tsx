@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import '../src/index.css'
 import { ShareTurnDialog } from '../src/components/AssistantChat/ShareTurnDialog'
@@ -23,6 +23,13 @@ const portraitFixtureImage = 'data:image/svg+xml;charset=utf-8,' + encodeURIComp
         <rect width="240" height="420" rx="28" fill="#0f766e"/>
         <text x="120" y="190" text-anchor="middle" fill="white" font-family="system-ui" font-size="24" font-weight="700">Portrait</text>
         <text x="120" y="226" text-anchor="middle" fill="white" font-family="system-ui" font-size="16">attachment</text>
+    </svg>
+`)
+
+const blobExportFixture = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+        <rect width="640" height="360" fill="#ff2fa8"/>
+        <text x="320" y="188" text-anchor="middle" fill="white" font-family="system-ui" font-size="38" font-weight="700">BLOB EXPORT FIXTURE</text>
     </svg>
 `)
 
@@ -106,9 +113,12 @@ function App() {
     const sourceRef = useRef<HTMLDivElement>(null)
     const [snapshots, setSnapshots] = useState<Snapshot[]>([])
     const [open, setOpen] = useState(false)
+    const [blobImageSrc, setBlobImageSrc] = useState<string | null>(null)
     const searchParams = new URLSearchParams(window.location.search)
     const wideSource = searchParams.get('wide') === '1'
     const narrowInlineSource = searchParams.get('inlineWrap') === '1'
+    const includeBlobImage = searchParams.get('blobImage') === '1'
+    const blobImageAsDataUrl = searchParams.get('blobMode') === 'data'
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
     const getGeneratedMediaBlob = includeGeneratedFile
         ? async (imageId: string) => {
@@ -127,6 +137,31 @@ function App() {
         updatedAt: { text: `${headerMetadata.showLabels ? 'Updated: ' : ''}Aug 2, 2026, 10:30 AM` },
         worktree: { text: `${headerMetadata.showLabels ? 'Worktree: ' : ''}feat/share-turn-polish` },
     })
+
+    useEffect(() => {
+        if (!includeBlobImage) {
+            setBlobImageSrc(null)
+            return undefined
+        }
+        if (blobImageAsDataUrl) {
+            setBlobImageSrc(blobExportFixture)
+            return undefined
+        }
+
+        let objectUrl: string | null = null
+        let disposed = false
+        void fetch(blobExportFixture)
+            .then((response) => response.blob())
+            .then((blob) => {
+                if (disposed) return
+                objectUrl = URL.createObjectURL(blob)
+                setBlobImageSrc(objectUrl)
+            })
+        return () => {
+            disposed = true
+            if (objectUrl) URL.revokeObjectURL(objectUrl)
+        }
+    }, [blobImageAsDataUrl, includeBlobImage])
 
     const openShare = () => {
         const searchParams = new URLSearchParams(window.location.search)
@@ -172,6 +207,32 @@ function App() {
                         <p data-testid="before-hidden-tool">Visible content before the hidden tool.</p>
                         <div data-hapi-share-exclude="true" className="mt-3 rounded-xl border p-3">Excluded tool output</div>
                         <p data-testid="after-hidden-tool">Visible content after the hidden tool.</p>
+                        {includeBlobImage && blobImageSrc ? (
+                            <div
+                                className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3"
+                                data-hapi-generated-media-id="fixture-blob-image"
+                                data-hapi-generated-media-file-name="blob-export-fixture.svg"
+                            >
+                                <div className="mb-2 min-w-0 truncate text-xs font-medium text-[var(--app-hint)]">
+                                    Displayed image: blob-export-fixture.svg
+                                </div>
+                                <div className="flex min-h-32 min-w-[12rem] items-center justify-center rounded-xl bg-[var(--app-subtle-bg)]">
+                                    <button
+                                        type="button"
+                                        title="Click to zoom"
+                                        data-image-preview-trigger=""
+                                        data-image-preview-label="Blob export fixture"
+                                        className="block max-h-[min(28rem,60vh)] max-w-full cursor-zoom-in rounded-xl text-left"
+                                    >
+                                        <img
+                                            src={blobImageSrc}
+                                            alt="Blob export fixture"
+                                            className="max-h-[min(28rem,60vh)] max-w-full rounded-xl object-contain"
+                                        />
+                                    </button>
+                                </div>
+                            </div>
+                        ) : null}
                         {includeGeneratedFile ? (
                             <div
                                 className="max-w-[92%] rounded-2xl border border-[var(--app-border)] bg-[var(--app-tool-card-bg)] p-3"

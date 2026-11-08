@@ -4,6 +4,7 @@ import { useState, type ComponentProps } from 'react'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     ConversationOutlinePanel,
+    anchorMessageIdFromAnchor,
     captureScrollAnchor,
     getHistoryCoverageRetryDelay,
     getPullToLoadState,
@@ -337,7 +338,7 @@ describe('scroll anchor helpers', () => {
         })
     })
 
-    it('shows the jump button only while scrolling down away from the bottom', () => {
+    it('shows the jump button in either direction away from the bottom', () => {
         const downward = getScrollIntent({
             scrollTop: 610,
             previousScrollTop: 590,
@@ -359,7 +360,7 @@ describe('scroll anchor helpers', () => {
 
         expect(downward.isScrollingDown).toBe(true)
         expect(shouldShowScrollToBottomButton(downward)).toBe(true)
-        expect(shouldShowScrollToBottomButton(upward)).toBe(false)
+        expect(shouldShowScrollToBottomButton(upward)).toBe(true)
         expect(shouldShowScrollToBottomButton(atBottom)).toBe(false)
     })
 
@@ -369,7 +370,7 @@ describe('scroll anchor helpers', () => {
         expect(shouldRenderScrollToBottomButton(false, 0)).toBe(false)
     })
 
-    it('keeps the jump button visible after downward scrolling stops', () => {
+    it('keeps the jump button visible when scrolling stops or reverses', () => {
         const downward = getScrollIntent({
             scrollTop: 610,
             previousScrollTop: 590,
@@ -391,7 +392,7 @@ describe('scroll anchor helpers', () => {
 
         expect(getScrollToBottomButtonVisibility(false, downward)).toBe(true)
         expect(getScrollToBottomButtonVisibility(true, stationary)).toBe(true)
-        expect(getScrollToBottomButtonVisibility(true, upward)).toBe(false)
+        expect(getScrollToBottomButtonVisibility(true, upward)).toBe(true)
     })
 
     it('cancels initial scroll settling when the user scrolls up away from the bottom', () => {
@@ -433,6 +434,24 @@ describe('scroll anchor helpers', () => {
             isScrollingUp: false
         })
         expect(shouldCancelInitialScrollSettling(intent, false)).toBe(false)
+    })
+
+    it('resolves a streamed card anchor to its raw message id, not the stream id', () => {
+        // A Pi assistant card renders with its stream id in the DOM id, while
+        // the store protects rows by canonical message id.
+        const group = document.createElement('div')
+        group.id = 'hapi-message-agent-text:stream-abc:0'
+        group.setAttribute('data-hapi-source-message-ids', 'raw-msg-1 raw-msg-2')
+        document.body.append(group)
+
+        expect(anchorMessageIdFromAnchor({ id: group.id, topOffset: 0 })).toBe('raw-msg-1')
+
+        group.remove()
+    })
+
+    it('falls back to the DOM id for kinds that embed a raw message id', () => {
+        expect(anchorMessageIdFromAnchor({ id: 'hapi-message-user-text:raw-msg-9', topOffset: 0 }))
+            .toBe('raw-msg-9')
     })
 
     it('restores the captured message to the same viewport offset', () => {

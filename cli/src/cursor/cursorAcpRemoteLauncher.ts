@@ -37,7 +37,7 @@ import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsShared
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     cursorHapiMcpServerId,
@@ -53,11 +53,20 @@ import {
     isRetryableCursorError,
     stripRetryableCursorError
 } from './cursorAutoRetry';
+import {
+    clearPostCloseGateForNewUserPrompt,
+    createPostCloseHarnessGate,
+    noteAssistantTextForPostCloseGate,
+    shouldSuppressPostCloseHarnessMessage,
+    shouldSuppressPostCloseHarnessThinking,
+    truncateCoalescedHarnessAfterDoneFooter
+} from './postCloseHarnessSilence';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
+    private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
     private acpSessionId: string | null = null;
     private permissionAdapter: PermissionAdapter | null = null;
@@ -93,10 +102,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private pendingInlineRetryableError = false;
     private attemptProducedToolActivity = false;
     private userAbortRequested = false;
+    /**
+     * #2267: after `AGENT_NOTIFY_SUMMARY` status:"done", drop Cursor harness
+     * resume ("Briefly inform…") user-visible traffic until the next HAPI prompt.
+     */
+    private readonly postCloseHarnessGate = createPostCloseHarnessGate();
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
+        this.titleSync = createAcpSessionTitleSync(session.client);
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -115,8 +130,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
         session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
 
+        const titleSync = this.titleSync;
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
         });
         this.happyServer = happyServer;
@@ -166,7 +182,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 addDirs: session.cursorAddDirs
             });
             this.backend = backend;
-            registerAcpSessionTitleSync(backend, session.client);
+            registerAcpSessionTitleSync(backend, session.client, titleSync);
             this.recordCursorNativeWorktreeMetadata();
 
             backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
@@ -282,7 +298,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             addDirs: session.cursorAddDirs
                         });
                         this.backend = backend;
-                        registerAcpSessionTitleSync(backend, session.client);
+                        registerAcpSessionTitleSync(backend, session.client, titleSync);
                         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
                         this.wireAgentActivityThinking(backend, session);
                         recentStderrHint = null;
@@ -343,7 +359,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             addDirs: session.cursorAddDirs
                         });
                         this.backend = backend;
-                        registerAcpSessionTitleSync(backend, session.client);
+                        registerAcpSessionTitleSync(backend, session.client, titleSync);
                         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
                         this.wireAgentActivityThinking(backend, session);
                         recentStderrHint = null;
@@ -703,6 +719,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // Hold promptInFlight before mode apply so a concurrent Auto relaunch
             // cannot disconnect this backend mid-dispatch.
             session.onThinkingChange(true);
+            // #2267: discard suppressed harness-resume buffers while the gate
+            // still applies. Keep the gate closed through applyCursorAcpMode and
+            // prompt()'s pre-swap drain; reopen only after the handler swap
+            // (promptGeneration bump) so old-handler chunks cannot resurrect.
+            if (
+                this.postCloseHarnessGate.closedWithDone
+                && !this.softSteerOutstanding()
+            ) {
+                await liveBackend.discardPendingMessageBuffers();
+            }
             this.promptInFlight = true;
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
@@ -736,7 +762,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         this.attemptProducedToolActivity = false;
                         let turnCompleted = false;
                         try {
+                            // Capture before prompt(): pre-swap drain still uses this
+                            // generation; after handler swap generation bumps and we
+                            // reopen speech once. Do not clear again on later harness
+                            // resumes that reuse this onUpdate (#2267 bot Minor).
+                            const generationAtPromptStart = liveBackend.getPromptGeneration();
+                            let reopenedSpeechForThisPrompt = false;
                             await liveBackend.prompt(liveSessionId, promptContent, (message) => {
+                                if (
+                                    !reopenedSpeechForThisPrompt
+                                    && liveBackend.getPromptGeneration() !== generationAtPromptStart
+                                ) {
+                                    clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
+                                    reopenedSpeechForThisPrompt = true;
+                                }
                                 if (message.type === 'turn_complete') turnCompleted = true;
                                 this.handleAgentMessage(message);
                             });
@@ -946,8 +985,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * #1470 / #1502: ACP foreground state → hub thinking via keepalive.
      * Background tool/content updates are ignored; running is debounced in the backend.
      */
+    private softSteerOutstanding(): boolean {
+        return this.softSteerWaiters.length > 0;
+    }
+
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
         backend.setAgentActivityListener((thinking) => {
+            if (shouldSuppressPostCloseHarnessThinking(this.postCloseHarnessGate, {
+                promptInFlight: this.promptInFlight,
+                softSteerOutstanding: this.softSteerOutstanding(),
+                thinking
+            })) {
+                return;
+            }
             if (session.thinking !== thinking) {
                 session.onThinkingChange(thinking);
             }
@@ -971,6 +1021,33 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (!visibleText) return;
                 message = { ...message, text: visibleText };
             }
+        }
+        // Quiet-drain coalescing can append finished-shell prose onto the same
+        // buffer as the done footer. Truncate before the gate runs so the real
+        // close still reaches the hub and the harness tail is dropped — but never
+        // while a soft-steer still owns the turn (#2268 Minors).
+        if (message.type === 'text' && message.live !== true) {
+            const truncated = truncateCoalescedHarnessAfterDoneFooter(message.text, {
+                softSteerOutstanding: this.softSteerOutstanding()
+            });
+            if (truncated !== null) {
+                message = { ...message, text: truncated };
+            }
+        }
+        // Gate must be evaluated *before* noting this segment's footer so a
+        // late-arriving done summary still reaches the hub (#2267). Soft-steer
+        // still outstanding counts as an active turn (Codex P2).
+        if (shouldSuppressPostCloseHarnessMessage(this.postCloseHarnessGate, {
+            promptInFlight: this.promptInFlight,
+            softSteerOutstanding: this.softSteerOutstanding(),
+            messageType: message.type
+        })) {
+            return;
+        }
+        if (message.type === 'text') {
+            noteAssistantTextForPostCloseGate(this.postCloseHarnessGate, message.text, {
+                live: message.live === true
+            });
         }
         const converted = convertAgentMessage(message, this.currentBackendModel);
         if (converted) {
@@ -1296,7 +1373,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
         // Publish this.backend only after initialize + session/load so the
         // message loop cannot prompt against a half-ready process.
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, this.titleSync);
         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
         this.wireAgentActivityThinking(backend, session);
         this.wireStderrErrorListener(backend, (hint) => {

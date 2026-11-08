@@ -3,7 +3,7 @@ import base from './playwright.config'
 
 export default defineConfig({
     ...base,
-    testMatch: '**/composer-image-preview.spec.ts',
+    testMatch: ['**/composer-image-preview.spec.ts', '**/image-preview-back.spec.ts'],
     projects: [
         ...base.projects!,
         { name: 'firefox', use: { browserName: 'firefox' } },

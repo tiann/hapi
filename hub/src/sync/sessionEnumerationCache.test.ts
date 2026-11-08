@@ -180,4 +180,20 @@ describe('SessionEnumerationCache', () => {
         expect(second).toEqual(okCommands(2))
         expect(h.fetches.length).toBe(2)
     })
+
+    it('release() drops machine-scoped keys without touching same-prefixed sessions', async () => {
+        const h = createHarness()
+        // A machine id prefix must not sweep session entries that merely
+        // share its leading characters — only the `<prefix>|` scope goes.
+        await h.cache.get('machine-1|agy-models', immediateFetch(h, () => okCommands(1)), isCacheable)
+        await h.cache.get('machine-12|agy-models', immediateFetch(h, () => okCommands(2)), isCacheable)
+
+        h.cache.release('machine-1')
+        const dropped = await h.cache.get('machine-1|agy-models', immediateFetch(h, () => okCommands(3)), isCacheable)
+        const kept = await h.cache.get('machine-12|agy-models', immediateFetch(h, () => okCommands(4)), isCacheable)
+
+        expect(dropped).toEqual(okCommands(3))
+        expect(kept).toEqual(okCommands(2))
+        expect(h.fetches.length).toBe(3)
+    })
 })

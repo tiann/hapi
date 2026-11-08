@@ -54,14 +54,19 @@ describe('PermissionField', () => {
         expect(onChange).toHaveBeenCalledWith('plan')
     })
 
-    it('renders the YOLO toggle with its native mapping for toggle flavors', () => {
-        renderField({ agent: 'cursor' })
-        expect(screen.getByRole('checkbox')).toBeTruthy()
-        expect(screen.getByText(/applies native Yolo mode/i)).toBeInTheDocument()
+    it('renders Cursor permission modes as a native select', () => {
+        const onChange = vi.fn()
+        renderField({ agent: 'cursor', nativeValue: 'default', onNativeChange: onChange })
+        expect(screen.getByRole('combobox')).toBeTruthy()
+        expect(screen.getByRole('option', { name: 'Plan Mode' })).toBeTruthy()
+        expect(screen.getByRole('option', { name: 'Ask Mode' })).toBeTruthy()
+        fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
+        expect(onChange).toHaveBeenCalledWith('plan')
     })
 
-    it('maps agy YOLO to its native always-proceed mode', () => {
+    it('renders the YOLO toggle with its native mapping for toggle flavors', () => {
         renderField({ agent: 'agy' })
+        expect(screen.getByRole('checkbox')).toBeTruthy()
         expect(screen.getByText(/applies native Always Proceed mode/i)).toBeInTheDocument()
     })
 
