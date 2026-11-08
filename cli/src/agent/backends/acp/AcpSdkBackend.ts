@@ -772,22 +772,7 @@ export class AcpSdkBackend implements AgentBackend {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 const finalPromptUsage = promptUsage ?? latestUsageUpdate?.tokenUsage ?? null;
                 if (finalPromptUsage) {
-                    onUpdate({
-                        type: 'usage',
-                        inputTokens: finalPromptUsage.inputTokens,
-                        outputTokens: finalPromptUsage.outputTokens,
-                        totalTokens: finalPromptUsage.totalTokens,
-                        thoughtTokens: finalPromptUsage.thoughtTokens,
-                        cacheReadTokens: finalPromptUsage.cacheReadTokens,
-                        ...(finalPromptUsage.cacheCreationTokens !== undefined
-                            ? { cacheCreationTokens: finalPromptUsage.cacheCreationTokens }
-                            : {}),
-                        contextTokens: latestUsageUpdate ? latestUsageUpdate.contextTokens : undefined,
-                        contextWindow: latestUsageUpdate ? latestUsageUpdate.contextWindow : undefined,
-                        ...(latestUsageUpdate?.cost
-                            ? { cost: latestUsageUpdate.cost.amount, costCurrency: latestUsageUpdate.cost.currency }
-                            : {})
-                    });
+                    onUpdate(this.buildTokenUsageMessage(finalPromptUsage, latestUsageUpdate));
                 } else if (
                     latestUsageUpdate
                     && (latestUsageUpdate.contextTokens !== undefined
@@ -1336,7 +1321,36 @@ export class AcpSdkBackend implements AgentBackend {
             tokenUsage: tokenUsage ?? previous?.tokenUsage ?? null,
             cost: cost ?? previous?.cost ?? null
         };
+        if (tokenUsage && !this.promptUsageCallback && this.usageUpdateListener) {
+            // A turn completed outside prompt() (e.g. Cursor harness-resumed
+            // work): no prompt finalization will consume these tokens, so
+            // forward them now, once.
+            const update = this.latestUsageUpdate;
+            this.latestUsageUpdate = { ...update, tokenUsage: null };
+            this.lastForwardedUsageUpdate = this.latestUsageUpdate;
+            this.usageUpdateListener(this.buildTokenUsageMessage(tokenUsage, update));
+            return;
+        }
         this.forwardUsageUpdate();
+    }
+
+    private buildTokenUsageMessage(usage: AcpPromptUsage, latest: AcpUsageUpdate | null): AgentMessage {
+        return {
+            type: 'usage',
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            thoughtTokens: usage.thoughtTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            ...(usage.cacheCreationTokens !== undefined
+                ? { cacheCreationTokens: usage.cacheCreationTokens }
+                : {}),
+            contextTokens: latest?.contextTokens,
+            contextWindow: latest?.contextWindow,
+            ...(latest?.cost
+                ? { cost: latest.cost.amount, costCurrency: latest.cost.currency }
+                : {})
+        };
     }
 
     private hasForwardedUsage(update: AcpUsageUpdate): boolean {

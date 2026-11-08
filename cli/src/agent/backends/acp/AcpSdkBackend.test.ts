@@ -911,6 +911,17 @@ describe('AcpSdkBackend', () => {
         expect(messages).toContainEqual(expect.objectContaining({ type: 'usage', inputTokens: 100, outputTokens: 20, cacheReadTokens: 40 }));
     });
 
+    it('forwards v2 state_update token usage once when no prompt is active', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const internal = backend as unknown as { handleSessionUpdate: (params: unknown) => void; sessionUpdateQueue: Promise<void> };
+        const messages: AgentMessage[] = [];
+        backend.setUsageUpdateListener((message) => messages.push(message));
+        internal.handleSessionUpdate({ sessionId: 'session-1', update: { sessionUpdate: 'state_update', state: 'idle', usage: { input_tokens: 100, output_tokens: 20 } } });
+        internal.handleSessionUpdate({ sessionId: 'session-1', update: { sessionUpdate: 'usage_update', used: 500, size: 1000 } });
+        await internal.sessionUpdateQueue;
+        expect(messages.filter((m) => m.type === 'usage' && m.inputTokens === 100 && m.outputTokens === 20)).toHaveLength(1);
+    });
+
     it('emits straggler chunks before turn_complete', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 5;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 50;
