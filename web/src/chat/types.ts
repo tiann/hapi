@@ -29,6 +29,8 @@ export type RoundSummary = {
     totalCostUsd?: number
     numTurns?: number
     durationMs?: number
+    generationMs?: number
+    generationOutputTokens?: number
 }
 
 export type AgentEvent =
@@ -45,8 +47,8 @@ export type AgentEvent =
     | { type: 'token-count'; info: unknown; provider?: 'codex'; turnId?: string; model?: string | null }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
     | { type: 'compact'; trigger: string; preTokens: number }
-    // Structured result of Pi's compact RPC; rendered as a dedicated chat block.
-    | { type: 'compact-summary'; summary: string; tokensBefore?: number; estimatedTokensAfter?: number }
+    // Structured compaction outcome with optional native identity and token facts.
+    | { type: 'compact-summary'; summary: string; compactionId?: string; tokensBefore?: number; tokensAfter?: number; estimatedTokensAfter?: number }
     // Claude Code's automatic away-summary recap (TUI window blur 5min+, then focus).
     | { type: 'recap'; text: string }
     | { type: 'thread-goal-updated'; goal: ThreadGoal; threadId?: string; turnId?: string }
@@ -240,6 +242,8 @@ export type UserTextBlock = {
 export type AgentTextBlock = {
     kind: 'agent-text'
     id: string
+    /** Raw HAPI message ids represented by a coalesced streaming block. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null
@@ -254,6 +258,8 @@ export type AgentTextBlock = {
 export type AgentReasoningBlock = {
     kind: 'agent-reasoning'
     id: string
+    /** Raw HAPI message ids represented by a coalesced streaming block. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null

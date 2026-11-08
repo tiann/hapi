@@ -10,9 +10,9 @@ import {
 } from './flavors'
 
 describe('hasCapability', () => {
-    test('agy supports model-change but not effort', () => {
+    test('agy supports model-change and effort', () => {
         expect(hasCapability('agy', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('agy', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('agy', Capabilities.Effort)).toBe(true)
     })
 
     test('claude supports model-change', () => {
@@ -143,6 +143,7 @@ describe('convenience functions', () => {
     })
 
     test('supportsEffort matches hasCapability', () => {
+        expect(supportsEffort('agy')).toBe(true)
         expect(supportsEffort('claude')).toBe(true)
         expect(supportsEffort('codex')).toBe(false)
         expect(supportsEffort('gemini')).toBe(false)

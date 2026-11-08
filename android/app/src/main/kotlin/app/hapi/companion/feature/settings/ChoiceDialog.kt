@@ -9,12 +9,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
@@ -30,6 +34,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import app.hapi.companion.ui.theme.ColorThemePreset
+import app.hapi.companion.ui.theme.preview
 
 /**
  * One entry of a [ChoiceDialog]: the value to hand back on selection, its
@@ -50,13 +56,16 @@ data class ChoiceOption<T>(
  * derived from the active color scheme, mirroring how the web color-theme
  * cards hardcode their preview colors: a "light" chip must stay light even
  * when the dialog itself is dark. [outline] adds a hairline border for
- * chips whose halves would otherwise disappear against the dialog surface.
+ * chips whose halves would otherwise disappear against the dialog surface;
+ * [accentColor] paints an accent strip along the bottom edge, the way the
+ * web color-theme cards carry their accent below the light/dark split.
  */
 @Immutable
 data class ChoiceSwatch(
     val startColor: Color,
     val endColor: Color,
     val outline: Boolean = false,
+    val accentColor: Color? = null,
 )
 
 /** Fixed light preview: the light theme's canvas. */
@@ -79,6 +88,25 @@ internal fun themeModeSwatch(mode: ThemeMode): ChoiceSwatch = when (mode) {
 }
 
 /**
+ * Preview chip for a color theme preset: the left half is the preset's light
+ * canvas, the right half its dark canvas, and the accent strip shows the
+ * preset's signature color (web parity — the web cards hardcode these three
+ * values rather than deriving them). Every preset card carries the hairline:
+ * a preset's canvases are near-white and near-black by design, so the chip
+ * would partially vanish against a same-toned dialog — the web cards are
+ * bordered for the same reason.
+ */
+internal fun colorThemePresetSwatch(preset: ColorThemePreset): ChoiceSwatch {
+    val preview = preset.preview()
+    return ChoiceSwatch(
+        startColor = preview.light,
+        endColor = preview.dark,
+        outline = true,
+        accentColor = preview.accent,
+    )
+}
+
+/**
  * Expressive single-choice dialog for small exclusive pickers (the theme and
  * language settings). Each option renders as a full-width choice card: the
  * selected card fills with [androidx.compose.material3.ColorScheme.secondaryContainer]
@@ -90,7 +118,9 @@ internal fun themeModeSwatch(mode: ThemeMode): ChoiceSwatch = when (mode) {
  * target instead of two (row + radio with its own click handler).
  *
  * Choosing an option is the only commit gesture: tapping one invokes
- * [onSelect] immediately, exactly like the previous dialogs.
+ * [onSelect] immediately, exactly like the previous dialogs. Longer
+ * catalogs (e.g. the color themes) scroll inside a capped height so the
+ * dialog stays on screen on small displays.
  */
 @Composable
 internal fun <T> ChoiceDialog(
@@ -106,7 +136,10 @@ internal fun <T> ChoiceDialog(
         title = { Text(title) },
         text = {
             Column(
-                modifier = Modifier.selectableGroup(),
+                modifier = Modifier
+                    .selectableGroup()
+                    .heightIn(max = 384.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 options.forEach { option ->
@@ -171,11 +204,15 @@ private fun <T> ChoiceRow(
     }
 }
 
-/** Rounded two-tone chip: left half [ChoiceSwatch.startColor], right half [ChoiceSwatch.endColor]. */
+/**
+ * Rounded two-tone chip: left half [ChoiceSwatch.startColor], right half
+ * [ChoiceSwatch.endColor], with the optional [ChoiceSwatch.accentColor] strip
+ * running along the bottom edge.
+ */
 @Composable
 private fun SwatchChip(swatch: ChoiceSwatch) {
     val shape = RoundedCornerShape(6.dp)
-    Row(
+    Box(
         modifier = Modifier
             .size(width = 36.dp, height = 20.dp)
             .clip(shape)
@@ -191,17 +228,30 @@ private fun SwatchChip(swatch: ChoiceSwatch) {
                 },
             ),
     ) {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .background(swatch.startColor),
-        )
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .background(swatch.endColor),
-        )
+        Row(
+            modifier = Modifier.matchParentSize(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(swatch.startColor),
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(swatch.endColor),
+            )
+        }
+        swatch.accentColor?.let { accent ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(accent),
+            )
+        }
     }
 }

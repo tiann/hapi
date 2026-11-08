@@ -1,5 +1,7 @@
 package app.hapi.data.api
 
+import app.hapi.protocol.wire.SessionReadStateRequest
+import app.hapi.protocol.wire.SessionReadStateResponse
 import app.hapi.data.auth.HubUrls
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.ApprovePermissionRequest
@@ -7,6 +9,7 @@ import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
+import app.hapi.protocol.wire.RestartRunnerResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -199,6 +202,9 @@ class HapiApi internal constructor(
     }
 
     /** `GET /api/sessions/:id`. */
+    suspend fun updateSessionReadState(sessionId: String, state: SessionReadStateRequest): SessionReadStateResponse =
+        request("PUT", url("api", "sessions", sessionId, "read-state").build(), state.toJsonBody())
+
     suspend fun getSession(sessionId: String): SessionResponse =
         request("GET", url("api", "sessions", sessionId).build())
 
@@ -496,6 +502,15 @@ class HapiApi internal constructor(
     }
 
     /**
+     * `POST /api/machines/:id/restart-runner` — the skew banner's manual
+     * exit: the hub stops a supervised runner so its supervisor relaunches it
+     * with the newer on-disk CLI. Fails (HTTP error) when the runner is not
+     * supervised or not newer-on-disk.
+     */
+    suspend fun restartMachineRunner(machineId: String): RestartRunnerResponse =
+        request("POST", url("api", "machines", machineId, "restart-runner").build(), EMPTY_JSON)
+
+    /**
      * `POST /api/machines/:id/spawn`. The response discriminates on `type`,
      * not HTTP status — a failed spawn is still HTTP 200 with `type: 'error'`.
      */
@@ -581,7 +596,7 @@ class HapiApi internal constructor(
     }
 
     /** `GET /api/sessions/:id/files?query=&limit=` — ripgrep-backed search (limit 1–500, default 200). */
-    suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int? = null): FileSearchResponse {
+    override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
         val target = url("api", "sessions", sessionId, "files").apply {
             if (query.isNotEmpty()) addQueryParameter("query", query)
             limit?.let { addQueryParameter("limit", it.toString()) }
