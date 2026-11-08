@@ -1,7 +1,7 @@
 import { logger } from '@/ui/logger';
 import { loop } from '@/claude/loop';
 import { AgentState, SessionEffort, SessionModel } from '@/api/types';
-import { EnhancedMode, PermissionMode } from './loop';
+import { claudeProcessModeKey, EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { classifyClaudeSlashCatalog, extractSDKMetadata } from '@/claude/sdk/metadataExtractor';
@@ -152,8 +152,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         logger.debug('[start] Failed to update session metadata:', error);
     });
 
-    // Start HAPI MCP server
-    const happyServer = await startHappyServer(session);
+    // Start HAPI MCP server (pass session cwd so spawn_peer "." anchors here)
+    const happyServer = await startHappyServer(session, { workingDirectory });
     logger.debug(`[START] HAPI MCP server started at ${happyServer.url}`);
 
     const formatFailureReason = (message: string): string => {
@@ -300,19 +300,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     const startingMode = options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');
     setControlledByUser(session, startingMode);
 
-    // Import MessageQueue2 and create message queue
-    // 'plan' and 'auto' are enforced inside Claude itself (not emulated via
-    // canCallTool like acceptEdits/bypassPermissions), so switching to/from
-    // them must start a new process with the matching --permission-mode flag.
+    // Batches split on any mode change that needs a new Claude process, and
+    // on effort so each batch runs at its own effort.
     const messageQueue = new MessageQueue2<EnhancedMode>(mode => hashObject({
-        agentEnforcedMode: mode.permissionMode === 'plan' || mode.permissionMode === 'auto' ? mode.permissionMode : null,
-        model: mode.model,
-        effort: mode.effort,
-        fallbackModel: mode.fallbackModel,
-        customSystemPrompt: mode.customSystemPrompt,
-        appendSystemPrompt: mode.appendSystemPrompt,
-        allowedTools: mode.allowedTools,
-        disallowedTools: mode.disallowedTools
+        ...claudeProcessModeKey(mode),
+        effort: mode.effort
     }));
 
     // Forward messages to the queue

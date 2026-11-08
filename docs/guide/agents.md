@@ -19,8 +19,8 @@ agent's integration; their supported syntax varies by agent.
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
-| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | — |
-| Antigravity (agy) | `hapi agy` | Headless print mode (per-turn `agy -p` + NDJSON) | — | ✓ | `request-review` `always-proceed` | ✓ |
+| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
+| Antigravity (agy) | `hapi agy` | Persistent headless NDJSON over stdio | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
@@ -30,7 +30,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
 
 ### Permission modes
 
@@ -52,7 +52,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini and fresh-session-only DSH cannot be resumed. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
 ### Mathematical formulas in HAPI Markdown
 
@@ -286,13 +286,20 @@ export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "de
 hapi dsh
 ```
 
-DSH sessions are remote-only and fresh-session-only. HAPI does not inject MCP
+DSH sessions are remote-only. With a persistent DSH ACP profile, HAPI stores the
+native DSH session id and restores model context with `session/resume` after a
+restart or archive. The resume call does not replay the transcript; HAPI's Hub
+message history remains the source for the chat UI. HAPI does not inject MCP
 servers. Model selection is available: the DSH composition's model catalog is
 exposed through the session RPC `ListDshModels` and applied per turn with ACP
 `session/set_config_option`. Effort pickers are not exposed because the
 official ACP contract leaves that surface to the DSH composition. Pending
 one-shot permission requests remain answerable in the standard HAPI UI, but
-the ACP composition owns the overall permission policy.
+the ACP composition owns the overall permission policy. A legacy or
+fresh-session-only server falls back to a new session and surfaces that outcome
+in the chat.
+
+`*` Resume requires a DSH ACP server that implements `session/resume`.
 
 HAPI's `$` skill menu for DSH sessions reads the same skill roots DSH's own
 skill filesystem uses: `$DSH_HOME/skills` (`~/.dsh/skills` by default), the
@@ -308,7 +315,28 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
-- **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven headlessly via print mode: every turn spawns `agy -p <msg> --conversation <uuid> --output-format stream-json`, and NDJSON events (init / step_update / result) are streamed into the chat. There is no PTY/TUI wrapper and no hook-based permission bridge: permission handling uses agy's own `settings.json` allow/deny rules (`request-review`) or `--dangerously-skip-permissions` (`always-proceed`). Tool calls that lack an allow-rule are auto-denied by agy and surfaced as a chat hint. MCP servers are configured the standard agy way — in the user's global `~/.gemini/config/mcp_config.json` or a workspace `.agents/mcp_config.json` — and are loaded natively by agy in headless mode (no HAPI injection). Remote-only — there is no local terminal input path. [Google Antigravity](https://antigravity.google)
+- **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven through
+  `agy --input-format stream-json --output-format stream-json`. HAPI starts the
+  process on the first prompt and reuses it for subsequent turns with the same
+  model, effort, and permission settings. Each prompt is sent through stdin;
+  the next turn starts after HAPI finishes handling the current `result` and
+  chat output.
+  Changing settings restarts the process with `--conversation <uuid>`. Stop
+  terminates the process and its tools; the next send resumes the conversation.
+  A process failure also causes the next turn to start a fresh process, without
+  automatically replaying a prompt the agent already accepted.
+
+  Requires an agy CLI with `--input-format stream-json` support. Native CLI
+  commands such as `/model` and `/usage` cannot run inside this stream; use
+  HAPI's model and effort controls to change settings. Remote-only — there is
+  no local terminal input path or PTY/TUI wrapper.
+
+  Permission handling uses agy's `settings.json` allow/deny rules
+  (`request-review`) or `--dangerously-skip-permissions` (`always-proceed`),
+  without a hook-based approval bridge. Tools without an allow-rule are
+  auto-denied and shown as a chat hint. MCP servers are loaded natively from
+  `~/.gemini/config/mcp_config.json` or workspace `.agents/mcp_config.json`;
+  HAPI does not inject its own MCP server. [Google Antigravity](https://antigravity.google)
 
   In the web model picker, models with multiple effort variants appear once,
   with a separate effort selector showing the levels in the machine's catalog.

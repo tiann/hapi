@@ -212,6 +212,28 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByRole('button', { name: 'High' })).toBeNull()
     })
 
+    it('gives Codex reasoning effort the same Effort button and section as Claude', () => {
+        const onModelReasoningEffortChange = vi.fn()
+        renderComposer('codex', {
+            effort: undefined,
+            modelReasoningEffort: 'high',
+            onModelReasoningEffortChange
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Low' }))
+        expect(onModelReasoningEffortChange).toHaveBeenCalledWith('low')
+    })
+
+    it('labels an unset effort as the default effort on every flavor', () => {
+        renderComposer('claude', { effort: null })
+        expect(screen.getByRole('button', { name: 'Default effort' })).toBeTruthy()
+        cleanup()
+        renderComposer('codex', { effort: undefined, modelReasoningEffort: null, onModelReasoningEffortChange: vi.fn() })
+        expect(screen.getByRole('button', { name: 'Default effort' })).toBeTruthy()
+    })
+
     it('hides value buttons on narrow viewports, keeping settings', () => {
         runtime.narrowViewport = true
         renderComposer('claude')
@@ -227,6 +249,40 @@ describe('HappyComposer generic model/effort value buttons', () => {
         // Anchored open: the other sections stay collapsed.
         expect(screen.queryByText('Permission Mode')).toBeNull()
         expect(screen.queryByText('Effort')).toBeNull()
+    })
+
+    it('offers Codex fast mode in the model picker', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { model: 'gpt-5.6', availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
+            serviceTier: 'standard', onServiceTierChange })
+        fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        expect(screen.getByText('Fast Mode')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Fast' }))
+        expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it('toggles Codex fast mode directly from the composer toolbar', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { serviceTier: 'standard', onServiceTierChange })
+        const fast = screen.getByRole('button', { name: 'Fast Mode' })
+        expect(fast).toHaveAttribute('aria-pressed', 'false')
+        fireEvent.click(fast)
+        expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it('offers the fast toggle on narrow screens and turns fast off', () => {
+        runtime.narrowViewport = true
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { serviceTier: 'fast', onServiceTierChange })
+        const fast = screen.getByRole('button', { name: 'Fast Mode' })
+        expect(fast).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(fast)
+        expect(onServiceTierChange).toHaveBeenCalledWith('standard')
+    })
+
+    it('does not show a fast toggle when it is unavailable', () => {
+        renderComposer('codex', { onServiceTierChange: undefined })
+        expect(screen.queryByRole('button', { name: 'Fast Mode' })).toBeNull()
     })
 
     it('opens only the Effort section from the effort button (anchored open)', () => {

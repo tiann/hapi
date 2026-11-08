@@ -66,6 +66,7 @@ sealed interface OlderLoadOutcome {
  */
 data class MessageWindowState(
     val sessionId: String,
+    val readThroughRevision: Long? = null,
     /** Window rows in position order (queued rows re-merged after each trim). */
     val messages: List<WindowMessage> = emptyList(),
     /** Older history exists (server flag, or rows were trimmed away). */

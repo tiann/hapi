@@ -22,6 +22,24 @@ export interface EnhancedMode {
     disallowedTools?: string[];
 }
 
+/**
+ * Mode fields that only take effect in a fresh Claude process. 'plan' and
+ * 'auto' are enforced inside Claude itself (not emulated via canCallTool like
+ * acceptEdits/bypassPermissions), so switching to/from them needs a matching
+ * --permission-mode flag. Effort is left out: it can change live.
+ */
+export function claudeProcessModeKey(mode: EnhancedMode) {
+    return {
+        agentEnforcedMode: mode.permissionMode === 'plan' || mode.permissionMode === 'auto' ? mode.permissionMode : null,
+        model: mode.model,
+        fallbackModel: mode.fallbackModel,
+        customSystemPrompt: mode.customSystemPrompt,
+        appendSystemPrompt: mode.appendSystemPrompt,
+        allowedTools: mode.allowedTools,
+        disallowedTools: mode.disallowedTools
+    };
+}
+
 interface LoopOptions {
     path: string
     model?: SessionModel

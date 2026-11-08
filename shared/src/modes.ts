@@ -192,6 +192,23 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
     }))
 }
 
+type SteeringSessionMetadata = {
+    flavor?: string | null
+    cursorSessionId?: string | null
+    cursorSessionProtocol?: 'acp' | 'stream-json' | null
+}
+
+type SteeringSessionState = {
+    metadata?: SteeringSessionMetadata | null
+    thinking?: boolean
+    agentState?: { steeringActive?: boolean | null } | null
+}
+
+type SteeringCapability = {
+    activeTurnState: 'thinking' | 'steeringActive'
+    supportsSession?: (metadata: SteeringSessionMetadata) => boolean
+}
+
 /**
  * Flavors that can deliver a queued message into an active turn on demand
  * (per-message "Steer" from the waiting queue), without waiting for full-turn end.
@@ -199,42 +216,61 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  * Steer = soft mid-turn delivery (same idea as Cursor GUI default "Send"):
  * - Pi: native steer over the Pi runtime (first-class since #1466)
  * - Codex: app-server `turn/steer` (true mid-turn inject)
+ * - OpenCode v1: concurrent ACP `session/prompt`; v2: durable REST inbox
+ *   steering at a native step boundary. Both require live steeringActive.
  * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
  *   stream-json Cursor sessions are NOT steerable — gate with
  *   {@link isSteeringSupportedForSession}.
+ * - Claude: stream-json stdin write during the turn (TUI Ctrl+X Ctrl+S);
+ *   Claude folds it in at the next tool boundary. Remote mode only.
  *
- * Claude / others: not supported (no reachable soft-steer path) — UI hides Steer.
+ * Others: not supported — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['codex', 'cursor', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'opencode', 'pi'] as const
+
+type SteeringFlavor = typeof STEERING_SUPPORTED_FLAVORS[number]
+
+// Keep protocol restrictions and the runtime's active-turn signal together so
+// peer senders and the waiting queue do not need their own flavor branches.
+const STEERING_CAPABILITIES = {
+    claude: { activeTurnState: 'steeringActive' },
+    codex: { activeTurnState: 'steeringActive' },
+    cursor: {
+        activeTurnState: 'steeringActive',
+        supportsSession: (metadata: SteeringSessionMetadata) =>
+            metadata.cursorSessionProtocol !== 'stream-json'
+            && (Boolean(metadata.cursorSessionProtocol) || !metadata.cursorSessionId)
+    },
+    opencode: { activeTurnState: 'steeringActive' },
+    pi: { activeTurnState: 'thinking' }
+} satisfies Record<SteeringFlavor, SteeringCapability>
+
+function getSteeringCapability(flavor?: string | null): SteeringCapability | undefined {
+    if (!flavor || !Object.hasOwn(STEERING_CAPABILITIES, flavor)) return undefined
+    return STEERING_CAPABILITIES[flavor as SteeringFlavor]
+}
 
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
-    return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
+    return getSteeringCapability(flavor) !== undefined
 }
 
 /**
- * Session-aware steer gate. Prefer this over {@link isSteeringSupportedForFlavor}
- * when metadata is available: legacy Cursor stream-json sessions advertise
- * flavor `cursor` but cannot steer.
- *
- * Matches CLI legacy detection: explicit `stream-json`, or a pre-ACP session
- * that has `cursorSessionId` without `cursorSessionProtocol: 'acp'`.
+ * Session-aware steer gate. Legacy Cursor stream-json sessions advertise
+ * flavor `cursor` but cannot steer, including pre-ACP sessions with only an id.
+ * Native admission and remote-control checks remain the caller's responsibility.
  */
-export function isSteeringSupportedForSession(metadata?: {
-    flavor?: string | null
-    cursorSessionId?: string | null
-    cursorSessionProtocol?: 'acp' | 'stream-json' | null
-} | null): boolean {
-    if (metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
-        return true
-    }
-    if (metadata?.flavor !== 'cursor') {
-        return false
-    }
-    if (metadata.cursorSessionProtocol === 'stream-json') {
-        return false
-    }
-    if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) {
-        return false
-    }
-    return true
+export function isSteeringSupportedForSession(metadata?: SteeringSessionMetadata | null): boolean {
+    const capability = getSteeringCapability(metadata?.flavor)
+    return capability !== undefined && (capability.supportsSession?.(metadata ?? {}) ?? true)
+}
+
+/**
+ * Whether the provider reports an active steerable turn. This does not imply
+ * that the session is active, remotely controlled, or will accept a native steer.
+ */
+export function hasActiveSteeringTurn(session: SteeringSessionState): boolean {
+    if (!isSteeringSupportedForSession(session.metadata)) return false
+    return getSteeringCapability(session.metadata?.flavor)?.activeTurnState === 'thinking'
+        ? session.thinking === true
+        : session.agentState?.steeringActive === true
 }
