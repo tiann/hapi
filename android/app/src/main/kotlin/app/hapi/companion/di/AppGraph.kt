@@ -278,8 +278,10 @@ class AppGraph(context: Context) {
     }
 
     /** Sequential by construction: only the [start] collector calls this. */
-    private fun swapActiveHub(activeHubUrl: String?) {
-        mutableActiveHubGraph.value?.close()
+    private suspend fun swapActiveHub(activeHubUrl: String?) {
+        val previous = mutableActiveHubGraph.value
+        previous?.close()
+        previous?.lastSeenStore?.flushPersistence()
         mutableActiveHubGraph.value = activeHubUrl?.let { hubUrl ->
             HubGraph(
                 hubUrl = hubUrl,

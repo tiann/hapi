@@ -72,6 +72,8 @@ struct ManualPairingFormView: View {
                         .fixedSize()
                         .frame(minHeight: 44)
                     }
+                    // The label draws its own chevron; Mac menus add another.
+                    .menuIndicator(.hidden)
                     .accessibilityLabel("Connection protocol")
                     .accessibilityValue(form.scheme.prefix)
                     .accessibilityIdentifier("pairing.scheme")

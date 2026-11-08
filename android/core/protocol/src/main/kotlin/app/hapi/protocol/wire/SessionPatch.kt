@@ -59,10 +59,13 @@ data class SessionPatch(
     val backgroundTaskCount: Int? = null,
     /** Bare refetch trigger for `GET /sessions/:id/scratchlist`; carries no data. */
     val scratchlistUpdatedAt: Long? = null,
+    val contentRevision: Long? = null,
+    val readState: SessionReadState? = null,
 )
 
 object SessionPatches {
     private val KNOWN_KEYS = setOf(
+        "contentRevision", "readState",
         "active", "thinking", "activeTurnStartedAt", "activeAt", "updatedAt", "lastUserMessageAt",
         "metadata", "agentState", "todos", "teamState",
         "model", "modelReasoningEffort", "effort", "serviceTier",
@@ -93,6 +96,8 @@ object SessionPatches {
         if (obj.isEmpty() || obj.keys.any { it !in KNOWN_KEYS }) return null
         return try {
             SessionPatch(
+                contentRevision = obj["contentRevision"]?.let { it.longOrNull?.takeIf { n -> n >= 0 } ?: return null },
+                readState = obj["readState"]?.let { HapiJson.decodeFromJsonElement(SessionReadState.serializer(), it) },
                 active = obj["active"]?.let { it.boolOrNull ?: return null },
                 thinking = obj["thinking"]?.let { it.boolOrNull ?: return null },
                 activeTurnStartedAt = optionalNullableLong(obj, "activeTurnStartedAt") ?: return null,
