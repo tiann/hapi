@@ -3221,6 +3221,27 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     });
                 }
             }
+            if (msgType === 'viewed_image') {
+                const viewedPath = asString(msg.path);
+                if (viewedPath) {
+                    const image = await registerGeneratedImageFromPathWrapper({ id: randomUUID(), path: viewedPath });
+                    if (!image) return;
+
+                    sendRootMessage({
+                        type: 'generated-image',
+                        imageId: image.id,
+                        fileName: image.fileName,
+                        mimeType: image.mimeType,
+                        id: randomUUID(),
+                        source: {
+                            ingress: 'tool_result',
+                            flavor: 'codex',
+                            toolName: 'view_image',
+                            toolCallId: asString(msg.call_id ?? msg.callId),
+                        },
+                    });
+                }
+            }
             if (msgType === 'exec_command_begin' || msgType === 'exec_approval_request') {
                 const callId = asString(msg.call_id ?? msg.callId);
                 if (callId) {
@@ -3575,7 +3596,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             // leak into the parent HAPI session. Defer the side effect until
             // parent-thread mcp_tool_call_end reaches this launcher; child
             // events are filtered above by thread id.
-            emitTitleSummary: false
+            emitTitleSummary: false,
+            workingDirectory: session.path,
         });
         this.happyServer = happyServer;
         let mcpServers: CodexMcpServersConfig = hapiMcpServers;

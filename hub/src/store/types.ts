@@ -1,4 +1,8 @@
+import type { SessionReadState } from '@hapi/protocol'
+
 export type StoredSession = {
+    contentRevision?: number
+    readState?: SessionReadState
     id: string
     tag: string | null
     namespace: string
@@ -42,6 +46,8 @@ export type StoredMachine = {
 export type MessageDeliveryState = 'indeterminate'
 
 export type StoredMessage = {
+    deliveryPending?: true
+    contentRevision?: number
     id: string
     sessionId: string
     content: unknown

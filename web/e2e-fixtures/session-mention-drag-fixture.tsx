@@ -41,7 +41,7 @@ function Fixture() {
             <div style={{ display: 'flex', height: 600, gap: 24, padding: 24 }}>
                 <aside style={{ width: 320, display: 'flex', flexDirection: 'column' }}>
                     <SessionList sessions={sessions} selectedSessionId={selected}
-                        onSelect={setSelected} onNewSession={() => {}}
+                        onSelect={setSelected} onNewSession={() => {}} onRefresh={() => {}}
                         isLoading={false} renderHeader={false} api={null} />
                 </aside>
                 <main style={{ width: 600 }}>

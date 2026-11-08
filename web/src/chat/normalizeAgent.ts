@@ -1,7 +1,8 @@
 import type { AgentEvent, CodexReview, CodexReviewFinding, NormalizedAgentContent, NormalizedMessage, RoundModelUsage, RoundSummary, ToolResultPermission, UsageData } from '@/chat/types'
 import { inlineMediaSourceFromWire } from '@/chat/inlineMediaSource'
 import { AGENT_MESSAGE_PAYLOAD_TYPE, asNumber, asString, isObject } from '@hapi/protocol'
-import { isClaudeChatVisibleMessage } from '@hapi/protocol/messages'
+import { getAgyTaskLogId, isClaudeChatVisibleMessage, stripAgyEchoedTaskResult } from '@hapi/protocol/messages'
+export { stripAgyEchoedTaskResult } from '@hapi/protocol/messages'
 import { parseAgentTimestampMs } from '@/chat/agentTimestamp'
 
 function normalizeToolResultPermissions(value: unknown): ToolResultPermission | undefined {
@@ -90,6 +91,57 @@ function normalizeRoundSummary(value: unknown): RoundSummary | undefined {
         modelUsage,
         totalCostUsd: totalCostUsd && totalCostUsd > 0 ? totalCostUsd : undefined,
         numTurns: numTurns && numTurns > 0 ? numTurns : undefined,
+        durationMs
+    }
+}
+
+function normalizeOpencodeRoundSummary(value: unknown): RoundSummary | undefined {
+    if (!isObject(value) || Array.isArray(value)) return undefined
+    const usage = normalizeResultUsage(value.usage)
+    if (
+        !usage
+        || usage.cache_creation_input_tokens === undefined
+        || usage.cache_read_input_tokens === undefined
+    ) return undefined
+
+    if (!isObject(value.modelUsage) || Array.isArray(value.modelUsage)) return undefined
+    const entries: Array<[string, RoundModelUsage]> = []
+    for (const [model, rawUsage] of Object.entries(value.modelUsage)) {
+        if (!model || !isObject(rawUsage) || Array.isArray(rawUsage)) return undefined
+        const inputTokens = nonNegativeSafeInteger(rawUsage.inputTokens)
+        const outputTokens = nonNegativeSafeInteger(rawUsage.outputTokens)
+        const cacheReadInputTokens = nonNegativeSafeInteger(rawUsage.cacheReadInputTokens)
+        const cacheCreationInputTokens = nonNegativeSafeInteger(rawUsage.cacheCreationInputTokens)
+        if (
+            inputTokens === undefined
+            || outputTokens === undefined
+            || cacheReadInputTokens === undefined
+            || cacheCreationInputTokens === undefined
+        ) return undefined
+        entries.push([model, { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens }])
+    }
+    if (entries.length === 0) return undefined
+
+    const numTurns = nonNegativeSafeInteger(value.num_turns)
+    const durationMs = nonNegativeNumber(value.duration_ms)
+    if (numTurns === undefined || numTurns <= 0 || durationMs === undefined) return undefined
+
+    const hasCost = Object.prototype.hasOwnProperty.call(value, 'total_cost_usd')
+    const totalCostUsd = hasCost ? nonNegativeNumber(value.total_cost_usd) : undefined
+    if (hasCost && (totalCostUsd === undefined || totalCostUsd <= 0)) return undefined
+
+    const generationMs = nonNegativeSafeInteger(value.generation_ms)
+    const generationOutputTokens = nonNegativeSafeInteger(value.generation_output_tokens)
+    const generation = generationMs !== undefined && generationMs > 0
+        && generationOutputTokens !== undefined && generationOutputTokens > 0
+        ? { generationMs, generationOutputTokens } : {}
+
+    return {
+        ...generation,
+        usage,
+        modelUsage: Object.fromEntries(entries),
+        totalCostUsd,
+        numTurns,
         durationMs
     }
 }
@@ -539,16 +591,6 @@ export function stripAgyReadArtifacts(content: string): string {
         .trimEnd()
 }
 
-// agy sometimes echoes an async task's raw result into its own PLANNER_RESPONSE
-// prose: "Inside the task-246 log…\n[Message] timestamp=… content=Task id … finished
-// with result: … Output: …". That echoed block duplicates the background-task card
-// rendered from the corresponding SYSTEM_MESSAGE (and leaks the raw `[Message]`
-// framing), so strip it from the "…log…" marker onward and keep only the agent's
-// narration. The narration itself is the agent's real words — left intact.
-export function stripAgyEchoedTaskResult(text: string): string {
-    return text.replace(/\n*\[Message\]\s+timestamp=[\s\S]*$/, '').trim()
-}
-
 // Canonical tool id for agy's transitional "Inside the task-NNN log…" narration,
 // rendered as a compact Send-Message-style chip instead of a full agent bubble.
 export const AGY_TASK_LOG_TOOL = 'AgyTaskLog'
@@ -881,8 +923,8 @@ export function normalizeAgentRecord(
             // Send-Message-style chip, not a full agent bubble. The actual task
             // result renders in its own background-task card, so this stays a thin
             // marker of what the agent is doing.
-            const taskLog = text.match(/^Inside the task-(\d+) log\b/)
-            if (taskLog) {
+            const taskLogId = getAgyTaskLogId(text)
+            if (taskLogId) {
                 const toolCallId = `${messageId}:tasklog`
                 return {
                     id: messageId,
@@ -891,7 +933,7 @@ export function normalizeAgentRecord(
                     role: 'agent',
                     isSidechain: false,
                     content: [
-                        { type: 'tool-call', id: toolCallId, name: AGY_TASK_LOG_TOOL, input: { task: `task-${taskLog[1]}` }, description: null, uuid: messageId, parentUUID: null },
+                        { type: 'tool-call', id: toolCallId, name: AGY_TASK_LOG_TOOL, input: { task: `task-${taskLogId}` }, description: null, uuid: messageId, parentUUID: null },
                         { type: 'tool-result', tool_use_id: toolCallId, content: '', is_error: false, uuid: messageId, parentUUID: null }
                     ],
                     meta
@@ -1041,6 +1083,20 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'round-summary') {
+            const summary = normalizeOpencodeRoundSummary(data.summary)
+            if (!summary) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'turn-summary', summary },
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'generated-image') {
             const imageId = asString(data.imageId ?? data.image_id)
             if (!imageId) return null
@@ -1133,9 +1189,12 @@ export function normalizeAgentRecord(
                 createdAt,
                 role: 'event',
                 content: {
-                    type: 'compact',
-                    trigger: asString(data.trigger) ?? 'auto',
-                    preTokens: asNumber(data.preTokens ?? data.pre_tokens) ?? 0
+                    type: 'compact-summary',
+                    // Native completion alone does not imply summary or token
+                    // content; the common presentation uses only available facts.
+                    summary: '',
+                    compactionId: asString(data.id) ?? undefined,
+                    tokensBefore: asNumber(data.preTokens ?? data.pre_tokens) ?? undefined
                 },
                 isSidechain: false,
                 meta
@@ -1145,8 +1204,7 @@ export function normalizeAgentRecord(
         // Defensive parity with context_compacted above: a compact-summary
         // arriving in the codex envelope (e.g. from an older import path or a
         // future producer) must not be silently dropped by the codex-content
-        // filter — map it to the same agent-event the live pi wrapper emits
-        // so it renders as the dedicated chat block.
+        // filter — preserve its facts for the common compaction presentation.
         if (data.type === 'compact-summary' && typeof data.summary === 'string') {
             return {
                 id: messageId,
@@ -1156,7 +1214,9 @@ export function normalizeAgentRecord(
                 content: {
                     type: 'compact-summary',
                     summary: data.summary,
+                    compactionId: asString(data.compactionId) ?? undefined,
                     tokensBefore: asNumber(data.tokensBefore) ?? undefined,
+                    tokensAfter: asNumber(data.tokensAfter) ?? undefined,
                     estimatedTokensAfter: asNumber(data.estimatedTokensAfter) ?? undefined
                 },
                 isSidechain: false,

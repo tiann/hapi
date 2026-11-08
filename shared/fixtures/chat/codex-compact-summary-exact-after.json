@@ -1,0 +1,67 @@
+{
+    "description": "Compaction summary facts preserve exact and estimated counts independently across event envelopes.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "compactionId": "compact-exact",
+                    "estimatedTokensAfter": 2,
+                    "summary": "",
+                    "tokensAfter": 0,
+                    "tokensBefore": 100,
+                    "type": "compact-summary"
+                },
+                "id": "codex-compact-summary-exact-after",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "compactionId": "compact-exact",
+                    "estimatedTokensAfter": 2,
+                    "summary": "",
+                    "tokensAfter": 0,
+                    "tokensBefore": 100,
+                    "type": "compact-summary"
+                },
+                "id": "codex-compact-summary-exact-after",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": "compact-exact",
+                            "estimatedTokensAfter": 2,
+                            "summary": "",
+                            "tokensAfter": 0,
+                            "tokensBefore": 100,
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "codex-compact-summary-exact-after",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-compact-summary-exact-after"
+}

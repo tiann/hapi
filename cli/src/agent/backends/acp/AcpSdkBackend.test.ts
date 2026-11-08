@@ -769,6 +769,67 @@ describe('AcpSdkBackend', () => {
         ]);
     });
 
+    it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 40;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 10;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 50;
+
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        const backend = new AcpSdkBackend({ command: 'agent', flavor: 'cursor' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+            sessionUpdateQueue: Promise<void>;
+        };
+
+        const messages: AgentMessage[] = [];
+        backendInternal.transport = {
+            sendRequest: async () => {
+                // Hold the sessionUpdateQueue so the final answer is still queued
+                // when session/prompt resolves — seal must await the queue first
+                // (#2268 Minor).
+                backendInternal.sessionUpdateQueue = backendInternal.sessionUpdateQueue.then(() => sleep(20));
+                backendInternal.handleSessionUpdate({
+                    sessionId: 'session-1',
+                    update: {
+                        sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                        content: { type: 'text', text: `Finished.\n\n${doneFooter}` }
+                    }
+                });
+                // Harness wake after native response resolves, during quiet window.
+                setTimeout(() => {
+                    backendInternal.handleSessionUpdate({
+                        sessionId: 'session-1',
+                        update: {
+                            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                            content: { type: 'text', text: 'Shell finished; here is a redundant summary.' }
+                        }
+                    });
+                }, 35);
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        await backend.prompt('session-1', [{ type: 'text', text: 'finish' }], (message) => {
+            messages.push(message);
+        });
+
+        const textMessages = messages.filter((message) => message.type === 'text');
+        expect(textMessages.map((message) => message.text)).toEqual([
+            `Finished.\n\n${doneFooter}`,
+            'Shell finished; here is a redundant summary.'
+        ]);
+    });
+
     it('combines OpenCode usage_update and prompt usage into a usage message', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
@@ -1239,6 +1300,62 @@ describe('AcpSdkBackend', () => {
             agentCapabilities: { loadSession: false }
         };
         expect(backend.supportsLoadSession()).toBe(false);
+    });
+
+    it('supportsSessionResume reflects DSH session capabilities', () => {
+        const backend = new AcpSdkBackend({ command: 'dsh' });
+        const backendInternal = backend as unknown as {
+            initializeResult: {
+                protocolVersion: number;
+                agentCapabilities?: { sessionCapabilities?: Record<string, unknown> };
+            } | null;
+        };
+
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { sessionCapabilities: { resume: {} } }
+        };
+        expect(backend.supportsSessionResume()).toBe(true);
+
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { sessionCapabilities: { list: {} } }
+        };
+        expect(backend.supportsSessionResume()).toBe(false);
+    });
+
+    it('resumeSession sends DSH session/resume and returns the native id', async () => {
+        const backend = new AcpSdkBackend({ command: 'dsh' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return { configOptions: [] };
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.resumeSession({
+            sessionId: 'dsh-session-1',
+            cwd: '/tmp/project',
+            mcpServers: []
+        });
+
+        expect(sessionId).toBe('dsh-session-1');
+        expect(calls).toEqual([{
+            method: 'session/resume',
+            params: {
+                sessionId: 'dsh-session-1',
+                cwd: '/tmp/project',
+                mcpServers: []
+            }
+        }]);
     });
 
     it('setMode falls back to session/set_config_option when session/set_mode is missing', async () => {
