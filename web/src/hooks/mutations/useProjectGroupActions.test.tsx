@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useProjectGroupActions } from './useProjectGroupActions'
@@ -78,30 +78,33 @@ describe('useProjectGroupActions', () => {
         expect(archive).toHaveBeenNthCalledWith(2, 'c')
     })
 
-    it('retries a member whose archive failed after SSE already marked it archived', async () => {
+    it('retries a member whose archive failed after SSE marked it archived, across a remount', async () => {
         const archive = vi.fn(async (_id: string) => {})
         archive.mockRejectedValueOnce(new Error('cleanup unconfirmed'))
         const api = { archiveSession: archive } as unknown as ApiClient
-        let sessions = [runningSession('a'), runningSession('b')]
+        const wrapper = createWrapper()
 
-        const { result, rerender } = renderHook(
-            () => useProjectGroupActions(api, sessions),
-            { wrapper: createWrapper() }
+        const first = renderHook(
+            () => useProjectGroupActions(api, [runningSession('a'), runningSession('b')]),
+            { wrapper }
         )
-
         await act(async () => {
-            await expect(result.current.archiveAll()).rejects.toThrow('cleanup unconfirmed')
+            await expect(first.result.current.archiveAll()).rejects.toThrow('cleanup unconfirmed')
         })
+        // A filter hides the group header; it comes back with 'a' archived via SSE.
+        first.unmount()
+        const { result } = renderHook(
+            () => useProjectGroupActions(api, [archivedSession('a'), runningSession('b')]),
+            { wrapper }
+        )
         expect(result.current.hasUnconfirmedArchive).toBe(true)
 
-        sessions = [archivedSession('a'), runningSession('b')]
-        rerender()
         await act(async () => {
             await result.current.archiveAll()
         })
 
         expect(archive.mock.calls.map(([id]) => id)).toEqual(['a', 'a', 'b'])
-        expect(result.current.hasUnconfirmedArchive).toBe(false)
+        await waitFor(() => expect(result.current.hasUnconfirmedArchive).toBe(false))
     })
 
     it('deletes the group through the atomic archived bulk route', async () => {
