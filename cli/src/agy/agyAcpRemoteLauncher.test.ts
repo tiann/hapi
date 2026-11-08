@@ -1681,6 +1681,30 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
         await run;
     });
 
+    it('confirms two steers that agy echoes in one chunk', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        queue.push('lint', REVIEW, 'short');
+        queue.push('fix the types', REVIEW, 'other');
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'short' })).toEqual({ steered: true });
+        expect(await rpc(client, RPC_METHODS.SteerQueuedMessage)({ localId: 'other' })).toEqual({ steered: true });
+        backend.echo!('run the tests');
+        backend.echo!('lint\nfix the types');
+        expect(consumedSteer(client, 'short')).toBe(true);
+        expect(consumedSteer(client, 'other')).toBe(true);
+
+        // Stop afterwards does not undo either.
+        backend.onCancel = () => {
+            release();
+            for (const steer of backend.steerCompletions) steer.resolve('cancelled');
+        };
+        await rpc(client, RPC_METHODS.Abort)();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalled();
+        queue.close();
+        await run;
+    });
+
     it('keeps an early-answered steer confirmed once echoed, even after a Stop', async () => {
         const backend = new FakeAgyBackend();
         const { queue, client, run, release } = await heldTurn(backend);

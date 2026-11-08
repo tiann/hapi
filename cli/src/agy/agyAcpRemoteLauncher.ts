@@ -712,16 +712,22 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         // An echo may arrive in several chunks, so each steer matches on the
         // text echoed since it was sent, and the longest match wins when one
-        // steer's text contains another's.
+        // steer's text contains another's. One chunk may echo several steers,
+        // so a match only uses up its own text.
         for (const entry of turn.unechoedSteers) {
             entry.echo = normalizeEcho(`${entry.echo} ${text}`).slice(-ECHO_BUFFER_LIMIT);
         }
-        const match = turn.unechoedSteers
-            .filter((entry) => entry.text && entry.echo.includes(entry.text))
-            .sort((a, b) => b.text.length - a.text.length)[0];
-        if (!match) return;
-        for (const entry of turn.unechoedSteers) entry.echo = '';
-        match.accept();
+        for (;;) {
+            const match = turn.unechoedSteers
+                .filter((entry) => entry.text && entry.echo.includes(entry.text))
+                .sort((a, b) => b.text.length - a.text.length)[0];
+            if (!match) return;
+            for (const entry of turn.unechoedSteers) {
+                if (entry !== match) entry.echo = normalizeEcho(entry.echo.replace(match.text, ' '));
+            }
+            match.accept();
+            if (turn.unechoedSteers.includes(match)) return;
+        }
     }
 
     private handleTurnUpdate(turn: AgyTurn, message: AgentMessage): void {
