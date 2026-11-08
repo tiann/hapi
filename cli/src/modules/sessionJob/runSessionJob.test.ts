@@ -42,7 +42,12 @@ describe('runSessionJob', () => {
                     }
                 }
             })),
-            patch: vi.fn(async () => ({
+            patch: vi.fn(async (_url: string, _body: {
+                remaining?: number
+                total?: number
+                unit?: string
+                expectedRunId?: string
+            }) => ({
                 status: 200,
                 data: {
                     job: {
