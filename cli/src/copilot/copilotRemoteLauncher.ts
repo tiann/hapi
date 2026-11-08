@@ -1,5 +1,5 @@
 import React from 'react';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -67,8 +67,9 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
+        const titleSync = createAcpSessionTitleSync(session.client);
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'copilot' }
         });
         this.happyServer = happyServer;
@@ -78,7 +79,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         this.currentAgentMode = session.getAgentMode();
         const backend = createCopilotBackend({ agentMode: this.currentAgentMode });
         this.backend = backend;
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, titleSync);
 
         backend.onStderrError((error) => {
             logger.debug('[copilot-remote] stderr error', error);
@@ -330,6 +331,8 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
+                break;
+            case 'round_summary':
                 break;
             default: {
                 const _exhaustive: never = message;

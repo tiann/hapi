@@ -55,3 +55,12 @@ internal val StopGlyph: ImageVector by lazy {
 internal val ArrowUpGlyph: ImageVector by lazy {
     strokeIcon("HapiArrowUp", "M12 19 L12 5.5 M6.5 11 L12 5.5 L17.5 11", 2.2f)
 }
+
+/** Clock — schedule-send toggle (web `ScheduleIcon`; accent-filled while pending). */
+internal val ScheduleGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiSchedule",
+        "M12 5 a7 7 0 0 1 7 7 a7 7 0 0 1 -7 7 a7 7 0 0 1 -7 -7 a7 7 0 0 1 7 -7 " +
+            "M12 8.5 L12 12 L14.7 14",
+    )
+}

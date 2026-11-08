@@ -14,31 +14,19 @@ import {
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { readAgyConversationTitle } from '../utils/agySessionTitle';
 import { resolveAgyTurnModels } from '../utils/agyConversationModel';
-import { killProcessByChildProcess } from '@/utils/process';
+import { AgyStreamProcess } from './agyStreamProcess';
 import { AGY_EFFORT_LEVELS, AGY_MODEL_LABELS, splitAgyModelSelection, type AgyEffortLevel } from '@hapi/protocol';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 const AGY_PRINT_TIMEOUT = '30m';
 
 // Bound on consecutive turns agy fails to accept (spawn error, crash, exit
-// before any transcript output). Beyond this the session ends with the messages
-// still queued rather than spinning forever.
+// before any transcript output). Beyond this the prompt is restored to the
+// composer rather than retried indefinitely.
 const MAX_UNACCEPTED_RETRIES = 3;
 
-/**
- * Per-turn spawn args for agy's headless print mode:
- *
- *   agy -p <msg> --conversation <uuid> --output-format stream-json \
- *       --model <slug> --mode accept-edits|plan --effort <level> \
- *       --print-timeout 30m [--dangerously-skip-permissions]
- *
- * One spawn per user turn (the only official multi-turn headless channel is
- * `--conversation` resume; the TUI is not used at all). The conversation id is
- * learned from the `init` event on the first turn and persisted to session
- * metadata, so every later turn resumes the same brain conversation.
- */
+/** Build the persistent process arguments. Prompts travel only over stdin. */
 export function buildAgyHeadlessArgs(opts: {
-    prompt: string;
     conversationId?: string;
     model?: string;
     permissionMode: PermissionMode;
@@ -49,7 +37,7 @@ export function buildAgyHeadlessArgs(opts: {
     if (selection.effort && opts.effort && selection.effort !== opts.effort) {
         throw new Error(`Antigravity model ${opts.model} conflicts with effort ${opts.effort}`);
     }
-    const args = ['-p', opts.prompt, '--output-format', 'stream-json'];
+    const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
     if (opts.conversationId) {
         args.push('--conversation', opts.conversationId);
     }
@@ -70,7 +58,7 @@ export function buildAgyHeadlessArgs(opts: {
 }
 
 /**
- * Build the spawn env for the per-turn agy process. Mirrors the model-probe
+ * Build the spawn env for the persistent agy process. Mirrors the model-probe
  * hardening (agyModels.ts): GEMINI_FORCE_FILE_STORAGE makes agy read the saved
  * OAuth file token directly instead of the keyring.
  *
@@ -95,28 +83,18 @@ export type AgyHeadlessDriverOptions = {
     spawnAgy?: (args: string[], cwd: string) => ChildProcessWithoutNullStreams;
 };
 
-/**
- * Headless print-mode transport for agy (replaces the PTY/TUI wrapper).
- *
- * Turn loop:
- *   1. wait for a queued user message (MessageQueue2)
- *   2. spawn `agy -p <msg> --conversation <uuid> --output-format stream-json …`
- *   3. stream NDJSON stdout through parseAgyNdjsonLine, mapping events onto the
- *      existing transcript-entry channel (session.client.sendAgySessionMessage)
- *   4. kill the child on abort; the conversation id from the `init` envelope is
- *      adopted into session metadata (onSessionFound) so resume works
- */
+/** Persistent NDJSON transport. One process serves sequential turns until its
+ * queued launch config changes, it fails, or the user interrupts it. */
 export class AgyHeadlessDriver extends RemoteLauncherBase {
     private readonly session: AgySession;
     private readonly spawnAgy: (args: string[], cwd: string) => ChildProcessWithoutNullStreams;
     private readonly syncNativeTitle: (title: unknown) => void;
     /** Aborted on exit/switch/kill so an idle queue wait resolves immediately. */
     private readonly loopAbortController = new AbortController();
-    private child: ChildProcessWithoutNullStreams | null = null;
+    private process: AgyStreamProcess | null = null;
     private turnAbortController: AbortController | null = null;
     /** Brain conversation UUID — from resume seed or the first turn's init event. */
     private conversationId: string | null;
-    private stderrTail = '';
 
     constructor(opts: AgyHeadlessDriverOptions) {
         super(process.env.DEBUG ? opts.session.logPath : undefined);
@@ -129,7 +107,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             }) as ChildProcessWithoutNullStreams;
             return child;
         });
-                this.syncNativeTitle = createNativeSessionTitleMetadataSync(this.session.client);
+        this.syncNativeTitle = createNativeSessionTitleMetadataSync(this.session.client);
         this.conversationId = this.session.sessionId;
         this.session.setKillHandler(() => this.abort());
         this.session.cancelRetryDelivery = this.cancelRetryItem;
@@ -140,8 +118,8 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
     }
 
     /**
-     * A requeued (unaccepted) delivery waiting out the retry backoff. finishTurn
-     * clears activeWebPrompt/activeLocalIds when the turn closes, so whole-session
+     * A requeued (unaccepted) delivery waiting out the retry backoff. Finalization
+     * clears activeWebPrompt/activeLocalIds when a turn finishes, so whole-session
      * shutdown during the backoff would otherwise find nothing to restore and the
      * session-end sweep would stamp the unacknowledged row invoked. Items keep
      * per-message localIds so a Cancel during the backoff can remove individual
@@ -216,7 +194,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
     /**
      * Snapshot the in-flight delivery and restore it to the composer (consuming
      * the hub row so it is neither replayed nor swept). Must run BEFORE any kill:
-     * the child close handler clears both fields via finishTurn.
+     * turn finalization clears both fields via resetTurn.
      */
     private snapshotAndRestoreDelivery(): void {
         const prompt = this.activeWebPrompt;
@@ -230,8 +208,8 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         this.session.client.sendSessionEvent({ type: 'abort-restore', text: prompt });
     }
 
-    /** True while the close handler is finalizing a completed turn (parsing the
-     * final record, awaiting model resolution / transcript sends). During this
+    /** True while an accepted turn is finalizing its record and awaiting
+     * model resolution / transcript sends. During this
      * window the delivery is already accepted, so Stop/kill must not restore or
      * abort it. */
     private turnFinalizing = false;
@@ -251,7 +229,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
     private async abort(): Promise<void> {
         this.loopAbortController.abort();
         if (this.turnCompleted || this.turnFinalizing) {
-            // The turn is accepted (result parsed) or finalizing (close handler
+            // The turn is accepted (result parsed) or finalizing (turn finalizer
             // awaiting model resolution / transcript sends): wait for it so the
             // final response and acks land before the API session closes. No
             // restore/abort — the prompt completed. Mark the interrupt on the
@@ -267,7 +245,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         this.restoreRetryDelivery();
         this.turnAbortController?.abort();
         await this.terminateChild();
-        // Let the close handler finish (its restore/ack work is already decided
+        // Let turn finalization finish (its restore/ack work is already decided
         // by the snapshot above; the turn promise must settle before teardown
         // closes the API session).
         await this.activeTurn;
@@ -293,15 +271,28 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
      * TERM-to-KILL escalation so session shutdown cannot exit before the tree is
      * actually gone.
      */
-    private async terminateChild(): Promise<void> {
-        const child = this.child;
-        if (!child || child.exitCode !== null) return;
-        const terminated = await killProcessByChildProcess(child);
-        if (!terminated && child.exitCode === null) {
-            // Last resort if tree-kill reports failure; the close handler is the
-            // real exit authority either way.
-            if (!child.killed) child.kill('SIGKILL');
+    private async terminateChild(graceful = false): Promise<void> {
+        const process = this.process;
+        if (!process) return;
+        await process.retire(graceful);
+        if (this.process === process) this.process = null;
+    }
+
+    private async getOrStartProcess(args: string[], signal: AbortSignal): Promise<AgyStreamProcess | null> {
+        // Conversation ids are discovered after launch and are deliberately not
+        // part of the config key: adopting init must not restart the warm process.
+        const configKey = JSON.stringify(args);
+        if (this.process && (this.process.configKey !== configKey || !this.process.reusable)) {
+            await this.terminateChild(true);
         }
+        if (signal.aborted || this.loopAbortController.signal.aborted || this.exitReason) return null;
+        if (!this.process) {
+            const spawnArgs = this.conversationId ? [...args, '--conversation', this.conversationId] : args;
+            // Prompts are never included in args or debug logs.
+            logger.debug(`[agy-headless] spawn: agy ${spawnArgs.join(' ')}`);
+            this.process = new AgyStreamProcess(this.spawnAgy(spawnArgs, this.session.path), configKey);
+        }
+        return this.process;
     }
 
     private async handleAbortRequest(): Promise<void> {
@@ -310,16 +301,16 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         // accepted its delivery — do not restore or abort it (resending could
         // repeat tool side effects).
         if (this.turnCompleted || this.turnFinalizing) {
-            // Mark the interrupt on the controller so the close handler reports
+            // Mark the interrupt on the controller so turn finalization reports
             // 'Turn aborted' (or nothing when the result already landed) instead
             // of a process failure. Do NOT restore — the prompt completed.
             this.turnAbortController?.abort();
             await this.terminateChild();
             return;
         }
-        // Snapshot BEFORE the kill: the child close handler (triggered by the
+        // Snapshot BEFORE the kill: turn finalization (triggered by process
         // termination) resolves the turn and clears activeWebPrompt/activeLocalIds
-        // via finishTurn — reading them after the wait would find nothing.
+        // via resetTurn — reading them after the wait would find nothing.
         this.snapshotAndRestoreDelivery();
 
         this.turnAbortController?.abort();
@@ -342,8 +333,8 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         });
     }
 
-    private describeFailure(code: number | null): string {
-        const stderr = this.stderrTail.trim();
+    private describeFailure(code: number | null, stderrTail: string): string {
+        const stderr = stderrTail.trim();
         if (/authentication|not signed in|keyring/i.test(stderr)) {
             return 'agy failed to authenticate. Ensure the login keyring is unlocked.';
         }
@@ -361,43 +352,19 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
     /** Local ids of the in-flight delivery (for abort-time acknowledgement). */
     private activeLocalIds: string[] = [];
 
-    /**
-     * True when the last turn's stderr carried a soft-deny notice (agy rejects a
-     * tool call under request-review because no allow-rule matches). Surfaced as
-     * a chat hint so the user can approve and resend.
-     */
-    private lastTurnSoftDenied = false;
-
-    /**
-     * Run a single turn: spawn agy with the queued prompt, stream NDJSON
-     * events onto the transcript-entry channel, wait for the `result` envelope
-     * or process exit. Returns whether agy accepted the prompt (user_input
-     * step seen or result envelope received). Aborting the returned
-     * controller's signal interrupts only this turn (the session loop stays
-     * alive for the next queued message).
-     */
+    /** Serve one queued delivery; only native activity/result proves acceptance. */
     private async runTurn(
         prompt: string,
         localIds: string[],
-        // The spawn config snapshot captured when the batch was queued — the
-        // session's live mode may have changed before dequeue, and a batch queued
-        // under request-review must never gain --dangerously-skip-permissions,
-        // nor must a queued prompt run on a model selected after it was sent.
         mode: AgyMode,
         signal: AbortSignal,
     ): Promise<boolean> {
-        const onAbort = () => {
-            void this.terminateChild();
-        };
+        const onAbort = () => { void this.terminateChild(); };
         signal.addEventListener('abort', onAbort, { once: true });
-
         const sessionModel = mode.model ?? undefined;
         const sessionEffort = mode.effort ?? undefined;
-        // Snapshot the model at turn start: a mid-response switch must not change
-        // attribution within one turn.
         const variantModel = sessionModel && sessionEffort && !splitAgyModelSelection(sessionModel).effort
-            ? `${sessionModel}-${sessionEffort}`
-            : sessionModel;
+            ? `${sessionModel}-${sessionEffort}` : sessionModel;
         const variantLabel = variantModel ? AGY_MODEL_LABELS[variantModel as keyof typeof AGY_MODEL_LABELS] : undefined;
         const turnModel = typeof sessionModel === 'string' && sessionModel
             ? variantLabel ?? AGY_MODEL_LABELS[sessionModel as keyof typeof AGY_MODEL_LABELS]
@@ -405,55 +372,57 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             : undefined;
         let args: string[];
         try {
+            if (!prompt.trim()) throw new Error('Antigravity requires a non-empty prompt');
             args = buildAgyHeadlessArgs({
-                prompt,
-                conversationId: this.conversationId ?? undefined,
                 model: sessionModel,
                 permissionMode: mode.permissionMode,
                 effort: (AGY_EFFORT_LEVELS as readonly unknown[]).includes(sessionEffort)
-                    ? sessionEffort as AgyEffortLevel
-                    : undefined,
+                    ? sessionEffort as AgyEffortLevel : undefined,
             });
         } catch (error) {
-            // Invalid legacy config must not lose a dequeued delivery or retry
-            // the same deterministic failure. Restore it for the user to resend.
             if (localIds.length > 0) this.session.client.emitMessagesConsumed(localIds);
             this.session.client.sendSessionEvent({ type: 'error', message: error instanceof Error ? error.message : String(error) });
             this.session.client.sendSessionEvent({ type: 'abort-restore', text: prompt });
             signal.removeEventListener('abort', onAbort);
             return true;
         }
-        // Never persist the user's prompt to the log (HAPI debug logs can be
-        // forwarded under remote-debug configuration); keep the spawn shape.
-        const safeArgs = args.map((arg, index) => (args[index - 1] === '-p' ? '<redacted>' : arg));
-        logger.debug(`[agy-headless] spawn: agy ${safeArgs.map((a) => (a.length > 80 ? `${a.slice(0, 80)}…` : a)).join(' ')}`);
 
         this.session.onThinkingChange(true);
-        this.stderrTail = '';
         this.activeWebPrompt = prompt;
         this.activeLocalIds = localIds;
-        this.lastTurnSoftDenied = false;
         this.turnFinalizing = false;
         this.turnCompleted = false;
+        const resetTurn = () => {
+            this.session.onThinkingChange(false);
+            this.activeWebPrompt = null;
+            this.activeLocalIds = [];
+            this.turnFinalizing = false;
+            this.turnCompleted = false;
+            signal.removeEventListener('abort', onAbort);
+        };
+        let stream: AgyStreamProcess;
+        try {
+            const process = await this.getOrStartProcess(args, signal);
+            if (!process) {
+                this.snapshotAndRestoreDelivery();
+                resetTurn();
+                return false;
+            }
+            stream = process;
+        } catch (error) {
+            this.session.client.sendSessionEvent({ type: 'error', message: `Failed to start agy: ${error instanceof Error ? error.message : String(error)}` });
+            resetTurn();
+            return false;
+        }
 
-        // Per-turn planner: partial text must never leak into a later turn's
-        // response if this turn is aborted or crashes mid-stream.
+        stream.stderrTail = '';
         const planner = new AgyPlannerAccumulator();
-
-        const child = this.spawnAgy(args, this.session.path);
-        this.child = child;
-        child.stdout.setEncoding('utf8');
-        child.stderr.setEncoding('utf8');
-
-        let turnDone = false;
         let deliveryAcked = false;
-        let stdoutBuffer = '';
         let accepted = false;
         let resultFailure: string | null = null;
         let sawResult = false;
         // Flush every pending planner step (result envelope AND turn close, so
         // prose emitted before a pre-result crash is not lost).
-        let plannerResponseSent = false;
         let lastPlannerContent: string | null = null;
         // Best-effort model resolution for default-model turns: when no explicit
         // --model was selected, the actual generation model is read from agy's
@@ -489,29 +458,26 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         // reorder entries (a step with no DB lookup resolves before an earlier one
         // that queries the conversation DB; a tool emit could overtake a pending
         // planner emit from the same stdout chunk). The chain preserves the event
-        // order on the wire, and the close handler awaits it before resolving.
+        // order on the wire, and turn finalization awaits it before resolving.
         let sendChain: Promise<void> = Promise.resolve();
         const enqueueTranscript = (send: () => void | Promise<void>): void => {
             sendChain = sendChain.then(send);
         };
         const sendPlanner = (entry: AgyTranscriptEntry) => {
-            plannerResponseSent = true;
             if (typeof entry.content === 'string') lastPlannerContent = entry.content;
             enqueueTranscript(async () => {
                 // Carry the turn's model (display label) on every planner entry so
                 // the web's per-turn attribution survives model switches and
                 // default-model turns still show the actual generation model.
                 const model = await resolveModel(entry);
-                this.session.client.sendAgySessionMessage(
+                await this.session.client.sendAgySessionMessage(
                     model ? { ...entry, model } : entry,
                     this.conversationId ?? undefined,
                 );
             });
         };
         const sendTool = (entry: AgyTranscriptEntry, toolCall: AgyToolCall) => {
-            enqueueTranscript(() => {
-                this.session.client.sendAgySessionMessage(entry, this.conversationId ?? undefined, toolCall);
-            });
+            enqueueTranscript(() => this.session.client.sendAgySessionMessage(entry, this.conversationId ?? undefined, toolCall));
         };
         const flushPlanner = async () => {
             for (const entry of planner.flushAll()) {
@@ -520,280 +486,206 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             }
             await sendChain;
         };
-        const finishTurn = () => {
-            if (turnDone) return;
-            turnDone = true;
-            this.session.onThinkingChange(false);
-            this.child = null;
-            this.activeWebPrompt = null;
-            this.activeLocalIds = [];
-            this.turnFinalizing = false;
-            this.turnCompleted = false;
-            signal.removeEventListener('abort', onAbort);
+        let softDenyReported = false;
+        const reportSoftDeny = () => {
+            if (softDenyReported || !/auto-denied|permissions\.allow|allow-rule/i.test(stream.stderrTail)) return;
+            softDenyReported = true;
+            const match = /(?:run_command|\S+)\s+auto-denied[^\n]*/i.exec(stream.stderrTail);
+            const detail = match?.[0] ? `: ${match[0].trim()}` : '';
+            this.session.client.sendSessionEvent({
+                type: 'message',
+                message: `A tool call was auto-denied (no allow-rule)${detail}. Approve it in agy's settings.json or switch to always-proceed, then resend.`,
+            });
         };
-
-        try {
-            await new Promise<void>((resolve) => {
-                const resolveTurn = () => resolve();
-
-                // Parse a complete NDJSON line. Extracted so both the streaming
-                // data handler and the close handler (EOF without trailing newline)
-                // can parse buffered records.
-                const handleLine = (line: string): void => {
-                    if (!line.trim()) return;
-                    const event = parseAgyNdjsonLine(line);
-                    // Resume can silently fail: agy may create a REPLACEMENT
-                    // conversation when the seeded --conversation id is stale.
-                    // The streamed id is authoritative then — adopt it so later
-                    // turns stop passing the stale value (the old PTY recovery
-                    // handled this explicitly).
-                    const adoptStreamConversationId = (id: string): void => {
-                        if (!id || id === this.conversationId) return;
-                        this.conversationId = id;
-                        this.session.onSessionFound(id);
-                        // emitSessionReady signals transport/session readiness (hub
-                        // row resolvable); the user-facing 'ready' chat event is
-                        // sent AFTER the turn completes (see runMainLoop) — sending
-                        // it here fires while thinking is still active and would
-                        // never fire on later turns (same conversation id).
-                        this.session.client.emitSessionReady();
-                        void this.syncTitleIfKnown();
-                    };
-                    switch (event.kind) {
-                            case 'init': {
-                                // The conversation id is known from the very first
-                                // envelope — adopt it immediately (and replace a
-                                // stale resume seed when agy started fresh).
-                                if (event.conversationId) {
-                                    adoptStreamConversationId(event.conversationId);
-                                }
-                                break;
-                            }
-                            case 'user-input': {
-                                // NDJSON's user_input step is the authoritative
-                                // delivery confirmation (replaces PTY echo matching).
-                                if (event.conversationId) {
-                                    adoptStreamConversationId(event.conversationId);
-                                }
-                                accepted = true;
-                                if (!deliveryAcked && localIds.length > 0) {
-                                    deliveryAcked = true;
-                                    this.session.client.emitMessagesConsumed(localIds);
-                                }
-                                break;
-                            }
-                            case 'planner-delta': {
-                                if (event.conversationId) {
-                                    adoptStreamConversationId(event.conversationId);
-                                }
-                                // Any emitted prose/tool activity proves the prompt
-                                // was accepted and the turn is running — a later
-                                // pre-result failure must NOT trigger a retry that
-                                // re-executes destructive tool effects.
-                                accepted = true;
-                                const entry = planner.feedDelta(event.stepIndex, event.delta, event.isDone);
-                                if (entry) {
-                                    void sendPlanner(entry);
-                                }
-                                break;
-                            }
-                            case 'tool': {
-                                if (event.conversationId) {
-                                    adoptStreamConversationId(event.conversationId);
-                                }
-                                // Only the DONE state carries the result; the ACTIVE
-                                // line is the invocation start (parameters only).
-                                accepted = true;
-                                if (event.isDone) {
-                                    sendTool(event.entry, event.toolCall);
-                                }
-                                break;
-                            }
-                            case 'checkpoint':
-                            case 'ignored':
-                                break;
-                            case 'result': {
-                                sawResult = true;
-                                // Fallback conversation-id adoption: if the init
-                                // line was absent/malformed, the result envelope is
-                                // authoritative — without it the next turn would
-                                // start a fresh agy conversation and lose context.
-                                // (adoptStreamConversationId also replaces a stale
-                                // resume seed here.)
-                                if (event.conversationId) {
-                                    adoptStreamConversationId(event.conversationId);
-                                }
-                                // Flush any planner text that never reached a DONE
-                                // line (stream ended / response truncated). A
-                                // SUCCESS result carries the authoritative complete
-                                // answer: when unfinished deltas were force-flushed,
-                                // the last pending step is replaced by the result
-                                // response instead of discarding it or leaving a
-                                // partial ("hel" → "hello").
-                                const pending = planner.flushAll();
-                                if (event.status === 'SUCCESS' && event.response?.trim() && pending.length > 0) {
-                                    for (const entry of pending.slice(0, -1)) {
-                                        void sendPlanner(entry);
-                                    }
-                                    void sendPlanner({ ...pending[pending.length - 1]!, content: event.response });
-                                } else {
-                                    for (const entry of pending) {
-                                        void sendPlanner(entry);
-                                    }
-                                }
-                                accepted = true;
-                                // The authoritative result arrived: seal the turn so
-                                // a Stop/kill before child close cannot restore it.
-                                this.turnCompleted = true;
-                                // A FAILURE envelope proves the prompt ran but the
-                                // turn failed; surface it (exit code may still be 0).
-                                if (event.status !== 'SUCCESS') {
-                                    // The reason lives in `error`; `response` is the
-                                    // answer field and stays filled on a failed turn,
-                                    // so reading it here repeated the whole answer in
-                                    // the chat as if it were the failure text.
-                                    resultFailure = event.error?.trim()
-                                        || `agy turn failed: ${event.status}`;
-                                } else if (event.response?.trim()) {
-                                    const response = event.response.trim();
-                                    // Deliver the authoritative final answer unless
-                                    // it was already emitted verbatim (trimmed — the
-                                    // envelope often carries a trailing newline the
-                                    // delta stream does not): a tool turn with
-                                    // completed pre-tool narration but no final
-                                    // agent_response would otherwise lose it.
-                                    if (lastPlannerContent?.trim() !== response) {
-                                        void sendPlanner({
-                                            step_index: -1,
-                                            source: 'MODEL',
-                                            type: 'PLANNER_RESPONSE',
-                                            status: 'DONE',
-                                            created_at: '',
-                                            content: response,
-                                        });
-                                    }
-                                }
-                                void this.syncTitleIfKnown();
-                                // Do NOT resolve here: the child's close handler is
-                                // the turn boundary. Resolving early would let the
-                                // queue loop spawn the next turn before this child
-                                // has closed, racing shared turnAbortController /
-                                // stderrTail state and briefly running two processes
-                                // against the same conversation.
-                                break;
-                            }
-                        }
-                };
-
-                child.stdout.on('data', (chunk: string) => {
-                    // stdout chunks are arbitrary and do not preserve line
-                    // boundaries: buffer partial lines across chunks before
-                    // parsing, or a JSON object split across chunks would be
-                    // parsed as two malformed lines (losing init ids, delivery
-                    // acks, tool output, or assistant text).
-                    stdoutBuffer += chunk;
-                    const lines = stdoutBuffer.split('\n');
-                    stdoutBuffer = lines.pop() ?? '';
-                    for (const line of lines) {
-                        handleLine(line);
+        let finalization: Promise<void> | null = null;
+        let resolveTurn!: () => void;
+        let rejectTurn!: (error: unknown) => void;
+        const completed = new Promise<void>((resolve, reject) => { resolveTurn = resolve; rejectTurn = reject; });
+        const finalize = (code?: number | null): void => {
+            if (finalization) return;
+            // Accepted close/result finalization is a barrier: Stop cannot
+            // restore it, and neither a later prompt nor API teardown may pass it.
+            this.turnFinalizing = accepted;
+            finalization = (async () => {
+                await flushPlanner();
+                if (!deliveryAcked && accepted && localIds.length > 0) {
+                    deliveryAcked = true;
+                    this.session.client.emitMessagesConsumed(localIds);
+                }
+                if (signal.aborted) {
+                    if (!sawResult) this.session.client.sendSessionEvent({ type: 'message', message: 'Turn aborted' });
+                } else if (resultFailure) {
+                    this.session.client.sendSessionEvent({ type: 'error', message: resultFailure });
+                } else if (!sawResult && stream.failure) {
+                    this.session.client.sendSessionEvent({ type: 'error', message: stream.failure });
+                } else if (!sawResult && code !== undefined && code !== 0) {
+                    this.session.client.sendSessionEvent({ type: 'error', message: this.describeFailure(code, stream.stderrTail) });
+                } else if (accepted && !sawResult) {
+                    this.session.client.sendSessionEvent({ type: 'error', message: 'agy exited before returning a result' });
+                } else reportSoftDeny();
+                // Failed results may be followed by the native process exiting.
+                // Retire before releasing the turn so the next write cannot race it.
+                if (stream.retiring) await stream.retire(true);
+            })();
+            void finalization.then(resolveTurn, rejectTurn);
+        };
+        const handleLine = (line: string): void => {
+            if (!line.trim() || sawResult || finalization) return;
+            const event = parseAgyNdjsonLine(line);
+            // Resume can silently fail: agy may create a REPLACEMENT
+            // conversation when the seeded --conversation id is stale.
+            // The streamed id is authoritative then — adopt it so later
+            // turns stop passing the stale value (the old PTY recovery
+            // handled this explicitly).
+            const adoptStreamConversationId = (id: string): void => {
+                if (!id || id === this.conversationId) return;
+                this.conversationId = id;
+                this.session.onSessionFound(id);
+                // emitSessionReady signals transport/session readiness (hub
+                // row resolvable); the user-facing 'ready' chat event is
+                // sent AFTER the turn completes (see runMainLoop) — sending
+                // it here fires while thinking is still active and would
+                // never fire on later turns (same conversation id).
+                this.session.client.emitSessionReady();
+                void this.syncTitleIfKnown();
+            };
+            switch (event.kind) {
+                case 'init': {
+                    // The conversation id is known from the very first
+                    // envelope — adopt it immediately (and replace a
+                    // stale resume seed when agy started fresh).
+                    if (event.conversationId) {
+                        adoptStreamConversationId(event.conversationId);
                     }
-                });
-
-                child.stderr.on('data', (chunk: string) => {
-                    this.stderrTail = `${this.stderrTail}${chunk}`.slice(-4096);
-                });
-                // Swallow pipe errors (e.g. ECONNRESET when we kill the child);
-                // the close handler is the real exit authority.
-                child.stdout.on('error', () => {});
-                child.stderr.on('error', () => {});
-
-                let spawnFailed = false;
-                child.on('error', (err) => {
-                    spawnFailed = true;
-                    logger.debug(`[agy-headless] spawn error: ${err.message}`);
-                    this.session.client.sendSessionEvent({ type: 'error', message: `Failed to start agy: ${err.message}` });
-                    // Node's ChildProcess emits close AFTER error; do NOT resolve
-                    // here — close remains the sole turn boundary, so a late close
-                    // cannot mutate shared state belonging to the next retry.
-                });
-
-                child.on('close', async (code) => {
-                    logger.debug(`[agy-headless] agy exited with code ${code}`);
-                    // EOF without a trailing newline: the final buffered record
-                    // (result envelope, replacement id, failure status) would
-                    // otherwise be discarded. Parse it FIRST — acceptance may be
-                    // established by that record.
-                    if (stdoutBuffer.trim()) {
-                        handleLine(stdoutBuffer);
-                        stdoutBuffer = '';
+                    break;
+                }
+                case 'user-input': {
+                    // NDJSON's user_input step is the authoritative
+                    // delivery confirmation (replaces PTY echo matching).
+                    if (event.conversationId) {
+                        adoptStreamConversationId(event.conversationId);
                     }
-                    // Seal the delivery ONLY when the turn was accepted: a close
-                    // with no acceptance signal (crash, spawn error) must remain
-                    // restorable/retryable — a concurrent archive/kill would
-                    // otherwise skip snapshotAndRestoreDelivery and lose the prompt.
-                    this.turnFinalizing = accepted;
-                    // A close before the result envelope (crash, kill) must still
-                    // deliver any prose emitted so far — and ALL pending emits
-                    // (planner + tool) must land before the turn resolves, or a
-                    // later turn could overtake them.
-                    await flushPlanner();
-                    await sendChain;
-                    // Ack whenever agy accepted the prompt — the user_input step
-                    // or a result envelope (SUCCESS or failure: either proves the
-                    // prompt was received, so the hub row must not stay stale),
-                    // regardless of the exit code.
-                    if (!deliveryAcked && accepted && localIds.length > 0) {
+                    accepted = true;
+                    if (!deliveryAcked && localIds.length > 0) {
                         deliveryAcked = true;
                         this.session.client.emitMessagesConsumed(localIds);
                     }
-                    if (this.turnAbortController?.signal.aborted) {
-                        // A deliberate Stop (the controller is marked aborted, and
-                        // a killed child closes with code null) is NOT an agy
-                        // crash: report it as an interrupt, unless the result
-                        // already landed (then the turn completed normally).
-                        if (!sawResult) {
-                            this.session.client.sendSessionEvent({ type: 'message', message: 'Turn aborted' });
-                        }
-                    } else if (code !== 0 && !spawnFailed) {
-                        // spawnFailed already surfaced the real cause via the
-                        // error handler; avoid a second generic exit error.
-                        this.session.client.sendSessionEvent({
-                            type: 'error',
-                            message: this.describeFailure(code),
-                        });
-                    } else if (resultFailure) {
-                        // Exit 0 with a FAILURE result envelope: the turn ran but
-                        // failed (e.g. quota, model error). Ack the delivery (it
-                        // was accepted) but surface the failure visibly.
-                        this.session.client.sendSessionEvent({
-                            type: 'error',
-                            message: resultFailure,
-                        });
-                    } else if (accepted && !sawResult) {
-                        // The prompt was accepted (user_input/planner/tool) but
-                        // agy exited without a result envelope: the turn ended
-                        // with no answer. Ack the delivery (it ran) but surface
-                        // the truncation instead of silently consuming it.
-                        this.session.client.sendSessionEvent({
-                            type: 'error',
-                            message: 'agy exited before returning a result',
-                        });
-                    } else if (/auto-denied|permissions\.allow|allow-rule/i.test(this.stderrTail)) {
-                        // Exit 0 with a soft-deny notice: surface a chat hint
-                        // (headless has no mid-turn approval dialog).
-                        this.lastTurnSoftDenied = true;
-                        const match = /(?:run_command|\S+)\s+auto-denied[^\n]*/i.exec(this.stderrTail);
-                        const detail = match?.[0] ? `: ${match[0].trim()}` : '';
-                        this.session.client.sendSessionEvent({
-                            type: 'message',
-                            message: `A tool call was auto-denied (no allow-rule)${detail}. Approve it in agy's settings.json or switch to always-proceed, then resend.`,
-                        });
+                    break;
+                }
+                case 'planner-delta': {
+                    if (event.conversationId) {
+                        adoptStreamConversationId(event.conversationId);
                     }
-                    resolveTurn();
-                });
-            });
+                    // Any emitted prose/tool activity proves the prompt
+                    // was accepted and the turn is running — a later
+                    // pre-result failure must NOT trigger a retry that
+                    // re-executes destructive tool effects.
+                    accepted = true;
+                    const entry = planner.feedDelta(event.stepIndex, event.delta, event.isDone);
+                    if (entry) {
+                        void sendPlanner(entry);
+                    }
+                    break;
+                }
+                case 'tool': {
+                    if (event.conversationId) {
+                        adoptStreamConversationId(event.conversationId);
+                    }
+                    // Only the DONE state carries the result; the ACTIVE
+                    // line is the invocation start (parameters only).
+                    accepted = true;
+                    if (event.isDone) {
+                        sendTool(event.entry, event.toolCall);
+                    }
+                    break;
+                }
+                case 'checkpoint':
+                case 'ignored':
+                    break;
+                case 'result': {
+                    sawResult = true;
+                    // Fallback conversation-id adoption: if the init
+                    // line was absent/malformed, the result envelope is
+                    // authoritative — without it the next turn would
+                    // start a fresh agy conversation and lose context.
+                    // (adoptStreamConversationId also replaces a stale
+                    // resume seed here.)
+                    if (event.conversationId) {
+                        adoptStreamConversationId(event.conversationId);
+                    }
+                    // Flush any planner text that never reached a DONE
+                    // line (stream ended / response truncated). A
+                    // SUCCESS result carries the authoritative complete
+                    // answer: when unfinished deltas were force-flushed,
+                    // the last pending step is replaced by the result
+                    // response instead of discarding it or leaving a
+                    // partial ("hel" → "hello").
+                    const pending = planner.flushAll();
+                    if (event.status === 'SUCCESS' && event.response?.trim() && pending.length > 0) {
+                        for (const entry of pending.slice(0, -1)) {
+                            void sendPlanner(entry);
+                        }
+                        void sendPlanner({ ...pending[pending.length - 1]!, content: event.response });
+                    } else {
+                        for (const entry of pending) {
+                            void sendPlanner(entry);
+                        }
+                    }
+                    accepted = true;
+                    // The authoritative result arrived: seal the turn so
+                    // a Stop/kill during finalization cannot restore it.
+                    this.turnCompleted = true;
+                    // A FAILURE envelope proves the prompt ran but the
+                    // turn failed; surface it (exit code may still be 0).
+                    if (event.status !== 'SUCCESS') {
+                        // The reason lives in `error`; `response` is the
+                        // answer field and stays filled on a failed turn,
+                        // so reading it here repeated the whole answer in
+                        // the chat as if it were the failure text.
+                        resultFailure = event.error?.trim()
+                            || `agy turn failed: ${event.status}`;
+                    } else if (event.response?.trim()) {
+                        const response = event.response.trim();
+                        // Deliver the authoritative final answer unless
+                        // it was already emitted verbatim (trimmed — the
+                        // envelope often carries a trailing newline the
+                        // delta stream does not): a tool turn with
+                        // completed pre-tool narration but no final
+                        // agent_response would otherwise lose it.
+                        if (lastPlannerContent?.trim() !== response) {
+                            void sendPlanner({
+                                step_index: -1,
+                                source: 'MODEL',
+                                type: 'PLANNER_RESPONSE',
+                                status: 'DONE',
+                                created_at: '',
+                                content: response,
+                            });
+                        }
+                    }
+                    void this.syncTitleIfKnown();
+                    if (event.status !== 'SUCCESS') stream.retiring = true;
+                    finalize();
+                    break;
+                }
+            }
+        };
+
+        stream.onLine = handleLine;
+        // stdout/stderr are independent pipes. A warning can arrive just after
+        // result; keep this reporter while idle, replacing it on the next turn.
+        stream.onStderr = reportSoftDeny;
+        const handleClose = (code: number | null) => finalize(code);
+        stream.onClose = handleClose;
+        try {
+            if (stream.closed) finalize(stream.closeCode);
+            else if (signal.aborted || stream.retiring) await stream.retire();
+            else stream.writePrompt(prompt);
+            await completed;
         } finally {
-            finishTurn();
+            if (stream.onLine === handleLine) stream.onLine = null;
+            if (stream.onClose === handleClose) stream.onClose = null;
+            resetTurn();
         }
         return accepted;
     }
@@ -831,6 +723,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                 this.turnAbortController = turnController;
                 const onLoopAbort = () => turnController.abort();
                 this.loopAbortController.signal.addEventListener('abort', onLoopAbort, { once: true });
+                if (this.loopAbortController.signal.aborted) turnController.abort();
                 try {
                     const turn = this.runTurn(msg.message, localIds, msg.mode, turnController.signal);
                     this.activeTurn = turn;
@@ -942,12 +835,15 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             }
         } finally {
             this.clearAbortHandlers(session.client.rpcHandlerManager);
+            this.restoreRetryDelivery();
+            await this.terminateChild(true);
         }
         logger.debug('[agy-headless]: main loop ended');
     }
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        await this.terminateChild(true);
         logger.debug('[agy-headless]: cleanup done');
     }
 }

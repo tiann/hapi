@@ -77,7 +77,7 @@ describe('CopilotRemoteLauncher.applyAgentMode', () => {
         Object.assign(session, {
             queue, getAgentMode: () => 'interactive', getPermissionMode: () => 'default',
             onSessionFound: vi.fn(), setRemoteAgentModeApplier: vi.fn(), setRemoteEffortApplier: vi.fn(), onThinkingChange: vi.fn(),
-            client: { rpcHandlerManager: { registerHandler: vi.fn() }, updateAgentState: vi.fn() },
+            client: { rpcHandlerManager: { registerHandler: vi.fn() }, updateAgentState: vi.fn(), getMetadata: vi.fn(() => null), updateMetadata: vi.fn() },
         });
         const bridgeSpy = vi.spyOn(bridge, 'buildHapiMcpBridge').mockResolvedValue({ server: { stop: vi.fn() }, mcpServers: {} } as never);
         const backendSpy = vi.spyOn(copilotBackend, 'createCopilotBackend').mockReturnValue(backend as never);
@@ -111,7 +111,7 @@ describe('CopilotRemoteLauncher.applyAgentMode', () => {
             client: { rpcHandlerManager: { registerHandler: (_method: string, handler: () => Promise<unknown>) => {
                 discover = handler;
                 throw registered;
-            } } },
+            } }, getMetadata: vi.fn(() => null), updateMetadata: vi.fn() },
         });
         const bridgeSpy = vi.spyOn(bridge, 'buildHapiMcpBridge').mockResolvedValue({ server: { stop: vi.fn() }, mcpServers: {} } as never);
         const backendSpy = vi.spyOn(copilotBackend, 'createCopilotBackend').mockReturnValue(backend as never);

@@ -21,8 +21,17 @@ function formatCompactTokenCount(value: number): string {
     return `${(Math.round((value / divisor) * 10) / 10).toString()}${suffix}`
 }
 
-function formatPercentage(value: number): string {
+function formatOneDecimal(value: number): string {
     return (Math.round(value * 10) / 10).toString()
+}
+
+function formatPercentage(value: number): string {
+    return formatOneDecimal(value)
+}
+
+function formatRoundDuration(durationMs: number): string {
+    if (durationMs < 60_000) return formatOneDecimal(durationMs / 1000) + 's'
+    return formatDuration(durationMs)
 }
 
 function formatUsd(value: number): string {
@@ -80,9 +89,15 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
     }
 
     const round: string[] = []
-    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(formatDuration(summary.durationMs))
+    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(formatRoundDuration(summary.durationMs))
     if (summary.numTurns !== undefined && summary.numTurns > 0) {
         round.push(`${summary.numTurns} turn${summary.numTurns === 1 ? '' : 's'}`)
+    }
+    const { generationMs, generationOutputTokens } = summary
+    if (generationMs !== undefined && Number.isSafeInteger(generationMs) && generationMs > 0
+        && generationOutputTokens !== undefined && Number.isSafeInteger(generationOutputTokens) && generationOutputTokens > 0) {
+        const tokensPerSecond = generationOutputTokens / (generationMs / 1_000)
+        if (Number.isFinite(tokensPerSecond)) round.push(`${tokensPerSecond.toFixed(1)} tok/s`)
     }
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts

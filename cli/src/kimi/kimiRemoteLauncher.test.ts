@@ -99,6 +99,8 @@ function createSession(
                 })
             },
             sendAgentMessage: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn()
         },
         queue,

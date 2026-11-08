@@ -152,8 +152,8 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertTrue(model.hasLoaded)
         XCTAssertTrue(model.rows.allSatisfy { !$0.unread })
         sessions.sessions[0].updatedAt += 1
-        model.onSessionOpened("a")
-        XCTAssertEqual(seen.lastSeenAt("a"), sessions.sessions[0].updatedAt)
+        model.selectedSessionId = "a"
+        XCTAssertEqual(seen.lastSeenAt("a"), 0, "Navigation and metadata are not reading")
         model.setPinMode(sessionId: "b", mode: .global)
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(model.rows.first?.id, "b")
@@ -167,14 +167,14 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertEqual(model.rows.count, 1)
     }
 
-    func testUnreadLensKeepsTheSelectedSessionAndMarkAllReadClearsIt() {
+    func testUnreadLensKeepsTheSelectedSessionAndMarkAllReadClearsIt() async throws {
         var stale = HomeFilterTestData.summary("seen", machine: "mac")
-        stale.updatedAt = 10
+        stale.contentRevision = 10
         var fresh = HomeFilterTestData.summary("fresh", machine: "mac")
-        fresh.updatedAt = 20
+        fresh.contentRevision = 20
         let sessions = HomeFilterTestSessions([fresh, stale])
         let lastSeen = LastSeenStore()
-        lastSeen.markSeen(sessionId: "seen", seenAt: 10)
+        await lastSeen.markSeen(sessionId: "seen", revision: 10)
         let model = SessionListModel(sessionStore: sessions, machineStore: HomeFilterTestMachines(),
                                      lastSeenStore: lastSeen, hubUrl: "test")
         XCTAssertEqual(model.unreadCount, 1)
@@ -186,6 +186,7 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertEqual(model.rows.map(\.id), ["fresh", "seen"])
 
         model.markAllRead()
+        try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(model.unreadCount, 0)
         XCTAssertEqual(model.rows.map(\.id), ["seen"])
         model.clearFilters()

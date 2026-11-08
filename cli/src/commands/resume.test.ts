@@ -15,6 +15,7 @@ const {
     runCopilotMock,
     runPiMock,
     runAgyMock,
+    runDshMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const {
     runCopilotMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
+    runDshMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -59,6 +61,7 @@ vi.mock('@/kimi/runKimi', () => ({ runKimi: runKimiMock }))
 vi.mock('@/copilot/runCopilot', () => ({ runCopilot: runCopilotMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
+vi.mock('@/dsh/runDsh', () => ({ runDsh: runDshMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -92,6 +95,7 @@ describe('resumeCommand', () => {
         runCopilotMock.mockClear()
         runPiMock.mockClear()
         runAgyMock.mockClear()
+        runDshMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -185,6 +189,54 @@ describe('resumeCommand', () => {
             startingMode: 'remote',
             model: 'gemini-3.1-pro',
             effort: 'high'
+        })
+    })
+
+    it('resumes a DSH target through the DSH launcher instead of falling through to Cursor', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'dsh-session-1',
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'dsh-session-1',
+            startedBy: 'terminal',
+            startingMode: 'remote'
+        })
+    })
+
+    it('hands off an active DSH target before starting its remote launcher', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh-active',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'dsh-session-active'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh-active']))
+
+        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-session-dsh-active')
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh-active',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'dsh-session-active',
+            startedBy: 'terminal',
+            startingMode: 'remote'
         })
     })
 

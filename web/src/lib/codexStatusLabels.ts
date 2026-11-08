@@ -1,3 +1,5 @@
+import { supportsEffort } from '@hapi/protocol'
+
 /** Labels shared by SessionHeader and composer StatusBar for supported reasoning providers. */
 
 export function formatCompactReasoningLabel(effort?: string | null): string {
@@ -8,12 +10,13 @@ export function formatCompactReasoningLabel(effort?: string | null): string {
 
 export function formatReasoningLabel(effort?: string | null, showLabel = true): string {
     const value = formatCompactReasoningLabel(effort)
-    return showLabel ? `reasoning ${value}` : value
+    return showLabel ? `effort ${value}` : value
 }
 
 /**
  * Status metadata comes from different session fields by agent protocol:
- * Codex/OpenCode publish model reasoning effort, while Pi publishes effort.
+ * Codex/OpenCode publish model reasoning effort; the other effort-capable
+ * flavors publish effort.
  */
 export function getReasoningEffortForFlavor(
     agentFlavor: string | null | undefined,
@@ -23,7 +26,7 @@ export function getReasoningEffortForFlavor(
     if (agentFlavor === 'codex' || agentFlavor === 'opencode') {
         return modelReasoningEffort?.trim() || null
     }
-    if (agentFlavor === 'pi') {
+    if (supportsEffort(agentFlavor)) {
         return effort?.trim() || null
     }
     return null
@@ -33,10 +36,10 @@ export function shouldShowReasoningStatusLabel(
     agentFlavor: string | null | undefined,
     reasoningEffort?: string | null
 ): boolean {
-    // Codex/OpenCode retain their existing explicit default label when unset.
-    if (agentFlavor === 'codex' || agentFlavor === 'opencode') return true
-    // Pi has no meaningful default for non-reasoning models; only show a real level.
-    return agentFlavor === 'pi' && Boolean(reasoningEffort?.trim())
+    // Flavors whose models always take an effort show "default" when unset.
+    if (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'claude' || agentFlavor === 'grok') return true
+    // Pi and AGY models may have no effort at all; only show a real level.
+    return supportsEffort(agentFlavor) && Boolean(reasoningEffort?.trim())
 }
 
 /** Codex-only aliases retained for tool-card and thread call sites. */

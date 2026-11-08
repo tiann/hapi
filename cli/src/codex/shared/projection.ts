@@ -6,6 +6,8 @@ import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
 import { codexPlanProposalId } from './plan';
+import { CodexCompactionSummaryLookup } from '../utils/codexCompactionSummary';
+import { asyncQuestionReplies, asyncQuestionsForItem } from './asyncQuestions';
 
 export function inputText(input: unknown): string {
     if (!Array.isArray(input)) return '';
@@ -44,8 +46,13 @@ export class SharedCodexProjection {
     private readonly pendingTitles = new Map<string, string>();
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
+    private readonly compactionSummaries: CodexCompactionSummaryLookup;
+    private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
+        private readonly readSummaryThread?: () => Promise<unknown>,
+        private readonly observeItem?: (threadId: string, item: unknown) => void) {
+        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
@@ -109,6 +116,17 @@ export class SharedCodexProjection {
         const send = (body: Record<string, unknown>, key: string) => this.send({
             ...body, ...(turnId ? { turn_id: turnId } : {})
         }, key);
+        const asyncQuestions = asyncQuestionsForItem(this.threadId, item);
+        if (asyncQuestions.length) {
+            if (method === 'item/completed') {
+                for (const question of asyncQuestions) {
+                    send({ type: 'tool-call', name: 'request_user_input', callId: question.id, input: question.input }, question.id);
+                }
+                this.observeItem?.(this.threadId, item);
+            }
+            return;
+        }
+        if (method === 'item/completed') this.observeItem?.(this.threadId, item);
         // Settings may already describe the next turn by the time queued
         // notifications are projected. Never attribute usage to that model.
         if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
@@ -125,7 +143,9 @@ export class SharedCodexProjection {
                 if (turnId) this.turns.set(id, turnId);
                 await this.committed(id);
                 const text = inputText(item.content);
-                if (text) this.session.sendUserMessage(text, undefined, id);
+                const replies = asyncQuestionReplies(text);
+                const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+                if (displayText) this.session.sendUserMessage(displayText, undefined, id);
                 this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
@@ -177,7 +197,19 @@ export class SharedCodexProjection {
                     this.emitted.add(key);
                     this.session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
                 }
-            } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
+            } else if (event.type === 'context_compacted') {
+                if (!fromHistory && this.readSummaryThread) {
+                    try { this.summaryThread = await this.readSummaryThread(); } catch { this.summaryThread = undefined; }
+                }
+                const compact = turnId && itemId ? await this.compactionSummaries.find(this.summaryThread, turnId, itemId, fromHistory ? { attempts: 1 } : undefined) : null;
+                if (compact) {
+                    // A distinct durable ID can enrich a previously stored boundary.
+                    // Clients fold it back into that exact compaction's original position.
+                    send({ type: 'compact-summary', ...compact, summary: compact.summary ?? '', compactionId: `codex:${this.threadId}:${key}` }, `${key}:summary`);
+                } else {
+                    send({ ...event, flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
+                }
+            } else if (event.type === 'token_count' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'proposed_plan' && turnId && itemId) {
@@ -192,6 +224,12 @@ export class SharedCodexProjection {
             } else if (event.type === 'generated_image' && typeof event.saved_path === 'string') {
                 const image = await registerGeneratedImageFromPath({ path: event.saved_path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex'), fileName: string(event.file_name) });
                 if (image) send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
+            } else if (event.type === 'viewed_image' && typeof event.path === 'string') {
+                const image = await registerGeneratedImageFromPath({ path: event.path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex') });
+                if (image) send({
+                    type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType,
+                    source: { ingress: 'tool_result', flavor: 'codex', toolName: 'view_image', ...(callId ? { toolCallId: callId } : {}) }
+                }, key);
             } else if (event.type === 'task_failed') {
                 send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
             }
@@ -209,6 +247,7 @@ export class SharedCodexProjection {
     }
 
     async history(thread: unknown): Promise<void> {
+        if (record(thread).id === this.threadId) this.summaryThread = thread;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;
@@ -226,7 +265,8 @@ export class SharedCodexProjection {
                 await this.project('item/started', params, undefined, true);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
-                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
+                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
+                    || asyncQuestionsForItem(this.threadId, item).length > 0) {
                     if (!this.parentThreadId) {
                         const title = successfulTitle(record(item));
                         if (title && string(record(item).id)) {

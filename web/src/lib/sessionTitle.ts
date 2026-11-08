@@ -3,6 +3,7 @@ type SessionTitleSource = {
     metadata?: {
         name?: string
         summary?: { text: string }
+        promptTitle?: string
         path?: string
     } | null
 }
@@ -16,6 +17,7 @@ export function hasSessionTitleSignal(session: SessionTitleSource): boolean {
     if (!meta) return false
     if (meta.name?.trim()) return true
     if (meta.summary?.text?.trim()) return true
+    if (meta.promptTitle?.trim()) return true
     return false
 }
 
@@ -25,6 +27,9 @@ export function getSessionTitle(session: SessionTitleSource): string {
     }
     if (session.metadata?.summary?.text) {
         return session.metadata.summary.text
+    }
+    if (session.metadata?.promptTitle) {
+        return session.metadata.promptTitle
     }
     if (session.metadata?.path) {
         const parts = session.metadata.path.split('/').filter(Boolean)

@@ -48,6 +48,15 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 @Composable
 fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifier = Modifier, processSteps: Int? = null) {
+    if (isQuestionDetailsTool(block.tool.name)) {
+        QuestionToolCard(block, modifier)
+    } else {
+        ActivityToolCard(block, basePath, modifier, processSteps)
+    }
+}
+
+@Composable
+private fun ActivityToolCard(block: ToolCallBlock, basePath: String?, modifier: Modifier, processSteps: Int?) {
     val tool = block.tool
     val resources = LocalContext.current.resources
     val presentation = remember(tool.name, tool.input, tool.description, basePath, resources) {

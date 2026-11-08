@@ -195,11 +195,20 @@ describe('alive incremental events', () => {
             }
             expect(engine.getSession(session.id)?.activeTurnStartedAt).toBe(received.message.createdAt)
 
+            // Prefer the incremental markMessageQueued patch. A full session
+            // snapshot (or a by-reference refreshSession emit later mutated in
+            // place) can also show thinking=true and includes activeAt as a
+            // snapshot field — that is not a claim that queued-thinking
+            // refreshed liveness (asserted via activeAtBeforeSend above).
             const update = events.find((event) => {
-                return event.type === 'session-updated'
-                    && typeof event.data === 'object'
-                    && event.data !== null
-                    && (event.data as { thinking?: unknown }).thinking === true
+                if (event.type !== 'session-updated' || typeof event.data !== 'object' || event.data === null) {
+                    return false
+                }
+                const data = event.data as Record<string, unknown>
+                return data.thinking === true
+                    && 'activeTurnStartedAt' in data
+                    && 'updatedAt' in data
+                    && !('id' in data)
             })
             expect(update).toBeDefined()
             if (!update || update.type !== 'session-updated') {

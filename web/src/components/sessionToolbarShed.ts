@@ -4,9 +4,14 @@
  * Lower `keep` stays on the row longer. Higher `keep` moves into More first.
  * Rank is survival, not paint order. Search is not a slot: it never sheds.
  *
+ * Paint order groups by purpose: list controls next to search (machine menu,
+ * sort and filter), then New, then navigation (browse, settings). Mark all
+ * read comes last because it only shows with unread sessions; at the end its
+ * coming and going never shifts the controls before it.
+ *
  * Upstream controls:
  *   4 New
- *   5 Session filter (unread lens)
+ *   5 Sort and filter
  *   6 Settings
  *   7 Mark all read (#1773 bulk hygiene — reachable, not a neighbor of New)
  *   8 Browse

@@ -1,5 +1,6 @@
 package app.hapi.data.store
 
+import app.hapi.protocol.wire.SessionReadState
 import app.hapi.data.api.HapiApi
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.protocol.patch.applySessionDetailPatch
@@ -167,8 +168,11 @@ class SessionStore(
 
     override suspend fun loadSessionDetail(sessionId: String): Session {
         val session = api.getSession(sessionId).session
-        _details.update { it + (sessionId to session) }
-        return session
+        _details.update { current -> current + (sessionId to session.copy(
+            contentRevision = listOfNotNull(current[sessionId]?.contentRevision, session.contentRevision).maxOrNull(),
+            readState = SessionReadState.merge(current[sessionId]?.readState, session.readState),
+        )) }
+        return _details.value[sessionId] ?: session
     }
 
     override fun releaseDetail(sessionId: String) {
@@ -192,12 +196,14 @@ class SessionStore(
             val response = api.getSessions()
             updateSummaries { current ->
                 // A user-input SSE patch can overtake an in-flight REST snapshot.
-                val clocks = current.associate { it.id to it.lastUserMessageAt }
+                val cachedRows = current.associateBy { it.id }
                 sortSessionSummaries(response.sessions.map { row ->
-                    val cached = clocks[row.id]
-                    if (cached != null && cached > (row.lastUserMessageAt ?: Long.MIN_VALUE)) {
-                        row.copy(lastUserMessageAt = cached)
-                    } else row
+                    val cached = cachedRows[row.id]
+                    row.copy(
+                        contentRevision = listOfNotNull(cached?.contentRevision, row.contentRevision).maxOrNull(),
+                        readState = SessionReadState.merge(cached?.readState, row.readState),
+                        lastUserMessageAt = maxOf(cached?.lastUserMessageAt ?: 0, row.lastUserMessageAt ?: 0).takeIf { it > 0 },
+                    )
                 })
             }
         }
@@ -371,7 +377,10 @@ class SessionStore(
         // parse, then the REST fallback.
         val full = parseFullSession(data)?.takeIf { it.id == sessionId }
         if (full != null) {
-            _details.update { it + (sessionId to full) }
+            _details.update { current -> current + (sessionId to full.copy(
+                contentRevision = listOfNotNull(current[sessionId]?.contentRevision, full.contentRevision).maxOrNull(),
+                readState = SessionReadState.merge(current[sessionId]?.readState, full.readState),
+            )) }
             upsertSummary(full)
             return
         }
@@ -422,6 +431,8 @@ class SessionStore(
             // fields — carry them over from the previous row (web
             // `upsertSessionSummary`).
             val summary = SummaryPatching.toSessionSummary(session).copy(
+                contentRevision = listOfNotNull(existing?.contentRevision, session.contentRevision).maxOrNull(),
+                readState = SessionReadState.merge(existing?.readState, session.readState),
                 lastUserMessageAt = session.lastUserMessageAt?.let { maxOf(existing?.lastUserMessageAt ?: 0, it) } ?: existing?.lastUserMessageAt,
                 futureScheduledMessageCount = existing?.futureScheduledMessageCount ?: 0,
                 nextScheduledAt = existing?.nextScheduledAt,

@@ -32,6 +32,7 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
+| `PUT /api/sessions/:id/read-state` | `{type: "read", readRevision, expectedVersion}` or `{type: "unread", expectedVersion}` | `{status, contentRevision, readState}`; see [Read state](./read-state.md) |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 
 Default list order is `globalPinned` → `pinned` →
@@ -43,7 +44,7 @@ Agent output, prompt echoes, delivery acknowledgements, liveness and pending
 request counts do not change the default order. User-message deletion does
 not rewind the timestamp.
 `order=updatedAt` explicitly requests pure activity recency (e.g. peer discovery).
-`updatedAt` retains its activity/unread/date-filter semantics; `activeAt`
+`updatedAt` retains its activity/date-filter semantics; `activeAt`
 remains transport keep-alive state. The Web session list may
 apply client-side grouping and search ranking after receiving this response;
 `GET /api/sessions` itself has no text-search parameter. List badges come from
@@ -201,7 +202,7 @@ Source: `hub/src/web/routes/git.ts`. Git endpoints return the **raw command outp
 | `GET /api/sessions/:id/git-diff-numstat` | Query: `staged=true\|false` | `GitCommandResponse` (raw `git diff --numstat` stdout) |
 | `GET /api/sessions/:id/git-diff-file` | Query: `path` (required), `staged?` | `GitCommandResponse` (raw unified diff) |
 | `GET /api/sessions/:id/file` | Query: `path` (required) | `{success, content?, size?, modified?, error?}` — `content` is **base64** (decode before display; web ref: `web/src/routes/sessions/file.tsx`) |
-| `GET /api/sessions/:id/files` | Query: `query?`, `limit?` (1–500, default 200) | `{success, files: [{fileName, filePath, fullPath, fileType: 'file', size?, modified?}]}` (ripgrep-backed search) |
+| `GET /api/sessions/:id/files` | Query: `query?`, `limit?` (1–500, default 200) | `{success, files: [{fileName, filePath, fullPath, fileType: 'file', size?, modified?}], pathSearch?: boolean}`; filename queries use ripgrep-backed fuzzy search, non-wildcard queries containing a path separator use an exact workspace-relative/absolute path lookup, and a trailing `/` or Windows `\\` searches recursively under that directory |
 | `GET /api/sessions/:id/directory` | Query: `path?` (empty = session root) | `{success, entries?: [{name, type: 'file'\|'directory'\|'other', size?, modified?}], error?}` |
 
 When the session has no `metadata.path` yet, these return HTTP 200 `{success: false, error: 'Session path not available'}`.
@@ -342,3 +343,10 @@ preserves the existing name/summary fields. A manual rename alone does not lock 
 session. Agent metadata writes cannot set or clear this flag. While locked, the
 Hub preserves both `name` and `summary` across agent writes; user title saves
 remain allowed. Unlocking preserves the current title until a future update.
+
+`metadata.promptTitle` is an optional, Hub-owned provisional title: the first
+non-command user prompt, with whitespace collapsed and capped at 80 characters.
+The Hub sets it once, only while the session has neither `name` nor `summary`;
+agent metadata writes cannot set or clear it. Clients display titles in the
+order `name`, `summary`, `promptTitle`, then the path fallback. Because
+`promptTitle` is separate from `summary`, it never blocks generated or native titles.

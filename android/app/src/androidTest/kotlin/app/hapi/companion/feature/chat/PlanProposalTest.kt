@@ -70,6 +70,8 @@ class PlanProposalTest {
         }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Plan failed to apply", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Plan failed to apply", substring = true).performScrollTo().assertIsDisplayed()
+        // Let background Source/result producers finish before rule teardown.
+        compose.waitForIdle()
     }
 
     @Test fun lowercaseProposalOpensWhenInputArrivesAndPrecedesApproval() {

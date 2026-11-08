@@ -1,5 +1,5 @@
 import React from 'react';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -59,8 +59,9 @@ export class KimiRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
+        const titleSync = createAcpSessionTitleSync(session.client);
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'kimi' }
         });
         this.happyServer = happyServer;
@@ -69,7 +70,7 @@ export class KimiRemoteLauncher extends RemoteLauncherBase {
 
         const backend = createKimiBackend();
         this.backend = backend;
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, titleSync);
 
         backend.onStderrError((error) => {
             logger.debug('[kimi-remote] stderr error', error);
@@ -333,6 +334,8 @@ export class KimiRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
+                break;
+            case 'round_summary':
                 break;
             default: {
                 const _exhaustive: never = message;

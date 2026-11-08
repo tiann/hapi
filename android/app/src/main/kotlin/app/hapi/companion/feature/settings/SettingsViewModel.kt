@@ -2,6 +2,7 @@ package app.hapi.companion.feature.settings
 
 import app.hapi.data.auth.JwtPeek
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.companion.ui.theme.ColorThemePreset
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -78,6 +79,10 @@ class SettingsViewModel(
 
     fun setDynamicColor(enabled: Boolean) {
         scope.launch { themePrefs.setDynamicColor(enabled) }
+    }
+
+    fun setPreset(preset: ColorThemePreset) {
+        scope.launch { themePrefs.setPreset(preset) }
     }
 
     fun setLanguage(language: AppLanguage) {

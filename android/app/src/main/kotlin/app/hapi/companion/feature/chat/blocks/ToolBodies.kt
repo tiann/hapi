@@ -93,8 +93,11 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
 
 @Composable
 private fun QuestionToolBody(tool: ChatToolCall) {
+    // Compose test effects can resume on a worker. Keep CPU work off-main,
+    // but publish every resulting state change on Android's main thread.
     val details by produceState<QuestionToolDetails?>(null, tool) {
-        value = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+        val prepared = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+        withContext(Dispatchers.Main.immediate) { value = prepared }
     }
     val prepared = details
     if (prepared == null) {
@@ -226,8 +229,9 @@ private fun GenericJsonInput(input: JsonElement?) {
         input is JsonPrimitive && input.isString -> ToolTextContent(code = input.content, language = null)
         else -> {
             val text by produceState<String?>(null, input) {
-                value = null
-                value = withContext(Dispatchers.Default) { prettyJson(input) }
+                withContext(Dispatchers.Main.immediate) { value = null }
+                val prepared = withContext(Dispatchers.Default) { prettyJson(input) }
+                withContext(Dispatchers.Main.immediate) { value = prepared }
             }
             text?.let { ToolTextContent(code = it, language = "json") }
         }
@@ -289,7 +293,8 @@ private fun ToolResultSection(tool: ChatToolCall) {
     if (result is JsonNull) return
     val isError = tool.state == "error"
     val rendering by produceState<ResultRendering?>(null, tool) {
-        value = withContext(Dispatchers.Default) { resultRendering(tool) }
+        val prepared = withContext(Dispatchers.Default) { resultRendering(tool) }
+        withContext(Dispatchers.Main.immediate) { value = prepared }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

@@ -2,15 +2,21 @@ import {
     CREATABLE_AGENT_FLAVORS,
     getPermissionModesForFlavor,
     resolveHapiYoloPermissionMode,
+    type AgentFlavor,
     type PermissionMode
 } from '@hapi/protocol'
+import {
+    resolvePermissionModeForFlavor,
+    type ResolvedPeerSpawnDefaults
+} from '@hapi/protocol/peerSpawnDefaults'
 import {
     CLAUDE_EFFORT_OPTIONS,
     CODEX_REASONING_EFFORT_OPTIONS,
     MODEL_OPTIONS,
     type AgentType,
     type CodexReasoningEffort,
-    type LaunchEffort
+    type LaunchEffort,
+    type NewSessionServiceTier
 } from './types'
 import { LEGACY_YOLO_BRIDGE_AGENTS, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
 
@@ -23,12 +29,51 @@ export type PreferredLaunchSettings = {
     cursorSelectedBase: string
     effort: LaunchEffort
     modelReasoningEffort: CodexReasoningEffort
+    serviceTier?: NewSessionServiceTier
     permissionMode?: PermissionMode
 }
 
 // Only launchable flavors are valid defaults; a stale 'gemini' preference
 // (no longer creatable) falls back to 'claude'.
 const VALID_AGENTS = CREATABLE_AGENT_FLAVORS
+
+const YOLO_STYLE_PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set([
+    'yolo',
+    'safe-yolo',
+    'bypassPermissions',
+    'always-proceed'
+])
+
+export function isYoloStylePermissionMode(mode: PermissionMode): boolean {
+    return YOLO_STYLE_PERMISSION_MODES.has(mode)
+}
+
+/**
+ * Map hub Settings → General peerSpawnDefaults into New Session form seeds
+ * so UI create and agent spawn share one authoritative default.
+ */
+export function seedNewSessionFromPeerSpawnDefaults(
+    defaults: ResolvedPeerSpawnDefaults
+): {
+    agent: AgentType
+    yoloMode: boolean
+    permissionMode: PermissionMode
+    model: string | undefined
+} {
+    const agent = VALID_AGENTS.includes(defaults.agent as AgentType)
+        ? defaults.agent as AgentType
+        : 'claude'
+    const permissionMode = getPermissionModesForFlavor(agent).includes(defaults.permissionMode)
+        ? defaults.permissionMode
+        : (isYoloStylePermissionMode(defaults.permissionMode) ? defaults.permissionMode : 'default')
+    const model = defaults.models[agent]?.trim() || undefined
+    return {
+        agent,
+        yoloMode: isYoloStylePermissionMode(permissionMode),
+        permissionMode,
+        model
+    }
+}
 
 export function loadPreferredAgent(): AgentType {
     try {
@@ -52,7 +97,21 @@ export function savePreferredAgent(agent: AgentType): void {
 
 export function loadPreferredYoloMode(): boolean {
     try {
-        return localStorage.getItem(YOLO_STORAGE_KEY) === 'true'
+        const stored = localStorage.getItem(YOLO_STORAGE_KEY)
+        // No key → stock yolo (matches hub peerSpawnDefaults / STOCK_PEER_SPAWN_DEFAULTS).
+        if (stored === null) {
+            return true
+        }
+        return stored === 'true'
+    } catch {
+        return true
+    }
+}
+
+/** True only when the operator previously persisted a Yolo preference. */
+export function hasSavedPreferredYoloMode(): boolean {
+    try {
+        return localStorage.getItem(YOLO_STORAGE_KEY) !== null
     } catch {
         return false
     }
@@ -97,6 +156,8 @@ export function loadPreferredLaunchSettings(
             modelReasoningEffort: typeof parsed.modelReasoningEffort === 'string'
                 ? parsed.modelReasoningEffort
                 : 'default',
+            ...(agent === 'codex' && (parsed.serviceTier === 'fast' || parsed.serviceTier === 'standard')
+                ? { serviceTier: parsed.serviceTier } : {}),
             ...(permissionMode ? { permissionMode } : {})
         }
     } catch {
@@ -130,7 +191,8 @@ function resolvePreferredOptionValue(
 export function resolvePreferredLaunchSettings(
     agent: AgentType,
     preferred: PreferredLaunchSettings | null,
-    legacyYolo = false
+    legacyYolo: boolean | null = false,
+    hubPermissionMode?: PermissionMode
 ): PreferredLaunchSettings {
     const preferredModel = preferred?.model ?? 'auto'
     const staticModelValues = MODEL_OPTIONS[agent].map((option) => option.value)
@@ -162,16 +224,34 @@ export function resolvePreferredLaunchSettings(
     const usesSharedPermissionMode = usesSharedPermissionModeState(agent)
     const availablePermissionModes = getPermissionModesForFlavor(agent)
     const preferredPermissionMode = preferred?.permissionMode
-    // A removed explicit mode falls back to Default, never to a stale YOLO toggle.
-    const legacyYoloBridgeMode = preferredPermissionMode === undefined && legacyYolo && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
-        ? resolveHapiYoloPermissionMode(agent)
+    // Migrate a saved HAPI YOLO toggle into the native select (true → yolo-equivalent,
+    // false → Default). Absent key leaves hub/stock defaults in place.
+    const legacyYoloBridgeMode = preferredPermissionMode === undefined
+        && legacyYolo !== null
+        && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
+        ? (legacyYolo
+            ? resolveHapiYoloPermissionMode(agent)
+            : 'default')
         : null
+    const hubMode = hubPermissionMode
+        ? (() => {
+            const mapped = resolvePermissionModeForFlavor(
+                hubPermissionMode,
+                agent as AgentFlavor
+            )
+            return availablePermissionModes.includes(mapped) ? mapped : undefined
+        })()
+        : undefined
     const permissionMode = usesSharedPermissionMode
         ? preferredPermissionMode && availablePermissionModes.includes(preferredPermissionMode)
             ? preferredPermissionMode
-            : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
-                ? legacyYoloBridgeMode
-                : 'default'
+            : preferredPermissionMode !== undefined
+                // Explicit saved mode that left the launch catalog → Default,
+                // never hub yolo (would upgrade sandboxed → unrestricted).
+                ? 'default'
+                : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
+                    ? legacyYoloBridgeMode
+                    : hubMode ?? 'default'
         : undefined
 
     return {
@@ -179,6 +259,7 @@ export function resolvePreferredLaunchSettings(
         cursorSelectedBase: preferred?.cursorSelectedBase ?? 'auto',
         effort,
         modelReasoningEffort,
+        ...(agent === 'codex' && preferred?.serviceTier ? { serviceTier: preferred.serviceTier } : {}),
         ...(permissionMode ? { permissionMode } : {})
     }
 }
