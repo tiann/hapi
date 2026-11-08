@@ -499,6 +499,23 @@ describe('AgyAcpRemoteLauncher', () => {
 });
 
 describe('AgyAcpRemoteLauncher Stop', () => {
+    it('keeps the session when Stop arrives while no turn is running', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(client.rpcHandlerManager.handlers.has(RPC_METHODS.Abort)).toBe(true));
+
+        // A late or repeated Stop after the turn already ended.
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        queue.push('next', REVIEW, 'a');
+        await vi.waitFor(() => expect(backend.prompts).toEqual([[{ type: 'text', text: 'next' }]]));
+        expect(backend.disconnected).toBe(false);
+
+        queue.close();
+        await run;
+    });
+
     it('restores a prompt that Stop cancelled before agy answered anything', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();

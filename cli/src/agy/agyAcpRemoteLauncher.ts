@@ -250,9 +250,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         });
 
         while (!this.shouldExit) {
-            const batch = await session.queue.waitForMessagesAndGetAsString(this.abortController.signal);
+            // Stop replaces the controller, so check the signal this wait used.
+            const signal = this.abortController.signal;
+            const batch = await session.queue.waitForMessagesAndGetAsString(signal);
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) continue;
+                if (signal.aborted && !this.shouldExit) continue;
                 break;
             }
             const localIds = batch.items
