@@ -167,6 +167,8 @@ type AgyTurn = {
     // agy echoes the prompt first, and that echo may contain a steer's text.
     promptEcho: { text: string; echo: string; done: boolean };
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
+    // Steers agy answered without an echo; settled when the turn ends.
+    answeredSteers: Array<{ accept: () => void; hold: () => void }>;
     abandonSteers: Array<() => void>;
     releaseSteerWait: () => void;
     steerWaitReleased: Promise<void>;
@@ -426,6 +428,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             steerAnswers: [],
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
             unechoedSteers: [],
+            answeredSteers: [],
             abandonSteers: [],
             releaseSteerWait,
             steerWaitReleased
@@ -486,6 +489,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // during this wait extend it.
             await this.waitForSteers(turn);
         } finally {
+            for (const steer of turn.answeredSteers) {
+                if (turn.aborted) steer.hold();
+                else steer.accept();
+            }
             turn.answerMain();
             if (this.turn === turn) this.turn = null;
             session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
@@ -669,7 +676,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 markIndeterminate();
                 return;
             }
-            accept();
+            // A later steer makes agy answer this one's request at once, before
+            // agy folds it in, so an answer alone is not delivery: without an
+            // echo, it counts only once the turn ends without a Stop.
+            if (this.turn === turn) turn.answeredSteers.push({ accept, hold: markIndeterminate });
+            else accept();
         }, (error) => {
             if (isAcpIndeterminateError(error)) {
                 markIndeterminate();

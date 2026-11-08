@@ -1099,6 +1099,59 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         expect(sessionEvents(client).filter((event) => (event as { type: string }).type === 'error')).toEqual([]);
     });
 
+    it('holds steers that a later steer answered early when Stop comes before their echo', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        let cancelled = false;
+        backend.onCancel = () => {
+            if (cancelled) return;
+            cancelled = true;
+            release();
+            for (const steer of backend.steerCompletions) steer.resolve('cancelled');
+        };
+        queue.push('also lint', REVIEW, 'steer-1');
+        queue.push('and format', REVIEW, 'steer-2');
+        expect(await steerRpc(client)({ localId: 'steer-1' })).toEqual({ steered: true });
+        expect(await steerRpc(client)({ localId: 'steer-2' })).toEqual({ steered: true });
+        // The second steer interrupts the first one's request: agy answers it
+        // at once, while the tool call and the turn go on.
+        backend.steerCompletions[0]!.resolve('end_turn');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-1'], { steered: true });
+
+        await abortRpc(client)();
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-2']);
+        expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-1'], { steered: true });
+        queue.close();
+        await run;
+    });
+
+    it('confirms an early-answered steer at its echo, or when the turn ends without one', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        queue.push('also lint', REVIEW, 'steer-1');
+        queue.push('and format', REVIEW, 'steer-2');
+        expect(await steerRpc(client)({ localId: 'steer-1' })).toEqual({ steered: true });
+        expect(await steerRpc(client)({ localId: 'steer-2' })).toEqual({ steered: true });
+        backend.steerCompletions[0]!.resolve('end_turn');
+
+        backend.echo!('run the tests');
+        backend.echo!('also lint');
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true });
+        expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-2'], { steered: true });
+
+        // agy never echoes the second steer; the turn still ends normally.
+        release();
+        backend.steerCompletions[1]!.resolve('end_turn');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-2'], { steered: true });
+        expect(client.emitSteerIndeterminate).not.toHaveBeenCalled();
+        queue.close();
+        await run;
+    });
+
     it('refuses a steer that arrives after Stop and stops offering Steer at once', async () => {
         const backend = new FakeAgyBackend();
         const { queue, client, run, release } = await heldTurn(backend);
