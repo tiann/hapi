@@ -47,10 +47,13 @@ jobs:
             - name: Build Hapi app for iOS Simulator
               run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
             - name: Transcript layout regression tests
+              env:
+                  HAPI_TEST_RESULT_BUNDLE_PATH: ${{ runner.temp }}/iphone-transcript.xcresult
               run: ios/scripts/test-transcript.sh
             - name: iPad navigation and layout regression tests
               env:
                   HAPI_TEST_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2
+                  HAPI_TEST_RESULT_BUNDLE_PATH: ${{ runner.temp }}/ipad-regression.xcresult
               run: >-
                   ios/scripts/test-transcript.sh
                   -only-testing:HapiTests/SessionNavigationTests
@@ -89,11 +92,11 @@ jobs:
                   -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
                   -resultBundlePath "$RUNNER_TEMP/mac-transcript-geometry.xcresult"
                   -only-testing:HapiTests/TranscriptGeometryTests
-            - name: Upload Mac regression test results
+            - name: Upload regression test results
               if: ${{ always() }}
               uses: actions/upload-artifact@v4
               with:
-                  name: mac-regression-test-results
+                  name: ios-regression-test-results
                   path: ${{ runner.temp }}/*.xcresult
                   if-no-files-found: ignore
                   retention-days: 7
