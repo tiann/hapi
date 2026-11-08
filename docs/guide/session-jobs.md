@@ -161,6 +161,7 @@ RUN_ID="$(uuidgen)"   # or python -c 'import uuid; print(uuid.uuid4())'
 
 hapi job set "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
+  --progress fraction \
   --run-id "$RUN_ID" \
   --remaining 150 --done 1637 --total 1787 --unit units \
   --detail 'album: Some Artist - Some Album'
@@ -185,6 +186,7 @@ By default jobs are **meter-only**: terminal `completed`/`failed` does not resum
 ```bash
 hapi job run "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
+  --progress fraction \
   --wake-on-terminal \
   --wake-prompt 'If exit looked clean, start the next album batch.' \
   --remaining 150 --done 1637 --total 1787 --unit units \
@@ -201,11 +203,12 @@ This does **not** treat heartbeats as thinking. Default remains off until dogfoo
 
 ## Progress honesty (tiers)
 
-| What you know | What to send | What the list shows |
-|---------------|--------------|---------------------|
-| Countable leftover | `--remaining N` + `--total M` (+ optional `--unit`) | `150 units left · 2d 4h` + bar fill when `total` is set |
-| Countable fraction | `--done N --total M` | `91% · 1637/1787 units · 2d 4h` + bar fill |
-| Stage only / unknown size | `--label` + `--detail` + heartbeats | `running · 2d 4h` + subtle indeterminate striped bar (no %) |
+| What you know | `--progress` + flags | What the list shows |
+|---------------|----------------------|---------------------|
+| Countable leftover | `fraction` + `--remaining N --total M` | `150 units left · 2d 4h` + fill |
+| Countable fraction | `fraction` + `--done N --total M` | `91% · 1637/1787 units · 2d 4h` + fill |
+| Known deadline | `until` + `--until <ISO\|epoch>` | countdown fill (`s`) |
+| Stage only / unknown size | `unknown` + `--detail` + heartbeats | `running · 2d 4h` + indeterminate stripes |
 
 **Determinate fill:** left→right width moves only when `total` is set **and** something keeps sending `--done`/`--total` or `--remaining`/`--total` (update/feeder), not when those flags appear only on `job run` launch. **Indeterminate stripes:** when there is no honest fraction (`total` missing), the same track slot shows soft diagonal stripes that drift slowly with **no** claimed percent — not spinner-only, not an empty track, and not a loud sliding chunk. `--remaining` alone (without `total`) updates the text label and keeps the striped bar; it is not a percent.
 
@@ -240,6 +243,7 @@ START_MS=1785304595000
 hapi job clear "$HAPI_SESSION_ID" beets
 hapi job set "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
+  --progress fraction \
   --started-at "$START_MS" \
   --remaining 0 --done 1787 --total 1787 --unit units \
   --status completed \
@@ -248,6 +252,7 @@ hapi job set "$HAPI_SESSION_ID" beets \
 # or, on hubs that honor explicit PUT startedAt without delete:
 hapi job set "$HAPI_SESSION_ID" beets \
   --label 'beets import' \
+  --progress fraction \
   --started-at "$START_MS" \
   --remaining 12 --done 1775 --total 1787 --unit units
 ```
@@ -261,7 +266,7 @@ Wrap the long process so something calls `hapi job update` on a timer (or on eac
 ```bash
 RUN_ID="$(uuidgen)"
 hapi job set "$HAPI_SESSION_ID" rsync-backup \
-  --run-id "$RUN_ID" --label 'rsync backup' --detail 'phase: copy'
+  --run-id "$RUN_ID" --label 'rsync backup' --progress unknown --detail 'phase: copy'
 # in a loop / cron / companion script:
 hapi job update "$HAPI_SESSION_ID" rsync-backup \
   --expected-run-id "$RUN_ID" --detail "phase: copy · $(date -u +%H:%M)Z"
@@ -272,11 +277,11 @@ When the process exits, mark completed/failed or clear. A stuck green/amber chip
 ## CLI / API reference
 
 ```bash
-hapi job set <session> <job-key> --label <text> [--started-at MS] [--run-id UUID] [progress flags]
+hapi job set <session> <job-key> --label <text> --progress unknown|fraction|until […]
 hapi job update <session> <job-key> [--expected-run-id UUID] [progress flags]   # no startedAt
 hapi job clear <session> <job-key> [--expected-run-id UUID]
 hapi job list <session>
-hapi job run <session> <job-key> --label <text> -- <cmd>…
+hapi job run <session> <job-key> --label <text> --progress unknown|fraction|until […] -- <cmd>…
 hapi job --help
 ```
 
