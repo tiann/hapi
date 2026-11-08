@@ -106,9 +106,10 @@ extension AgentFlavor {
         case .pi:
             return []
         case .hermes:
-            // Hermes owns its approval policy (approvals.mode + hardline
-            // floor); HAPI has no native permission mode to project onto it.
-            return []
+            // Hermes has no read-only equivalent — its ACP mode axis is
+            // edit-approval only — so three modes are offered; dangerous-command
+            // approvals arrive as request_permission and the HAPI bridge decides.
+            return [.default, .safeYolo, .yolo]
         case .claude, .other:
             return [.default, .acceptEdits, .auto, .bypassPermissions, .plan]
         }
