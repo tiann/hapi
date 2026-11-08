@@ -217,17 +217,16 @@ describe('HermesRemoteLauncher', () => {
         })
     })
 
-    it('forwards native session_info_update titles into the HAPI session summary', async () => {
+    it('does not mirror native session_info_update titles (the Hub owns titles)', async () => {
         const session = createSession()
         const launcher = new HermesRemoteLauncher(session as never)
 
         await launcher.launch()
 
-        expect(harness.titleListener).toBeTypeOf('function')
-        harness.titleListener!({ title: 'Fix the flaky test' })
-        expect(session.client.sendClaudeSessionMessage).toHaveBeenCalledWith(
-            expect.objectContaining({ type: 'summary', summary: 'Fix the flaky test' })
-        )
+        // Hermes seeds its native title with the raw first user message;
+        // mirroring it would suppress Hub title generation.
+        expect(harness.titleListener).toBeNull()
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled()
     })
 
     it('applies the session permission mode onto the Hermes edit-approval axis at startup', async () => {

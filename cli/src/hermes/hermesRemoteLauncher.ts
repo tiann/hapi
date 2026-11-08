@@ -3,7 +3,6 @@ import { RPC_METHODS } from '@hapi/protocol'
 import type { PermissionMode } from '@hapi/protocol/types'
 import { logger } from '@/ui/logger'
 import { convertAgentMessage } from '@/agent/messageConverter'
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle'
 import type { AgentMessage, PromptContent } from '@/agent/types'
 import {
     RemoteLauncherBase,
@@ -64,9 +63,11 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     protected async runMainLoop(): Promise<void> {
         const backend = createHermesBackend()
         this.backend = backend
-        // Hermes names its gateway sessions natively and pushes them via
-        // session_info_update; mirror them into the HAPI session title.
-        registerAcpSessionTitleSync(backend, this.session.client)
+        // Native session_info_update titles are deliberately NOT mirrored:
+        // Hermes seeds its gateway session title with the raw first user
+        // message, and mirroring it into metadata.summary suppresses the
+        // Hub's own title generation. The Hub owns Hermes session titles,
+        // matching the other ACP flavors without a native rename tool.
         backend.onStderrError((error) => {
             logger.debug('[hermes-acp] stderr error', error)
             this.session.sendSessionEvent({ type: 'message', message: error.message })
