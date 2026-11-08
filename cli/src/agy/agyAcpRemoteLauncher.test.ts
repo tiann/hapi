@@ -1128,6 +1128,29 @@ describe('AgyAcpRemoteLauncher delivery and recovery', () => {
         await run;
     });
 
+    it('holds an early-answered steer when agy dies before its echo', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, release } = await heldTurn(backend);
+        queue.push('also lint', REVIEW, 'steer-1');
+        queue.push('and format', REVIEW, 'steer-2');
+        expect(await steerRpc(client)({ localId: 'steer-1' })).toEqual({ steered: true });
+        expect(await steerRpc(client)({ localId: 'steer-2' })).toEqual({ steered: true });
+        // The second steer answers the first one's request at once; then agy
+        // exits before echoing either.
+        release();
+        backend.steerCompletions[0]!.resolve('end_turn');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        backend.alive = false;
+        backend.steerCompletions[1]!.reject(indeterminate());
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
+        expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-2']);
+        expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer-1'], { steered: true });
+        queue.close();
+        await run;
+    });
+
     it('confirms an early-answered steer at its echo, or when the turn ends without one', async () => {
         const backend = new FakeAgyBackend();
         const { queue, client, run, release } = await heldTurn(backend);

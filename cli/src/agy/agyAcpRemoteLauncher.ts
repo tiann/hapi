@@ -489,9 +489,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // during this wait extend it.
             await this.waitForSteers(turn);
         } finally {
+            // After a Stop or a lost agy process, agy may have dropped a steer
+            // it had not echoed yet.
+            const endedCleanly = !turn.aborted && !this.backendLost;
             for (const steer of turn.answeredSteers) {
-                if (turn.aborted) steer.hold();
-                else steer.accept();
+                if (endedCleanly) steer.accept();
+                else steer.hold();
             }
             turn.answerMain();
             if (this.turn === turn) this.turn = null;
@@ -678,11 +681,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             // A later steer makes agy answer this one's request at once, before
             // agy folds it in, so an answer alone is not delivery: without an
-            // echo, it counts only once the turn ends without a Stop.
+            // echo, it counts only once the turn ends cleanly.
             if (this.turn === turn) turn.answeredSteers.push({ accept, hold: markIndeterminate });
             else accept();
         }, (error) => {
             if (isAcpIndeterminateError(error)) {
+                if (this.turn === turn) this.backendLost = true;
                 markIndeterminate();
                 return;
             }
