@@ -189,6 +189,41 @@ for (const touch of [false, true]) {
             await expect(page.getByRole('dialog').getByTitle('Reset zoom')).toHaveText('125%')
         })
 
+        test('vertical swipe from an image thumbnail scrolls an overflowing draft list', async ({ page, browserName }, testInfo) => {
+            test.skip(!touch || browserName !== 'chromium', 'Native touch injection requires Chromium CDP and the touch context.')
+            await page.getByRole('button', { name: 'Overflowing rows', exact: true }).click()
+            const viewport = page.getByTestId('scratchlist-scroll-viewport')
+            const dimensions = await viewport.evaluate((element) => ({
+                clientHeight: element.clientHeight,
+                scrollHeight: element.scrollHeight,
+                scrollTop: element.scrollTop,
+            }))
+            expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight)
+            expect(dimensions.scrollTop).toBe(0)
+
+            const thumb = page.getByTestId('scratchlist-attachment-thumb').first()
+            const trigger = thumb.getByTitle('Click to zoom')
+            await expect(trigger).toHaveCSS('touch-action', 'pan-y')
+            await expect(thumb.getByTestId('scratchlist-attachment-drag-handle')).toHaveCSS('touch-action', 'none')
+            const box = await trigger.boundingBox()
+            const cdp = await page.context().newCDPSession(page)
+            const x = box!.x + box!.width / 2
+            const startY = box!.y + box!.height - 8
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: startY, id: 1 }] })
+            for (const delta of [20, 40, 60, 80, 100, 120]) {
+                await cdp.send('Input.dispatchTouchEvent', {
+                    type: 'touchMove',
+                    touchPoints: [{ x, y: startY - delta, id: 1 }],
+                })
+            }
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+            await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+            await expect(page.getByRole('dialog')).toHaveCount(0)
+            await page.getByTestId('scratchlist-drawer').screenshot({
+                path: testInfo.outputPath('vertical-thumbnail-scroll.png'),
+            })
+            await cdp.detach()
+        })
         test('More actions long-press starts row drag and a short tap still opens the menu', async ({ page, browserName }, testInfo) => {
             test.skip(!touch || browserName !== 'chromium', 'Native touch injection requires Chromium CDP and the touch context.')
             await page.getByRole('button', { name: 'Mixed attachments', exact: true }).click()

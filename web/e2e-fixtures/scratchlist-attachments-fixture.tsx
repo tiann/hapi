@@ -44,6 +44,7 @@ function App() {
             <button onClick={() => save([{ ...entries[0]!, attachments: [image, file] }])}>Mixed attachments</button>
             <button onClick={() => save([{ ...entries[0]!, attachments: [image, { ...image, id: 'second', filename: 'second.png' }] }])}>Two images</button>
             <button onClick={() => save([{ ...entries[0]!, attachments: Array.from({ length: 8 }, (_, index) => ({ ...image, id: `many-${index}`, filename: `many-${index}.png` })) }])}>Many images</button>
+            <button onClick={() => save(Array.from({ length: 10 }, (_, row) => ({ ...entries[0]!, id: `overflow-${row}`, text: `Draft ${row + 1}`, createdAt: row + 1, attachments: [{ ...image, id: `overflow-photo-${row}`, filename: `photo-${row}.png` }, { ...image, id: `overflow-second-${row}`, filename: `second-${row}.png` }] })))}>Overflowing rows</button>
             <button onClick={() => save([{ ...entries[0]!, attachments: [file, { ...file, id: 'second-file', filename: 'second.txt' }] }])}>Two files</button>
             <button onClick={() => setFailSave((value) => !value)}>Toggle save failure</button>
             <button onClick={() => setActiveActions((value) => !value)}>Toggle inactive session actions</button>
