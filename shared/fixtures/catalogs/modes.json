@@ -180,7 +180,23 @@
                 "tone": "danger"
             }
         ],
-        "hermes": [],
+        "hermes": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
         "kimi": [
             {
                 "label": "Default",
