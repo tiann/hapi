@@ -53,7 +53,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 31
+const SCHEMA_VERSION: number = 32
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -375,6 +375,7 @@ export class Store {
             28: () => this.migrateFromV28ToV29(),
             29: () => this.migrateFromV29ToV30(),
             30: () => this.migrateFromV30ToV31(),
+            31: () => this.migrateFromV31ToV32(),
         })
 
         if (currentVersion === 0) {
@@ -412,6 +413,7 @@ export class Store {
             this.migrateFromV26ToV30()
             this.migrateFromV29ToV30()
             this.migrateFromV30ToV31()
+            this.migrateFromV31ToV32()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -514,6 +516,9 @@ export class Store {
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS message_epochs (
                 session_id TEXT PRIMARY KEY,
@@ -1209,6 +1214,16 @@ export class Store {
     private migrateFromV30ToV31(): void {
         createMessageContentSearchTable(this.db)
         if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+    }
+
+    /** v31→v32: index the latest-page uninvoked-local-message lookup. */
+    private migrateFromV31ToV32(): void {
+        if (this.getMessageColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL
+        `)
     }
 
     private getSessionColumnNames(): Set<string> {

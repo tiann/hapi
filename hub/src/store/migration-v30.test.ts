@@ -52,7 +52,7 @@ it('creates and backfills search tables when upgrading a base v30 database', () 
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(migrated.messages.searchContent('searchable', 'default')[0]?.sessionId).toBe(session.id)
         } finally { migrated.close() }
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
@@ -84,7 +84,7 @@ it('upgrades a genuine v26 schema without read-state or search table shortcuts',
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(migrated.sessions.getSession(session.id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
             migrated.messages.addMessage(session.id, {
                 role: 'user', content: { type: 'text', text: 'genuine v26 searchable text' }

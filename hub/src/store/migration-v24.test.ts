@@ -41,7 +41,7 @@ describe('schema migrations through v31', () => {
             expect(columns.some((col) => col.name === 'push_key')).toBe(true)
             const messageColumns = messageColumnsStatement.all() as Array<{ name: string }>
             expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
 
             // Existing Android rows survive with a NULL push key.
             const devices = migrated.fcm.getDevicesByNamespace('default')
@@ -91,7 +91,7 @@ describe('schema migrations through v31', () => {
             const version = versionStatement.get() as { user_version: number }
             const indexes = indexesStatement.all() as Array<{ name: string }>
             expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(31)
+            expect(version.user_version).toBe(32)
             expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
                 'idx_messages_immediate_queued',
                 'idx_messages_future_scheduled_queued'
