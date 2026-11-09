@@ -22,11 +22,16 @@ function makeTool(id: string): ChatToolCall {
     } as unknown as ChatToolCall
 }
 
-function renderFooter(sessionId: string, tool: ChatToolCall, approvePermission = vi.fn().mockResolvedValue(undefined)) {
+function renderFooter(
+    sessionId: string,
+    tool: ChatToolCall,
+    approvePermission = vi.fn().mockResolvedValue(undefined),
+    denyPermission = vi.fn().mockResolvedValue(undefined)
+) {
     return {
         ...render(
             <AskUserQuestionFooter
-                api={{ approvePermission } as unknown as ApiClient}
+                api={{ approvePermission, denyPermission } as unknown as ApiClient}
                 sessionId={sessionId}
                 tool={tool}
                 disabled={false}
@@ -34,6 +39,7 @@ function renderFooter(sessionId: string, tool: ChatToolCall, approvePermission =
             />
         ),
         approvePermission,
+        denyPermission,
     }
 }
 
@@ -117,5 +123,36 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         // Re-mount the same session/tool pair as if the widget were shown again
         rerender(<SessionKeyedWrapper sessionId="session-A" tool={tool} />)
         expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('denies the question once on Skip and clears the draft', async () => {
+        const tool = makeTool('tool-1')
+        const { approvePermission, denyPermission, rerender } = renderFooter('session-A', tool)
+
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.skip' }))
+        await vi.waitFor(() => expect(denyPermission).toHaveBeenCalledTimes(1))
+        expect(denyPermission).toHaveBeenCalledWith('session-A', 'permission-1')
+        expect(approvePermission).not.toHaveBeenCalled()
+
+        rerender(<SessionKeyedWrapper sessionId="session-A" tool={tool} />)
+        expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('skips on Escape from inside the card', async () => {
+        const { denyPermission } = renderFooter('session-A', makeTool('tool-1'))
+
+        fireEvent.keyDown(screen.getByRole('radio', { name: /Alpha/ }), { key: 'Escape' })
+
+        await vi.waitFor(() => expect(denyPermission).toHaveBeenCalledTimes(1))
+    })
+
+    it('is not shown once the question is no longer pending', () => {
+        const tool = makeTool('tool-1')
+        const resolved = { ...tool, permission: { id: 'permission-1', status: 'denied' } } as unknown as ChatToolCall
+
+        renderFooter('session-A', resolved)
+
+        expect(screen.queryByRole('button', { name: 'tool.skip' })).toBeNull()
     })
 })

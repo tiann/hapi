@@ -244,6 +244,15 @@ export function AskUserQuestionFooter(props: {
         setLoading(false)
     }
 
+    // Dismisses the question without answering it (agy's "esc Skip"): the
+    // backend maps the denial to a decline / cancel for the agent.
+    const skip = async () => {
+        if (loading || props.disabled) return
+        setLoading(true)
+        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
+        setLoading(false)
+    }
+
     const next = () => {
         if (questions.length === 0) return
         const a = validateQuestion(clampedStep)
@@ -330,7 +339,14 @@ export function AskUserQuestionFooter(props: {
     }
 
     return (
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+        <div
+            className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3"
+            onKeyDown={(e) => {
+                if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing) return
+                e.preventDefault()
+                void skip()
+            }}
+        >
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -440,6 +456,16 @@ export function AskUserQuestionFooter(props: {
                 </div>
 
                 <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={props.disabled || loading}
+                        onClick={skip}
+                        className={questionNavButtonClassName}
+                    >
+                        {t('tool.skip')}
+                    </Button>
                     {questions.length > 1 && clampedStep < questions.length - 1 ? (
                         <Button
                             type="button"
