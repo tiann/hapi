@@ -3155,6 +3155,77 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: '## Objective\n- Did the thing' });
     });
 
+    it('fork child startup does not republish the inherited automatic compaction its copied transcript already carries', async () => {
+        // Hub fork state: the child's transcript was hydrated from the parent
+        // (its auto-compaction card is already stored there under the parent
+        // session's localId) and the child resumed its own forked native
+        // session. The baseline transcript refresh below replays that same
+        // completed compaction; republishing it would mint a child-session
+        // localId the hub cannot dedupe against the copied card, appending a
+        // duplicate historical summary at the child's tail.
+        harness.clientMetadata = {
+            path: '/tmp/hapi-opencode-test', host: 'fixture',
+            forkedFrom: 'parent-hapi-session',
+            opencodeForkPending: true,
+            conversationHistoryPoints: { 'local-first': true },
+            conversationHistoryIndexes: { 'local-first': 0 },
+            opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ['msg_marker', 'msg_summary'], userMessageIds: ['msg_marker'], localMessageIds: [] }
+        };
+        harness.transcriptFetchImpl = async () => Response.json([
+            { info: { id: 'msg_marker', sessionID: 'acp-session-1', role: 'user' },
+                parts: [{ id: 'part_marker', messageID: 'msg_marker', sessionID: 'acp-session-1', type: 'compaction', auto: true }] },
+            { info: { id: 'msg_summary', sessionID: 'acp-session-1', role: 'assistant', summary: true, parentID: 'msg_marker', finish: 'stop' },
+                parts: [{ id: 'part_summary', messageID: 'msg_summary', sessionID: 'acp-session-1', type: 'text', text: 'inherited summary', time: { end: 1 } }] }
+        ]);
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => new Response(JSON.stringify(
+            String(input).endsWith('/message')
+                ? [{ info: { id: 'msg_marker', sessionID: 'acp-session-1', role: 'user' } },
+                    { info: { id: 'msg_summary', sessionID: 'acp-session-1', role: 'assistant', summary: true, parentID: 'msg_marker', finish: 'stop' } }]
+                : { paths: { '/session/{sessionID}/fork': { post: {} } } }
+        )));
+        const { session, sentAgentMessages } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const sentLocalIds: unknown[] = [];
+        const clientSend = session.client.sendAgentMessage.bind(session.client);
+        Object.assign(session.client, {
+            sendAgentMessage: (message: unknown, localId?: string) => {
+                sentLocalIds.push(localId);
+                clientSend(message);
+            }
+        });
+
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        try {
+            // The baseline read is awaited before the event stream subscribes,
+            // so the inherited compaction's replay has already been decided.
+            await vi.waitFor(() => expect(harness.eventStreamOptions.length).toBe(1));
+
+            // A compaction completing in the child after startup is a genuine
+            // new event and must still publish under the child's localId.
+            const onEvent = harness.eventStreamOptions[0]!.onEvent!;
+            onEvent('message.updated', { info: { id: 'msg_new', sessionID: 'acp-session-1', role: 'user' } });
+            onEvent('message.part.updated', { part: { id: 'part_new_marker', messageID: 'msg_new', sessionID: 'acp-session-1', type: 'compaction', auto: true } });
+            onEvent('message.updated', { info: { id: 'msg_new_summary', sessionID: 'acp-session-1', role: 'assistant', summary: true, parentID: 'msg_new' } });
+            onEvent('message.part.updated', { part: { id: 'part_new_text', messageID: 'msg_new_summary', sessionID: 'acp-session-1', type: 'text', text: 'child summary', time: { end: 2 } } });
+            onEvent('message.updated', { info: { id: 'msg_new_summary', sessionID: 'acp-session-1', role: 'assistant', summary: true, parentID: 'msg_new', finish: 'stop' } });
+            await vi.waitFor(() => expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: 'child summary' }));
+
+            // Exactly one compaction summary card ends up in the child: the
+            // copied one. The inherited replay must not add a second.
+            expect(sentAgentMessages.filter((m: unknown) => (m as { type?: string; summary?: string }).type === 'compact-summary'
+                && (m as { summary?: string }).summary === 'inherited summary')).toHaveLength(0);
+            expect(sentLocalIds).toContain('opencode:acp-session-1:compaction:msg_new');
+            expect(sentLocalIds).not.toContain('opencode:acp-session-1:compaction:msg_marker');
+        } finally {
+            session.queue.close();
+            await Promise.race([
+                launcherPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit in time')), 5000))
+            ]);
+            fetchSpy.mockRestore();
+        }
+    });
+
     it('does not report completion when HTTP success resolves to the observed empty terminal summary failure', async () => {
         compactHarness.compactionResult = {
             status: 'failed',

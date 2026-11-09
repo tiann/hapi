@@ -32,12 +32,30 @@ export class OpencodeNativeTranscript {
         onFailure?: (id: string, trigger: OpencodeCompactionTrigger) => void;
         onStart?: (id: string, trigger: OpencodeCompactionTrigger) => void;
         onReadFailure?: () => void;
+        /**
+         * Fork children resume a native session whose baseline already holds
+         * the parent's compactions, and the hub's transcript copy already
+         * published their cards under the parent's localId. This worker's
+         * session id would mint an undeduplicateable copy of each baseline
+         * outcome, so they are dropped while the baseline is still priming;
+         * outcomes observed after it publish normally.
+         */
+        suppressBaselineSummaries?: boolean;
         fetchImpl?: FetchLike;
     }) {
+        const { onFailure } = options;
         this.projector = new OpencodeCompactionProjector({
             sessionId: options.sessionId,
-            onSummary: options.onSummary,
-            onFailure: options.onFailure,
+            onSummary: (id, summary, trigger) => {
+                if (this.initializing && options.suppressBaselineSummaries) return;
+                options.onSummary(id, summary, trigger);
+            },
+            onFailure: onFailure
+                ? (id, trigger) => {
+                    if (this.initializing && options.suppressBaselineSummaries) return;
+                    onFailure(id, trigger);
+                }
+                : undefined,
             onStart: options.onStart,
             onText: part => {
                 if (this.closed) return;

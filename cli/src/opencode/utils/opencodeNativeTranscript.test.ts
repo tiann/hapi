@@ -121,6 +121,29 @@ describe('OpenCode native transcript reconciliation', () => {
         await recovering;
         expect(onText).not.toHaveBeenCalled();
     });
+    it('suppresses baseline compaction outcomes for fork children while post-baseline ones still publish', async () => {
+        const inherited = [
+            { info: { id: 'marker', sessionID: 'ses', role: 'user' }, parts: [{ id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true }] },
+            { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' }, parts: [{ id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'inherited', time: { end: 1 } }] }
+        ];
+        const onSummary = vi.fn();
+        const onFailure = vi.fn();
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v1',
+            suppressBaselineSummaries: true, onSummary, onFailure, onText: vi.fn(), fetchImpl: async () => Response.json(inherited) });
+        await transcript.refresh();
+        expect(onSummary).not.toHaveBeenCalled();
+        expect(onFailure).not.toHaveBeenCalled();
+        // Replays after the baseline applied stay published.
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' } });
+        expect(onSummary).not.toHaveBeenCalled();
+        transcript.event('message.updated', { info: { id: 'new-marker', sessionID: 'ses', role: 'user' } });
+        transcript.event('message.part.updated', { part: { id: 'new-marker-part', messageID: 'new-marker', sessionID: 'ses', type: 'compaction', auto: true } });
+        transcript.event('message.updated', { info: { id: 'new-summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'new-marker' } });
+        transcript.event('message.part.updated', { part: { id: 'new-summary-part', messageID: 'new-summary', sessionID: 'ses', type: 'text', text: 'fresh', time: { end: 2 } } });
+        transcript.event('message.updated', { info: { id: 'new-summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'new-marker', finish: 'stop' } });
+        expect(onSummary).toHaveBeenCalledExactlyOnceWith('new-marker', 'fresh', 'auto');
+        transcript.close();
+    });
     it('drops a stale read and honors an idle/reconnect refresh requested while it was in flight', async () => {
         let resolve!: (r: Response) => void;
         const fetchImpl = vi.fn().mockImplementationOnce(() => new Promise<Response>(r => { resolve = r; })).mockResolvedValue(Response.json([]));
