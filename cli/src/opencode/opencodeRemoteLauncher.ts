@@ -577,10 +577,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.nativeTranscript = new OpencodeNativeTranscript({
             baseUrl: restBaseUrl, sessionId: acpSessionId, directory: session.path,
             mode: this.majorVersion ?? 'v1', headers: nativeHeaders,
-            // A fork child's baseline holds the parent's compactions and the
-            // hub's transcript copy already carries their cards; publishing
-            // them again under this session's id would append duplicates.
-            suppressBaselineSummaries: currentMetadata?.forkedFrom != null,
+            // A fork child's native history holds the source's compactions and
+            // the hub's transcript copy already carries their cards; outcomes
+            // this runtime never observed live would be republished duplicates.
+            suppressInheritedCompactions: currentMetadata?.forkedFrom != null,
             onSummary: (id, summary, trigger) => {
                 // Only the verified manual bridge owns remote manual outcomes,
                 // including cancellation. Hub history restores published cards.
