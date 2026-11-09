@@ -795,8 +795,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const permissionHandler = this.permissionHandler;
         // Not shown to the user, so not declined by them either.
         if (!form || !permissionHandler) return { action: 'cancel' };
-        // A question that comes in after Stop is not shown.
-        if (this.turn?.aborted) return { action: 'cancel' };
+        // Only a live turn can be asked on: after Stop, or once that turn has
+        // ended, nothing would settle the card.
+        if (!this.turn || this.turn.aborted || this.shouldExit) return { action: 'cancel' };
         // Keyed by agy's tool call so the card shows on it, unless that id
         // was already used for a request.
         const id = form.toolCallId && !permissionHandler.isUsed(form.toolCallId)

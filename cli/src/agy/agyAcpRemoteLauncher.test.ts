@@ -2077,6 +2077,20 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
         await run;
     });
 
+    it('cancels a question that arrives after the stopped turn has finished', async () => {
+        const { client, queue, run, rpc, answer, backend, finish } = await askedTurn();
+        backend.onCancel = () => finish();
+        await rpc(RPC_METHODS.Abort)();
+        await expect(answer()).resolves.toEqual({ action: 'cancel' });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const late = backend.elicit({ ...elicitation, toolCallId: 'call_late2' });
+        await expect(Promise.race([late, new Promise((resolve) => setTimeout(() => resolve('still open'), 300))]))
+            .resolves.toEqual({ action: 'cancel' });
+        expect(Object.keys(agentState(client).requests ?? {})).not.toContain('call_late2');
+        queue.close();
+        await run;
+    });
+
     it('cancels a form that is not a question', async () => {
         const { queue, run, backend, finish } = await askedTurn();
         await expect(backend.elicit({
