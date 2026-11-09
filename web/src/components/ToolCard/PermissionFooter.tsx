@@ -63,6 +63,22 @@ function formatPermissionSummary(permission: ToolPermission, toolName: string, t
     return t('tool.allow')
 }
 
+/**
+ * What the permission footer renders; null means nothing. ToolCard uses this
+ * too, so the card body and the footer cannot disagree about visibility.
+ */
+export function permissionFooterContent(permission: ToolPermission | undefined, toolName: string, toolInput: unknown): 'controls' | 'status' | 'reason' | null {
+    if (!permission) return null
+    if (permission.status === 'pending') return 'controls'
+    if (permission.status === 'resolved') return 'status'
+    // A canceled optional question loses its form, so its history needs a visible
+    // outcome even without a reason. "Canceled" also covers runtime withdrawal.
+    if (permission.status === 'canceled' && isAsyncRequestUserInput(toolName, toolInput)) return 'status'
+    // Keep the thread minimal: approval is already reflected by tool state/icon.
+    if ((permission.status === 'denied' || permission.status === 'canceled') && permission.reason) return 'reason'
+    return null
+}
+
 function PermissionRowButton(props: {
     label: string
     tone: 'allow' | 'deny' | 'neutral' | 'muted'
@@ -205,20 +221,10 @@ export function PermissionFooter(props: {
         setLoading(null)
     }
 
-    if (permission.status === 'resolved') return <div className="mt-2 text-xs text-[var(--app-hint)]">{t('tool.resolved')}</div>
-
-    // Dismissal removes the form, but the historical question still needs a
-    // visible outcome. "Canceled" also covers runtime withdrawal, not just a user click.
-    if (permission.status === 'canceled' && isAsyncRequestUserInput(toolName, props.tool.input)) {
-        return <div className="mt-2 text-xs text-[var(--app-hint)]">{summary}</div>
-    }
-
-    if (!isPending) {
-        // Keep the thread minimal: approval is already reflected by tool state/icon.
-        // Only surface a short message when the permission was denied/canceled and we have a reason.
-        if (permission.status !== 'denied' && permission.status !== 'canceled') return null
-        if (!permission.reason) return null
-
+    const content = permissionFooterContent(permission, toolName, props.tool.input)
+    if (content === null) return null
+    if (content === 'status') return <div className="mt-2 text-xs text-[var(--app-hint)]">{summary}</div>
+    if (content === 'reason') {
         return (
             <div className="mt-2 rounded-xl border border-[var(--app-badge-error-border)] bg-[var(--app-badge-error-bg)] px-3 py-2 text-xs text-[var(--app-badge-error-text)]">
                 {permission.reason}
