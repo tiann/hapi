@@ -1175,32 +1175,41 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // A stop (archive/switch/user stop) kills this session's child. Record the
     // owning PIDs before any kill so onChildExited treats their exit as
     // deliberate and does not report it as an unexpected child death.
+    // Returns the marked PIDs plus the subset the runner spawned itself: only
+    // those have an 'exit' listener that consumes their entry in onChildExited.
     const markIntentionalStop = (sessionId: string) => {
+      const marked = new Set<number>();
+      const withExitListener = new Set<number>();
+      const mark = (pid: number) => {
+        marked.add(pid);
+        intentionallyStoppedPids.add(pid);
+        if (pidToTrackedSession.get(pid)?.childProcess) withExitListener.add(pid);
+      };
       for (const [pid, session] of pidToTrackedSession) {
         if (session.requestedHappySessionId === sessionId
           || session.happySessionId === sessionId
           || session.sharedSessions?.[sessionId]) {
-          intentionallyStoppedPids.add(pid);
+          mark(pid);
         }
       }
       for (const [pid, record] of persistedResumeProcesses) {
         if (record.requestedSessionId === sessionId || record.confirmedSessionId === sessionId) {
-          intentionallyStoppedPids.add(pid);
+          mark(pid);
         }
       }
       if (sessionId.startsWith('PID-')) {
         const pid = Number(sessionId.slice('PID-'.length));
-        if (Number.isInteger(pid) && pid > 0) intentionallyStoppedPids.add(pid);
+        if (Number.isInteger(pid) && pid > 0) mark(pid);
       }
+      return { marked, withExitListener };
     };
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = coalesceStopRequests(async (
+    const attemptStopSession = async (
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
-      markIntentionalStop(sessionId);
 
       // After a mapped/persisted PID path succeeds, still scan argv for other
       // generations of the same HAPI id (untracked orphans from an earlier
@@ -1643,6 +1652,24 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // while callers that just spawned this id can treat unknown defensively.
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
       return 'unknown';
+    };
+
+    // Late RPC retries join the same operation, but every attempt records its
+    // own intentional PIDs and releases the ones that no exit event will
+    // consume (see markIntentionalStop): a stale entry would suppress the real
+    // unexpected exit of a later child that reused the PID.
+    const stopSession = coalesceStopRequests(async (
+      sessionId: string,
+      opts?: { processStartMarker?: string }
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      const intentional = markIntentionalStop(sessionId);
+      try {
+        return await attemptStopSession(sessionId, opts);
+      } finally {
+        for (const pid of intentional.marked) {
+          if (!intentional.withExitListener.has(pid)) intentionallyStoppedPids.delete(pid);
+        }
+      }
     });
 
     // A reused PID invalidates a binding, not every runtime for that session.
