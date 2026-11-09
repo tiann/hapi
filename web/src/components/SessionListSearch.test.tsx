@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { SessionListSearch } from './SessionList'
 
@@ -87,5 +87,38 @@ describe('SessionListSearch content scope', () => {
         renderSearch({ searchMode: 'content' })
 
         expect(screen.getByRole('searchbox').getAttribute('placeholder')).toBe('Search message content')
+    })
+})
+
+describe('SessionListSearch content-scope FUE', () => {
+    afterEach(() => {
+        window.localStorage.removeItem('hapi.fue.v1.session-list-search-scope')
+    })
+
+    it('shows a pulsing FUE dot on the scope toggle until acknowledged', () => {
+        renderSearch()
+
+        const scopeButton = screen.getByTestId('session-list-search-scope')
+        expect(within(scopeButton).getByRole('status', { name: 'New feature available' })).toBeInTheDocument()
+    })
+
+    it('flips scope and shows the explainer on first click', () => {
+        const onSearchModeChange = vi.fn()
+        renderSearch({ onSearchModeChange })
+
+        fireEvent.click(screen.getByTestId('session-list-search-scope'))
+
+        expect(onSearchModeChange).toHaveBeenCalledWith('content')
+        expect(screen.getByRole('dialog', { name: 'New: search message text' })).toBeInTheDocument()
+    })
+
+    it('dismisses and persists acknowledgement on Got it', () => {
+        renderSearch()
+
+        fireEvent.click(screen.getByTestId('session-list-search-scope'))
+        fireEvent.click(screen.getByRole('button', { name: 'Got it' }))
+
+        expect(window.localStorage.getItem('hapi.fue.v1.session-list-search-scope')).toBe('1')
+        expect(screen.queryByRole('dialog', { name: 'New: search message text' })).not.toBeInTheDocument()
     })
 })
