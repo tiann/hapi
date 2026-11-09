@@ -65,6 +65,7 @@ describe('runAgy model and effort config', () => {
             session: {
                 onUserMessage: mocks.onUserMessage,
                 onCancelQueuedMessage: vi.fn(),
+                onRetryQueuedMessage: vi.fn(),
                 rpcHandlerManager: { registerHandler: mocks.registerHandler },
             },
         }
@@ -125,6 +126,17 @@ describe('runAgy model and effort config', () => {
         await runAgy({ model, effort: 'high', workingDirectory: '/tmp' })
         expect(mocks.listModels).not.toHaveBeenCalled()
         expect(mocks.loop).toHaveBeenCalledWith(expect.objectContaining({ model: undefined, effort: 'high' }))
+    })
+
+    it('queues the first message with the permission mode the session was spawned with', async () => {
+        mocks.loop.mockImplementation(async ({ messageQueue }: { messageQueue: MessageQueue2<AgyMode> }) => {
+            const send = mocks.onUserMessage.mock.calls[0]![0]
+            send({ content: { text: 'plan this' } }, 'first')
+            expect((await messageQueue.waitForMessagesAndGetAsString())?.mode)
+                .toMatchObject({ permissionMode: 'plan' })
+        })
+        await runAgy({ permissionMode: 'plan', workingDirectory: '/tmp' })
+        expect(mocks.loop).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'plan' }))
     })
 
     it('cleans up a bootstrapped session if catalog initialization rejects', async () => {

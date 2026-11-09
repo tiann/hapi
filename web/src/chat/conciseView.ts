@@ -1,5 +1,6 @@
 import type { AgentEvent, ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isInteractiveToolBlock } from '@/chat/toolGroups'
+import { getAssistantResponseGroups, hasUnambiguousResponseOwner } from '@/chat/responseGroups'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 
 // Plan proposals are decisions the user acts on, not intermediate work.
@@ -53,6 +54,19 @@ function isConciseVisibleEvent(event: AgentEvent): boolean {
     }
 }
 
+// Projection must preserve metadata within the original runtime response group,
+// even when a hidden event would otherwise join two visible assistant runs.
+function preserveRoundSummaries(round: readonly ChatBlock[], output: ChatBlock[], start: number): void {
+    const kept = new Map(output.slice(start).map((block, index) => [block, start + index]))
+    for (const group of getAssistantResponseGroups(round)) {
+        const sources = group.blocks.filter(block => block.roundSummary)
+        // Never choose between carriers or invent a reply without a target.
+        if (sources.length !== 1 || kept.has(sources[0]) || !hasUnambiguousResponseOwner(group)) continue
+        const target = group.blocks.find(block => kept.has(block))
+        if (target) output[kept.get(target)!] = { ...target, roundSummary: sources[0].roundSummary }
+    }
+}
+
 function filterRound(round: readonly ChatBlock[], output: ChatBlock[]): void {
     // Agent text after the round's last tool call or reasoning is the reply;
     // text before it is narration of the work in progress.
@@ -65,6 +79,7 @@ function filterRound(round: readonly ChatBlock[], output: ChatBlock[]): void {
         }
     }
 
+    const outputStart = output.length
     round.forEach((block, index) => {
         switch (block.kind) {
             case 'agent-text':
@@ -82,6 +97,7 @@ function filterRound(round: readonly ChatBlock[], output: ChatBlock[]): void {
                 output.push(block)
         }
     })
+    preserveRoundSummaries(round, output, outputStart)
 }
 
 /**
