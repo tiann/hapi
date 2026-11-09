@@ -18,6 +18,7 @@ import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normal
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
+import { buildChildExitNotices, type ChildExitNotice } from './childExitNotice';
 import {
     decideKeepWrapperArchive,
     decideRawPidStop,
@@ -432,6 +433,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // existingSessionId identifies the HAPI row, not a permanent spawn request.
     // Keep the dedupe entry only while this runner still owns the child PID.
     const existingSessionIdByChildPid = new Map<number, string>();
+    // PIDs the runner is deliberately killing (archive/stop/switch), consumed
+    // once when the exit is observed. Their exit must not be reported to the
+    // hub as an unexpected child death: those flows already end the session
+    // through the normal session-end / archive path.
+    const intentionallyStoppedPids = new Set<number>();
+    // Wired once the machine socket exists (see apiMachine.connect below).
+    // Before that an unexpected child exit is not reported; the child's own
+    // socket plus keep-alive expiry remain the hub-side backstop.
+    let reportChildExitToHub: ((notice: ChildExitNotice) => void) | null = null;
     type SpawnFailureDetails = {
       message: string
       pid?: number
@@ -1162,12 +1172,35 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       );
     }
 
+    // A stop (archive/switch/user stop) kills this session's child. Record the
+    // owning PIDs before any kill so onChildExited treats their exit as
+    // deliberate and does not report it as an unexpected child death.
+    const markIntentionalStop = (sessionId: string) => {
+      for (const [pid, session] of pidToTrackedSession) {
+        if (session.requestedHappySessionId === sessionId
+          || session.happySessionId === sessionId
+          || session.sharedSessions?.[sessionId]) {
+          intentionallyStoppedPids.add(pid);
+        }
+      }
+      for (const [pid, record] of persistedResumeProcesses) {
+        if (record.requestedSessionId === sessionId || record.confirmedSessionId === sessionId) {
+          intentionallyStoppedPids.add(pid);
+        }
+      }
+      if (sessionId.startsWith('PID-')) {
+        const pid = Number(sessionId.slice('PID-'.length));
+        if (Number.isInteger(pid) && pid > 0) intentionallyStoppedPids.add(pid);
+      }
+    };
+
     // Stop a session by sessionId or PID fallback
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
+      markIntentionalStop(sessionId);
 
       // After a mapped/persisted PID path succeeds, still scan argv for other
       // generations of the same HAPI id (untracked orphans from an earlier
@@ -1640,6 +1673,20 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         spawnSession.onChildExited(existingSessionId);
         existingSessionIdByChildPid.delete(pid);
       }
+      // Tell the hub this generation died, unless we killed it on purpose.
+      // The marker from the durable resume record outlives a dropped
+      // TrackedSession (webhook timeout), so a late exit still carries the
+      // generation the hub compares against.
+      const intentional = intentionallyStoppedPids.delete(pid);
+      const notices = buildChildExitNotices({
+        pid,
+        processStartMarker: persistedResumeProcesses.get(pid)?.processStartMarker,
+        tracked: session,
+        requestedSessionId,
+        confirmedSessionId,
+        existingSessionId
+      }, { time: Date.now(), intentional });
+      for (const notice of notices) reportChildExitToHub?.(notice);
       pidToTrackedSession.delete(pid);
       pidToAwaiter.delete(pid);
       pidToErrorAwaiter.delete(pid);
@@ -1762,6 +1809,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Connect to server
     apiMachine.connect();
+    // Route unexpected child exits to the hub on the same machine socket.
+    reportChildExitToHub = (notice) => apiMachine.reportSessionChildExited(notice);
     scheduleCursorModelsPrewarm();
 
     // Visible startup banner. Use console.log so it always appears on stdout,
