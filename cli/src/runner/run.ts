@@ -370,6 +370,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       pid: number;
       processStartMarker: string;
       bootId?: string;
+      // Agent flavor, so a recovered process can skip OpenCode-only stop preparation.
+      flavor?: string;
     };
     const resumeProcessFile = `${configuration.runnerStateFile}.resume-processes.json`;
     const persistedResumeProcesses = (() => {
@@ -390,6 +392,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             pid: record.pid,
             processStartMarker: record.processStartMarker,
             bootId: normalizeBootId(record.bootId) ?? undefined,
+            flavor: typeof record.flavor === 'string' ? record.flavor : undefined,
           }]];
         }));
       } catch (error) {
@@ -496,6 +499,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const persisted = persistedResumeProcesses.get(pid);
         if (persisted) {
           persisted.confirmedSessionId = sessionId;
+          persisted.flavor = sessionMetadata.flavor ?? persisted.flavor;
           persistResumeProcesses();
         } else {
           // Fresh Claude/etc. spawns often have no reserved HAPI id at spawn
@@ -510,6 +514,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               pid,
               processStartMarker,
               bootId: getSystemBootId() ?? undefined,
+              flavor: sessionMetadata.flavor ?? undefined,
             });
             persistResumeProcesses();
           }
@@ -598,6 +603,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               pid,
               processStartMarker,
               bootId: getSystemBootId() ?? undefined,
+              flavor: sessionMetadata.flavor ?? undefined,
             });
             persistResumeProcesses();
           }
@@ -962,6 +968,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               pid,
               processStartMarker,
               bootId: getSystemBootId() ?? undefined,
+              flavor: agent,
             });
             persistResumeProcesses();
           }
@@ -1171,7 +1178,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const signalDeadlines = new Map<number, number>();
       const prepareSessionStop = async (id: string, pid: number, expectedMarker?: string): Promise<boolean> => {
         if (!isProcessAlive(pid)) return true;
-        const flavor = pidToTrackedSession.get(pid)?.happySessionMetadataFromLocalWebhook?.flavor;
+        const flavor = pidToTrackedSession.get(pid)?.happySessionMetadataFromLocalWebhook?.flavor
+          ?? persistedResumeProcesses.get(pid)?.flavor;
         if (flavor && flavor !== 'opencode') return true;
         const marker = expectedMarker ?? getProcessStartMarker(pid);
         if (!marker) return false;
