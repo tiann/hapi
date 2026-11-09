@@ -53,7 +53,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -61,12 +60,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import android.webkit.MimeTypeMap
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatMedia
+import app.hapi.companion.ui.components.ZoomableImage
+import app.hapi.companion.ui.components.ZoomableImageContent
+import app.hapi.companion.ui.components.ZoomableImageViewerDialog
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.GeneratedImageBlock
 import coil.compose.AsyncImage
@@ -85,6 +85,11 @@ import kotlinx.coroutines.withContext
  * comment "Non-image media can be tens of MB; wait for explicit user intent"
  * is the rule here too, so those kinds show a Load/Prepare button first
  * (web report §3 / G3-G14).
+ *
+ * Images load through the per-hub authed Coil loader ([LocalChatMedia]) — SVG
+ * documents included, via the loader's `SvgDecoder`. Tap opens the shared
+ * zoomable viewer (the web `ImagePreview` overlay). Without a loader
+ * (previews/tests) the card degrades to a filename placeholder.
  */
 @Composable
 fun GeneratedImageBlockView(block: GeneratedImageBlock, modifier: Modifier = Modifier) {
@@ -192,26 +197,10 @@ private fun GeneratedImageCardContent(block: GeneratedImageBlock, modifier: Modi
     }
 
     if (viewerOpen) {
-        Dialog(
-            onDismissRequest = { viewerOpen = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.92f))
-                    .clickable { viewerOpen = false },
-                contentAlignment = Alignment.Center,
-            ) {
-                AsyncImage(
-                    model = url,
-                    imageLoader = loader,
-                    contentDescription = block.fileName,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize().padding(8.dp),
-                )
-            }
-        }
+        ZoomableImageViewerDialog(
+            images = listOf(ZoomableImage(ZoomableImageContent.Loaded(url, media.imageLoader), block.fileName)),
+            onDismiss = { viewerOpen = false },
+        )
     }
 }
 

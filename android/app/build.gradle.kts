@@ -169,8 +169,10 @@ dependencies {
     implementation(libs.zxing.android.embedded)
 
     // Generated images (chat, B-M2d2): loader wired in HubGraph over the
-    // authed + disk-cached hub image client.
+    // authed + disk-cached hub image client. coil-svg adds the SVG decoder
+    // registered on that loader (and the files viewer's local one).
     implementation(libs.coil.compose)
+    implementation(libs.coil.svg)
     // Generated media (chat, C): raw byte download of non-image generated
     // media (video/audio/file) through the same authed hub client Coil uses.
     implementation(libs.okhttp)

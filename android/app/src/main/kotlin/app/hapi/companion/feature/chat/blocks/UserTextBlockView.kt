@@ -21,7 +21,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,7 +38,11 @@ import app.hapi.companion.feature.chat.LocalChatInspection
 import app.hapi.companion.feature.chat.messagePreview
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.feature.chat.attachments.PreviewImage
+import app.hapi.companion.feature.chat.attachments.rememberFullPreviewImage
 import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
+import app.hapi.companion.ui.components.ZoomableImage
+import app.hapi.companion.ui.components.ZoomableImageContent
+import app.hapi.companion.ui.components.ZoomableImageViewerDialog
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.chat.ChatAttachment
 import app.hapi.protocol.chat.UserTextBlock
@@ -112,8 +118,9 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
 
 /**
  * One bubble attachment: image mimes with a decodable `previewUrl` render a
- * thumbnail (web `MessageAttachments` split); everything else — plus decode
- * failures — falls back to the filename chip.
+ * thumbnail (web `MessageAttachments` split) that opens the shared zoomable
+ * viewer on tap; everything else — plus decode failures — falls back to the
+ * filename chip.
  */
 @Composable
 private fun AttachmentView(attachment: ChatAttachment) {
@@ -124,15 +131,33 @@ private fun AttachmentView(attachment: ChatAttachment) {
     }
     val preview by rememberPreviewImage(attachment.previewUrl)
     when (val state = preview) {
-        is PreviewImage.Ready -> Image(
-            bitmap = state.bitmap,
-            contentDescription = attachment.filename,
-            contentScale = ContentScale.Fit,
-            alignment = Alignment.CenterEnd,
-            modifier = Modifier
-                .heightIn(max = 180.dp)
-                .clip(RoundedCornerShape(10.dp)),
-        )
+        is PreviewImage.Ready -> {
+            var viewerOpen by remember { mutableStateOf(false) }
+            Image(
+                bitmap = state.bitmap,
+                contentDescription = attachment.filename,
+                contentScale = ContentScale.Fit,
+                alignment = Alignment.CenterEnd,
+                modifier = Modifier
+                    .heightIn(max = 180.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { viewerOpen = true },
+            )
+            if (viewerOpen) {
+                // Zoom the original, like the web viewer; the downsampled
+                // thumbnail is the stand-in while it decodes.
+                val fullImage by rememberFullPreviewImage(attachment.previewUrl)
+                ZoomableImageViewerDialog(
+                    images = listOf(
+                        ZoomableImage(
+                            ZoomableImageContent.Decoded(fullImage ?: state.bitmap),
+                            attachment.filename,
+                        ),
+                    ),
+                    onDismiss = { viewerOpen = false },
+                )
+            }
+        }
         // Sized placeholder while decoding keeps the bubble from jumping.
         PreviewImage.Loading -> Surface(
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.4f),

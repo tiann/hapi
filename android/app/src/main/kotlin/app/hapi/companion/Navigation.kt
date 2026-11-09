@@ -43,12 +43,17 @@ import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
 import app.hapi.companion.feature.files.ApiFilesGateway
+import app.hapi.companion.feature.files.DirectoryExpandPrefs
+import app.hapi.companion.feature.files.DirectorySortPrefs
+import app.hapi.companion.feature.files.FilePaths
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
 import app.hapi.companion.feature.files.FileViewerViewModel
 import app.hapi.companion.feature.files.FilesScreen
 import app.hapi.companion.feature.files.FilesStrings
 import app.hapi.companion.feature.files.FilesViewModel
+import app.hapi.companion.feature.files.MarkdownPreviewPrefs
+import app.hapi.companion.feature.files.PendingDownloadPrefs
 import app.hapi.companion.feature.files.ViewerMode
 import app.hapi.companion.feature.home.HomeScreen
 import app.hapi.companion.feature.newsession.ApiNewSessionGateway
@@ -84,6 +89,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -525,17 +531,43 @@ fun HapiNavigation() {
             val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
             val hubGraph = activeHubGraph ?: return@composable
             val filesContext = LocalContext.current
+            val appContext = filesContext.applicationContext
             val holder = viewModel<FilesViewModelHolder>(
                 key = "files:${hubGraph.hubUrl}:$sessionId",
                 factory = viewModelFactory {
-                    FilesViewModelHolder(hubGraph, sessionId, filesStrings(filesContext))
+                    FilesViewModelHolder(
+                        hubGraph, sessionId, filesStrings(filesContext),
+                        graph.directorySortPrefs, graph.directoryExpandPrefs,
+                        graph.pendingDownloadPrefs,
+                    )
                 },
             )
+            // "Add to composer" reuses the chat ViewModel of the entry below
+            // this route (same holder key + the chat entry as owner), so the
+            // backticked reference lands in the live composer draft, not a
+            // stale one. Guarded: without a chat below, the menu item hides
+            // (web `canAddToComposer` twin).
+            val chatEntry = remember(entry) {
+                runCatching { navController.getBackStackEntry(Routes.CHAT) }.getOrNull()
+            }
+            val chatHolder = chatEntry?.let { owner ->
+                viewModel<ChatViewModelHolder>(
+                    viewModelStoreOwner = owner,
+                    key = "chat:${hubGraph.hubUrl}:$sessionId",
+                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                )
+            }
             FilesScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
                 onOpenFile = { path, staged ->
                     navController.navigate(Routes.fileViewer(sessionId, path, staged = staged))
+                },
+                onAddFileToComposer = chatHolder?.let { chat ->
+                    { path ->
+                        chat.viewModel.insertComposerText(FilePaths.formatFileReference(path))
+                        navController.popBackStack()
+                    }
                 },
             )
         }
@@ -584,6 +616,8 @@ fun HapiNavigation() {
                     FileViewerViewModelHolder(
                         hubGraph, sessionId, path, staged, mode, line,
                         fileViewerStrings(viewerContext),
+                        graph.markdownPreviewPrefs,
+                        graph.pendingDownloadPrefs,
                     )
                 },
             )
@@ -867,6 +901,9 @@ private class FilesViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     strings: FilesStrings,
+    sortPrefs: DirectorySortPrefs,
+    expandPrefs: DirectoryExpandPrefs,
+    pendingDownloadPrefs: PendingDownloadPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -875,6 +912,15 @@ private class FilesViewModelHolder(
         gateway = ApiFilesGateway(hubGraph.session.api),
         scope = scope,
         strings = strings,
+        sortSource = sortPrefs.sort,
+        onSortChanged = { sort -> sortPrefs.setSort(sort) },
+        expandedSource = expandPrefs.expandedPaths(hubGraph.hubUrl, sessionId),
+        onExpandedChanged = { paths -> expandPrefs.setExpandedPaths(hubGraph.hubUrl, sessionId, paths) },
+        pendingDownloadSource = pendingDownloadPrefs.pendingDownload("files:${hubGraph.hubUrl}:$sessionId"),
+        onPendingDownloadChanged = { request ->
+            pendingDownloadPrefs.setPendingDownload("files:${hubGraph.hubUrl}:$sessionId", request)
+        },
+        sessions = hubGraph.sessionStore.sessions,
     )
 
     override fun onCleared() {
@@ -891,8 +937,14 @@ private class FileViewerViewModelHolder(
     mode: ViewerMode?,
     line: Int?,
     strings: FileViewerStrings,
+    markdownPrefs: MarkdownPreviewPrefs,
+    pendingDownloadPrefs: PendingDownloadPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // The viewer's owner key includes the path: two stacked viewers of
+    // different files must not share one pending download.
+    private val pendingOwner = "viewer:${hubGraph.hubUrl}:$sessionId:$path"
 
     val viewModel = FileViewerViewModel(
         sessionId = sessionId,
@@ -903,6 +955,12 @@ private class FileViewerViewModelHolder(
         gateway = ApiFilesGateway(hubGraph.session.api),
         scope = scope,
         strings = strings,
+        // The pref stores the non-default Source choice (web twin); the VM
+        // state is the preview flag, so flip at the seam.
+        markdownPreviewSource = markdownPrefs.source.map { source -> !source },
+        onMarkdownPreviewChanged = { preview -> markdownPrefs.setSource(!preview) },
+        pendingDownloadSource = pendingDownloadPrefs.pendingDownload(pendingOwner),
+        onPendingDownloadChanged = { request -> pendingDownloadPrefs.setPendingDownload(pendingOwner, request) },
     )
 
     override fun onCleared() {
@@ -1071,12 +1129,15 @@ private fun filesStrings(context: Context) = FilesStrings(
     unknownError = context.getString(R.string.files_error_unknown),
     listDirectoryFailed = context.getString(R.string.files_error_list),
     searchFailed = context.getString(R.string.files_error_search),
+    downloadFailedTitle = context.getString(R.string.files_download_failed),
+    downloadFailedDefault = context.getString(R.string.files_download_failed_default),
 )
 
 /** Resource-resolved [FileViewerStrings] (B-M5a Strings seam). */
 private fun fileViewerStrings(context: Context) = FileViewerStrings(
     loadDiffFailed = context.getString(R.string.files_error_load_diff),
     readFileFailed = context.getString(R.string.files_error_read_file),
+    downloadFailedDefault = context.getString(R.string.files_download_failed_default),
 )
 
 /** Resource-resolved [NewSessionStrings] (B-M5a Strings seam). */
