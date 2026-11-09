@@ -160,6 +160,7 @@ export function createMachinesRoutes(
         // AGY/DSH even when the request omitted agent).
         if (
             (effectiveAgent === 'agy' || effectiveAgent === 'dsh')
+            (effectiveAgent === 'agy' || effectiveAgent === 'dsh' || effectiveAgent === 'berry')
             && startingMode
             && startingMode !== 'remote'
         ) {

@@ -33,6 +33,12 @@ describe('sessionResume', () => {
             flavor: 'cursor',
             cursorSessionId: 'cursor-1',
         })).toBe('cursor-1')
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'berry',
+            berrySessionId: 'berry-1',
+        })).toBe('berry-1')
     })
 
     it('resolveAgentSessionIdFromMetadata ignores stale cross-flavor ids', () => {

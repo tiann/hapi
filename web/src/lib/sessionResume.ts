@@ -23,6 +23,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'copilot': return metadata.copilotSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
         case 'dsh': return metadata.dshSessionId ?? undefined
+        case 'berry': return metadata.berrySessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }

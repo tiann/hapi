@@ -389,6 +389,25 @@ describe('buildCliArgs', () => {
         ])
     })
 
+    it('builds a remote Berry runner command with resume, model, and permission mode', () => {
+        const args = buildCliArgs('berry', {
+            directory: '/tmp',
+            resumeSessionId: 'berry-session-1',
+            model: 'newapi/glm-5.3',
+            startingMode: 'remote',
+            permissionMode: 'read-only',
+            effort: 'high'
+        }, true)
+        expect(args).toEqual([
+            'berry',
+            '--resume', 'berry-session-1',
+            '--hapi-starting-mode', 'remote',
+            '--started-by', 'runner',
+            '--model', 'newapi/glm-5.3',
+            '--permission-mode', 'read-only'
+        ])
+    })
+
     it('stamps --hapi-session-id for local HTTP sessionId hints (reap / adopt-stub)', () => {
         // sessionId alone is not reopen — that was the round-4 Major when we
         // collapsed everything onto --existing-session-id.

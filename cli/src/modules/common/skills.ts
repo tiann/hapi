@@ -58,6 +58,9 @@ function getAgentConfigDir(flavor?: string): string {
         case 'dsh':
             // DSH resolves its harness home from $DSH_HOME, then ~/.dsh.
             return process.env.DSH_HOME || join(getHomeDirectory(), '.dsh');
+        case 'berry':
+            // Berry resolves its data dir from $BERRY_AGENT_DATA_DIR, then ~/.berry-agent.
+            return process.env.BERRY_AGENT_DATA_DIR || join(getHomeDirectory(), '.berry-agent');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -81,6 +84,12 @@ function getUserSkillsRoots(flavor?: string): string[] {
             break;
         case 'dsh':
             // Mirrors DSH's own skill-filesystem provider: $DSH_HOME/skills.
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'berry':
+            // Mirrors Berry's user skills layer: <data dir>/skills.
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
     }

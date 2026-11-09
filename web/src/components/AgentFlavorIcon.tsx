@@ -38,6 +38,17 @@ function PiLogo() {
     )
 }
 
+/** Berry Agent has no upstream icon pack entry; ship a minimal geometric
+ *  berry mark (currentColor) in the PiLogo tradition. */
+function BerryLogo() {
+    return (
+        <svg viewBox="0 0 24 24" width="100%" height="100%" fill="currentColor">
+            <path d="M12 4.2c.2-1 1-1.8 2-2l.4 1.5c.8-.5 1.8-.6 2.6-.1-.3.9-1 1.5-1.9 1.7.9.4 1.5 1.1 1.7 2-.9.2-1.8 0-2.4-.6l-.6.9a6.6 6.6 0 0 0-1.8-.4V4.2z" />
+            <path d="M12 21.4c-3.9 0-6.9-2.6-6.9-6s3-6 6.9-6 6.9 2.6 6.9 6-3 6-6.9 6z" />
+        </svg>
+    )
+}
+
 const UNKNOWN_FLAVOR_BADGE = {
     label: 'Un',
     colors: 'bg-[var(--app-secondary-bg)] text-[var(--app-hint)]',
@@ -77,6 +88,17 @@ export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null;
                 className={`inline-flex items-center justify-center leading-none text-[var(--app-fg)] ${sizeClass}`}
             >
                 <PiLogo />
+            </span>
+        )
+    }
+
+    if (normalized === 'berry') {
+        return (
+            <span
+                aria-hidden="true"
+                className={`inline-flex items-center justify-center leading-none text-[var(--app-fg)] ${sizeClass}`}
+            >
+                <BerryLogo />
             </span>
         )
     }

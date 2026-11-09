@@ -93,6 +93,11 @@ extension AgentFlavor {
             return [.default, .readOnly, .autoReview, .yolo]
         case .gemini, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
+        case .berry:
+            // Berry maps the modes onto its native sandbox axis; tool
+            // approvals arrive as request_permission and the HAPI bridge
+            // decides, so the full four-mode set is offered.
+            return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]
         case .opencode:
