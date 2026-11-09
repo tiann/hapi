@@ -83,6 +83,26 @@ describe('RenameSessionDialog title-lock FUE', () => {
         expect(onClose).not.toHaveBeenCalled()
     })
 
+    it('keeps the callout clickable while the modal disables outside pointer events', async () => {
+        renderDialog()
+
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 10))
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Lock title against agent updates' }))
+        const gotIt = screen.getByRole('button', { name: 'Got it' })
+
+        // Radix's modal Dialog sets document.body's pointer-events to none
+        // and re-enables it only on its own content node. FueCallout's
+        // portal is a separate sibling of that node — without an explicit
+        // override it would inherit "none" and be unclickable by a real
+        // pointer, even though a plain fireEvent.click (used elsewhere in
+        // this file) bypasses CSS hit-testing entirely and would still pass.
+        expect(getComputedStyle(document.body).pointerEvents).toBe('none')
+        expect(getComputedStyle(gotIt).pointerEvents).toBe('auto')
+    })
+
     it.fails('keyboard focus can reach the callout dismiss button', () => {
         // Known limitation, not fixed here: Radix's FocusScope traps focus
         // using a raw DOM containment check (container.contains(target)),
