@@ -689,7 +689,7 @@ function getSteeringIneligibility(session: PingPeerSessionSummary): SteeringInel
 // Explicit steer refuses before sending, so these texts say no message was sent.
 const EXPLICIT_STEER_REFUSAL: Record<SteeringIneligibility, string> = {
     inactive: 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it',
-    unsupported: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions; no message sent',
+    unsupported: 'Steering is only supported for Claude, Pi, Codex, OpenCode, Antigravity, and Cursor ACP sessions; no message sent',
     local: 'Steering is only available for remote sessions; no message sent',
     idle: 'Steering requires an active turn; target is idle, no message sent. Use queue to start a turn'
 }

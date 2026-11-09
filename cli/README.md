@@ -50,8 +50,8 @@ Choose a supported coding agent from your terminal and control its sessions remo
 
 Peer messages default to `auto`: use the target's live capabilities and turn
 state to steer an active, eligible turn; otherwise queue. Inactive peers require explicit `wake: true`; awakened peers enter the ordinary queue. This applies to every steering-supported
-flavor: remote Claude, Pi, Codex, OpenCode, and Cursor ACP. Unsupported agents and
-legacy Cursor sessions queue instead. Prefer auto for routine collaboration
+flavor: remote Claude, Pi, Codex, OpenCode, Antigravity on agy acp, and Cursor ACP.
+Unsupported agents and legacy Cursor sessions queue instead. Prefer auto for routine collaboration
 when queueing is an acceptable fallback.
 
 Use explicit `queue` for non-urgent updates that can wait. Use `steer` for

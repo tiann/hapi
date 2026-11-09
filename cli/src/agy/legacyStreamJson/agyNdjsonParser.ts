@@ -1,4 +1,4 @@
-import type { AgyTranscriptEntry, AgyToolCall } from '../utils/agyTranscriptTypes';
+import type { AgyTranscriptEntry, AgyToolCall } from './agyTranscriptTypes';
 
 /**
  * agy `--output-format stream-json` NDJSON protocol (measured on agy 1.1.13).
@@ -14,7 +14,7 @@ import type { AgyTranscriptEntry, AgyToolCall } from '../utils/agyTranscriptType
  *   {"event":"result","result":{"conversation_id":"...","status":"SUCCESS","response":"OK\n","duration_seconds":3.4,"num_turns":1,"usage":{...}}}
  *   {"event":"result","result":{"conversation_id":"...","status":"ERROR","response":"","error":"timeout waiting for response","duration_seconds":2.4,"num_turns":1,"usage":{...}}}
  *
- * Mapping to the existing transcript-entry channel (sendAgySessionMessage):
+ * Mapping to the existing transcript-entry channel (sendAgyTranscriptEntry):
  *   - init        → conversation id becomes known immediately (no hook needed)
  *   - user_input  → delivery confirmation (emitMessagesConsumed); no re-emit,
  *                   the web already rendered the user's own message

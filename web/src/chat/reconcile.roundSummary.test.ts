@@ -29,3 +29,26 @@ describe('round throughput reconciliation', () => {
         expect(result.blocks[0]).toBe(previous)
     })
 })
+
+describe('agy round usage reconciliation', () => {
+    const agy: RoundSummary = {
+        provider: 'agy', modelUsage: {}, durationMs: 2_000,
+        agyUsage: { input_tokens: 10, output_tokens: 2, thinking_tokens: 1, cache_read_tokens: 4, total_tokens: 13 }
+    }
+
+    it.each(['input_tokens', 'output_tokens', 'thinking_tokens', 'cache_read_tokens', 'total_tokens'] as const)(
+        'updates the footer when only agy %s changes',
+        (key) => {
+            const previous = block(agy)
+            const next = block({ ...agy, agyUsage: { ...agy.agyUsage, [key]: 99 } })
+            const result = reconcileChatBlocks([next], new Map([[previous.id, previous]]))
+            expect(result.blocks[0]).toBe(next)
+        }
+    )
+
+    it('retains stable references for unchanged agy usage', () => {
+        const previous = block(agy)
+        const result = reconcileChatBlocks([block({ ...agy, agyUsage: { ...agy.agyUsage } })], new Map([[previous.id, previous]]))
+        expect(result.blocks[0]).toBe(previous)
+    })
+})
