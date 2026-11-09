@@ -129,6 +129,9 @@ export type SpawnPeerOptions = {
 export type SpawnPeerResult = {
     sessionId: string
     name: string
+    /** The remit's ping-peer localId; unknown when its delivery call failed but the remit still landed. */
+    localId?: string
+    flavor: AgentFlavor
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -673,7 +676,7 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
     }
 
     onProgress?.(`delivering remit (${message.length} chars) via ping-peer path...`)
-    let pingResult: { sessionId: string; name: string } | undefined
+    let pingResult: { sessionId: string; name: string; localId: string } | undefined
     let deliveryError: unknown
     try {
         pingResult = await pingPeer({
@@ -707,7 +710,9 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
                 sessionId,
                 name: renamed
                     ? requestedName
-                    : pingResult?.name || sessionId.slice(0, 8)
+                    : pingResult?.name || sessionId.slice(0, 8),
+                localId: pingResult?.localId,
+                flavor: resolved.agent
             }
         }
         lastVerify = verify

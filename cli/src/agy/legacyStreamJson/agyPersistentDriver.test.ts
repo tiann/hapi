@@ -6,14 +6,20 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AgyHeadlessDriver } from './agyHeadlessDriver';
 import { AgySession } from '../session';
 import type { AgyMode } from '../types';
+
+// Record transcript entries on the fake client instead of building wire messages.
+vi.mock('./agyTranscript', () => ({
+    sendAgyTranscriptEntry: (client: { agyTranscript: (...args: unknown[]) => void }, ...args: unknown[]) =>
+        client.agyTranscript(...args),
+}));
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const modelLookup = vi.hoisted(() => vi.fn(async (_id: unknown, indexes: readonly number[]) => (
     new Map<number, string | null>(indexes.map((index) => [index, null]))
 )));
-vi.mock('../utils/agyConversationModel', () => ({ resolveAgyTurnModels: modelLookup }));
-vi.mock('../utils/agySessionTitle', () => ({ readAgyConversationTitle: async () => null }));
+vi.mock('./agyConversationModel', () => ({ resolveAgyTurnModels: modelLookup }));
+vi.mock('./agySessionTitle', () => ({ readAgyConversationTitle: async () => null }));
 
 const CONVERSATION = '12345678-1234-4234-8234-123456789abc';
 const MODE: AgyMode = { permissionMode: 'request-review', model: 'gemini-4-argon', effort: 'medium' };
@@ -88,7 +94,8 @@ class PersistentChild extends EventEmitter {
 function createHarness(configureChild?: (child: PersistentChild, index: number) => void) {
     const sent: unknown[][] = [];
     const client = {
-        sendAgySessionMessage: (...args: unknown[]) => { sent.push(args); },
+        agyTranscript: (...args: unknown[]) => { sent.push(args); },
+        onCancelQueuedMessage: vi.fn(),
         emitMessagesConsumed: vi.fn(),
         emitSessionReady: vi.fn(),
         sendSessionEvent: vi.fn(),

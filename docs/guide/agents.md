@@ -20,7 +20,7 @@ agent's integration; their supported syntax varies by agent.
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
-| Antigravity (agy) | `hapi agy` | Persistent headless NDJSON over stdio | — | ✓ | `request-review` `always-proceed` | ✓ |
+| Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `plan` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
@@ -30,7 +30,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, Antigravity, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
 
 ### Permission modes
 
@@ -315,28 +315,49 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
-- **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven through
-  `agy --input-format stream-json --output-format stream-json`. HAPI starts the
-  process on the first prompt and reuses it for subsequent turns with the same
-  model, effort, and permission settings. Each prompt is sent through stdin;
-  the next turn starts after HAPI finishes handling the current `result` and
-  chat output.
-  Changing settings restarts the process with `--conversation <uuid>`. Stop
-  terminates the process and its tools; the next send resumes the conversation.
-  A process failure also causes the next turn to start a fresh process, without
-  automatically replaying a prompt the agent already accepted.
+- **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
+  (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the
+  session starts; older agy releases, an agy whose version cannot be read,
+  and an `agy acp` that fails to start keep the previous persistent
+  stream-json integration (no approval prompts in
+  HAPI: tools without an allow-rule in agy's `settings.json` are auto-denied).
 
-  Requires an agy CLI with `--input-format stream-json` support. Native CLI
-  commands such as `/model` and `/usage` cannot run inside this stream; use
-  HAPI's model and effort controls to change settings. Remote-only — there is
-  no local terminal input path or PTY/TUI wrapper.
+  On ACP, one `agy acp` process serves the whole session. The agy conversation
+  id is the ACP session id, so a session continues the same conversation
+  through `session/resume` without replaying history, whichever integration
+  started it. If the agy process dies, the next message restarts it and
+  resumes the conversation; a prompt agy never started is restored to the
+  composer. Stop sends `session/cancel`, which also ends open tool calls; a
+  prompt stopped before agy answered anything also goes back to the composer.
 
-  Permission handling uses agy's `settings.json` allow/deny rules
-  (`request-review`) or `--dangerously-skip-permissions` (`always-proceed`),
-  without a hook-based approval bridge. Tools without an allow-rule are
-  auto-denied and shown as a chat hint. MCP servers are loaded natively from
-  `~/.gemini/config/mcp_config.json` or workspace `.agents/mcp_config.json`;
-  HAPI does not inject its own MCP server. [Google Antigravity](https://antigravity.google)
+  On ACP, **Steer** a queued message to add it to the running turn instead of
+  waiting for the turn to end. HAPI sends it as another `session/prompt`; agy
+  finishes any tool call already running, then continues the same turn with
+  the new message. The turn's usage includes the steered part.
+
+  Permission modes map to agy's session modes. `request-review` is agy's
+  `default` mode, which asks only as agy's own `toolPermission` setting
+  (`~/.gemini/antigravity-cli/settings.json`) says; on ACP its approval
+  requests show in HAPI. With `toolPermission: always-proceed`, agy runs
+  commands and edits without asking, so HAPI shows no approval prompts; set
+  it to `request-review` in agy to approve each command and edit from HAPI.
+  HAPI cannot override this per session. `acceptEdits` is agy's
+  `accept-edits` mode, which also runs edits without asking, and `plan` is
+  agy's `plan` mode, which writes a plan instead of running commands or
+  edits. `always-proceed` approves every request automatically, including
+  one a PreToolUse hook marks `force_ask` (agy does not tell HAPI a request
+  came from a hook). On ACP, mode changes apply to the next message without
+  restarting agy. Conversation titles come from agy; on ACP each response's
+  details show the turn's token usage.
+
+  Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
+  servers are loaded natively from `~/.gemini/config/mcp_config.json` or
+  workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
+  [Google Antigravity](https://antigravity.google)
+
+  On ACP, agy's questions (`ask_question`) appear as the question card; the
+  choice goes back as agy's answer, and no permission mode answers a question
+  for you.
 
   In the web model picker, models with multiple effort variants appear once,
   with a separate effort selector showing the levels in the machine's catalog.
@@ -357,6 +378,8 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   Pi's extension commands and prompt templates (discovered via `get_commands`) keep working from the `/` menu, and skills are available through `$skill-name` like other ACP flavors. Other Pi TUI builtins (e.g. `/tree`, `/export`, `/reload`) cannot run over RPC; typing them in web shows an explicit "terminal-only" notice instead of silently forwarding the text to the model.
 
   Pi sessions include a `hapi_display_image` tool for showing local PNG, JPEG, GIF, or WebP images up to 25 MiB in the chat. Images returned by Pi tools render inline even when the selected model has no vision support. The display tool also returns image bytes to Pi's model context.
+
+  On Pi versions with built-in MCP support (0.99+), HAPI also exposes its peer-session tools through Pi: `list_peers`, `inspect_peer`, `ping_peer`, and `spawn_peer`. Calls that read another session, send to it, or spawn a session require confirmation in the HAPI UI. `HAPI_DISABLE_PEER_TOOLS=1` hides the tools and keeps the disabled citation guidance in the system prompt.
 
 ## Related
 

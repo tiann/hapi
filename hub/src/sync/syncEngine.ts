@@ -1337,8 +1337,8 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Claude, Pi, Codex, OpenCode, and Cursor
-     * ACP sessions; the CLI's handler is registered per flavor. Legacy
+     * (native steer). Supported for Claude, Pi, Codex, OpenCode, Antigravity,
+     * and Cursor ACP sessions; the CLI's handler is registered per flavor. Legacy
      * stream-json Cursor sessions and other flavors are rejected by the
      * capability gate.
      */
@@ -1352,7 +1352,12 @@ export class SyncEngine {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions', localId: null }
+            // An agy session gets its ACP marker only once its CLI has picked
+            // the transport, a few seconds after spawn.
+            const error = session.metadata?.flavor === 'agy'
+                ? 'Antigravity is not running on agy acp (yet); Steer is not available'
+                : 'Steering is only supported for Claude, Pi, Codex, OpenCode, Antigravity, and Cursor ACP sessions'
+            return { status: 'failed', error, localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
