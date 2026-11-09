@@ -166,6 +166,10 @@ function contentForDeferredDelivery(content: unknown): unknown {
     if (!isObject(content) || content.role !== 'user' || !isObject(content.meta)) {
         return content
     }
+    // Replay paths (replayImmediateQueuedMessages, releaseDeliverableQueuedMessages)
+    // also surface stragglers that never had delivery metadata, e.g. legacy rows
+    // written before meta became mandatory (aliveEvents "queued-before-attach").
+    if (!Object.keys(content.meta).length) return content
     if (content.meta.deliveryMode !== 'steer') return content
     return {
         ...content,

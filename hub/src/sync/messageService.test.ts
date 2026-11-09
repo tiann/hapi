@@ -1976,6 +1976,39 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
         expect(stillQueued.find((m) => m.localId === 'local-future')?.invokedAt).toBeNull()
     })
+
+    it('agent session events with a localId keep invoked_at NULL and their position across the sweep', () => {
+        // Session events (opencode compaction ":started") carry a stable localId but
+        // have no ack path, so they used to match the sweep's "immediate queued"
+        // selection and got force-invoked at every session end. That restamped their
+        // position_at (COALESCE(invoked_at, created_at)) to the reopen time, which
+        // resurfaced days-old events at the bottom of the thread as if new. The
+        // sweep's contract is queued USER prompts; agent event rows must keep their
+        // original invoked_at/position.
+        const store = makeStore()
+        const session = makeSession(store, 'r4-agent-event-sweep')
+        const publisher = makePublisher()
+        const now = Date.now()
+        const oldCreated = now - 2 * 24 * 60 * 60 * 1000
+
+        const localId = 'opencode:ses_x:compaction:msg_1b40439c:started'
+        store.messages.addMessage(
+            session.id,
+            { role: 'agent', content: { id: 'e1', type: 'event', data: { type: 'message', message: '📦 Compaction started' } } },
+            localId,
+            undefined,
+            oldCreated
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+        expect(result).toBeNull()
+        expect(publisher.events.filter(e => e.type === 'messages-consumed')).toHaveLength(0)
+
+        const row = store.messages.getMessages(session.id).find((m) => m.localId === localId)
+        expect(row?.invokedAt).toBeNull()
+        expect(row?.createdAt).toBe(oldCreated)
+    })
 })
 
 it('preserves live confirmation state when an idempotent send repeats the same durable input', async () => {
