@@ -496,6 +496,9 @@ function mayBeUnfinishedControlEnvelope(text: string): boolean {
 
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
+    // The agent's own tool name and args by call id (agy sends `name`/`args`
+    // on every tool_call and tool_call_update).
+    private readonly nativeTools = new Map<string, { nativeName: string; nativeArgs: unknown }>();
     private acceptingUpdates = true;
     private bufferedText = '';
     // Stable stream id for a text segment that has already been emitted by an
@@ -943,6 +946,17 @@ export class AcpMessageHandler {
         return source;
     }
 
+    private nativeToolFields(toolCallId: string, update: Record<string, unknown>): { nativeName?: string; nativeArgs?: unknown } {
+        const nativeName = asString(update.name);
+        if (nativeName) {
+            this.nativeTools.set(toolCallId, {
+                nativeName,
+                nativeArgs: update.args !== undefined ? update.args : update.rawInput
+            });
+        }
+        return this.nativeTools.get(toolCallId) ?? {};
+    }
+
     private handleToolCall(update: Record<string, unknown>): void {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
@@ -993,7 +1007,8 @@ export class AcpMessageHandler {
             input,
             status,
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         });
     }
 
@@ -1005,7 +1020,8 @@ export class AcpMessageHandler {
         const existing = this.toolCalls.get(toolCallId);
         const presentation = {
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         };
 
         if (isUsableRawInput(update.rawInput)) {

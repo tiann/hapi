@@ -59,6 +59,10 @@ export type AgentMessage =
         title?: string;
         kind?: string;
         progress?: unknown;
+        // The agent's own tool name and args, when it sends them next to the
+        // standard fields (agy does: `name`, `args`).
+        nativeName?: string;
+        nativeArgs?: unknown;
     }
     | { type: 'tool_result'; id: string; output: unknown; status: 'completed' | 'failed' }
     | {
