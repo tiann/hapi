@@ -232,7 +232,37 @@ export function addMessage(
 const TOOL_CALL_UPSERT_LOOKBACK = 200
 
 /** `tool-call` payload fields merged newest-wins-when-non-null. */
-const TOOL_CALL_MERGE_FIELDS = ['name', 'input', 'nativeTitle', 'nativeKind', 'nativeName', 'nativeArgs', 'status'] as const
+const TOOL_CALL_MERGE_FIELDS = ['name', 'input', 'nativeTitle', 'nativeKind', 'nativeName', 'nativeArgs'] as const
+
+/** Status progression rank for one tool call: pending < in_progress <
+ *  completed/failed. A merged row may only advance the state — agents
+ *  normalize a missing/unknown status to `pending` (cli normalizeStatus), so
+ *  permission rounds re-emit pending after the call already ran, and that
+ *  re-send must not overwrite `in_progress` and never a terminal state.
+ *  `completed`/`failed` share the terminal tier; ties keep the newer value. */
+const TOOL_CALL_STATUS_RANK: Record<string, number> = {
+    pending: 0,
+    in_progress: 1,
+    completed: 2,
+    failed: 2
+}
+
+function toolCallStatusRank(status: unknown): number | null {
+    return typeof status === 'string' && status in TOOL_CALL_STATUS_RANK
+        ? TOOL_CALL_STATUS_RANK[status]
+        : null
+}
+
+function mergeToolCallStatus(stored: unknown, incoming: unknown): unknown {
+    if (incoming === null || incoming === undefined) return stored
+    const storedRank = toolCallStatusRank(stored)
+    const incomingRank = toolCallStatusRank(incoming)
+    // Unrecognized status strings rank below every known state so an unknown
+    // value can never regress a known one; two unknowns keep the newer.
+    if (incomingRank === null) return storedRank === null ? incoming : stored
+    if (storedRank === null) return incoming
+    return incomingRank >= storedRank ? incoming : stored
+}
 
 export type UpsertToolCallResult = {
     message: StoredMessage
@@ -266,8 +296,9 @@ function isUserMessageRow(value: unknown): boolean {
  *  A non-null new value wins for the payload fields the CLI updates
  *  independently; a null/absent one keeps the stored value, so a later
  *  status-only tick cannot erase the input or title an earlier tick carried.
- *  `progress` follows the web's latest-wins rendering of that transient
- *  (reducerTools.ensureToolBlock). */
+ *  `status` merges by progression rank so a re-emitted pending never regresses
+ *  a running or terminal call. `progress` follows the web's latest-wins
+ *  rendering of that transient (reducerTools.ensureToolBlock). */
 function mergeToolCallContent(stored: unknown, incoming: unknown): unknown {
     const envelope = unwrapRoleWrappedRecordEnvelope(stored)
     const incomingEnvelope = unwrapRoleWrappedRecordEnvelope(incoming)
@@ -281,6 +312,8 @@ function mergeToolCallContent(stored: unknown, incoming: unknown): unknown {
         const next = incomingData[field]
         if (next !== null && next !== undefined) mergedData[field] = next
     }
+    const mergedStatus = mergeToolCallStatus(storedData.status, incomingData.status)
+    if (mergedStatus !== null && mergedStatus !== undefined) mergedData.status = mergedStatus
     if (incomingData.progress !== null && incomingData.progress !== undefined) {
         mergedData.progress = incomingData.progress
     }

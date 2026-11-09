@@ -587,7 +587,10 @@ describe('cli session handlers', () => {
         const send = (content: unknown) => socket.trigger('message', { sid: session.id, message: content })
 
         send(toolCallContent('call-1', { input: { path: '/a' }, status: 'in_progress', nativeTitle: 'Reading /a' }))
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
         send(toolCallContent('call-1', { status: 'in_progress' }))
+        // The update replaces the row in place: no second row mid-stream.
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
         send(toolCallContent('call-1', { status: 'completed' }))
         send(toolCallResultContent('call-1', 'done'))
 
@@ -611,6 +614,17 @@ describe('cli session handlers', () => {
         expect(mergedData.input).toEqual({ path: '/a' })
         expect(mergedData.nativeTitle).toBe('Reading /a')
         expect(mergedData.status).toBe('completed')
+
+        // The session-room socket broadcast re-emits the same existing id/seq.
+        const roomUpdates = socket.roomEvents.filter(event => event.event === 'update')
+        expect(roomUpdates).toHaveLength(4)
+        const updatedBody = (roomUpdates[1]!.data as {
+            body: { t: string; message: { id: string; seq: number | null; content: unknown } }
+        }).body
+        expect(updatedBody.t).toBe('new-message')
+        expect(updatedBody.message.id).toBe(firstId)
+        expect(updatedBody.message.seq).toBe(firstSeq)
+        expect((updatedBody.message.content as { content: { data: Record<string, unknown> } }).content.data.status).toBe('in_progress')
         store.close()
     })
 })

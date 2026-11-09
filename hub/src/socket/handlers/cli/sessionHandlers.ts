@@ -178,7 +178,9 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // state tick. When that callId is still live in the session tail, fold
         // the tick into the call's existing row instead of appending another
         // one, and broadcast the merged row under its original id/seq so
-        // clients upsert it in place.
+        // clients upsert it in place. Peer CLIs in the session room dedupe
+        // that re-emit by message id, harmlessly: only user rows reach a
+        // consumer there (onUserMessage), agent rows do not.
         const callId = getToolCallId(content)
         const stored = callId !== null && !wasStored
             ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)

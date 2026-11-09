@@ -777,6 +777,9 @@ type ToolCallFields = {
     status?: string
     nativeTitle?: string
     nativeKind?: string
+    nativeName?: string
+    nativeArgs?: unknown
+    progress?: unknown
 }
 
 function toolCallContent(callId: string, fields: ToolCallFields = {}): unknown {
@@ -791,8 +794,22 @@ function toolCallContent(callId: string, fields: ToolCallFields = {}): unknown {
                 ...(fields.input !== undefined ? { input: fields.input } : {}),
                 ...(fields.status !== undefined ? { status: fields.status } : {}),
                 ...(fields.nativeTitle !== undefined ? { nativeTitle: fields.nativeTitle } : {}),
-                ...(fields.nativeKind !== undefined ? { nativeKind: fields.nativeKind } : {})
+                ...(fields.nativeKind !== undefined ? { nativeKind: fields.nativeKind } : {}),
+                ...(fields.nativeName !== undefined ? { nativeName: fields.nativeName } : {}),
+                ...(fields.nativeArgs !== undefined ? { nativeArgs: fields.nativeArgs } : {}),
+                ...(fields.progress !== undefined ? { progress: fields.progress } : {})
             }
+        }
+    }
+}
+
+/** Agent chatter the lookback scan must walk through without stopping. */
+function agentMessageContent(text: string): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'message', message: text }
         }
     }
 }
@@ -965,6 +982,121 @@ describe('tool-call upsert', () => {
         expect(rowsB).toHaveLength(1)
         expect(rowsB[0]!.data.input).toEqual({ path: '/other' })
         expect(rowsB[0]!.data.status).toBe('in_progress')
+        store.close()
+    })
+
+    it('does not regress an in_progress call when a later tick re-emits pending', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-status-inprogress')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // normalizeStatus maps a missing/unknown status to 'pending', so
+        // permission rounds re-emit pending after the call already ran.
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('in_progress')
+        store.close()
+    })
+
+    it('does not regress a terminal call when a later tick re-emits pending', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-status-terminal')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('still advances pending through in_progress to completed', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-status-progression')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('merges nativeName, nativeArgs and progress from later ticks', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-native-fields')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', {
+            status: 'in_progress',
+            nativeName: 'run_command',
+            nativeArgs: { CommandLine: 'x' },
+            progress: { lines: 3 }
+        }), 'call-1')
+        // A later tick without those fields keeps what earlier ticks carried.
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.nativeName).toBe('run_command')
+        expect(rows[0]!.data.nativeArgs).toEqual({ CommandLine: 'x' })
+        expect(rows[0]!.data.progress).toEqual({ lines: 3 })
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('merges while the live row is inside the lookback window', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-lookback-inside')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // 199 rows after the call keep it within the 200-row scan window.
+        for (let i = 0; i < 199; i++) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler ${i}`))
+        }
+
+        const update = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        expect(update.updated).toBe(true)
+        expect(toolCallRows(store, session.id)).toHaveLength(1)
+        store.close()
+    })
+
+    it('inserts a new row once the live row falls outside the lookback window', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-lookback-outside')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // The 200th row after the call pushes it past the scan window.
+        for (let i = 0; i < 200; i++) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler ${i}`))
+        }
+
+        const outside = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        expect(outside.updated).toBe(false)
+        expect(outside.message.id).not.toBe(first.message.id)
+        expect(toolCallRows(store, session.id)).toHaveLength(2)
+        store.close()
+    })
+
+    it('walks past a tool-call-result for a different callId', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-other-result')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-2', 'unrelated'))
+        const update = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        expect(update.updated).toBe(true)
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(2)
+        expect(getToolCallId(rows[0]!.content)).toBe('call-1')
+        expect(rows[0]!.id).toBe(update.message.id)
+        expect(toolCallDataOf(rows[1]!).callId).toBe('call-2')
         store.close()
     })
 })
