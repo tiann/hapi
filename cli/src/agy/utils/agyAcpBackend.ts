@@ -23,6 +23,8 @@ export function createAgyAcpBackend(): AcpSdkBackend {
         command: getAgentLaunchCommand('agy'),
         args: ['acp'],
         env: buildAgyAcpEnv(),
-        flavor: 'agy'
+        flavor: 'agy',
+        // agy then asks its ask_question questions as form elicitations.
+        elicitationForm: true
     });
 }

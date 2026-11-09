@@ -1,10 +1,11 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
-import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
+import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
@@ -17,6 +18,13 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgySession } from './session';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import {
+    QUESTION_TOOL_NAME,
+    agyQuestionContent,
+    parseAgyQuestionForm,
+    questionCardInput,
+    questionCardInputFromToolCall
+} from './agyQuestion';
 
 type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
 
@@ -143,6 +151,17 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
 }
 
+/** agy's ask_question tool call (titled "Run ask_question"), as the question card. */
+function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLabels: string[][] | null } {
+    if (message.type !== 'tool_call' || !/\bask_question\b/.test(message.name)) return { message, shownLabels: null };
+    const input = questionCardInputFromToolCall(message.input);
+    if (!input) return { message, shownLabels: null };
+    return {
+        message: { ...message, name: QUESTION_TOOL_NAME, input },
+        shownLabels: input.questions.map((question) => question.options.map((option) => option.label))
+    };
+}
+
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
@@ -187,6 +206,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly cancelHardStopMs: number;
     private readonly killSettleMs: number;
     private turnSettled: Promise<void> | null = null;
+    // Option labels each question card showed, by agy tool call id.
+    private readonly questionLabels = new Map<string, string[][]>();
     private backend: AcpSdkBackend | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
     private acpSessionId: string | null = null;
@@ -343,6 +364,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             );
+            backend.onFormElicitation((request) => this.handleQuestion(request));
             void backend.refreshSessionInfo(acpSessionId, session.path);
         } catch (error) {
             // A half-started process must not serve later turns; the next turn
@@ -366,6 +388,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         backend.onPermissionRequest((request) => {
             void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         });
+        // Its late questions must not open cards in the next process's session.
+        backend.onFormElicitation(async () => ({ action: 'cancel' }));
         const handler = this.permissionHandler;
         this.permissionHandler = null;
         await handler?.cancelAll('Antigravity stopped');
@@ -497,6 +521,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // during this wait extend it.
             await this.waitForSteers(turn);
         } finally {
+            this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
@@ -558,9 +583,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!turn || turn.aborted || !backend || !acpSessionId || this.shouldExit) {
             return { steered: false, error: 'No active steerable turn' };
         }
-        // agy rejects a prompt while an approval is open.
+        // agy rejects a prompt while an approval or a question is open.
         if (this.permissionHandler?.hasPendingRequests()) {
-            return { steered: false, error: 'Antigravity is waiting for an approval; answer it, then steer' };
+            return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
         const taken = session.queue.takeByLocalId(localId);
         if (!taken) return { steered: false, error: 'Message not in queue' };
@@ -617,6 +642,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (this.turn !== turn || this.backend !== backend || turn.aborted) {
             await restoreQueued();
             return { steered: false, error: 'Active turn changed' };
+        }
+        // An approval or a question may have opened while the hub answered.
+        if (this.permissionHandler?.hasPendingRequests()) {
+            await restoreQueued();
+            return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
@@ -752,8 +782,39 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.sawActivity = true;
                 turn.acknowledge();
                 this.trackToolWindow(turn, message);
-                this.forwardAgentMessage(message);
+                this.forwardAgentMessage(this.showQuestionCard(message));
         }
+    }
+
+    /**
+     * agy's ask_question, shown as the question card on its tool call. Never
+     * answered automatically: the user's choice goes back as agy's answer.
+     */
+    private async handleQuestion(request: FormElicitationRequest): Promise<FormElicitationResponse> {
+        const form = parseAgyQuestionForm(request);
+        const permissionHandler = this.permissionHandler;
+        // Not shown to the user, so not declined by them either.
+        if (!form || !permissionHandler) return { action: 'cancel' };
+        // A question that comes in after Stop is not shown.
+        if (this.turn?.aborted) return { action: 'cancel' };
+        // Keyed by agy's tool call so the card shows on it, unless that id
+        // was already used for a request.
+        const id = form.toolCallId && !permissionHandler.isUsed(form.toolCallId)
+            ? form.toolCallId
+            : `agy-question-${randomUUID()}`;
+        const shownLabels = form.toolCallId ? this.questionLabels.get(form.toolCallId) : undefined;
+        const answer = await permissionHandler.askUser(id, QUESTION_TOOL_NAME, questionCardInput(form.questions));
+        if (answer.decision === 'abort') return { action: 'cancel' };
+        if (answer.decision === 'denied') return { action: 'decline' };
+        const content = agyQuestionContent(form.questions, answer.answers, shownLabels);
+        // An approval without a usable answer must not become an empty answer.
+        return Object.keys(content).length > 0 ? { action: 'accept', content } : { action: 'decline' };
+    }
+
+    private showQuestionCard(message: AgentMessage): AgentMessage {
+        const shown = asQuestionCard(message);
+        if (shown.shownLabels && message.type === 'tool_call') this.questionLabels.set(message.id, shown.shownLabels);
+        return shown.message;
     }
 
     private trackToolWindow(turn: AgyTurn, message: AgentMessage): void {
