@@ -63,10 +63,14 @@ export function ProjectGroupRow(props: {
             if (!api) return
             // Per-session archive key so row spinners and the delete dialog's
             // waiting-for-archive guard see each request.
-            const results = await Promise.allSettled(liveSessions.map((s) => new MutationObserver(queryClient, {
-                mutationKey: sessionArchiveMutationKey(s.id),
-                mutationFn: () => api.archiveSession(s.id)
-            }).mutate()))
+            const results = await Promise.allSettled(liveSessions.map((s) => {
+                const observer = new MutationObserver(queryClient, {
+                    mutationKey: sessionArchiveMutationKey(s.id),
+                    mutationFn: () => api.archiveSession(s.id)
+                })
+                // Detach once settled so the mutation can be garbage-collected.
+                return observer.mutate().finally(() => observer.reset())
+            }))
             void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
             const failed = results.filter((r) => r.status === 'rejected').length
             if (failed > 0) {
