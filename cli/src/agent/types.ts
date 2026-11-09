@@ -111,9 +111,14 @@ export type FormElicitationRequest = {
 
 export type FormElicitationContent = Record<string, string | number | boolean | string[]>;
 
-/** `cancel` covers every non-answer: dismissed, aborted, or unavailable. */
+/**
+ * `decline` is the user refusing to answer; `cancel` covers every other
+ * non-answer: dismissed, aborted, or unavailable. Agents may record the two
+ * differently.
+ */
 export type FormElicitationResponse =
     | { action: 'accept'; content: FormElicitationContent }
+    | { action: 'decline' }
     | { action: 'cancel' };
 
 export type AgentSessionModelDescriptor = {

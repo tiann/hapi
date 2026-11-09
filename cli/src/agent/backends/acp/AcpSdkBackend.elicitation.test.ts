@@ -43,6 +43,13 @@ describe('AcpSdkBackend form elicitation', () => {
         });
     });
 
+    it('passes a decline back to the agent', async () => {
+        const { backend, internal } = createBackend();
+        backend.onFormElicitation(async () => ({ action: 'decline' }));
+
+        await expect(internal.handleElicitationRequest(formParams)).resolves.toEqual({ action: 'decline' });
+    });
+
     it('cancels when no handler is registered', async () => {
         const { internal } = createBackend();
 
