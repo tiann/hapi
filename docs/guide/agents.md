@@ -335,11 +335,18 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   finishes any tool call already running, then continues the same turn with
   the new message. The turn's usage includes the steered part.
 
-  Permission modes map to agy's session modes: `request-review` is agy's
-  `default` mode, which follows agy's own permission settings and, on ACP,
-  shows its approval requests in HAPI; `acceptEdits` and `plan` are agy's
-  `accept-edits` and `plan` modes; `always-proceed` approves every request
-  automatically. On ACP, mode changes apply to the next message without
+  Permission modes map to agy's session modes. `request-review` is agy's
+  `default` mode, which asks only as agy's own `toolPermission` setting
+  (`~/.gemini/antigravity-cli/settings.json`) says; on ACP its approval
+  requests show in HAPI. With `toolPermission: always-proceed`, agy runs
+  commands and edits without asking, so HAPI shows no approval prompts; set
+  it to `request-review` in agy to approve each command and edit from HAPI.
+  HAPI cannot override this per session. `acceptEdits` is agy's
+  `accept-edits` mode, which also runs edits without asking, and `plan` is
+  agy's `plan` mode, which writes a plan instead of running commands or
+  edits. `always-proceed` approves every request automatically, including
+  one a PreToolUse hook marks `force_ask` (agy does not tell HAPI a request
+  came from a hook). On ACP, mode changes apply to the next message without
   restarting agy. Conversation titles come from agy; on ACP each response's
   details show the turn's token usage.
 
