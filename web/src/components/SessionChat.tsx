@@ -123,6 +123,7 @@ import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorMode
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
+import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReasoningEffortOptions'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
@@ -1173,6 +1174,11 @@ function SessionChatInner(props: SessionChatProps) {
             : undefined
     ), [agentFlavor, grokModelsState.availableModels])
     const copilotModelsState = useCopilotModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
+    })
+    const copilotEffortOptions = useCopilotReasoningEffortOptions({
         api: props.api,
         sessionId: props.session.id,
         enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
@@ -2345,6 +2351,8 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? agyEffortOptions
                                 : agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
+                                : agentFlavor === 'copilot'
+                                ? copilotEffortOptions
                                 : claudeEffortOptions
                         }
                         active={props.session.active}
@@ -2447,6 +2455,10 @@ function SessionChatInner(props: SessionChatProps) {
                                     : undefined)
                                 : agentFlavor === 'grok'
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'copilot'
+                                ? (props.session.active && !controlledByUser && copilotEffortOptions.length > 0
                                     ? handleEffortChange
                                     : undefined)
                                 : handleEffortChange

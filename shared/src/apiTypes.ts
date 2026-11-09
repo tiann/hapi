@@ -1052,6 +1052,9 @@ export type GrokReasoningEffortResponse = {
     error?: string
 }
 
+/** Copilot's ACP `thought_level` option for the active model. */
+export type CopilotReasoningEffortResponse = GrokReasoningEffortResponse
+
 export type OpencodeReasoningEffortOption = {
     value: string
     name?: string
