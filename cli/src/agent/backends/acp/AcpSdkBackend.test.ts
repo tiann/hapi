@@ -2601,11 +2601,11 @@ describe('AcpSdkBackend config_option_update', () => {
             sessionId: 's1',
             update: {
                 sessionUpdate: 'config_option_update',
-                configOptions: [{ id: 'reasoning_effort', category: 'thought_level', currentValue: 'low', options: [{ value: 'low', name: 'low' }] }]
+                configOptions: [{ id: 'effort', category: 'thought_level', currentValue: 'low', options: [{ value: 'low', name: 'low' }] }]
             }
         };
         for (const configOptionUpdates of [true, false]) {
-            const backend = new AcpSdkBackend({ command: 'copilot', configOptionUpdates });
+            const backend = new AcpSdkBackend({ command: 'acp-agent', configOptionUpdates });
             (backend as unknown as { handleNotification: (m: string, p: unknown) => void }).handleNotification('session/update', update);
             expect(backend.getThoughtLevelConfigOption('s1')?.currentValue).toBe(configOptionUpdates ? 'low' : undefined);
         }
