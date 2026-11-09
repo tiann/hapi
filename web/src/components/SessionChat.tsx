@@ -1181,6 +1181,7 @@ function SessionChatInner(props: SessionChatProps) {
     const copilotEffortOptions = useCopilotReasoningEffortOptions({
         api: props.api,
         sessionId: props.session.id,
+        model: props.session.model,
         enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
     })
     const copilotModelOptions = useMemo(() => (

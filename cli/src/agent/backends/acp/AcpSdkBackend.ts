@@ -207,6 +207,13 @@ export class AcpSdkBackend implements AgentBackend {
          * would wait on a request nobody answers.
          */
         elicitationForm?: boolean;
+        /**
+         * Refresh cached config options (model, thought_level, ...) from ACP
+         * `config_option_update` notifications. Opt-in for agents whose
+         * `session/set_model` response carries no options and which push the
+         * new model's options this way instead.
+         */
+        configOptionUpdates?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -1315,6 +1322,9 @@ export class AcpSdkBackend implements AgentBackend {
         // work is queued so async image registration preserves event order.
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
+            if (this.options.configOptionUpdates && isObject(update) && update.sessionUpdate === 'config_option_update') {
+                this.captureSessionConfigOptions(sessionId, update);
+            }
         }
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);

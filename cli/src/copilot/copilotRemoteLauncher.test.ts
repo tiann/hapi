@@ -214,4 +214,26 @@ describe('CopilotRemoteLauncher effort', () => {
         expect(mode.effort).toBeNull();
         expect(onEffortRollback).toHaveBeenCalledWith(null);
     });
+
+    it('re-applies the selected effort when a model switch changes the agent level', async () => {
+        const { launcher } = createLauncher(vi.fn());
+        const setConfigOption = vi.fn().mockResolvedValue(undefined);
+        const internals = launcher as unknown as {
+            backend: unknown;
+            currentBackendEffort: string | null;
+            captureEffortBaseline: (sessionId: string) => void;
+            applyQueuedEffort: (sessionId: string, mode: { effort?: string | null }) => Promise<void>;
+        };
+        // config_option_update for the new model reported `medium`.
+        internals.backend = {
+            setConfigOption,
+            getThoughtLevelConfigOption: () => ({ id: 'reasoning_effort', currentValue: 'medium', options: [] })
+        };
+        internals.currentBackendEffort = 'high';
+
+        internals.captureEffortBaseline('s');
+        await internals.applyQueuedEffort('s', { effort: 'high' });
+
+        expect(setConfigOption).toHaveBeenCalledWith('s', 'reasoning_effort', 'high');
+    });
 });

@@ -31,6 +31,8 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null;
     private currentBackendEffort: string | null = null;
     private defaultBackendEffort: string | null = null;
+    /** Session model selection the backend has been brought in line with. */
+    private appliedModelSelection: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setModeSupported: boolean | undefined = undefined;
     private activeSessionId: string | null = null;
@@ -146,12 +148,16 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListCopilotModels, async () => {
             return await buildCopilotModelsResponseFromBackend(acpSessionId, backend, session.path);
         });
-        this.currentBackendEffort = backend.getThoughtLevelConfigOption(acpSessionId)?.currentValue ?? null;
-        this.defaultBackendEffort = this.currentBackendEffort;
+        this.captureEffortBaseline(acpSessionId);
+        this.appliedModelSelection = session.getModel() ?? null;
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListCopilotReasoningEffortOptions, async () => {
+            // A model change is applied with the next turn; until then the
+            // cached levels belong to the previous model.
+            if ((session.getModel() ?? null) !== this.appliedModelSelection) {
+                return { success: false, error: 'Copilot model switch pending' };
+            }
             const option = backend.getThoughtLevelConfigOption(acpSessionId);
-            if (!option) return { success: false, error: 'Copilot effort options are not available' };
-            return { success: true, options: option.options, currentValue: option.currentValue ?? null };
+            return { success: true, options: option?.options ?? [], currentValue: option?.currentValue ?? null };
         });
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
@@ -172,9 +178,14 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            const modelBeforeBatch = this.currentBackendModel;
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
             }
+            if (this.currentBackendModel !== modelBeforeBatch) {
+                this.captureEffortBaseline(acpSessionId);
+            }
+            this.appliedModelSelection = session.getModel() ?? null;
             await this.applyQueuedEffort(acpSessionId, batch.mode);
 
             const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
@@ -458,6 +469,12 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             });
             return this.rollbackModel();
         }
+    }
+
+    /** The agent's level for the active model; "Default" resets to it. */
+    private captureEffortBaseline(sessionId: string): void {
+        this.currentBackendEffort = this.backend?.getThoughtLevelConfigOption(sessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = this.currentBackendEffort;
     }
 
     private async applyQueuedEffort(sessionId: string, mode: { effort?: string | null }): Promise<void> {
