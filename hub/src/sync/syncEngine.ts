@@ -833,6 +833,38 @@ export class SyncEngine {
         clearAgentTerminalBuffer(payload.sid)
     }
 
+    /**
+     * A runner reported that one of its child processes exited without the
+     * CLI's normal session-end handshake (crash, SIGKILL, OOM). Accept the
+     * notice only while the reported OS generation still owns the session, so
+     * a late notice about a replaced process cannot flip a session that was
+     * already resumed elsewhere. Accepted notices reuse the existing crash
+     * path: active/thinking clear immediately, the row stays unarchived and
+     * resumable, and no second lifecycle event fires for an already-ended row.
+     */
+    handleSessionChildExited(payload: {
+        machineId: string
+        namespace: string
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time: number
+    }): boolean {
+        const session = this.sessionCache.getSessionByNamespace(payload.sid, payload.namespace)
+        if (!session) return false
+        if (session.metadata?.machineId !== payload.machineId) return false
+        if (session.metadata?.hostPid !== payload.pid) return false
+        // hostStartMarker is written per spawn; when the row carries one it is
+        // the generation binding. A notice with a different (or missing)
+        // marker is about a pid that a newer process reused.
+        const ownerStartMarker = session.metadata?.hostStartMarker
+        if (ownerStartMarker !== undefined && ownerStartMarker !== payload.processStartMarker) return false
+        if (!session.active && !session.thinking) return false
+
+        this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })
+        return true
+    }
+
     handleBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
         this.sessionCache.setBackgroundTasks(sessionId, tasks)
     }
