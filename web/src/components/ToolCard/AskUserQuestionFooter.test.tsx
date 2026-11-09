@@ -147,6 +147,21 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         await vi.waitFor(() => expect(denyPermission).toHaveBeenCalledTimes(1))
     })
 
+    it('only leaves the Other field on Escape, keeping the typed text', async () => {
+        const { denyPermission } = renderFooter('session-A', makeTool('tool-1'))
+
+        fireEvent.click(screen.getByRole('radio', { name: /tool\.other/ }))
+        const field = screen.getByPlaceholderText('tool.askUserQuestion.otherPlaceholder') as HTMLTextAreaElement
+        field.focus()
+        fireEvent.change(field, { target: { value: 'my answer' } })
+        fireEvent.keyDown(field, { key: 'Escape' })
+
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        expect(denyPermission).not.toHaveBeenCalled()
+        expect(field.value).toBe('my answer')
+        expect(document.activeElement).not.toBe(field)
+    })
+
     it('is not shown once the question is no longer pending', () => {
         const tool = makeTool('tool-1')
         const resolved = { ...tool, permission: { id: 'permission-1', status: 'denied' } } as unknown as ChatToolCall

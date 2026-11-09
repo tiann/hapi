@@ -344,6 +344,12 @@ export function AskUserQuestionFooter(props: {
             onKeyDown={(e) => {
                 if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing) return
                 e.preventDefault()
+                // Esc in a text field only leaves it, so typed text isn't discarded.
+                const target = e.target
+                if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+                    target.blur()
+                    return
+                }
                 void skip()
             }}
         >
