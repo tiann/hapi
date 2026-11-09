@@ -89,16 +89,41 @@ describe('toAskUserQuestionInput', () => {
                     header: 'Runtime',
                     question: 'Which runtime?',
                     options: [{ label: 'Bun' }, { label: 'Node', description: 'Stable' }],
-                    multiSelect: false
+                    multiSelect: false,
+                    allowFreeText: true
                 },
                 {
                     header: 'Goals',
                     question: 'What matters?',
                     options: [{ label: 'Fast label', description: 'Speed' }, { label: 'Small' }],
-                    multiSelect: true
+                    multiSelect: true,
+                    allowFreeText: true
                 }
             ]
         });
+    });
+});
+
+describe('free-text permission', () => {
+    it('passes allowFreeText=false for a form without a custom partner', () => {
+        const schema = structuredClone(approvalSchema);
+        delete (schema.properties as Record<string, unknown>).q0_custom;
+        const input = toAskUserQuestionInput(parseQuestionSchema(schema)!);
+
+        expect(input.questions[0]?.allowFreeText).toBe(false);
+    });
+
+    it('carries OpenCode tool-call custom=false as allowFreeText=false', () => {
+        const out = normalizeQuestionToolInput({
+            questions: [
+                { question: 'a', options: [], custom: false },
+                { question: 'b', options: [], custom: true },
+                { question: 'c', options: [] }
+            ]
+        }) as { questions: Array<Record<string, unknown>> };
+
+        expect(out.questions.map((q) => q.allowFreeText)).toEqual([false, true, undefined]);
+        expect(out.questions.every((q) => !('custom' in q))).toBe(true);
     });
 });
 

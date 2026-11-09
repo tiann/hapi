@@ -121,7 +121,8 @@ describe('OpencodePermissionHandler question forms', () => {
                             { label: '거절', description: '거절합니다' },
                             { label: '승인', description: '승인합니다' }
                         ],
-                        multiSelect: false
+                        multiSelect: false,
+                        allowFreeText: true
                     }]
                 },
                 createdAt: expect.any(Number)

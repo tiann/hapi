@@ -103,7 +103,8 @@ export function toAskUserQuestionInput(questions: ElicitedQuestion[]): { questio
                 label: option.label,
                 ...(option.description ? { description: option.description } : {})
             })),
-            multiSelect: question.multiple
+            multiSelect: question.multiple,
+            allowFreeText: question.customKey !== null
         }))
     };
 }
@@ -150,15 +151,20 @@ export function buildQuestionContent(
     return Object.keys(content).length > 0 ? content : null;
 }
 
-/** OpenCode names the per-question flag `multiple`; the web card reads `multiSelect`. */
+/** OpenCode names the per-question flags `multiple` and `custom`; the web card reads `multiSelect` and `allowFreeText`. */
 export function normalizeQuestionToolInput(input: unknown): unknown {
     if (!isObject(input) || !Array.isArray(input.questions)) return input;
     return {
         ...input,
         questions: input.questions.map((question) => {
-            if (!isObject(question) || !('multiple' in question)) return question;
-            const { multiple, ...rest } = question;
-            return { ...rest, multiSelect: multiple === true };
+            if (!isObject(question)) return question;
+            const { multiple, custom, ...rest } = question;
+            return {
+                ...rest,
+                ...('multiple' in question ? { multiSelect: multiple === true } : {}),
+                // OpenCode's per-question `custom` (typed answers allowed, default true).
+                ...(typeof custom === 'boolean' ? { allowFreeText: custom } : {})
+            };
         })
     };
 }

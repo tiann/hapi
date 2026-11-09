@@ -63,9 +63,18 @@ describe('agy question form', () => {
                 question: 'Do you prefer RED or BLUE?',
                 header: null,
                 options: [{ label: '(Recommended) RED', description: null }, { label: 'BLUE', description: null }],
-                multiSelect: false
+                multiSelect: false,
+                allowFreeText: true
             }]
         });
+    });
+
+    it('marks the card as not allowing free text when the form has no qN_other', () => {
+        const params = structuredClone(singleChoice) as any;
+        delete params.requestedSchema.properties.q1_other;
+        const form = parseAgyQuestionForm(params)!;
+
+        expect(questionCardInput(form.questions).questions[0]?.allowFreeText).toBe(false);
     });
 
     it('reads several questions in order, with multi-select', () => {

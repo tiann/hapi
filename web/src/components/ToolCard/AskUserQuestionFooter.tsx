@@ -423,16 +423,18 @@ export function AskUserQuestionFooter(props: {
                             )
                         })}
 
-                        <OptionRow
-                            checked={otherSelectedByQuestion[clampedStep] ?? false}
-                            mode={mode}
-                            disabled={props.disabled || loading}
-                            title={t('tool.other')}
-                            description={t('tool.otherDescription')}
-                            onClick={() => toggleOther(clampedStep)}
-                        />
+                        {questions[clampedStep].allowFreeText ? (
+                            <OptionRow
+                                checked={otherSelectedByQuestion[clampedStep] ?? false}
+                                mode={mode}
+                                disabled={props.disabled || loading}
+                                title={t('tool.other')}
+                                description={t('tool.otherDescription')}
+                                onClick={() => toggleOther(clampedStep)}
+                            />
+                        ) : null}
 
-                        {(otherSelectedByQuestion[clampedStep] ?? false) ? (
+                        {questions[clampedStep].allowFreeText && (otherSelectedByQuestion[clampedStep] ?? false) ? (
                             <textarea
                                 value={otherTextByQuestion[clampedStep] ?? ''}
                                 onChange={(e) => updateOtherText(clampedStep, e.target.value)}

@@ -21,6 +21,8 @@ type AskUserQuestionInput = {
         header: null;
         options: Array<{ label: string; description: null }>;
         multiSelect: boolean;
+        /** Absent when unknown (the tool call's own input). */
+        allowFreeText?: boolean;
     }>;
 };
 
@@ -78,7 +80,8 @@ export function questionCardInput(questions: AgyQuestion[]): AskUserQuestionInpu
             question: question.question,
             header: null,
             options: question.choices.map((choice) => ({ label: choice.label, description: null })),
-            multiSelect: question.multiSelect
+            multiSelect: question.multiSelect,
+            allowFreeText: question.otherKey !== null
         }))
     };
 }

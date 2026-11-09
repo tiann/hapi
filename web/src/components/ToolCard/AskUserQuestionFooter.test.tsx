@@ -13,10 +13,10 @@ vi.mock('@/lib/use-translation', () => ({
 
 import { AskUserQuestionFooter } from './AskUserQuestionFooter'
 
-function makeTool(id: string): ChatToolCall {
+function makeTool(id: string, allowFreeText?: boolean): ChatToolCall {
     return {
         id, name: 'AskUserQuestion', state: 'pending',
-        input: { questions: [{ question: 'Pick one', options: [{ label: 'Alpha', description: null }, { label: 'Beta', description: null }], multiSelect: false }] },
+        input: { questions: [{ question: 'Pick one', options: [{ label: 'Alpha', description: null }, { label: 'Beta', description: null }], multiSelect: false, ...(allowFreeText === undefined ? {} : { allowFreeText }) }] },
         createdAt: 1, startedAt: null, completedAt: null, execStartedAt: null, execCompletedAt: null, description: null,
         permission: { id: 'permission-1', status: 'pending' }
     } as unknown as ChatToolCall
@@ -160,6 +160,25 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         expect(denyPermission).not.toHaveBeenCalled()
         expect(field.value).toBe('my answer')
         expect(document.activeElement).not.toBe(field)
+    })
+
+    it('hides Other when the question does not allow free text, and submits an option as accept', async () => {
+        const { approvePermission } = renderFooter('session-A', makeTool('tool-1', false))
+
+        expect(screen.queryByRole('radio', { name: /tool\.other/ })).toBeNull()
+        fireEvent.click(screen.getByRole('radio', { name: /Beta/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+
+        await vi.waitFor(() => expect(approvePermission).toHaveBeenCalledWith('session-A', 'permission-1', { answers: { '0': ['Beta'] } }))
+    })
+
+    it('still shows Other when free text is allowed or the flag is absent', () => {
+        const allowed = renderFooter('session-A', makeTool('tool-1', true))
+        expect(screen.getByRole('radio', { name: /tool\.other/ })).toBeTruthy()
+        allowed.unmount()
+
+        renderFooter('session-B', makeTool('tool-2'))
+        expect(screen.getByRole('radio', { name: /tool\.other/ })).toBeTruthy()
     })
 
     it('is not shown once the question is no longer pending', () => {
