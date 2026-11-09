@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
-import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import { getReasoningStreamId, getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -174,7 +174,16 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        // ACP agents re-emit one tool call under a stable callId for every
+        // state tick. When that callId is still live in the session tail, fold
+        // the tick into the call's existing row instead of appending another
+        // one, and broadcast the merged row under its original id/seq so
+        // clients upsert it in place.
+        const callId = getToolCallId(content)
+        const stored = callId !== null && !wasStored
+            ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
+            : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), updated: false }
+        const msg = stored.message
         // The durable row already exists; replay must not be mistaken for
         // fresh agent progress or trigger another round of UI updates.
         if (wasStored) return

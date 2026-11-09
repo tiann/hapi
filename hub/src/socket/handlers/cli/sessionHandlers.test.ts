@@ -74,6 +74,39 @@ function reasoningTextOf(message: { content: unknown }): string {
     return (message.content as { content: { data: { message: string } } }).content.data.message
 }
 
+type ToolCallFields = {
+    input?: unknown
+    status?: string
+    nativeTitle?: string
+}
+
+function toolCallContent(callId: string, fields: ToolCallFields = {}): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: {
+                type: 'tool-call',
+                callId,
+                name: 'Read',
+                ...(fields.input !== undefined ? { input: fields.input } : {}),
+                ...(fields.status !== undefined ? { status: fields.status } : {}),
+                ...(fields.nativeTitle !== undefined ? { nativeTitle: fields.nativeTitle } : {})
+            }
+        }
+    }
+}
+
+function toolCallResultContent(callId: string, output: unknown): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'tool-call-result', callId, output }
+        }
+    }
+}
+
 describe('cli session handlers', () => {
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
@@ -540,5 +573,44 @@ describe('cli session handlers', () => {
             titleSuggestionTurn: { first: true, completed: false },
             promptTitle: 'Fix the login bug'
         })
+    })
+
+    it('folds repeated ACP tool-call updates into one stored row and rebroadcasts the merged row', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('acp-toolcall-fold', {}, null, 'default')
+        const socket = new FakeSocket()
+        const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onWebappEvent: event => events.push(event)
+        })
+        const send = (content: unknown) => socket.trigger('message', { sid: session.id, message: content })
+
+        send(toolCallContent('call-1', { input: { path: '/a' }, status: 'in_progress', nativeTitle: 'Reading /a' }))
+        send(toolCallContent('call-1', { status: 'in_progress' }))
+        send(toolCallContent('call-1', { status: 'completed' }))
+        send(toolCallResultContent('call-1', 'done'))
+
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(2)
+
+        const received = events.filter((event): event is Extract<SyncEvent, { type: 'message-received' }> => event.type === 'message-received')
+        expect(received).toHaveLength(4)
+        const firstId = received[0]!.message.id
+        const firstSeq = received[0]!.message.seq
+        // Every update is broadcast under the FIRST row's id/seq so live
+        // clients replace the row in place instead of appending a duplicate.
+        expect(received[1]!.message.id).toBe(firstId)
+        expect(received[1]!.message.seq).toBe(firstSeq)
+        expect(received[2]!.message.id).toBe(firstId)
+        expect(received[2]!.message.seq).toBe(firstSeq)
+        // The result stays its own row with its own id.
+        expect(received[3]!.message.id).not.toBe(firstId)
+        // The final broadcast of the call carries the merged content.
+        const mergedData = (received[2]!.message.content as { content: { data: Record<string, unknown> } }).content.data
+        expect(mergedData.input).toEqual({ path: '/a' })
+        expect(mergedData.nativeTitle).toBe('Reading /a')
+        expect(mergedData.status).toBe('completed')
+        store.close()
     })
 })
