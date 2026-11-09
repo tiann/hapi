@@ -985,6 +985,7 @@ ${messageText}`;
             // false, so a steer arriving during either is rejected rather than
             // injected into a turn the agent is not running.
             this.promptInFlight = true;
+            this.permissionHandler?.beginTurn();
             this.activePromptModeHash = session.queue.modeHasher({ ...batch.mode, model: steeringModel });
             this.activePromptText = messageText;
             this.steerTurnEpoch += 1;

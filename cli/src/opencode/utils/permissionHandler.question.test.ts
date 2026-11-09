@@ -256,4 +256,25 @@ describe('OpencodePermissionHandler question forms', () => {
         expect(ids).toHaveLength(1);
         expect(ids[0]).toMatch(/^opencode-question-/);
     });
+
+    it('cancels a form that arrives after Stop without queuing a card', async () => {
+        const harness = createHarness();
+
+        await harness.handler.cancelAll('User aborted');
+        const late = harness.ask();
+
+        await expect(late).resolves.toEqual({ action: 'cancel' });
+        expect(harness.getAgentState().requests).toEqual({});
+    });
+
+    it('shows questions again once a new turn begins', async () => {
+        const harness = createHarness();
+        await harness.handler.cancelAll('User aborted');
+        harness.handler.beginTurn();
+
+        const pending = harness.ask();
+
+        expect(await settled(pending)).toBe(false);
+        expect(harness.getAgentState().requests['call-question']).toBeDefined();
+    });
 });

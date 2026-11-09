@@ -89,6 +89,10 @@ function mapDecisionToOutcome(request: PermissionRequest, decision: PermissionRe
 export class OpencodePermissionHandler extends BasePermissionHandler<PermissionResponseMessage, void> {
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>();
     private readonly pendingQuestions = new Map<string, PendingQuestion>();
+    // Closed by cancelAll (Stop, prompt end, teardown) so a form that reaches
+    // us afterwards is declined instead of queued as a card nobody can settle;
+    // beginTurn reopens it for the next prompt.
+    private acceptingQuestions = true;
 
     constructor(
         session: ApiSessionClient,
@@ -107,6 +111,10 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
      * every permission mode (yolo included) waits for the human's answer.
      */
     private handleFormElicitation(request: FormElicitationRequest): Promise<FormElicitationResponse> {
+        if (!this.acceptingQuestions) {
+            logger.debug('[Opencode] Dismissing form elicitation received outside an active turn');
+            return Promise.resolve({ action: 'cancel' });
+        }
         const questions = parseQuestionSchema(request.requestedSchema);
         if (!questions) {
             logger.warn('[Opencode] Dismissing form elicitation with an unsupported schema');
@@ -282,7 +290,15 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
         logger.debug('[Opencode] Permission response received for unknown request', response.id);
     }
 
+    /** Start accepting questions again; call when a new prompt begins. */
+    beginTurn(): void {
+        this.acceptingQuestions = true;
+    }
+
     async cancelAll(reason: string): Promise<void> {
+        // Close synchronously, before any await, so a form delivered while the
+        // cleanup below is still running is already declined.
+        this.acceptingQuestions = false;
         const pending = Array.from(this.pendingBackendRequests.values());
         this.pendingBackendRequests.clear();
 
