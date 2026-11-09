@@ -60,7 +60,7 @@ See `src/router.tsx` for route definitions.
 - Pending permission request count.
 - Agent flavor label (claude/codex/gemini).
 - Model mode display.
-- Transient filters for unread sessions and sessions with scratchlist entries.
+- One Sort and filter menu combines the persisted sort/status/unread view with transient update-date and scratchlist filters and machine selection; Reset to default clears all conditions. Its popover sizes to its content, centers on the trigger, and stays within the viewport.
 - Agent name and model display.
 - Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
 - Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.
@@ -81,6 +81,7 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 - Message thread with infinite scroll.
 - Concise view (header toggle or `/settings/chat`, per device): shows only user input and each round's final reply (`src/chat/conciseView.ts`). Permission requests, questions, plan proposals, user shell commands, and errors stay visible; the full thread returns while a search target is active.
 - Composer for sending messages.
+- A collapsible **Awaiting your reply** section above the composer collects all live non-blocking `request_user_input` questions, including those outside the loaded transcript. Answer there or dismiss individual questions without sending an answer or stopping the agent. Collapsing preserves drafts; blocking permissions retain their existing controls.
 - Permission mode and model selection for supported agents.
   Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. Switching a live session to Auto when ACP does not advertise a literal Auto option relaunches the Cursor ACP process in place under `--model auto` while preserving the hub session id.
 - Session abort and handoff controls.

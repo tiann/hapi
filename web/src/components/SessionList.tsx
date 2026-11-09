@@ -113,18 +113,13 @@ import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProj
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
+import { MachineFilterBar, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { useScratchlistSessionIds } from '@/hooks/queries/useScratchlistSessionIds'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
-import { SessionListFilterMenu } from '@/components/SessionListFilterMenu'
 import { CalendarIcon, formatDateValue, parseLocalDate, SessionDateRangePicker } from '@/components/SessionDateFilter'
-import {
-    DEFAULT_SESSION_LIST_FILTER_STATE,
-    type SessionListFilterState
-} from '@/lib/sessionListFilter'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
@@ -1534,19 +1529,8 @@ export function SessionList(props: {
     const listComparator = useMemo(() => createSessionComparator(listView), [listView])
     const lastSeenVersion = useSessionLastSeenVersion()
 
-    // Transient session-list lens — not a Settings preference. Cleared on reload.
-    const [sessionFilters, setSessionFilters] = useState<SessionListFilterState>(DEFAULT_SESSION_LIST_FILTER_STATE)
-    const effectiveSessionFilters = useMemo<SessionListFilterState>(() => ({
-        ...sessionFilters,
-        unread: listView.unreadOnly,
-    }), [sessionFilters, listView.unreadOnly])
-    const applySessionFilters = useCallback((next: SessionListFilterState) => {
-        setSessionFilters(prev => prev.scratchlist === next.scratchlist
-            ? prev
-            : { ...prev, scratchlist: next.scratchlist })
-        if (next.unread !== listView.unreadOnly) setListView({ unreadOnly: next.unread })
-    }, [listView.unreadOnly, setListView])
-    const showScratchlistOnly = sessionFilters.scratchlist
+    // Date and scratchlist are transient; unread uses the upstream view store.
+    const [showScratchlistOnly, setShowScratchlistOnly] = useState(false)
     const {
         sessionIds: scratchlistSessionIds,
         isLoading: isScratchlistStatusLoading,
@@ -1583,16 +1567,12 @@ export function SessionList(props: {
     const headerRowRef = useRef<HTMLDivElement>(null)
     const headerActionsRef = useRef<HTMLDivElement>(null)
     const toolbarMeasureRef = useRef<HTMLDivElement>(null)
-    const machineMenuRef = useRef<HTMLDivElement>(null)
     const actionsObserverRef = useRef<ResizeObserver | null>(null)
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
     const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
-    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, machinePx: 0 })
+    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX })
     const [searchChromePx, setSearchChromePx] = useState(0)
     const [searchMaxPx, setSearchMaxPx] = useState(0)
-    const [isDesktopToolbar, setIsDesktopToolbar] = useState(() => (
-        typeof window === 'undefined' || window.matchMedia('(min-width: 768px)').matches
-    ))
     // jsdom reports clientWidth 0; the row observer publishes the stubbed width.
     const [toolbarRowBoxPx, setToolbarRowBoxPx] = useState(0)
     // Search expand unmounts the actions box. A callback ref re-observes the
@@ -1635,17 +1615,10 @@ export function SessionList(props: {
         actionsObserverRef.current = ro
         publishActions(node.clientWidth || node.getBoundingClientRect().width)
     }, [])
-    useEffect(() => {
-        const media = window.matchMedia('(min-width: 768px)')
-        const update = () => setIsDesktopToolbar(media.matches)
-        update()
-        media.addEventListener?.('change', update)
-        return () => media.removeEventListener?.('change', update)
-    }, [])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
-    const isFiltering = isSearchFiltering || listView.unreadOnly || sessionFilters.scratchlist
+    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly
 
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
@@ -1813,7 +1786,7 @@ export function SessionList(props: {
                 selectedSessionId
             )
         }
-        if (sessionFilters.scratchlist) {
+        if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) return []
             filtered = filterScratchlistSessionsOnly(filtered, selectedSessionId, scratchlistSessionIds)
         }
@@ -1830,7 +1803,7 @@ export function SessionList(props: {
         scratchlistSessionIds,
         scratchlistStatusError,
         selectedSessionId,
-        sessionFilters.scratchlist,
+        showScratchlistOnly,
         listView.unreadOnly,
         timeRange?.start,
         timeRange?.end
@@ -1898,7 +1871,7 @@ export function SessionList(props: {
         let filtered = listView.unreadOnly
             ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
             : visibleSessions
-        if (sessionFilters.scratchlist) {
+        if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) {
                 return []
             }
@@ -1915,7 +1888,7 @@ export function SessionList(props: {
         scratchlistSessionIds,
         scratchlistStatusError,
         selectedSessionId,
-        sessionFilters.scratchlist,
+        showScratchlistOnly,
         listView.unreadOnly,
         visibleSessions
     ])
@@ -2464,14 +2437,12 @@ export function SessionList(props: {
         const parsedGap = Number.parseFloat(getComputedStyle(root).columnGap)
         const morePx = moreNode && moreNode.offsetWidth > 0 ? moreNode.offsetWidth : TOOLBAR_MORE_PX
         const gapPx = Number.isFinite(parsedGap) && parsedGap > 0 ? parsedGap : TOOLBAR_GAP_PX
-        const machinePx = machineMenuRef.current?.offsetWidth ?? 0
         setToolbarChrome((previous) => (
-            previous.morePx === morePx && previous.gapPx === gapPx && previous.machinePx === machinePx
+            previous.morePx === morePx && previous.gapPx === gapPx
                 ? previous
-                : { morePx, gapPx, machinePx }
+                : { morePx, gapPx }
         ))
-        // Search may use a 9rem chip. Reserve padding + gap + visible machine
-        // menu + More so that chip cannot eat the trailing controls (#2040).
+        // Reserve padding + gap + More so search cannot eat the trailing controls (#2040).
         const row = headerRowRef.current
         const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
         const rowStyle = row ? getComputedStyle(row) : null
@@ -2479,7 +2450,6 @@ export function SessionList(props: {
             ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
             : 0
         const trailing = gapPx
-            + (machinePx > 0 ? machinePx + gapPx : 0)
             + morePx
         const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
         setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
@@ -2630,9 +2600,6 @@ export function SessionList(props: {
                                 // Shed one control at a time, highest keep first.
                                 // Do not ml-auto a lone ⋯ across empty space, and do
                                 // not fold the whole row at a single width gate (#2039).
-                                const machineAndGap = toolbarChrome.machinePx > 0
-                                    ? toolbarChrome.machinePx + toolbarChrome.gapPx
-                                    : 0
                                 // Prefer the flex allocation. It tracks the row, not the
                                 // icons already on it. If they all fit, More is empty.
                                 const allocated = headerActionsRef.current?.clientWidth ?? 0
@@ -2642,35 +2609,13 @@ export function SessionList(props: {
                                         ? headerRowWidth
                                         : 0
                                 const budget = gutter > 0
-                                    ? Math.max(0, gutter - machineAndGap)
+                                    ? gutter
                                     : toolbarActionBudget(0, searchQuery.length > 0)
                                 const slotWidth = (id: string, fallback: number) => {
                                     const measured = toolbarSlotWidths[id] ?? 0
                                     return measured > 0 ? measured : fallback
                                 }
                                 const definedSlots: Array<ToolbarShedSlot & { node: ReactNode }> = []
-                                if (!showMachineFilterBar || isDesktopToolbar) {
-                                    definedSlots.push({
-                                        id: 'session-filter',
-                                        keep: 5,
-                                        widthPx: slotWidth('session-filter', TOOLBAR_ICON_PX),
-                                        node: (
-                                            <SessionListFilterMenu
-                                                value={effectiveSessionFilters}
-                                                onChange={applySessionFilters}
-                                                customStart={customStart}
-                                                customEnd={customEnd}
-                                                sessionActivityDates={sessionActivityDates}
-                                                onDateRangeChange={(start, end) => {
-                                                    setCustomStart(start)
-                                                    setCustomEnd(end)
-                                                }}
-                                                datePickerCenterRef={sessionListRef}
-                                                className={showMachineFilterBar ? 'max-md:hidden' : undefined}
-                                            />
-                                        )
-                                    })
-                                }
                                 definedSlots.push({
                                     id: 'view',
                                     keep: 5,
@@ -2679,7 +2624,27 @@ export function SessionList(props: {
                                         <SessionListViewMenu
                                             view={listView}
                                             onChange={setListView}
-                                            onReset={() => setListView(DEFAULT_SESSION_LIST_VIEW)}
+                                            onReset={() => {
+                                                setListView(DEFAULT_SESSION_LIST_VIEW)
+                                                setShowScratchlistOnly(false)
+                                                setCustomStart('')
+                                                setCustomEnd('')
+                                                setMachineFilter(null)
+                                            }}
+                                            scratchlistOnly={showScratchlistOnly}
+                                            onScratchlistChange={setShowScratchlistOnly}
+                                            customStart={customStart}
+                                            customEnd={customEnd}
+                                            sessionActivityDates={sessionActivityDates}
+                                            onDateRangeChange={(start, end) => {
+                                                setCustomStart(start)
+                                                setCustomEnd(end)
+                                            }}
+                                            datePickerCenterRef={sessionListRef}
+                                            machines={showMachineFilterBar ? machineFilterItems : undefined}
+                                            machineFilter={activeMachineFilter}
+                                            onMachineChange={setMachineFilter}
+                                            totalCount={allSessions.length}
                                         />
                                     )
                                 })
@@ -2759,30 +2724,6 @@ export function SessionList(props: {
                                             ))}
                                             <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
                                         </div>
-                                        {showMachineFilterBar ? (
-                                            <div
-                                                ref={machineMenuRef}
-                                                data-testid="session-list-header-machine-menu"
-                                                className="inline-flex shrink-0"
-                                            >
-                                                <MachineFilterMenu
-                                                    machines={machineFilterItems}
-                                                    totalCount={allSessions.length}
-                                                    value={activeMachineFilter}
-                                                    onChange={setMachineFilter}
-                                                    sessionFilter={effectiveSessionFilters}
-                                                    onSessionFilterChange={applySessionFilters}
-                                                    customStart={customStart}
-                                                    customEnd={customEnd}
-                                                    sessionActivityDates={sessionActivityDates}
-                                                    onDateRangeChange={(start, end) => {
-                                                        setCustomStart(start)
-                                                        setCustomEnd(end)
-                                                    }}
-                                                    datePickerCenterRef={sessionListRef}
-                                                />
-                                            </div>
-                                        ) : null}
                                         {visible.map((slot) => (
                                             <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
                                                 {slot.node}
@@ -2847,13 +2788,13 @@ export function SessionList(props: {
                     />
                 ) : null}
 
-                {props.sessions.length > 0 && isScratchlistStatusLoading && sessionFilters.scratchlist ? (
+                {props.sessions.length > 0 && isScratchlistStatusLoading && showScratchlistOnly ? (
                     <div role="status" className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.filter.loading')}
                     </div>
                 ) : null}
 
-                {props.sessions.length > 0 && scratchlistStatusError && sessionFilters.scratchlist ? (
+                {props.sessions.length > 0 && scratchlistStatusError && showScratchlistOnly ? (
                     <div role="alert" className="flex flex-col items-center gap-2 px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.filter.error')}
                         <button

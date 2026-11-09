@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type Ref, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Ref, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { CheckIcon } from '@/components/icons'
 import { useTranslation } from '@/lib/use-translation'
@@ -48,8 +48,9 @@ export function SessionDateFilterMenuRow(props: {
         <button
             ref={props.buttonRef}
             type="button"
-            role="menuitemcheckbox"
-            aria-checked={hasDateRange}
+            role="menuitem"
+            aria-label={label}
+            title={label}
             aria-haspopup="dialog"
             aria-expanded={props.expanded}
             onClick={props.onSelect}
@@ -61,7 +62,14 @@ export function SessionDateFilterMenuRow(props: {
             <span className="flex h-5 w-4 shrink-0 items-center justify-center text-[var(--app-link)]">
                 {hasDateRange ? <CheckIcon className="h-4 w-4" /> : null}
             </span>
-            <span className="min-w-0 flex-auto truncate whitespace-nowrap">{label}</span>
+            <span className="inline-flex min-w-0 items-center gap-1">
+                <span className="truncate whitespace-nowrap">{t('sessions.filter.date')}</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+                    className="h-3 w-3 shrink-0 text-[var(--app-hint)]">
+                    <path d="m9 6 6 6-6 6" />
+                </svg>
+            </span>
         </button>
     )
 }
@@ -191,6 +199,36 @@ export function SessionDateRangePicker(props: {
             window.removeEventListener('scroll', updatePosition, true)
         }
     }, [props.anchorRef, updatePosition, visibleMonth])
+
+    useEffect(() => {
+        const frame = window.requestAnimationFrame(() => {
+            pickerRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+        })
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.preventDefault()
+                event.stopPropagation()
+                props.onClose()
+            }
+            if (event.key === 'Tab') {
+                const buttons = Array.from(pickerRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+                const first = buttons[0]
+                const last = buttons[buttons.length - 1]
+                if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault()
+                    last?.focus()
+                } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault()
+                    first?.focus()
+                }
+            }
+        }
+        document.addEventListener('keydown', handleKeyDown)
+        return () => {
+            window.cancelAnimationFrame(frame)
+            document.removeEventListener('keydown', handleKeyDown)
+        }
+    }, [props.onClose])
 
     const isFloating = props.anchorRef !== undefined
 

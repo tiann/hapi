@@ -24,6 +24,7 @@ import {
   LIST_PEERS_TOOL_DESCRIPTION,
   PEER_DELIVERY_MODE_DESCRIPTION,
   PEER_WAKE_PARAM_DESCRIPTION,
+  PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION,
   PING_PEER_TOOL_DESCRIPTION,
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
   SPAWN_PEER_TOOL_DESCRIPTION,
@@ -223,6 +224,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       message: z.string().min(1).describe('Message text to deliver to the target session'),
       deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
       wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
+      waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('ping_peer')) {
@@ -273,6 +275,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           'Permission mode for the new session. Omit to use hub/stock default (yolo). '
           + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
         ),
+      waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('spawn_peer')) {

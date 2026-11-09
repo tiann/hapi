@@ -222,7 +222,7 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
         const searchButton = screen.getByRole('button', { name: SEARCH_LABEL })
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
         const searchControl = searchButton.parentElement
         // #2039: collapsed search must not shrink under neighbors (overlap);
         // header wraps trailing actions instead.
@@ -230,12 +230,12 @@ describe('SessionList time filter', () => {
         expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('min-w-0')
         expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
         expect(screen.getByTestId('session-list-header-actions')).toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: 'Filter sessions by last activity' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Filter sessions by update date' })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
 
         fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
-        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
         const emptyDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
         const activeDate = within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
         expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
@@ -248,7 +248,7 @@ describe('SessionList time filter', () => {
         expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
         expect(filterButton).toHaveAttribute('aria-expanded', 'true')
-        expect(screen.getByRole('menuitemcheckbox', { name: /^Date/ })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.getByRole('menuitem', { name: /^Updated date/ })).toHaveAccessibleName('Updated date: 2026-07-17 – 2026-07-18')
     })
 
     it('keeps the selected session visible when the date range excludes it', () => {
@@ -277,9 +277,9 @@ describe('SessionList time filter', () => {
         )
 
         expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
-        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
-        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
         fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() }))
         fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
 
@@ -307,9 +307,9 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
-        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
-        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
         const today = within(calendar).getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
         const anotherDay = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
 
@@ -338,10 +338,10 @@ describe('SessionList time filter', () => {
             />
         )
 
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
         fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
-        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
         const startDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
         fireEvent.click(startDate)
         expect(startDate).toHaveClass('bg-[var(--app-button)]', 'text-[var(--app-button-text)]')
@@ -372,20 +372,20 @@ describe('SessionList time filter', () => {
             />
         )
 
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
         fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
-        let calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        let calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
         fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
         fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
 
         // The footer Clear button unmounts with the range; focus must not drop to body.
-        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /^Date/ }))
-        calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(screen.getByRole('menuitem', { name: /^Updated date/ }))
+        calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
         fireEvent.click(within(calendar).getByRole('button', { name: 'Clear' }))
 
-        expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveFocus()
-        expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveAttribute('aria-checked', 'false')
+        expect(screen.getByRole('menuitem', { name: 'Updated date' })).toHaveFocus()
+        expect(screen.getByRole('menuitem', { name: 'Updated date' })).not.toHaveAttribute('aria-checked')
     })
 })
 
@@ -1873,8 +1873,8 @@ describe('SessionList search toggle', () => {
         // Unmeasured query: keep the daily lens on the row. Do not collapse
         // to [chip][⋯] and waste the right half of a Quest sidebar.
 
-        expect(within(actions).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
-expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+        expect(within(actions).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
 
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
@@ -1982,11 +1982,10 @@ expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInT
         )
 
         // Empty query + 320px still fits the daily controls. Do not collapse
-        // the row to [search][⋯]. Machine menu stays in the row (not shed).
+        // the row to [search][⋯]. Machine choices live in the unified view menu.
         const actions = screen.getByTestId('session-list-header-actions')
 
-        expect(screen.getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
-expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
 
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
@@ -2001,7 +2000,7 @@ expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInT
         // Phone row 320px; actions leftover crushed to ~80px (the bug geometry).
         // Search must cap itself so machine menu + More still fit in that row.
         stubHeaderWidth({ row: 320, actions: 80 })
-        const machineMenuPx = 47
+        const machineMenuPx = 0
         const morePx = 47
         const originalOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
         Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
@@ -2072,7 +2071,6 @@ expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInT
         expect(maxWidth).toBeLessThanOrEqual(320 - machineMenuPx - morePx)
         expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
-        expect(screen.getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
 
         if (originalOffset) {
             Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffset)
@@ -2107,8 +2105,8 @@ expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInT
         const actions = screen.getByTestId('session-list-header-actions')
         expect(actions).toHaveClass('flex-1')
 
-        expect(within(actions).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
-expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+        expect(within(actions).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
 
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
@@ -2164,8 +2162,8 @@ expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInT
         // Wide header + query: New stays inline (not folded into More-only).
         expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
 
-        expect(within(screen.getByTestId('session-list-header-actions')).getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
-expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+        expect(within(screen.getByTestId('session-list-header-actions')).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+        expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
 
 
         vi.unstubAllGlobals()
@@ -2192,7 +2190,7 @@ expect(within(screen.getByTestId('session-list-header-actions')).getByRole('butt
 
         expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
 
-        expect(screen.getByTestId('session-toolbar-slot-session-filter')).toBeInTheDocument()
+        expect(screen.getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
 expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
 
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()

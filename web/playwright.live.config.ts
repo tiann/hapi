@@ -7,6 +7,7 @@ export default defineConfig({
     testDir: './e2e',
     testMatch: [
         'mermaid-lightbox-session.spec.ts',
+        'session-list-filter-session.spec.ts',
         'latex-bracket-math-session.spec.ts',
         'codex-fork-while-running.spec.ts',
         'codex-archived-fork.spec.ts',
