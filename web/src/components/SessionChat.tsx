@@ -48,6 +48,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
+import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -2230,6 +2231,14 @@ function SessionChatInner(props: SessionChatProps) {
                         />
 
                         <div className="px-3">
+                            <AsyncQuestionsPanel
+                                key={`questions-${props.session.id}`}
+                                api={props.api}
+                                sessionId={props.session.id}
+                                requests={props.session.agentState?.requests}
+                                disabled={sessionInactive}
+                                onRefresh={props.onRefresh}
+                            />
                             {/*
                              * Scratchlist drawer - composer-controlled. Only
                              * mounted when the operator clicks the notepad icon
