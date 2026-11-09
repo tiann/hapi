@@ -1887,18 +1887,38 @@ describe('NewSession launch preferences', () => {
         }
     )
 
-    it('persists explicit YOLO toggle edits across remounts', async () => {
+    it('starts Antigravity on request-review and spawns it with the chosen mode', async () => {
         savePreferredAgent('agy')
-        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
-        const view = renderWithQuery(form)
-        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-off'))
-        expect(localStorage.getItem('hapi:newSession:yolo')).toBeNull()
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('permission-mode')).toHaveTextContent('request-review'))
 
-        fireEvent.click(screen.getByTestId('yolo-toggle'))
-        expect(localStorage.getItem('hapi:newSession:yolo')).toBe('true')
-        view.unmount()
-        renderWithQuery(form)
-        await waitFor(() => expect(screen.getByTestId('yolo-toggle')).toHaveTextContent('yolo-on'))
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'agy',
+            permissionMode: 'plan',
+            yolo: undefined
+        }))
+        expect(loadPreferredLaunchSettings('machine-1', 'agy')).toMatchObject({ permissionMode: 'plan' })
+    })
+
+    it.each([
+        ['true', 'always-proceed'],
+        ['false', 'request-review']
+    ] as const)('carries a stored YOLO toggle (%s) into the Antigravity mode %s', async (stored, expected) => {
+        savePreferredAgent('agy')
+        localStorage.setItem('hapi:newSession:yolo', stored)
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('permission-mode')).toHaveTextContent(expected))
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'agy',
+            permissionMode: expected
+        })))
     })
 
     it('keeps Create disabled while getHubSettings is pending', async () => {

@@ -51,8 +51,8 @@ Choose a supported coding agent from your terminal and control its sessions remo
 
 Peer messages default to `auto`: use the target's live capabilities and turn
 state to steer an active, eligible turn; otherwise queue. Inactive peers require explicit `wake: true`; awakened peers enter the ordinary queue. This applies to every steering-supported
-flavor: remote Claude, Pi, Codex, OpenCode, and Cursor ACP. Unsupported agents and
-legacy Cursor sessions queue instead. Prefer auto for routine collaboration
+flavor: remote Claude, Pi, Codex, OpenCode, Antigravity on agy acp, and Cursor ACP.
+Unsupported agents and legacy Cursor sessions queue instead. Prefer auto for routine collaboration
 when queueing is an acceptable fallback.
 
 Use explicit `queue` for non-urgent updates that can wait. Use `steer` for
@@ -315,6 +315,10 @@ The first message is required and verified in the transcript before success;
 machine-spawn HTTP 200 alone does not prove the task was delivered. In-session
 spawns add a Parent `[title](/sessions/<uuid>)` citation so parent renames do not
 change its identity.
+With `waitForReply` on `ping_peer` or `spawn_peer`, the peer's reply is posted
+back into the calling session when the peer's turn ends (Pi peers are not
+supported). The caller's CLI process does the polling, so if that process exits
+first, the reply is not posted back; it stays in the peer session.
 On a remote runner host, configure the matching hub URL and token so shell
 commands reach the same hub (`hapi auth login` saves the token).
 
@@ -333,6 +337,20 @@ bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional
   completes the same session. Wait for that row or explicitly stop it rather
   than creating duplicates. Process exit and explicit stop still clean up the
   child. The Hub gives Codex spawn RPCs 60 seconds for preflight plus startup.
+- On macOS, when the spawner's responsible process goes away with it (a runner
+  started by launchd, directly or through the npm launcher `bin/hapi.cjs`,
+  which passes `HAPI_LAUNCHER_PID`), every detached `spawnHappyCLI` child
+  (sessions, runner handoff, runner start) is started with
+  `HAPI_DISCLAIM_RESPONSIBILITY=<spawner pid>`. In a direct child of that pid,
+  the entry hook clears the variable and re-executes the same executable in
+  place so the child becomes its own responsible process; the pid, stdio and
+  cwd are unchanged. Without this, a session kept alive across a runner restart
+  loses LAN access for every new process in its tree (macOS Local Network
+  check, `EHOSTUNREACH`) once the old runner is gone. Spawners started from
+  Terminal or SSH keep the inherited responsibility (and its implicit LAN
+  allowance). Binaries without the hook ignore the variable; any failure in the
+  hook falls back to a plain exec or to continuing in-process, and is logged.
+  Implementation: `src/runtime/disclaimExec.ts`, `src/runtime/responsibility.ts`.
 
 When changing agent bootstrap, handoff, or shared-session plumbing:
 
