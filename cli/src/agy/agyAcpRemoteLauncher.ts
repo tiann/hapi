@@ -15,6 +15,7 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgySession } from './session';
+import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
 
@@ -155,6 +156,9 @@ type AgyTurn = {
     // Tool runs and waits for the user, which are not generation time.
     idleWindows: TimeWindow[];
     toolWindows: Map<string, TimeWindow>;
+    // Commands agy has not reported an end for; one still open at end_turn was
+    // moved to the background.
+    openCommands: Set<string>;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -189,6 +193,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turnSettled: Promise<void> | null = null;
     private backend: AcpSdkBackend | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
+    // agy's own tool name by call id, to map results of the calls it started.
+    private readonly nativeToolNames = new Map<string, string>();
     private acpSessionId: string | null = null;
     private abortController = new AbortController();
     /** agy's own model at session start; the target of the "Default" selection. */
@@ -419,6 +425,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answeredAt: null,
             idleWindows: [],
             toolWindows: new Map(),
+            openCommands: new Set(),
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -496,6 +503,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
+            this.closeBackgroundCommands(turn);
         } finally {
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
@@ -528,6 +536,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 session.sendSessionEvent({ type: 'ready' });
             }
         }
+    }
+
+    /**
+     * agy sends nothing more for a command it moved to the background: its
+     * completion arrives inside a later prompt's stream. Until then the card
+     * would spin, so it shows the command as running in the background; the
+     * real result replaces this one when it comes.
+     */
+    private closeBackgroundCommands(turn: AgyTurn): void {
+        if (turn.aborted || this.backendLost || turn.stopReason !== 'end_turn') return;
+        for (const id of turn.openCommands) {
+            const placeholder = convertAgentMessage(
+                { type: 'tool_result', id, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
+                this.currentModelId
+            );
+            if (placeholder) this.session.sendAgentMessage(placeholder);
+        }
+        turn.openCommands.clear();
     }
 
     private async waitForSteers(turn: AgyTurn): Promise<void> {
@@ -758,6 +784,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     private trackToolWindow(turn: AgyTurn, message: AgentMessage): void {
         if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
+        // Only a command agy reports as running counts: one still waiting
+        // for approval (pending) did not start, whatever happens to the turn.
+        if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
+            turn.openCommands.add(message.id);
+        } else if (message.status !== 'in_progress') {
+            turn.openCommands.delete(message.id);
+        }
         const now = Date.now();
         let window = turn.toolWindows.get(message.id);
         if (!window) {
@@ -769,7 +802,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
-        const converted = convertAgentMessage(message, this.currentModelId);
+        const converted = convertAgentMessage(this.toCanonicalToolMessage(message), this.currentModelId);
         if (converted) this.session.sendAgentMessage(converted);
 
         switch (message.type) {
@@ -798,6 +831,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return _exhaustive;
             }
         }
+    }
+
+    /** agy's own tool name picks the card; the open-command bookkeeping rides along. */
+    private toCanonicalToolMessage(message: AgentMessage): AgentMessage {
+        if (message.type === 'tool_call') {
+            if (message.nativeName) this.nativeToolNames.set(message.id, message.nativeName);
+            return mapAgyToolCall(message);
+        }
+        if (message.type === 'tool_result') {
+            const nativeName = this.nativeToolNames.get(message.id);
+            this.nativeToolNames.delete(message.id);
+            return mapAgyToolResult(message, nativeName);
+        }
+        return message;
     }
 
     private reportTurnError(message: string): void {

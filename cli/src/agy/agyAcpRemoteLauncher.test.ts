@@ -1511,6 +1511,120 @@ describe('AgyAcpRemoteLauncher questions', () => {
     });
 });
 
+describe('AgyAcpRemoteLauncher tool cards', () => {
+    const toolMessages = (client: ReturnType<typeof makeClient>) => client.sendAgentMessage.mock.calls
+        .map(([message]) => message as Record<string, unknown>)
+        .filter((message) => message.type === 'tool-call' || message.type === 'tool-call-result');
+
+    it('shows agy tools as their canonical cards and cleans the command result', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            const args = { CommandLine: 'ls', WaitMsBeforeAsync: 5000, toolSummary: 'List files' };
+            onUpdate({
+                type: 'tool_call', id: 'c1', name: 'ls', input: args, status: 'in_progress',
+                title: 'ls', kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({
+                type: 'tool_result', id: 'c1', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\na\r\nb\r\n', exit_code: 0 }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('go', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        expect(toolMessages(client)).toMatchObject([
+            { type: 'tool-call', callId: 'c1', name: 'Bash', input: { command: 'ls', description: 'List files' } },
+            { type: 'tool-call-result', callId: 'c1', output: { stdout: 'a\nb', exit_code: 0 } }
+        ]);
+    });
+
+    it('closes a command agy moved to the background at the end of the turn, and the real result replaces it', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const args = { CommandLine: 'sleep 30', WaitMsBeforeAsync: 5000 };
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call', id: 'bg', name: 'sleep 30', input: args, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // agy reports the completion inside the next prompt's stream.
+            onUpdate({
+                type: 'tool_call', id: 'bg', name: 'sleep 30', input: args, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({
+                type: 'tool_result', id: 'bg', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\ndone', exit_code: 0 }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('start it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(toolMessages(client).filter((m) => m.type === 'tool-call-result')).toMatchObject([
+            { callId: 'bg', output: { stdout: expect.stringContaining('background') }, is_error: false }
+        ]);
+
+        queue.push('next', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        const results = toolMessages(client).filter((m) => m.type === 'tool-call-result');
+        expect(results).toHaveLength(2);
+        expect(results[1]).toMatchObject({ callId: 'bg', output: { stdout: 'done', exit_code: 0 } });
+    });
+
+    it('does not call a command that never started a background command', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            const args = { CommandLine: 'rm -rf x' };
+            onUpdate({
+                type: 'tool_call', id: 'd', name: 'rm -rf x', input: args, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            // Waiting for approval; the user denies and agy ends the turn.
+            onUpdate({
+                type: 'tool_call', id: 'd', name: 'rm -rf x', input: args, status: 'pending',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('go', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        expect(toolMessages(client).filter((m) => m.type === 'tool-call-result')).toEqual([]);
+    });
+
+    it('does not close a command that finished or a turn that was cancelled', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call', id: 'x', name: 'x', input: {}, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: { CommandLine: 'x' }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('go', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        expect(toolMessages(client).filter((m) => m.type === 'tool-call-result')).toEqual([]);
+    });
+});
+
 describe('agy ACP helpers', () => {
     it('maps HAPI permission modes to agy ACP modes', () => {
         expect(agyAcpModeForPermission('request-review')).toBe('default');
