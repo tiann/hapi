@@ -3618,6 +3618,27 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * True while the hub still has a live CLI socket for this session. The
+     * session-scoped `/cli` room (`session:<id>`) is joined on connect and left
+     * on close, so it is the hub-local proof that a process is actually
+     * attached — unlike `active`, which survives on the keep-alive grace.
+     */
+    private hasLiveSessionOwner(sessionId: string): boolean {
+        const io = this.io as unknown as { of?: (name: string) => unknown } | undefined
+        if (typeof io?.of !== 'function') {
+            // A hub without Socket.IO (many unit tests) cannot probe liveness;
+            // keep the legacy shortcut instead of spawning on every resume.
+            return true
+        }
+        const cliNamespace = io.of('/cli') as { adapter?: { rooms?: Map<string, Set<string>> } } | undefined
+        const rooms = cliNamespace?.adapter?.rooms
+        if (!(rooms instanceof Map)) {
+            return true
+        }
+        return (rooms.get(`session:${sessionId}`)?.size ?? 0) > 0
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
@@ -3696,7 +3717,7 @@ export class SyncEngine {
             this.ptyResumeQuarantinedIds.delete(access.sessionId)
             initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
         }
-        if (initialSession.active) {
+        if (initialSession.active && this.hasLiveSessionOwner(access.sessionId)) {
             return { type: 'success', sessionId: access.sessionId }
         }
 
