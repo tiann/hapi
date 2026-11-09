@@ -66,6 +66,10 @@ export const PEER_WAKE_PARAM_DESCRIPTION =
     'Resume the target if it is inactive. Default false: an inactive target is refused and no message is sent. ' +
     'Set true only when the user asked you to wake that peer or the work you hand off requires it to act; never for FYI, status, or done notes.'
 
+/** Zod `.describe` for ping_peer / spawn_peer `waitForReply`. */
+export const PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION =
+    'Post the peer\'s reply into this session when its turn ends (default false). End your turn after calling; do not poll.'
+
 /** Zod `.describe` for list_peers `includeInactive`. */
 export const LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION =
     'Also list inactive sessions (default false: active only). Inactive rows are history, not recipients.'

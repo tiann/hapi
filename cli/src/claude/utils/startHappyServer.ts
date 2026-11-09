@@ -29,6 +29,7 @@ import {
     LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
     LIST_PEERS_TOOL_DESCRIPTION,
     PEER_DELIVERY_MODE_DESCRIPTION,
+    PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION,
     PEER_WAKE_PARAM_DESCRIPTION,
     PING_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
@@ -36,7 +37,7 @@ import {
 } from '@hapi/protocol/sessionCitation'
 import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol/modes'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
-import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
+import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, forwardPeerReply, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer, supportsPeerReply } from "@/modules/pingPeer/pingPeer";
 import { applySessionDisplayRename, normalizeSessionDisplayTitle } from "@/agent/sessionDisplayRename";
 import { SpawnPeerError, spawnPeer } from "@/modules/spawnPeer/spawnPeer";
 
@@ -200,11 +201,25 @@ function createHapiMcpServer(
         title: z.string().trim().min(1).max(255).optional().describe('Optional display title or filename'),
     });
 
+    /** Start reply forwarding when asked; returns the note for the tool result. */
+    const forwardReplyIfRequested = (
+        waitForReply: boolean | undefined,
+        task: { sessionId: string; localId?: string; flavor?: string | null }
+    ): string => {
+        if (!waitForReply) return '';
+        if (!task.localId) return '; the delivered message could not be identified, so check the reply with inspect_peer';
+        if (!supportsPeerReply(task.flavor)) return `; ${task.flavor} peers do not report turn ends, so check the reply with inspect_peer`;
+        forwardPeerReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: client.sessionId })
+            .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error));
+        return '; its reply will be posted here';
+    };
+
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
         deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
         wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
+        waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     const spawnPeerInputSchema: z.ZodTypeAny = z.object({
@@ -230,6 +245,7 @@ function createHapiMcpServer(
                 'Permission mode for the new session. Omit to use hub/stock default (yolo). '
                 + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
             ),
+        waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
@@ -421,7 +437,7 @@ function createHapiMcpServer(
             description: PING_PEER_TOOL_DESCRIPTION,
             title: 'Ping Peer Session',
             inputSchema: pingPeerInputSchema,
-        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode; wake?: boolean }) => {
+        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode; wake?: boolean; waitForReply?: boolean }) => {
             logger.debug('[hapiMCP] ping_peer:', args.sessionIdPrefix);
             try {
                 const result = await pingPeer({
@@ -430,13 +446,14 @@ function createHapiMcpServer(
                     deliveryMode: args.deliveryMode,
                     wake: args.wake === true,
                 });
+                const replyNote = forwardReplyIfRequested(args.waitForReply, result);
                 return {
                     content: [
                         {
                             type: 'text' as const,
                             text: result.delivery === 'accepted'
-                                ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}`
-                                : `${result.delivery} to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId}`,
+                                ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}${replyNote}`
+                                : `${result.delivery} to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId}${replyNote}`,
                         },
                     ],
                     isError: false,
@@ -474,6 +491,7 @@ function createHapiMcpServer(
             effort?: string
             sessionType?: 'simple' | 'worktree'
             permissionMode?: string
+            waitForReply?: boolean
         }) => {
             logger.debug('[hapiMCP] spawn_peer:', args.directory, args.machine ? `machine=${args.machine}` : '');
             try {
@@ -505,7 +523,7 @@ function createHapiMcpServer(
                     content: [
                         {
                             type: 'text' as const,
-                            text: `Spawned ${result.sessionId} (${result.name})`,
+                            text: `Spawned ${result.sessionId} (${result.name})${forwardReplyIfRequested(args.waitForReply, result)}`,
                         },
                     ],
                     isError: false,

@@ -342,9 +342,28 @@ describe('startHappyServer skill_lookup', () => {
         }
     })
 
+    it('forwards the spawned peer\'s reply when waitForReply is set', async () => {
+        const spawn = vi.spyOn(peerSpawn, 'spawnPeer').mockResolvedValue({
+            sessionId: 'child-id', name: 'Worker', localId: 'ping-peer-1', flavor: 'codex'
+        })
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue()
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'spawn_peer',
+                arguments: { directory: '/srv/project', message: 'Run the tests', waitForReply: true },
+            }) as ToolResult
+            expect(result.content?.[0]?.text).toBe('Spawned child-id (Worker); its reply will be posted here')
+            expect(forward).toHaveBeenCalledWith({ peerSessionId: 'child-id', taskLocalId: 'ping-peer-1', callerSessionId: 'parent-id' })
+        } finally {
+            spawn.mockRestore()
+            forward.mockRestore()
+        }
+    })
+
     it('forwards cross-machine spawn settings with the calling session identity and cwd', async () => {
         const spawn = vi.spyOn(peerSpawn, 'spawnPeer').mockResolvedValue({
-            sessionId: 'child-id', name: 'Worker'
+            sessionId: 'child-id', name: 'Worker', flavor: 'codex'
         })
         try {
             const mcp = await connect(false)
