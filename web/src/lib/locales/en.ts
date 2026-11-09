@@ -659,6 +659,7 @@ export default {
   'tool.questionsAnswers': 'Questions & Answers',
   'tool.submit': 'Submit',
   'tool.submitting': 'Submitting…',
+  'tool.skip': 'Skip',
   'tool.prev': '← Prev',
   'tool.next': 'Next →',
   'tool.yes': 'Yes',

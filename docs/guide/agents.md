@@ -355,6 +355,10 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
   [Google Antigravity](https://antigravity.google)
 
+  On ACP, agy's questions (`ask_question`) appear as the question card; the
+  choice goes back as agy's answer, and no permission mode answers a question
+  for you.
+
   In the web model picker, models with multiple effort variants appear once,
   with a separate effort selector showing the levels in the machine's catalog.
   For example, choose **Gemini 4 Argon** and **High**, or launch with

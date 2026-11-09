@@ -1,5 +1,5 @@
 import type { AgentFlavor } from '@hapi/protocol';
-import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
+import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
@@ -11,6 +11,11 @@ import packageJson from '../../../../package.json';
 
 type PendingPermission = {
     resolve: (result: { outcome: { outcome: string; optionId?: string } }) => void;
+};
+
+type PendingElicitation = {
+    sessionId: string;
+    settle: (response: FormElicitationResponse) => void;
 };
 
 type AcpPromptUsage = {
@@ -99,6 +104,8 @@ export class AcpSdkBackend implements AgentBackend {
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
+    private formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
+    private readonly pendingElicitations = new Set<PendingElicitation>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private readonly sessionInfoRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -193,6 +200,13 @@ export class AcpSdkBackend implements AgentBackend {
          * child in the background).
          */
         childSessionUpdates?: boolean;
+        /**
+         * Advertise `elicitation.form` so the agent may ask the user structured
+         * questions through `elicitation/create`. Opt-in because the handler
+         * for that request is flavor specific; without a handler the agent
+         * would wait on a request nobody answers.
+         */
+        elicitationForm?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -241,12 +255,19 @@ export class AcpSdkBackend implements AgentBackend {
             return await this.handlePermissionRequest(params, requestId);
         });
 
+        if (this.options.elicitationForm) {
+            this.transport.registerRequestHandler('elicitation/create', async (params) => {
+                return await this.handleElicitationRequest(params);
+            });
+        }
+
         const response = await withRetry(
             () => this.transport!.sendRequest('initialize', {
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: false, writeTextFile: false },
                     terminal: false,
+                    ...(this.options.elicitationForm ? { elicitation: { form: {} } } : {}),
                     _meta: {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
                         // `model` + `fast` config options only when the client advertises
@@ -829,6 +850,9 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.transport.sendNotification('session/cancel', { sessionId });
+        // The agent keeps waiting on an unanswered form until its request is
+        // answered, so cancelling the prompt must settle the form too.
+        this.settlePendingElicitations(sessionId);
     }
 
     /**
@@ -959,6 +983,55 @@ export class AcpSdkBackend implements AgentBackend {
 
     onPermissionRequest(handler: (request: PermissionRequest) => void): void {
         this.permissionHandler = handler;
+    }
+
+    onFormElicitation(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void {
+        this.formElicitationHandler = handler;
+    }
+
+    private settlePendingElicitations(sessionId?: string): void {
+        for (const pending of Array.from(this.pendingElicitations)) {
+            if (sessionId === undefined || pending.sessionId === sessionId) {
+                pending.settle({ action: 'cancel' });
+            }
+        }
+    }
+
+    private async handleElicitationRequest(params: unknown): Promise<FormElicitationResponse> {
+        const cancel: FormElicitationResponse = { action: 'cancel' };
+        if (!isObject(params) || params.mode !== 'form' || !this.formElicitationHandler) {
+            return cancel;
+        }
+        const sessionId = asString(params.sessionId);
+        if (!sessionId || !isObject(params.requestedSchema)) {
+            return cancel;
+        }
+
+        const request: FormElicitationRequest = {
+            sessionId,
+            ...(asString(params.toolCallId) ? { toolCallId: asString(params.toolCallId) as string } : {}),
+            message: asString(params.message) ?? '',
+            requestedSchema: params.requestedSchema
+        };
+
+        return await new Promise<FormElicitationResponse>((resolve) => {
+            const pending: PendingElicitation = {
+                sessionId,
+                settle: (response) => {
+                    this.pendingElicitations.delete(pending);
+                    resolve(response);
+                }
+            };
+            this.pendingElicitations.add(pending);
+            this.agentActivityListener?.(true);
+            this.formElicitationHandler!(request).then(
+                (response) => pending.settle(response),
+                (error) => {
+                    logger.warn('[ACP] form elicitation handler failed; cancelling', error);
+                    pending.settle(cancel);
+                }
+            );
+        });
     }
 
     onStderrError(handler: (error: AcpStderrError) => void): void {
@@ -1107,6 +1180,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionAvailableCommands.clear();
         this.autoPermissionModeEnabled = null;
         this.notifyResponseComplete();
+        this.settlePendingElicitations();
         await this.transport.close();
         this.transport = null;
     }
