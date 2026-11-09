@@ -66,6 +66,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             emitTitleSummary: undefined,
             enableChangeTitle: undefined,
             workingDirectory: '/repo',
+            flavor: 'opencode',
             skillLookup
         })
         expect(harness.cliArgs).toEqual([
@@ -74,6 +75,8 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             'http://127.0.0.1:43006/',
             '--tools',
             'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,skill_lookup',
+            '--flavor',
+            'opencode',
             '--hapi-session-id',
             'hub-session-1',
         ])
@@ -90,12 +93,15 @@ describe('buildHapiMcpBridge skill lookup config', () => {
     it('does not expose skill_lookup for native-skill bridge callers', async () => {
         const bridge = await buildHapiMcpBridge(createClient())
 
+        expect(harness.startOptions).toMatchObject({ flavor: 'codex' })
         expect(harness.cliArgs).toEqual([
             'mcp',
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
             'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer',
+            '--flavor',
+            'codex',
             '--hapi-session-id',
             'hub-session-1',
         ])

@@ -4,6 +4,8 @@ import {
     DISPLAY_IMAGE_PROMPT_CLAUDE,
     DISPLAY_IMAGE_PROMPT_CODEX,
     DISPLAY_IMAGE_PROMPT_CURSOR,
+    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
+    DISPLAY_IMAGE_PROMPT_VARIANTS,
     DISPLAY_MEDIA_PROMPT_CLAUDE,
     DISPLAY_MEDIA_PROMPT_CODEX,
     DISPLAY_MEDIA_PROMPT_CURSOR,
@@ -11,6 +13,7 @@ import {
     DISPLAY_VIDEO_PROMPT_CLAUDE,
     DISPLAY_VIDEO_PROMPT_CODEX,
     DISPLAY_VIDEO_PROMPT_CURSOR,
+    resolveDisplayToolPrompt,
 } from './displayImagePrompt'
 
 const displayImagePrompts = [
@@ -34,6 +37,15 @@ describe('display_image prompt semantics', () => {
         expect(DISPLAY_IMAGE_PROMPT_CLAUDE).toContain('mcp__hapi__display_image')
         expect(DISPLAY_IMAGE_PROMPT_CODEX).toContain('functions.hapi__display_image')
         expect(DISPLAY_IMAGE_PROMPT_CURSOR).toContain('"display_image"')
+        expect(DISPLAY_IMAGE_PROMPT_HAPI_MCP).toContain('"hapi_display_image"')
+    })
+
+    it('resolveDisplayToolPrompt selects the matching variant (and hapiMcp fallback)', () => {
+        expect(resolveDisplayToolPrompt('claude', DISPLAY_IMAGE_PROMPT_VARIANTS)).toContain('mcp__hapi__display_image')
+        expect(resolveDisplayToolPrompt('codex', DISPLAY_IMAGE_PROMPT_VARIANTS)).toContain('functions.hapi__display_image')
+        expect(resolveDisplayToolPrompt('cursor', DISPLAY_IMAGE_PROMPT_VARIANTS)).toContain('"display_image"')
+        expect(resolveDisplayToolPrompt(undefined, DISPLAY_IMAGE_PROMPT_VARIANTS)).toContain('"hapi_display_image"')
+        expect(resolveDisplayToolPrompt('opencode', DISPLAY_IMAGE_PROMPT_VARIANTS)).toContain('"hapi_display_image"')
     })
 })
 
