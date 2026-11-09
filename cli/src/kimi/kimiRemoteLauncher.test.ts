@@ -77,7 +77,6 @@ function createSession(modes: KimiMode[] = [
         queue,
         sessionId: null as string | null,
         getPermissionMode: () => 'default' as const,
-        getModel: () => 'kimi-k2',
         onSessionFound(id: string) { session.sessionId = id },
         onThinkingChange: vi.fn(),
         sendAgentMessage: vi.fn(),

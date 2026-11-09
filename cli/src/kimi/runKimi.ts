@@ -190,7 +190,8 @@ export async function runKimi(opts: {
             },
             onEffortRollback: (effort) => {
                 sessionEffort = effort;
-            }
+            },
+            getQueuedModel: () => resolvedModel ?? null
         });
     } catch (error) {
         crashed = true;

@@ -16,6 +16,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private readonly session: KimiSession;
     private readonly model?: string;
     private readonly onEffortRollback?: (effort: string | null) => void;
+    private readonly getQueuedModel?: () => string | null;
     private backend: ReturnType<typeof createKimiBackend> | null = null;
     private permissionHandler: KimiPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
@@ -25,15 +26,19 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null;
     private currentBackendEffort: string | null = null;
     private defaultBackendEffort: string | null = null;
-    /** Session model selection the backend has been brought in line with. */
-    private appliedModelSelection: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private lastDisplayedToolCall = new Map<string, string>();
-    constructor(session: KimiSession, opts: { model?: string; onEffortRollback?: (effort: string | null) => void }) {
+    constructor(session: KimiSession, opts: {
+        model?: string;
+        onEffortRollback?: (effort: string | null) => void;
+        /** Model the next queued turn will carry; differs from the backend's while a switch is pending. */
+        getQueuedModel?: () => string | null;
+    }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.model = opts.model;
         this.onEffortRollback = opts.onEffortRollback;
+        this.getQueuedModel = opts.getQueuedModel;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -126,11 +131,11 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         }
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode, effectiveModel ?? undefined);
         this.captureEffortBaseline(acpSessionId);
-        this.appliedModelSelection = session.getModel() ?? null;
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListKimiReasoningEffortOptions, async () => {
-            // A model change is applied with the next turn; until then the
-            // cached levels belong to the previous model.
-            if ((session.getModel() ?? null) !== this.appliedModelSelection) {
+            // A model change is applied with the turn that carries it; until
+            // then (or after it failed) the cached levels belong to another model.
+            const queuedModel = this.getQueuedModel?.() ?? null;
+            if (queuedModel !== null && queuedModel !== this.currentBackendModel) {
                 return { success: false, error: 'Kimi model switch pending' };
             }
             const option = backend.getThoughtLevelConfigOption(acpSessionId);
@@ -190,7 +195,6 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             if (this.currentBackendModel !== modelBeforeBatch) {
                 this.captureEffortBaseline(acpSessionId);
             }
-            this.appliedModelSelection = session.getModel() ?? null;
             await this.applyQueuedEffort(acpSessionId, batch.mode);
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
@@ -413,7 +417,7 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function kimiRemoteLauncher(
     session: KimiSession,
-    opts: { model?: string; onEffortRollback?: (effort: string | null) => void }
+    opts: ConstructorParameters<typeof KimiRemoteLauncher>[1]
 ): Promise<'switch' | 'exit'> {
     const launcher = new KimiRemoteLauncher(session, opts);
     return launcher.launch();

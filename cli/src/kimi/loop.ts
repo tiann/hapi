@@ -20,6 +20,7 @@ interface KimiLoopOptions {
     resumeSessionId?: string;
     onSessionReady?: (session: KimiSession) => void;
     onEffortRollback?: (effort: string | null) => void;
+    getQueuedModel?: () => string | null;
 }
 
 export async function kimiLoop(opts: KimiLoopOptions): Promise<void> {
@@ -59,7 +60,8 @@ export async function kimiLoop(opts: KimiLoopOptions): Promise<void> {
         }),
         runRemote: (instance) => kimiRemoteLauncher(instance, {
             model: getCurrentModel(),
-            onEffortRollback: opts.onEffortRollback
+            onEffortRollback: opts.onEffortRollback,
+            getQueuedModel: opts.getQueuedModel
         }),
         onSessionReady: opts.onSessionReady
     });
