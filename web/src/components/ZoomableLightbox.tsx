@@ -127,6 +127,10 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         fitContentSize = null,
         fitOnOpen = true,
     } = props
+    // Callers may allocate an equivalent size object on every render. Only
+    // actual dimension changes should refit and discard the user's view.
+    const fitContentWidth = fitContentSize?.width
+    const fitContentHeight = fitContentSize?.height
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
     const [toolbarHeight, setToolbarHeight] = useState(0)
@@ -165,7 +169,9 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const content = contentRef.current
         if (!content) return
 
-        const contentSize = fitContentSize ?? measureContentSize(content, scaleRef.current)
+        const contentSize = fitContentWidth !== undefined && fitContentHeight !== undefined
+            ? { width: fitContentWidth, height: fitContentHeight }
+            : measureContentSize(content, scaleRef.current)
         if (!contentSize) return
 
         const screen = getScreenFitSize(toolbarHeight)
@@ -177,7 +183,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         baseScaleRef.current = fitScale
         updateScale(fitScale)
         updateOffset({ x: 0, y: 0 })
-    }, [fitContentSize, fitOnOpen, toolbarHeight, updateOffset, updateScale])
+    }, [fitContentWidth, fitContentHeight, fitOnOpen, toolbarHeight, updateOffset, updateScale])
 
     const resetView = useCallback(() => {
         updateScale(baseScaleRef.current)
@@ -329,7 +335,8 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
         const scheduleFit = () => {
             frame = requestAnimationFrame(() => {
                 const content = contentRef.current
-                const hadSize = fitContentSize ?? (content ? measureContentSize(content) : null)
+                const hadSize = (fitContentWidth !== undefined && fitContentHeight !== undefined)
+                    || (content ? measureContentSize(content) : null)
                 applyFitScale()
                 attempt += 1
                 if (!hadSize && attempt < maxAttempts) {
@@ -347,7 +354,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
             window.clearTimeout(retry)
             window.clearTimeout(lateRetry)
         }
-    }, [fitContentKey, fitContentSize, fitOnOpen, open, applyFitScale])
+    }, [fitContentKey, fitContentWidth, fitContentHeight, fitOnOpen, open, applyFitScale])
 
     useLayoutEffect(() => {
         if (!open) return undefined
