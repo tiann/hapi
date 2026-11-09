@@ -25,6 +25,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null;
     private currentBackendEffort: string | null = null;
     private defaultBackendEffort: string | null = null;
+    /** Session model selection the backend has been brought in line with. */
+    private appliedModelSelection: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private lastDisplayedToolCall = new Map<string, string>();
     constructor(session: KimiSession, opts: { model?: string; onEffortRollback?: (effort: string | null) => void }) {
@@ -123,12 +125,16 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(`[MODEL:${effectiveModel}]`, 'system');
         }
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode, effectiveModel ?? undefined);
-        this.currentBackendEffort = backend.getThoughtLevelConfigOption(acpSessionId)?.currentValue ?? null;
-        this.defaultBackendEffort = this.currentBackendEffort;
+        this.captureEffortBaseline(acpSessionId);
+        this.appliedModelSelection = session.getModel() ?? null;
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListKimiReasoningEffortOptions, async () => {
+            // A model change is applied with the next turn; until then the
+            // cached levels belong to the previous model.
+            if ((session.getModel() ?? null) !== this.appliedModelSelection) {
+                return { success: false, error: 'Kimi model switch pending' };
+            }
             const option = backend.getThoughtLevelConfigOption(acpSessionId);
-            if (!option) return { success: false, error: 'Kimi effort options are not available' };
-            return { success: true, options: option.options, currentValue: option.currentValue ?? null };
+            return { success: true, options: option?.options ?? [], currentValue: option?.currentValue ?? null };
         });
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
@@ -149,6 +155,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            const modelBeforeBatch = this.currentBackendModel;
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 if (!backend.setModel || this.setModelSupported === false) {
                     batch.mode.model = this.currentBackendModel ?? undefined;
@@ -180,6 +187,10 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            if (this.currentBackendModel !== modelBeforeBatch) {
+                this.captureEffortBaseline(acpSessionId);
+            }
+            this.appliedModelSelection = session.getModel() ?? null;
             await this.applyQueuedEffort(acpSessionId, batch.mode);
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
@@ -215,6 +226,12 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 }
             }
         }
+    }
+
+    /** The agent's level for the active model; "Default" resets to it. */
+    private captureEffortBaseline(sessionId: string): void {
+        this.currentBackendEffort = this.backend?.getThoughtLevelConfigOption(sessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = this.currentBackendEffort;
     }
 
     private async applyQueuedEffort(sessionId: string, mode: { effort?: string | null }): Promise<void> {

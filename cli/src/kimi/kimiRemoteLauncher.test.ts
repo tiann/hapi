@@ -4,7 +4,8 @@ import type { KimiMode } from './types'
 
 const harness = vi.hoisted(() => ({
     prompts: [] as unknown[][],
-    configCalls: [] as unknown[][]
+    configCalls: [] as unknown[][],
+    thinking: 'on'
 }))
 
 vi.mock('./utils/kimiBackend', () => ({
@@ -12,10 +13,14 @@ vi.mock('./utils/kimiBackend', () => ({
         initialize: vi.fn(async () => {}),
         newSession: vi.fn(async () => 'kimi-session-1'),
         loadSession: vi.fn(async () => 'kimi-session-1'),
-        setModel: vi.fn(async () => {}),
-        getThoughtLevelConfigOption: vi.fn(() => ({ id: 'thinking', currentValue: 'on', options: [] })),
+        // Mimics config_option_update: a new model reports its own level.
+        setModel: vi.fn(async (_sessionId: string, model: string) => {
+            if (model === 'kimi-k3') harness.thinking = 'medium'
+        }),
+        getThoughtLevelConfigOption: vi.fn(() => ({ id: 'thinking', currentValue: harness.thinking, options: [] })),
         setConfigOption: vi.fn(async (...args: unknown[]) => {
             harness.configCalls.push(args)
+            harness.thinking = args[2] as string
         }),
         prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
             harness.prompts.push(content)
@@ -72,6 +77,7 @@ function createSession(modes: KimiMode[] = [
         queue,
         sessionId: null as string | null,
         getPermissionMode: () => 'default' as const,
+        getModel: () => 'kimi-k2',
         onSessionFound(id: string) { session.sessionId = id },
         onThinkingChange: vi.fn(),
         sendAgentMessage: vi.fn(),
@@ -86,6 +92,7 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
     afterEach(() => {
         harness.prompts = []
         harness.configCalls = []
+        harness.thinking = 'on'
     })
 
     it('does not prepend skill_lookup instructions onto user turns', async () => {
@@ -107,6 +114,18 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         expect(harness.configCalls).toEqual([
             ['kimi-session-1', 'thinking', 'high'],
             ['kimi-session-1', 'thinking', 'on']
+        ])
+    })
+
+    it('re-applies the selected effort after a model switch changes the agent level', async () => {
+        await kimiRemoteLauncher(createSession([
+            { permissionMode: 'default', model: 'kimi-k2', effort: 'high' },
+            { permissionMode: 'default', model: 'kimi-k3', effort: 'high' }
+        ]) as never, { model: 'kimi-k2' })
+
+        expect(harness.configCalls).toEqual([
+            ['kimi-session-1', 'thinking', 'high'],
+            ['kimi-session-1', 'thinking', 'high']
         ])
     })
 })

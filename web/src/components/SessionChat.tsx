@@ -1208,6 +1208,7 @@ function SessionChatInner(props: SessionChatProps) {
     const kimiEffortOptions = useKimiReasoningEffortOptions({
         api: props.api,
         sessionId: props.session.id,
+        model: props.session.model,
         enabled: agentFlavor === 'kimi' && props.session.active && !controlledByUser
     })
     const kimiModelOptions = useMemo(() => (
