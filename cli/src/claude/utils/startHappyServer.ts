@@ -47,6 +47,8 @@ import { SpawnPeerError, spawnPeer } from "@/modules/spawnPeer/spawnPeer";
 
 export type HapiMcpToolName =
     | 'change_title'
+    | 'link_pr'
+    | 'link_issue'
     | 'display_image'
     | 'display_video'
     | 'display_media'
@@ -378,7 +380,7 @@ function createHapiMcpServer(
     }
 
     let setLinkPrVisible: ((enabled: boolean) => void) | undefined
-    if (enableLinkPr !== false) {
+    if (enableLinkPr !== false && enabledTools.has('link_pr')) {
         const linkPrInputSchema: z.ZodTypeAny = z.object({
             url: z.string().optional().describe('GitHub PR URL (https://github.com/owner/repo/pull/N)'),
             repo: z.string().optional().describe('owner/repo slug when not passing url'),
@@ -472,11 +474,12 @@ function createHapiMcpServer(
 
     // Always-on, no opt-in toggle (hapi#235/#238 operator decision: "unless
     // someone uses it, they're not gonna see it" — no chrome to gate for
-    // operators who never link an issue).
+    // operators who never link an issue). Still routes through registerTool()
+    // so an explicit enabledTools allowlist that omits it can still exclude it.
     const linkIssueInputSchema: z.ZodTypeAny = z.object({
         url: z.string().describe('GitHub issue URL (https://github.com/<owner>/<repo>/issues/<n>) or the [host:]<owner>/<repo>#<n> shorthand'),
     });
-    mcp.registerTool<any, any>('link_issue', {
+    registerTool('link_issue', {
         description: 'Attach a GitHub issue reference to the current HAPI session (self-session only). Shows as a chip on the session row/detail. Re-linking the same issue refreshes it rather than duplicating.',
         title: 'Link GitHub Issue',
         inputSchema: linkIssueInputSchema,
@@ -870,17 +873,17 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     // HAPI_DISABLE_PEER_TOOLS=1: peer tools are neither registered nor
     // advertised, so wrapped agents cannot browse or message other sessions.
     const peerToolsDisabled = isPeerToolsDisabled();
-    // link_pr/link_issue are fork-only extras controlled independently by
-    // linkPrMode (hapi#235/#238), not by the enabledTools restriction above —
-    // included here (when linkPrMode allows) so the stdio bridge's --tools
-    // shortlist still lists them, but filtered out of `enabledTools` below so
-    // they skip the generic registerTool() gate: their own registration
-    // block further down calls mcp.registerTool() directly instead, since it
-    // also needs the returned RegisteredTool handle for enable/disable.
-    const toolNames: string[] = [];
+    // link_pr/link_issue go through the same includeTool() gate as every
+    // other tool (an explicit enabledTools allowlist that omits them excludes
+    // them too) — but link_pr additionally needs linkPrMode to allow it, and
+    // both still call mcp.registerTool() directly below rather than through
+    // the generic registerTool() wrapper, since link_pr needs the returned
+    // RegisteredTool handle for enable/disable (link_issue has no such need,
+    // but stays consistent with its sibling for readability).
+    const toolNames: HapiMcpToolName[] = [];
     if (enableChangeTitle && includeTool('change_title')) toolNames.push('change_title');
-    if (linkPrMode !== false) toolNames.push('link_pr');
-    toolNames.push('link_issue');
+    if (linkPrMode !== false && includeTool('link_pr')) toolNames.push('link_pr');
+    if (includeTool('link_issue')) toolNames.push('link_issue');
     for (const name of ['display_image', 'display_video', 'display_media'] as const) {
         if (includeTool(name)) toolNames.push(name);
     }
@@ -893,9 +896,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     if (toolNames.length === 0) {
         throw new Error('startHappyServer requires at least one enabled tool');
     }
-    const enabledTools = new Set(toolNames.filter((name): name is HapiMcpToolName =>
-        name !== 'link_pr' && name !== 'link_issue'
-    ));
+    const enabledTools = new Set(toolNames);
 
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
