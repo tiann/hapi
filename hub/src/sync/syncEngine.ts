@@ -69,6 +69,8 @@ import {
     type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
     type RpcListDshModelsResponse,
+    type RpcListHermesModelsResponse,
+    type RpcListBerryModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -110,6 +112,8 @@ export type {
     RpcListOpencodeModelVariantsResponse,
     RpcListGrokModelsResponse,
     RpcListDshModelsResponse,
+    RpcListHermesModelsResponse,
+    RpcListBerryModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -4284,7 +4288,7 @@ export class SyncEngine {
             namespace,
             {
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'hermes' || flavor === 'berry') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {
@@ -5613,6 +5617,22 @@ export class SyncEngine {
             () => this.rpcGateway.listDshModelsForSession(sessionId),
             SyncEngine.modelListCacheable
         ) as RpcListDshModelsResponse
+    }
+
+    async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|hermes-models`,
+            () => this.rpcGateway.listHermesModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListHermesModelsResponse
+    }
+
+    async listBerryModelsForSession(sessionId: string): Promise<RpcListBerryModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|berry-models`,
+            () => this.rpcGateway.listBerryModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListBerryModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

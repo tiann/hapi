@@ -280,6 +280,22 @@ describe('BerryRemoteLauncher', () => {
         })
     })
 
+    it('skips the turn when tightening to read-only fails', async () => {
+        const session = createSessionWithBatches([['first', { permissionMode: 'read-only' }]])
+        const launcher = new BerryRemoteLauncher(session as never)
+        harness.setModeError = new Error('method not found: session/set_mode')
+
+        await launcher.launch()
+
+        // The sandbox is the only enforcement layer for read-only; a failed
+        // tightening must not submit the prompt under the writable sandbox.
+        expect(harness.prompts).toEqual([])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('read-only sandbox switch')
+        })
+    })
+
     it('discovers the current model from the model config option', async () => {
         harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
         const onConfigDiscovered = vi.fn()

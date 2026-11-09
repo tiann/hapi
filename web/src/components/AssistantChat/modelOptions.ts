@@ -174,6 +174,12 @@ export function getModelOptionsForFlavor(
     if (flavor === 'dsh') {
         return []
     }
+    // Hermes and Berry are the same shape: catalogs arrive via the session's
+    // ACP config options (SessionChat's hermesModelOptions/berryModelOptions).
+    // An empty list must win over the Claude fallback for the same reason.
+    if (flavor === 'hermes' || flavor === 'berry') {
+        return []
+    }
     if (flavor === 'cursor') {
         return withCurrentModelOption([{ value: 'auto', label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
     }

@@ -127,6 +127,7 @@ import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReas
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
+import { useBerryModelsForSession, useHermesModelsForSession } from '@/hooks/queries/useAcpSessionModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1242,6 +1243,40 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, dshModelsState.availableModels])
+    // hermes/berry ride the same rail: catalogs arrive through the session's
+    // ACP config options (ListHermesModels / ListBerryModels RPCs).
+    const hermesModelsState = useHermesModelsForSession({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'hermes' && props.session.active
+    })
+    const hermesModelOptions = useMemo(() => (
+        agentFlavor === 'hermes' && hermesModelsState.availableModels.length > 0
+            ? [
+                { value: null, label: 'Default' },
+                ...hermesModelsState.availableModels.map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            ]
+            : undefined
+    ), [agentFlavor, hermesModelsState.availableModels])
+    const berryModelsState = useBerryModelsForSession({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'berry' && props.session.active
+    })
+    const berryModelOptions = useMemo(() => (
+        agentFlavor === 'berry' && berryModelsState.availableModels.length > 0
+            ? [
+                { value: null, label: 'Default' },
+                ...berryModelsState.availableModels.map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            ]
+            : undefined
+    ), [agentFlavor, berryModelsState.availableModels])
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -2336,6 +2371,10 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? agyModelOptions
                                             : agentFlavor === 'dsh'
                                                 ? dshModelOptions
+                                            : agentFlavor === 'hermes'
+                                                ? hermesModelOptions
+                                            : agentFlavor === 'berry'
+                                                ? berryModelOptions
                                         // Pi gets its provider-qualified model list from the piModels prop;
                                         // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,

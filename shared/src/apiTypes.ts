@@ -1063,6 +1063,34 @@ export type DshModelsResponse = {
 }
 export type ListDshModelsResponse = DshModelsResponse
 
+/** Hermes/Berry model discovery entry (opaque ACP config-option values). */
+export type AcpCatalogModelSummary = {
+    modelId: string
+    name?: string
+}
+
+/**
+ * Hermes model discovery (ListHermesModels). Model ids are opaque
+ * `provider:model` picker values and must be sent back verbatim.
+ */
+export type HermesModelsResponse = {
+    success: boolean
+    availableModels?: AcpCatalogModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+/**
+ * Berry Agent model discovery (ListBerryModels). Model ids are opaque
+ * `provider/model` catalog values and must be sent back verbatim.
+ */
+export type BerryModelsResponse = {
+    success: boolean
+    availableModels?: AcpCatalogModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
 export type GrokReasoningEffortOption = {
     value: string
     name?: string

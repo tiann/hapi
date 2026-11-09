@@ -68,6 +68,8 @@ function createApp(session: Session, opts?: {
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
+    listHermesModelsForSession?: SyncEngine['listHermesModelsForSession']
+    listBerryModelsForSession?: SyncEngine['listBerryModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
@@ -157,6 +159,16 @@ function createApp(session: Session, opts?: {
         listDshModelsForSession: opts?.listDshModelsForSession ?? (async () => ({
             success: true,
             models: []
+        })),
+        listHermesModelsForSession: opts?.listHermesModelsForSession ?? (async () => ({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        })),
+        listBerryModelsForSession: opts?.listBerryModelsForSession ?? (async () => ({
+            success: true,
+            availableModels: [],
+            currentModelId: null
         })),
         listPiModelsForSession: opts?.listPiModelsForSession ?? (async () => ({
             success: true,
@@ -468,6 +480,64 @@ describe('sessions routes', () => {
             error: 'RPC handler not registered: session-1:listDshModels',
             code: 'rpc_target_missing'
         })
+    })
+
+    it('serves Hermes session model lists and rejects other flavors', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'hermes' }
+        })
+        const { app } = createApp(session, {
+            listHermesModelsForSession: async () => ({
+                success: true,
+                availableModels: [{ modelId: 'newapi:glm-5.3', name: 'GLM 5.3' }],
+                currentModelId: 'newapi:glm-5.3'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/hermes-models')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'newapi:glm-5.3', name: 'GLM 5.3' }],
+            currentModelId: 'newapi:glm-5.3'
+        })
+
+        const other = createSession({
+            id: 'session-2',
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app: otherApp } = createApp(other, {})
+        const rejected = await otherApp.request('/api/sessions/session-2/hermes-models')
+        expect(rejected.status).toBe(400)
+    })
+
+    it('serves Berry session model lists and rejects other flavors', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'berry' }
+        })
+        const { app } = createApp(session, {
+            listBerryModelsForSession: async () => ({
+                success: true,
+                availableModels: [{ modelId: 'newapi/glm-5.3', name: 'GLM 5.3' }],
+                currentModelId: 'newapi/glm-5.3'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/berry-models')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'newapi/glm-5.3', name: 'GLM 5.3' }],
+            currentModelId: 'newapi/glm-5.3'
+        })
+
+        const other = createSession({
+            id: 'session-2',
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app: otherApp } = createApp(other, {})
+        const rejected = await otherApp.request('/api/sessions/session-2/berry-models')
+        expect(rejected.status).toBe(400)
     })
 
     it('serves Pi session model lists through the engine cache wrapper', async () => {

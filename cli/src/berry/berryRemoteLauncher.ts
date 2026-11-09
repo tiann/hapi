@@ -200,7 +200,18 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
 
             this.applyDisplayMode(batch.mode.permissionMode)
             if (batch.mode.permissionMode !== undefined) {
-                await this.applyBerryAcpMode(backend, acpSessionId, batch.mode.permissionMode)
+                const applied = await this.applyBerryAcpMode(backend, acpSessionId, batch.mode.permissionMode)
+                if (!applied && batch.mode.permissionMode === 'read-only') {
+                    // The sandbox is the only enforcement layer for read-only;
+                    // a failed tightening must not fall through to prompting
+                    // under the previous writable sandbox.
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Turn skipped: Berry did not accept the read-only sandbox switch.'
+                    })
+                    this.messageBuffer.addMessage('Turn skipped (read-only switch failed)', 'status')
+                    continue
+                }
             }
 
             const requestedModel = batch.mode.model
@@ -315,21 +326,26 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
      * `session/set_mode` (default / read_only / accept_edits / dont_ask →
      * Berry sandbox workspace-write / read-only / workspace-write / danger).
      * Tool approvals always arrive as request_permission and are decided by
-     * the HAPI permission bridge. No-op when the mode is unchanged; failures
-     * degrade to a status note because the bridge still honors the mode on
-     * the HAPI side.
+     * the HAPI permission bridge. No-op when the mode is unchanged.
+     *
+     * Returns whether the agent accepted the switch. Tightenings to read-only
+     * are the one case the caller must not ignore: the sandbox IS the
+     * enforcement layer there, so a failed tightening leaves the agent more
+     * permissive than the advertised mode. Relaxations may degrade to a
+     * status note — the bridge still honors the stricter HAPI mode.
      */
     private async applyBerryAcpMode(
         backend: ReturnType<typeof createBerryBackend>,
         acpSessionId: string,
         permissionMode: PermissionMode | undefined
-    ): Promise<void> {
+    ): Promise<boolean> {
         const acpMode = BERRY_ACP_MODE_BY_PERMISSION[permissionMode ?? 'default'] ?? 'default'
-        if (acpMode === this.lastAppliedAcpMode) return
+        if (acpMode === this.lastAppliedAcpMode) return true
         try {
             await backend.setMode(acpSessionId, acpMode, { syncThoughtLevel: false })
             this.lastAppliedAcpMode = acpMode
             logger.debug(`[berry-acp] Applied sandbox mode via set_mode: ${acpMode}`)
+            return true
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             logger.warn('[berry-acp] set_mode failed', { message })
@@ -337,6 +353,7 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
                 type: 'message',
                 message: `Berry sandbox mode switch failed: ${message}`
             })
+            return false
         }
     }
 
