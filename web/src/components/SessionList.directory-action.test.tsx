@@ -118,6 +118,39 @@ describe('SessionList directory action', () => {
         })
     })
 
+    it('archives only the live sessions of a project from its context menu', async () => {
+        const archiveSession = vi.fn(async () => {})
+        const metadata = (name: string, lifecycleState: string) => ({
+            path: '/work/proj', machineId: 'machine-1', name, flavor: 'codex', lifecycleState
+        })
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({ id: 'live', active: true, updatedAt: 3, metadata: metadata('Live', 'running') }),
+                    makeSession({ id: 'stale', updatedAt: 2, metadata: metadata('Stale', 'idle') }),
+                    makeSession({ id: 'done', updatedAt: 1, metadata: metadata('Done', 'archived') }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={{ archiveSession } as unknown as ApiClient}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByTitle('/work/proj'))
+        expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive all' }))
+        expect(screen.getByText('Archive 2 sessions in "work/proj"?')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledTimes(2))
+        expect(archiveSession).toHaveBeenCalledWith('live')
+        expect(archiveSession).toHaveBeenCalledWith('stale')
+    })
+
     it('keeps the sticky project header opaque and aligned with the list viewport', () => {
         const session = makeSession({
             id: 'session-1',
