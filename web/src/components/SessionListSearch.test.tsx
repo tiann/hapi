@@ -121,4 +121,19 @@ describe('SessionListSearch content-scope FUE', () => {
         expect(window.localStorage.getItem('hapi.fue.v1.session-list-search-scope')).toBe('1')
         expect(screen.queryByRole('dialog', { name: 'New: search message text' })).not.toBeInTheDocument()
     })
+
+    it('does not collapse the search bar when focus moves into the portaled callout', () => {
+        const onExpandedChange = vi.fn()
+        renderSearch({ onExpandedChange })
+
+        fireEvent.click(screen.getByTestId('session-list-search-scope'))
+        const gotIt = screen.getByRole('button', { name: 'Got it' })
+
+        // FueCallout portals to document.body, so it's never a DOM descendant
+        // of the search container — without the fix this blur would read as
+        // focus leaving and collapse the bar out from under the callout.
+        fireEvent.blur(screen.getByTestId('session-list-search'), { relatedTarget: gotIt })
+
+        expect(onExpandedChange).not.toHaveBeenCalledWith(false)
+    })
 })

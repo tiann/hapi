@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { RenameSessionDialog } from './RenameSessionDialog'
@@ -50,5 +50,54 @@ describe('RenameSessionDialog title-lock FUE', () => {
 
         expect(window.localStorage.getItem('hapi.fue.v1.session-title-lock')).toBe('1')
         expect(screen.queryByRole('dialog', { name: 'New: lock this title' })).not.toBeInTheDocument()
+    })
+
+    it('does not close the whole dialog when interacting with the callout', async () => {
+        const onClose = vi.fn()
+        renderDialog({ onClose })
+
+        // Radix's dismissable layer defers attaching its outside-pointerdown
+        // listener by a setTimeout(0), specifically so it doesn't fire on the
+        // same click that opened the dialog. Wait past that tick so the
+        // listener is actually live before testing the outside interaction —
+        // without this wait the test passes vacuously regardless of whether
+        // the behavior below is real.
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 10))
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Lock title against agent updates' }))
+        const gotIt = screen.getByRole('button', { name: 'Got it' })
+
+        // FueCallout portals to document.body, outside Radix's DialogContent
+        // DOM subtree — but it's still a React *child* of DialogContent in
+        // the JSX tree, and React's synthetic events bubble along that
+        // logical tree regardless of portal placement. Radix's outside-click
+        // detection is itself a React onPointerDownCapture handler, so it
+        // correctly sees this as "inside" and does not close the dialog.
+        // (Verified against a differential control: a *truly* detached
+        // element at the same point in the sequence does close it.)
+        fireEvent.pointerDown(gotIt)
+        fireEvent.click(gotIt)
+
+        expect(onClose).not.toHaveBeenCalled()
+    })
+
+    it.fails('keyboard focus can reach the callout dismiss button', () => {
+        // Known limitation, not fixed here: Radix's FocusScope traps focus
+        // using a raw DOM containment check (container.contains(target)),
+        // not React's logical tree — unlike the pointerdown-outside check
+        // above, there's no portal-transparency here. Tabbing or
+        // programmatically focusing into the portaled callout gets pulled
+        // straight back to the dialog's rename input. Mouse-click dismiss
+        // and Escape-to-dismiss both still work (see the other tests in this
+        // file); only reaching "Got it" via Tab is affected.
+        renderDialog()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Lock title against agent updates' }))
+        const gotIt = screen.getByRole('button', { name: 'Got it' })
+        gotIt.focus()
+
+        expect(document.activeElement).toBe(gotIt)
     })
 })

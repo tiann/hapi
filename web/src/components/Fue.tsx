@@ -185,6 +185,10 @@ export function FueCallout(props: {
             ref={panelRef}
             role="dialog"
             aria-label={props.title}
+            // Portals to document.body, so ancestor-containment checks (blur
+            // collapse, Radix dialog outside-interaction) can't see this as
+            // "inside". Callers detect it via this marker instead.
+            data-fue-callout="true"
             style={
                 pos
                     ? {
