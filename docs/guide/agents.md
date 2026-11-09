@@ -375,6 +375,8 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
   Pi sessions include a `hapi_display_image` tool for showing local PNG, JPEG, GIF, or WebP images up to 25 MiB in the chat. Images returned by Pi tools render inline even when the selected model has no vision support. The display tool also returns image bytes to Pi's model context.
 
+  On Pi versions with built-in MCP support (0.99+), HAPI also exposes its peer-session tools through Pi: `list_peers`, `inspect_peer`, `ping_peer`, and `spawn_peer`. Calls that read another session, send to it, or spawn a session require confirmation in the HAPI UI. `HAPI_DISABLE_PEER_TOOLS=1` hides the tools and keeps the disabled citation guidance in the system prompt.
+
 ## Related
 
 - [How it Works](./how-it-works.md) - Architecture and data flow
