@@ -1389,9 +1389,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
 
-                if (!this.instructionsSent) {
+                // The one-time flag is consumed only at dispatch below, so a Stop
+                // during the history read cannot drop the instructions for good.
+                const attachInstructions = !this.instructionsSent;
+                if (attachInstructions) {
                     messageText = `${getOpencodeNativeToolInstruction()}\n\n${messageText}`;
-                    this.instructionsSent = true;
                 }
 
                 const promptContent: PromptContent[] = [{
@@ -1438,6 +1440,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     this.nativeHistoryUnverified = true;
                     this.nativeInputWriters.add(nativeInput);
                     promptDispatched = true;
+                    if (attachInstructions) this.instructionsSent = true;
                     try {
                         await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                             this.handleAgentMessage(message);

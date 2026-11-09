@@ -4783,6 +4783,43 @@ describe('selectAbortStatusMessage', () => {
         expect(text).toContain('actual second prompt')
     })
 
+    it('keeps native instructions for the first actual prompt after Stop aborts the history read', async () => {
+        roundSummaryHarness.snapshotImpl = async () => ({ messageIds: [] })
+        harness.promptCount = 0
+        harness.promptContents = []
+        const { OpencodeConversationHistory } = await import('./conversationHistory')
+        let countCalls = 0
+        let releaseFirstCount: ((value: number | null) => void) | null = null
+        const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
+            .mockImplementation(() => {
+                countCalls += 1
+                return countCalls === 1
+                    ? new Promise<number | null>((resolve) => { releaseFirstCount = resolve })
+                    : Promise.resolve(null)
+            })
+        try {
+            const { session, rpcHandlers } = createSessionStub([{ message: 'aborted during history read', mode: createMode() }], { keepOpen: true })
+            const launchPromise = opencodeRemoteLauncher(session as never)
+            await vi.waitFor(() => expect(countCalls).toBe(1))
+
+            const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined
+            expect(abortHandler).toBeDefined()
+            await abortHandler!()
+            session.queue.push('actual second prompt', createMode())
+            releaseFirstCount!(null)
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1))
+            session.queue.close()
+            await launchPromise
+
+            expect(harness.promptCount).toBe(1)
+            const text = (harness.promptContents[0] as Array<{ type: string; text?: string }>)[0]?.text
+            expect(text).toContain(getOpencodeNativeToolInstruction())
+            expect(text).toContain('actual second prompt')
+        } finally {
+            countSpy.mockRestore()
+        }
+    })
+
     it('does not start a backend prompt when Switch arrives during the blocking pre-prompt snapshot', async () => {
         roundSummaryHarness.snapshotCalls = []
         harness.promptCount = 0
