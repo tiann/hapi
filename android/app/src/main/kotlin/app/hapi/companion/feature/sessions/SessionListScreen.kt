@@ -40,6 +40,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
@@ -59,6 +60,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -89,6 +92,7 @@ import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
 import app.hapi.protocol.wire.TodoProgress
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The session list (B-M2b) — standalone screen: navigation and app graph stay
@@ -130,12 +134,19 @@ fun SessionListScreen(
     modifier: Modifier = Modifier,
     /** Shows the "+" FAB (new-session form, B-M3d) when non-null. */
     onNewSession: (() -> Unit)? = null,
+    /** null ⇒ no export entry in the actions sheet (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val cursorGate by viewModel.cursorReopenGate.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
+    // Saveable session id: the export dialog must come back after the SAF
+    // picker rotates/kills the activity, to re-register for its result.
+    var exportSessionId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -217,7 +228,12 @@ fun SessionListScreen(
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
                         },
-                        onLongPress = { sheetRow = it },
+                        onLongPress = {
+                            // Seed the Cursor reopen gate before the sheet
+                            // opens (web probes on menu open).
+                            viewModel.beginCursorReopenProbe(it.summary)
+                            sheetRow = it
+                        },
                         onSwipePin = { row ->
                             val pinned = row.summary.pinned == true || row.summary.globalPinned == true
                             viewModel.setPinMode(row.id, if (pinned) PinMode.None else PinMode.Project)
@@ -249,6 +265,15 @@ fun SessionListScreen(
     }
 
     sheetRow?.let { row ->
+        // Gate only the probed row's Reopen entry (web: one menu at a time).
+        val gateUi = cursorGate.takeIf { it.sessionId == row.id }?.gate
+        val reopenDisabledReason = when (gateUi?.disabledReason) {
+            CursorReopenGateReason.Missing -> stringResource(R.string.sessions_reopen_cursor_missing)
+            CursorReopenGateReason.Checking -> stringResource(R.string.sessions_reopen_cursor_checking)
+            null -> null
+        }
+        val reopenHint =
+            if (gateUi?.probeUnverified == true) stringResource(R.string.sessions_reopen_cursor_unverified) else null
         SessionActionsSheet(
             row = row,
             onDismiss = { sheetRow = null },
@@ -264,10 +289,16 @@ fun SessionListScreen(
                 renameRow = row
                 sheetRow = null
             },
+            onExport = {
+                exportSessionId = row.id
+                sheetRow = null
+            },
             onReopen = {
                 viewModel.reopenSession(row.id)
                 sheetRow = null
             },
+            reopenDisabledReason = reopenDisabledReason,
+            reopenHint = reopenHint,
             onDelete = {
                 deleteRow = row
                 sheetRow = null
@@ -296,6 +327,20 @@ fun SessionListScreen(
                 deleteRow = null
             },
             onDismiss = { deleteRow = null },
+        )
+    }
+    if (exportSessionId != null && sessionExport != null) {
+        SessionExportDialog(
+            sessionId = exportSessionId.orEmpty(),
+            support = sessionExport,
+            onDismiss = { exportSessionId = null },
+            onSaved = { filename ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.session_export_saved, filename),
+                    )
+                }
+            },
         )
     }
 }
@@ -736,6 +781,11 @@ private fun SessionActionsSheet(
     onReopen: () -> Unit,
     onDelete: () -> Unit,
     onMarkRead: () -> Unit = {},
+    onExport: () -> Unit = {},
+    /** Cursor reopen gate reason (missing/checking) — disables the entry. */
+    reopenDisabledReason: String? = null,
+    /** Cursor probe-unverified hint — entry stays enabled with a caveat. */
+    reopenHint: String? = null,
 ) {
     val summary = row.summary
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -760,8 +810,14 @@ private fun SessionActionsSheet(
             SheetAction(stringResource(R.string.sessions_action_pin_global)) { onSetPinMode(PinMode.Global) }
         }
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
+        SheetAction(stringResource(R.string.sessions_action_export), onClick = onExport)
         if (!summary.active) {
-            SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
+            SheetAction(
+                text = stringResource(R.string.sessions_action_reopen),
+                enabled = reopenDisabledReason == null,
+                supportingText = reopenDisabledReason ?: reopenHint,
+                onClick = onReopen,
+            )
         }
         SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
         SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
@@ -770,7 +826,13 @@ private fun SessionActionsSheet(
 }
 
 @Composable
-private fun SheetAction(text: String, destructive: Boolean = false, onClick: () -> Unit) {
+private fun SheetAction(
+    text: String,
+    destructive: Boolean = false,
+    enabled: Boolean = true,
+    supportingText: String? = null,
+    onClick: () -> Unit,
+) {
     ListItem(
         headlineContent = {
             Text(
@@ -778,7 +840,24 @@ private fun SheetAction(text: String, destructive: Boolean = false, onClick: () 
                 color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
             )
         },
-        modifier = Modifier.clickable(onClick = onClick),
+        supportingContent = supportingText?.let { hint ->
+            {
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        colors = if (enabled) {
+            ListItemDefaults.colors()
+        } else {
+            ListItemDefaults.colors(
+                headlineColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
     )
 }
 

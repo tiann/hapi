@@ -33,6 +33,7 @@ import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.ReadingColumn
+import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.protocol.chat.*
 import kotlinx.coroutines.launch
 
@@ -48,6 +49,8 @@ internal fun ChatHost(
     onOpenFiles: () -> Unit,
     onOpenFile: (String, Int?) -> Unit,
     onOpenScratchlist: (() -> Unit)?,
+    /** null ⇒ no export entry in the chat overflow menu (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
 ) {
     val navigation = rememberNavController()
     val entry by navigation.currentBackStackEntryAsState()
@@ -132,6 +135,7 @@ internal fun ChatHost(
                         viewModel, media, onBack, snackbarHostState = snackbar,
                         dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
                         onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
+                        sessionExport = sessionExport,
                         transcriptList = transcriptList, readingState = reading,
                     )
                 }
