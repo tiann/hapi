@@ -1929,6 +1929,47 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         ).toBeUndefined()
     })
 
+    it('job-wake row (hapi-job-wake: localId) is exempt: session-end cannot confirm an unconsumed wake, replay preserves pending (#1489)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'job-wake-sweep-exempt')
+        const publisher = makePublisher()
+        const now = Date.now()
+        const wakeLocalId = 'hapi-job-wake:batch:claim-abc'
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: '[hapi job] Attached job reached completed' } },
+            wakeLocalId
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'ordinary' } },
+            'local-ordinary'
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+
+        expect(result?.localIds).toEqual(['local-ordinary'])
+        const consumed = publisher.events.filter(e => e.type === 'messages-consumed')
+        expect(consumed).toHaveLength(1)
+        expect((consumed[0] as { localIds: string[] }).localIds).toEqual(['local-ordinary'])
+
+        const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stillQueued.find((m) => m.localId === wakeLocalId)?.invokedAt).toBeNull()
+
+        const { io, cliEmitted } = makeTrackingIo()
+        const service2 = new MessageService(store, io, publisher as any)
+        expect(service2.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(1)
+
+        store.messages.markMessagesInvoked(session.id, [wakeLocalId], now + 1000)
+        expect(
+            store.messages.getUninvokedLocalMessages(session.id)
+                .find((m) => m.localId === wakeLocalId)
+        ).toBeUndefined()
+    })
+
     it('duplicate ACK on a peer row preserves the original consumption timestamp (first-write-wins)', () => {
         const store = makeStore()
         const session = makeSession(store, 'peer-dup-ack')

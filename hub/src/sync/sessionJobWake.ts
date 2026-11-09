@@ -21,6 +21,19 @@ export function isTerminalJobStatus(status: AttachedJobStatus): boolean {
     return status === 'completed' || status === 'failed'
 }
 
+/**
+ * localId prefix for job-complete wake prompts (`hapi job run --wake-on-terminal`).
+ * Must stay exempt from MessageService.sweepImmediateQueuedOnSessionEnd — same
+ * reason as `ping-peer-`: session-end must not synthetically confirm a wake the
+ * runtime never consumed (otherwise claim is marked delivered and the prompt is
+ * neither retried nor replayed).
+ */
+export const JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX = 'hapi-job-wake:'
+
+export function buildJobWakeLocalId(jobKey: string, claimId: string): string {
+    return `${JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX}${jobKey}:${claimId}`
+}
+
 /** Build the user message that resumes the owning agent. */
 export function buildJobTerminalWakePrompt(job: JobWakeSnapshot): string {
     const detail = job.detail?.trim() ? job.detail.trim() : '(none)'

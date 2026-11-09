@@ -32,6 +32,7 @@ import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../curso
 import { toAttachedJob } from '../store/sessionJobs'
 import {
     buildJobTerminalWakePrompt,
+    buildJobWakeLocalId,
     isTerminalJobStatus,
     waitUntilSessionActive,
 } from './sessionJobWake'
@@ -1415,10 +1416,12 @@ export class SyncEngine {
                 ...(job.runId !== undefined ? { runId: job.runId } : {}),
             })
             // Run-scoped localId so a rare double-send after persist dedupes.
+            // Prefix must stay exempt from session-end synthetic sweep (see
+            // MessageService.sweepImmediateQueuedOnSessionEnd).
             await this.sendMessage(targetId, {
                 text,
                 sentFrom: 'webapp',
-                localId: `hapi-job-wake:${ownerJobKey}:${claimId}`,
+                localId: buildJobWakeLocalId(ownerJobKey, claimId),
             })
             this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
             this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
