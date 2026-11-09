@@ -389,6 +389,13 @@ describe('getNextModelForFlavor', () => {
         expect(getNextModelForFlavor('dsh', flash, [])).toBe(flash)
     })
 
+    it('keeps the current hermes/berry model when the ACP catalog has not loaded (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3')).toBe('newapi:glm-5.3')
+        expect(getNextModelForFlavor('berry', 'newapi/glm-5.3')).toBe('newapi/glm-5.3')
+        expect(getModelOptionsForFlavor('hermes', null)).toEqual([])
+        expect(getModelOptionsForFlavor('berry', null)).toEqual([])
+    })
+
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
         const next = getNextModelForFlavor('cursor', 'composer-2.5')
         expect(next).toBe('composer-2.5')

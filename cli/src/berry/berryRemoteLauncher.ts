@@ -56,6 +56,20 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         await this.handleAbort()
     }
 
+    /**
+     * Push the live permission mode to the agent immediately (mid-session
+     * config switches). The queued-turn loop already applies modes at turn
+     * boundaries; without this, a switch to read-only publishes on the HAPI
+     * side right away while the native sandbox lags until the next prompt —
+     * a window where bridge auto-approval and the real sandbox disagree.
+     */
+    async applyModeNow(): Promise<void> {
+        if (!this.backend || !this.session.sessionId) return
+        const permissionMode = this.session.getPermissionMode() as PermissionMode | undefined
+        this.applyDisplayMode(permissionMode)
+        await this.applyBerryAcpMode(this.backend, this.session.sessionId, permissionMode)
+    }
+
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
         return React.createElement(RemoteModeDisplay, {
             ...context,

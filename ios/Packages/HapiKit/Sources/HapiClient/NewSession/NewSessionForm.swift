@@ -170,8 +170,11 @@ public enum NewSessionLogic {
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
+        // Session-only catalogs (hermes/berry) have nothing to pick at create
+        // time — their picker appears in-chat once the agent is running.
+        let catalogScope = AgentModelCatalog.scope(for: agent)
         let hasModelPicker = agent == .claude || agent == .codex
-            || AgentModelCatalog.scope(for: agent) != nil
+            || (catalogScope != nil && catalogScope != .session)
         let trimmedModel = form.model.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedModel: String?
         if agent == .cursor {

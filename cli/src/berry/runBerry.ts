@@ -89,7 +89,13 @@ export async function runBerry(opts: {
             if (config.model !== undefined) currentModel = config.model
             if (config.permissionMode !== undefined) currentPermissionMode = config.permissionMode
         },
-        onAfterApply: syncSessionMode
+        onAfterApply: () => {
+            syncSessionMode()
+            // Mid-session mode switches take effect on the agent immediately;
+            // waiting for the next queued turn would leave the published mode
+            // and the native sandbox disagreeing (read-only especially).
+            void launcherRef.current?.applyModeNow?.()
+        }
     })
 
     const lifecycle = createRunnerLifecycle({

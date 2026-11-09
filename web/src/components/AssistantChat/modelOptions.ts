@@ -252,6 +252,11 @@ export function getNextModelForFlavor(
     if (flavor === 'dsh') {
         return normalizeCurrentModel(currentModel)
     }
+    // Hermes/Berry: same guard — their catalogs arrive via the session's ACP
+    // config options; until then the shortcut keeps the current model.
+    if (flavor === 'hermes' || flavor === 'berry') {
+        return normalizeCurrentModel(currentModel)
+    }
     if (flavor === 'cursor') {
         return normalizeCurrentModel(currentModel)
     }
