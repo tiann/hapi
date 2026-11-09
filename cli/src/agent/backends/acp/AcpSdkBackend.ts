@@ -88,6 +88,12 @@ type AcpInitializeResult = {
     };
 };
 
+function userMessageChunkText(update: unknown): string | null {
+    if (!isObject(update) || update.sessionUpdate !== 'user_message_chunk') return null;
+    const content = update.content;
+    return isObject(content) && content.type === 'text' ? asString(content.text) : null;
+}
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
@@ -120,6 +126,7 @@ export class AcpSdkBackend implements AgentBackend {
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
+    private userMessageChunkListener: ((text: string) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
     private agentActivityListener: ((thinking: boolean) => void) | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
@@ -618,6 +625,11 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionInfoUpdateListener = listener;
     }
 
+    /** Called in order with agent output: text buffered before an echo is flushed first. */
+    setUserMessageChunkListener(listener: ((text: string) => void) | null): void {
+        this.userMessageChunkListener = listener;
+    }
+
     /**
      * Called when ACP reports foreground state / permission for harness wake (#1470 / #1502).
      * `true` = sustained `running` (debounced), `requires_action`, or permission.
@@ -682,7 +694,10 @@ export class AcpSdkBackend implements AgentBackend {
     async prompt(
         sessionId: string,
         content: PromptContent[],
-        onUpdate: (msg: AgentMessage) => void
+        onUpdate: (msg: AgentMessage) => void,
+        // prompt() waits for earlier output before it sends and for late output
+        // after the answer; callers timing the agent itself need both moments.
+        timing?: { onSent?: () => void; onAnswered?: () => void }
     ): Promise<void> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
@@ -722,17 +737,27 @@ export class AcpSdkBackend implements AgentBackend {
             this.promptRequestInFlight = true;
             let response: unknown;
             try {
-                response = await this.transport.sendRequest('session/prompt', {
+                const request = this.transport.sendRequest('session/prompt', {
                     sessionId,
                     prompt: content
                 }, { timeoutMs: Infinity });
+                timing?.onSent?.();
+                response = await request;
             } finally {
                 this.promptRequestInFlight = false;
+                timing?.onAnswered?.();
             }
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
         } finally {
+            // Cursor (#2267/#2268): drain any session updates already queued with
+            // the native response, then seal a done footer before the quiet
+            // window so finished-shell harness text cannot bury it in one flush.
+            await this.sessionUpdateQueue;
+            if (this.options.flavor === 'cursor') {
+                this.messageHandler?.sealDoneNotifySummaryIfPresent();
+            }
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
@@ -841,8 +866,14 @@ export class AcpSdkBackend implements AgentBackend {
      * Separates transport dispatch from prompt completion so callers can commit
      * queue state only after stdin accepted the request without waiting for the turn.
      */
-    beginSoftSteerPrompt(sessionId: string, content: PromptContent[]): {
+    beginSoftSteerPrompt(sessionId: string, content: PromptContent[], options?: {
+        // Agents that answer each request with its own share (Antigravity)
+        // need every response's usage to total the turn.
+        onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+    }): {
         dispatched: Promise<void>;
+        /** Settles when the agent answers, before late output is drained. */
+        answered: Promise<void>;
         /** Resolves with the ACP stopReason (`cancelled` after session/cancel). */
         completed: Promise<string | null>;
     } {
@@ -862,6 +893,16 @@ export class AcpSdkBackend implements AgentBackend {
         const completed = (async () => {
             try {
                 const response = await request.completed;
+                const usage = options?.onUsage ? this.extractPromptUsage(response) : null;
+                if (usage) {
+                    const context = this.readLatestUsageUpdate();
+                    options?.onUsage?.({
+                        type: 'usage',
+                        ...usage,
+                        contextTokens: context?.contextTokens,
+                        contextWindow: context?.contextWindow
+                    });
+                }
                 return isObject(response) ? asString(response.stopReason) : null;
             } finally {
                 try {
@@ -879,10 +920,15 @@ export class AcpSdkBackend implements AgentBackend {
         })();
 
         void completed.catch((error) => {
-            logger.warn('[ACP] soft-steer session/prompt failed', error);
+            // An Error logs as `{}`.
+            logger.warn('[ACP] soft-steer session/prompt failed', {
+                message: error instanceof Error ? error.message : String(error),
+                code: (error as { code?: unknown } | null)?.code
+            });
         });
 
-        return { dispatched: request.dispatched, completed };
+        const answered = request.completed.then(() => {}, () => {});
+        return { dispatched: request.dispatched, answered, completed };
     }
 
     async respondToPermission(
@@ -997,6 +1043,10 @@ export class AcpSdkBackend implements AgentBackend {
         return this.promptGeneration;
     }
 
+    isTransportAlive(): boolean {
+        return this.transport?.isAlive() ?? false;
+    }
+
     /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
     getProcessPid(): number | null {
         return this.transport ? this.transport.getProcessPid() : null;
@@ -1004,6 +1054,17 @@ export class AcpSdkBackend implements AgentBackend {
 
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
+    }
+
+    /**
+     * Drop buffered speech on the current message handler without emitting.
+     * Cursor post-done silence (#2267): call while the silence gate still
+     * applies, before opening the next HAPI prompt, so prompt()'s pre-swap
+     * drain cannot resurrect a suppressed harness-resume live snapshot.
+     */
+    async discardPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.discardBuffers();
     }
 
     /**
@@ -1189,9 +1250,14 @@ export class AcpSdkBackend implements AgentBackend {
         // update into the restored handler if earlier async image work kept
         // the queue busy past restore.
         const handler = this.messageHandler;
+        const echoedText = this.userMessageChunkListener ? userMessageChunkText(update) : null;
         this.sessionUpdateQueue = this.sessionUpdateQueue
             .then(async () => {
                 await handler?.handleUpdate(update);
+                if (echoedText !== null) {
+                    handler?.drainBuffers();
+                    this.userMessageChunkListener?.(echoedText);
+                }
             })
             .catch((error) => {
                 logger.debug(

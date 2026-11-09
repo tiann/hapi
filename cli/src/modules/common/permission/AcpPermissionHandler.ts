@@ -6,6 +6,7 @@ import { logger } from '@/ui/logger'
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
+    type AutoApprovalRuleSet,
     type PendingPermissionRequest,
     type PermissionCompletion
 } from './BasePermissionHandler'
@@ -45,11 +46,25 @@ function mapDecisionToOutcome(
 /** Shared HAPI permission bridge for ACP agents with one-shot choices. */
 export class AcpPermissionHandler extends BasePermissionHandler<PermissionResponseMessage, void> {
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>()
+    private readonly userWaitEnds = new Map<string, () => void>()
 
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => PermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionMode | undefined,
+        private readonly options: {
+            // Agents that title requests with free text (agy: the command
+            // line) turn off the HAPI tool-name hints, which could match it.
+            autoApprovalRules?: AutoApprovalRuleSet
+            // A long-lived agent process outlives mode switches, so automatic
+            // approvals must not leave standing grants behind.
+            autoApproveOnce?: boolean
+            // Questions need the user's answer in every mode.
+            requiresUser?: (request: PermissionRequest) => boolean
+            // Called when a request starts waiting for the user; the returned
+            // callback runs once it is answered (agents timing their own work).
+            onUserWait?: (request: PermissionRequest) => () => void
+        } = {}
     ) {
         super(session)
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request))
@@ -62,17 +77,25 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             rawInput: request.rawInput
         })
         const toolInput = deriveToolInput(request)
-        const autoDecision = this.resolveAutoApprovalDecision(
-            this.getPermissionMode(),
-            toolName,
-            request.toolCallId
-        )
+        const autoDecision = this.options.requiresUser?.(request)
+            ? null
+            : this.resolveAutoApprovalDecision(
+                this.getPermissionMode(),
+                toolName,
+                request.toolCallId,
+                this.options.autoApprovalRules
+            )
         if (autoDecision) {
-            void this.autoApprove(request, toolName, toolInput, autoDecision)
+            const decision = this.options.autoApproveOnce && autoDecision === 'approved_for_session'
+                ? 'approved'
+                : autoDecision
+            void this.autoApprove(request, toolName, toolInput, decision)
             return
         }
 
         this.pendingBackendRequests.set(request.id, request)
+        const endUserWait = this.options.onUserWait?.(request)
+        if (endUserWait) this.userWaitEnds.set(request.id, endUserWait)
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
@@ -118,6 +141,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         if (request) {
             await this.backend.respondToPermission(request.sessionId, request, mapDecisionToOutcome(request, decision))
         }
+        this.endUserWait(response.id)
         pending.resolve()
 
         return {
@@ -131,11 +155,22 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         logger.debug('[ACP] Permission response received for unknown request', response.id)
     }
 
+    private endUserWait(id: string): void {
+        const end = this.userWaitEnds.get(id)
+        this.userWaitEnds.delete(id)
+        end?.()
+    }
+
+    hasPendingRequests(): boolean {
+        return this.pendingBackendRequests.size > 0
+    }
+
     async cancelAll(reason: string): Promise<void> {
         const pending = Array.from(this.pendingBackendRequests.values())
         this.pendingBackendRequests.clear()
         for (const request of pending) {
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' })
+            this.endUserWait(request.id)
         }
         this.cancelPendingRequests({
             completedReason: reason,

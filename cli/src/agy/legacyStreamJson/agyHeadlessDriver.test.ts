@@ -8,6 +8,12 @@ import { AgySession } from '../session';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { AgyMode, PermissionMode } from '../types';
 
+// Record transcript entries on the fake client instead of building wire messages.
+vi.mock('./agyTranscript', () => ({
+    sendAgyTranscriptEntry: (client: { agyTranscript: (...args: unknown[]) => void }, ...args: unknown[]) =>
+        client.agyTranscript(...args),
+}));
+
 // A fake agy binary: emits a fixed NDJSON stream for one turn, then exits 0.
 function fakeAgyProcess(lines: string[], exitCode = 0): ChildProcessWithoutNullStreams {
     const child = spawn(process.execPath, ['-e', `
@@ -67,10 +73,16 @@ function scriptableFakeChild(chunks: string[], exitCode = 0): ChildProcessWithou
     return Object.assign(child as ChildProcessWithoutNullStreams, { run, feedStdout });
 }
 
+function cancelQueued(client: { onCancelQueuedMessage: ReturnType<typeof vi.fn> }, localId: string): unknown {
+    const handler = client.onCancelQueuedMessage.mock.calls.at(-1)?.[0] as ((id: string) => unknown) | undefined;
+    return handler?.(localId);
+}
+
 function createSession(clientOverrides: Record<string, unknown> = {}) {
     const sent: unknown[] = [];
     const client = {
-        sendAgySessionMessage: (...args: unknown[]) => { sent.push(args); },
+        agyTranscript: (...args: unknown[]) => { sent.push(args); },
+        onCancelQueuedMessage: vi.fn(),
         emitMessagesConsumed: vi.fn(),
         emitSessionReady: vi.fn(),
         sendSessionEvent: vi.fn(),
@@ -346,6 +358,33 @@ describe('AgyHeadlessDriver', () => {
         expect(spawnedArgs.length).toBe(1);
         // The turn must NOT gain --dangerously-skip-permissions from the later
         // mode flip; the queued snapshot (request-review) governs this spawn.
+        expect(spawnedArgs[0]).not.toContain('--dangerously-skip-permissions');
+    });
+
+    it.each([
+        ['acceptEdits', 'accept-edits'],
+        ['plan', 'plan'],
+    ] as const)('starts agy with --mode for the %s permission mode', async (permissionMode, agyMode) => {
+        const { session, queue } = createSession();
+        const spawnedArgs: string[][] = [];
+        const driver = new AgyHeadlessDriver({
+            session,
+            spawnAgy: (args) => {
+                spawnedArgs.push(args);
+                return fakeAgyProcess(FULL_TURN);
+            },
+        });
+
+        queue.push('hello', { permissionMode }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(spawnedArgs.length).toBe(1);
+        const at = spawnedArgs[0]!.indexOf('--mode');
+        expect(spawnedArgs[0]![at + 1]).toBe(agyMode);
         expect(spawnedArgs[0]).not.toContain('--dangerously-skip-permissions');
     });
 
@@ -1126,7 +1165,7 @@ describe('AgyHeadlessDriver', () => {
         // retry backoff: the queue has nothing (batch is outside it), but the
         // driver-owned retry state must remove it so the retry never spawns.
         const removed = session.queue.cancelByLocalId('local-1');
-        const retryRemoved = session.cancelRetryDelivery?.( 'local-1') ?? false;
+        const retryRemoved = cancelQueued(client, 'local-1');
         await new Promise((r) => setTimeout(r, 2000));
         queue.close();
         session.stopKeepAlive();
@@ -1179,7 +1218,7 @@ describe('AgyHeadlessDriver', () => {
         await new Promise((r) => setTimeout(r, 400));
         // Cancel the only retry item: the session must stay alive (not break) and
         // accept a later prompt.
-        session.cancelRetryDelivery?.('local-1');
+        cancelQueued(client, 'local-1');
         await new Promise((r) => setTimeout(r, 2000));
         // A newer message queued after the cancel must still be processed.
         queue.push('second', { permissionMode: 'request-review' }, 'local-2');
