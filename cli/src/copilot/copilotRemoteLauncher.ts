@@ -20,6 +20,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private readonly model?: string;
     private readonly onModelRollback?: (model: string | null) => void;
     private readonly onEffortRollback?: (effort: string | null) => void;
+    private readonly getQueuedModel?: () => string | null;
     private backend: ReturnType<typeof createCopilotBackend> | null = null;
     private permissionHandler: CopilotPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
@@ -31,8 +32,6 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null;
     private currentBackendEffort: string | null = null;
     private defaultBackendEffort: string | null = null;
-    /** Session model selection the backend has been brought in line with. */
-    private appliedModelSelection: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setModeSupported: boolean | undefined = undefined;
     private activeSessionId: string | null = null;
@@ -42,12 +41,15 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         model?: string;
         onModelRollback?: (model: string | null) => void;
         onEffortRollback?: (effort: string | null) => void;
+        /** Model the next queued turn will carry; differs from the backend's while a switch is pending. */
+        getQueuedModel?: () => string | null;
     }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.model = opts.model;
         this.onModelRollback = opts.onModelRollback;
         this.onEffortRollback = opts.onEffortRollback;
+        this.getQueuedModel = opts.getQueuedModel;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -149,11 +151,11 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             return await buildCopilotModelsResponseFromBackend(acpSessionId, backend, session.path);
         });
         this.captureEffortBaseline(acpSessionId);
-        this.appliedModelSelection = session.getModel() ?? null;
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListCopilotReasoningEffortOptions, async () => {
-            // A model change is applied with the next turn; until then the
-            // cached levels belong to the previous model.
-            if ((session.getModel() ?? null) !== this.appliedModelSelection) {
+            // A model change is applied with the turn that carries it; until
+            // then the cached levels belong to the previous model.
+            const queuedModel = this.getQueuedModel?.() ?? null;
+            if (queuedModel !== null && queuedModel !== this.currentBackendModel) {
                 return { success: false, error: 'Copilot model switch pending' };
             }
             const option = backend.getThoughtLevelConfigOption(acpSessionId);
@@ -185,7 +187,6 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             if (this.currentBackendModel !== modelBeforeBatch) {
                 this.captureEffortBaseline(acpSessionId);
             }
-            this.appliedModelSelection = session.getModel() ?? null;
             await this.applyQueuedEffort(acpSessionId, batch.mode);
 
             const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
@@ -546,11 +547,7 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function copilotRemoteLauncher(
     session: CopilotSession,
-    opts: {
-        model?: string;
-        onModelRollback?: (model: string | null) => void;
-        onEffortRollback?: (effort: string | null) => void;
-    }
+    opts: ConstructorParameters<typeof CopilotRemoteLauncher>[1]
 ): Promise<'switch' | 'exit'> {
     const launcher = new CopilotRemoteLauncher(session, opts);
     return launcher.launch();

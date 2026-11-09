@@ -354,7 +354,8 @@ export async function runCopilot(opts: {
             },
             onEffortRollback: (effort) => {
                 sessionEffort = effort;
-            }
+            },
+            getQueuedModel: () => resolvedModel
         });
     } catch (error) {
         crashed = true;
