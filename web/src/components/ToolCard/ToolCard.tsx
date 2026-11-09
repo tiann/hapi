@@ -12,7 +12,7 @@ import { CodexPlanFooter } from '@/components/ToolCard/CodexPlanFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
-import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
+import { isAsyncRequestUserInput, isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
@@ -465,6 +465,7 @@ function ToolCardInner(props: ToolCardProps) {
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'resolved' || permission.status === 'pending'
+        || (permission.status === 'canceled' && isAsyncRequestUserInput(toolName, props.block.tool.input))
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
     ))
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter

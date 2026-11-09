@@ -7,6 +7,7 @@ import { Spinner } from '@/components/Spinner'
 import { isCodexFamilyFlavor } from '@hapi/protocol'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import { useTranslation } from '@/lib/use-translation'
+import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 
 function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTools: string[] | undefined): boolean {
     if (!allowedTools || allowedTools.length === 0) return false
@@ -205,6 +206,12 @@ export function PermissionFooter(props: {
     }
 
     if (permission.status === 'resolved') return <div className="mt-2 text-xs text-[var(--app-hint)]">{t('tool.resolved')}</div>
+
+    // Dismissal removes the form, but the historical question still needs a
+    // visible outcome. "Canceled" also covers runtime withdrawal, not just a user click.
+    if (permission.status === 'canceled' && isAsyncRequestUserInput(toolName, props.tool.input)) {
+        return <div className="mt-2 text-xs text-[var(--app-hint)]">{summary}</div>
+    }
 
     if (!isPending) {
         // Keep the thread minimal: approval is already reflected by tool state/icon.
