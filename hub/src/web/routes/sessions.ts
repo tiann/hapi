@@ -1742,6 +1742,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.get('/sessions/:id/kimi-reasoning-effort-options', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'kimi') {
+            return c.json({ success: false, error: 'Kimi effort options are only available for Kimi sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listKimiReasoningEffortOptionsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Kimi effort options'
+            }, 500)
+        }
+    })
+
     app.get('/sessions/:id/kimi-models', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) return engine

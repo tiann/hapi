@@ -3,7 +3,8 @@ import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { KimiMode } from './types'
 
 const harness = vi.hoisted(() => ({
-    prompts: [] as unknown[][]
+    prompts: [] as unknown[][],
+    configCalls: [] as unknown[][]
 }))
 
 vi.mock('./utils/kimiBackend', () => ({
@@ -12,6 +13,10 @@ vi.mock('./utils/kimiBackend', () => ({
         newSession: vi.fn(async () => 'kimi-session-1'),
         loadSession: vi.fn(async () => 'kimi-session-1'),
         setModel: vi.fn(async () => {}),
+        getThoughtLevelConfigOption: vi.fn(() => ({ id: 'thinking', currentValue: 'on', options: [] })),
+        setConfigOption: vi.fn(async (...args: unknown[]) => {
+            harness.configCalls.push(args)
+        }),
         prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
             harness.prompts.push(content)
         }),
@@ -45,10 +50,13 @@ vi.mock('@/ui/logger', () => ({
 
 import { kimiRemoteLauncher } from './kimiRemoteLauncher'
 
-function createSession() {
+function createSession(modes: KimiMode[] = [
+    { permissionMode: 'default', model: 'kimi-k2' },
+    { permissionMode: 'default', model: 'kimi-k2' }
+]) {
     const queue = new MessageQueue2<KimiMode>((mode) => JSON.stringify(mode))
-    queue.pushIsolateAndClear('first', { permissionMode: 'default', model: 'kimi-k2' })
-    queue.push('second', { permissionMode: 'default', model: 'kimi-k2' })
+    queue.pushIsolateAndClear('first', modes[0])
+    queue.push('second', modes[1])
     queue.close()
 
     const session = {
@@ -67,7 +75,9 @@ function createSession() {
         onSessionFound(id: string) { session.sessionId = id },
         onThinkingChange: vi.fn(),
         sendAgentMessage: vi.fn(),
-        sendSessionEvent: vi.fn()
+        sendSessionEvent: vi.fn(),
+        setEffort: vi.fn(),
+        pushKeepAlive: vi.fn()
     }
     return session
 }
@@ -75,6 +85,7 @@ function createSession() {
 describe('kimiRemoteLauncher skill lookup instruction', () => {
     afterEach(() => {
         harness.prompts = []
+        harness.configCalls = []
     })
 
     it('does not prepend skill_lookup instructions onto user turns', async () => {
@@ -85,5 +96,17 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         expect(JSON.stringify(harness.prompts[0])).not.toContain('skill_lookup')
         expect(JSON.stringify(harness.prompts[0])).not.toContain('$name')
         expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup')
+    })
+
+    it('applies the queued effort and resets to the agent default', async () => {
+        await kimiRemoteLauncher(createSession([
+            { permissionMode: 'default', model: 'kimi-k2', effort: 'high' },
+            { permissionMode: 'default', model: 'kimi-k2', effort: null }
+        ]) as never, { model: 'kimi-k2' })
+
+        expect(harness.configCalls).toEqual([
+            ['kimi-session-1', 'thinking', 'high'],
+            ['kimi-session-1', 'thinking', 'on']
+        ])
     })
 })

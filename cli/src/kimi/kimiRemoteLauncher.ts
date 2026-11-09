@@ -11,9 +11,11 @@ import type { PermissionMode } from './types';
 import { createKimiBackend } from './utils/kimiBackend';
 import { KimiPermissionHandler } from './utils/permissionHandler';
 import { resolveKimiRuntimeConfig } from './utils/config';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 class KimiRemoteLauncher extends RemoteLauncherBase {
     private readonly session: KimiSession;
     private readonly model?: string;
+    private readonly onEffortRollback?: (effort: string | null) => void;
     private backend: ReturnType<typeof createKimiBackend> | null = null;
     private permissionHandler: KimiPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
@@ -21,12 +23,15 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private displayModel: string | null = null;
     private displayPermissionMode: PermissionMode | null = null;
     private currentBackendModel: string | null = null;
+    private currentBackendEffort: string | null = null;
+    private defaultBackendEffort: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private lastDisplayedToolCall = new Map<string, string>();
-    constructor(session: KimiSession, opts: { model?: string }) {
+    constructor(session: KimiSession, opts: { model?: string; onEffortRollback?: (effort: string | null) => void }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.model = opts.model;
+        this.onEffortRollback = opts.onEffortRollback;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -118,6 +123,13 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(`[MODEL:${effectiveModel}]`, 'system');
         }
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode, effectiveModel ?? undefined);
+        this.currentBackendEffort = backend.getThoughtLevelConfigOption(acpSessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = this.currentBackendEffort;
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListKimiReasoningEffortOptions, async () => {
+            const option = backend.getThoughtLevelConfigOption(acpSessionId);
+            if (!option) return { success: false, error: 'Kimi effort options are not available' };
+            return { success: true, options: option.options, currentValue: option.currentValue ?? null };
+        });
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -168,6 +180,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            await this.applyQueuedEffort(acpSessionId, batch.mode);
+
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
             messageBuffer.addMessage(batch.message, 'user');
 
@@ -200,6 +214,29 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                     sendReady();
                 }
             }
+        }
+    }
+
+    private async applyQueuedEffort(sessionId: string, mode: { effort?: string | null }): Promise<void> {
+        const backend = this.backend;
+        const requested = mode.effort ?? this.defaultBackendEffort;
+        if (!backend || !requested || requested === this.currentBackendEffort) return;
+        const option = backend.getThoughtLevelConfigOption(sessionId);
+        try {
+            if (!option) throw new Error('no thinking option');
+            await backend.setConfigOption(sessionId, option.id, requested);
+            this.currentBackendEffort = requested;
+        } catch (error) {
+            logger.warn('[kimi-remote] Inline effort switch failed', error);
+            const effort = this.currentBackendEffort === this.defaultBackendEffort ? null : this.currentBackendEffort;
+            mode.effort = effort;
+            this.session.setEffort(effort);
+            this.session.pushKeepAlive();
+            this.onEffortRollback?.(effort);
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch Kimi effort to ${requested}.`
+            });
         }
     }
 
@@ -359,7 +396,7 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function kimiRemoteLauncher(
     session: KimiSession,
-    opts: { model?: string }
+    opts: { model?: string; onEffortRollback?: (effort: string | null) => void }
 ): Promise<'switch' | 'exit'> {
     const launcher = new KimiRemoteLauncher(session, opts);
     return launcher.launch();
