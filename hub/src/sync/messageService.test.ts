@@ -2009,6 +2009,49 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         expect(row?.invokedAt).toBeNull()
         expect(row?.createdAt).toBe(oldCreated)
     })
+
+    it('an enveloped user prompt with a lost ack is still swept and replayed', () => {
+        // Role detection must match the sibling delivery logic: some rows carry the
+        // role inside an envelope ({message: …}, {data:{message}}, {payload:{message}})
+        // rather than at the top level, and unwrapRoleWrappedRecordEnvelope is the
+        // one unwrapper both paths should agree on.
+        const store = makeStore()
+        const session = makeSession(store, 'r4-enveloped-sweep')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        const enveloped = { message: { role: 'user', content: { type: 'text', text: 'enveloped prompt' } } }
+        store.messages.addMessage(session.id, enveloped, 'enveloped-lost-ack')
+
+        // Replay delivers it to the CLI room like any queued prompt.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(1)
+
+        // The session-end sweep force-invokes it once the CLI is gone.
+        const sweepAt = Date.now()
+        const swept = service.sweepImmediateQueuedOnSessionEnd(session.id, sweepAt)
+        expect(swept?.localIds).toEqual(['enveloped-lost-ack'])
+        expect(store.messages.getLocalMessageStates(session.id, ['enveloped-lost-ack'])[0]?.invokedAt).toBe(sweepAt)
+    })
+
+    it('attach-time replay skips agent session-event rows instead of re-delivering them', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'r4-enveloped-replay-excludes-events')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'agent', content: { id: 'e1', type: 'event', data: { type: 'message', message: '📦 Compaction started' } } },
+            'opencode:ses_x:compaction:msg_1:started'
+        )
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+        // The event row itself is untouched — still stored, still uninvoked.
+        const row = store.messages.getMessages(session.id).find((m) => m.localId === 'opencode:ses_x:compaction:msg_1:started')
+        expect(row?.invokedAt).toBeNull()
+    })
 })
 
 it('preserves live confirmation state when an idempotent send repeats the same durable input', async () => {

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { hasUnreadMessageContent, getLiveReasoningStreamId } from '@hapi/protocol/messages'
+import { hasUnreadMessageContent, getLiveReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
@@ -688,9 +688,13 @@ export function getMatureScheduledMessages(
  *  (COALESCE(invoked_at, created_at)) to "now" and resurfacing days-old events
  *  at the bottom of the thread as if they had just arrived. Session events are
  *  already stored and rendered; they are never deliverable prompts and must
- *  keep their original position. The check runs on the decoded content rather
- *  than json_extract in SQL because compressed rows store content as a zstd
- *  BLOB, which SQLite's JSON functions reject ("malformed JSON").
+ *  keep their original position. The check unwraps role-wrapped envelopes via
+ *  unwrapRoleWrappedRecordEnvelope, the same helper the delivery/export paths
+ *  use (isQueuedUserMessage), so both sides agree on what a queued user prompt
+ *  is even if a row stores the role inside an envelope. It runs on the decoded
+ *  content rather than json_extract in SQL because compressed rows store
+ *  content as a zstd BLOB, which SQLite's JSON functions reject ("malformed
+ *  JSON").
  *
  *  Scheduled rows (scheduled_at IS NOT NULL) are *deliberately excluded*, mature
  *  or not.  The mature-scan path (releaseMatureScheduledMessages) is the sole
@@ -713,7 +717,7 @@ export function getImmediateQueuedLocalMessages(
         ORDER BY seq ASC
     `).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
-        .filter((message) => (message.content as { role?: unknown } | null)?.role === 'user')
+        .filter((message) => unwrapRoleWrappedRecordEnvelope(message.content)?.role === 'user')
 }
 
 /**
