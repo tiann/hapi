@@ -25,11 +25,14 @@ import app.hapi.protocol.markdown.HrefDecision
  * [HrefDecision.ConfirmFirst] asks first (custom schemes), blocked never gets
  * here. Workspace-file citations route to the session file viewer (B-M4c) via
  * [onOpenFile] — the chat screen wires it to `chat/{id}/file` in full mode,
- * passing the cited line along as a hint.
+ * passing the cited line along as a hint. Session citations
+ * (`/sessions/<id>`) route to that session's chat via [onOpenSession]
+ * (web `SessionPathAnchor` parity).
  */
 @Composable
 fun rememberChatLinkHandler(
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
+    onOpenSession: (sessionId: String) -> Unit = {},
 ): MarkdownLinkHandler {
     val context = LocalContext.current
     var confirmUrl by remember { mutableStateOf<String?>(null) }
@@ -53,9 +56,11 @@ fun rememberChatLinkHandler(
         )
     }
 
-    return remember(context, onOpenFile) {
+    return remember(context, onOpenFile, onOpenSession) {
         object : MarkdownLinkHandler {
             override fun onFilePath(path: String, line: Int?) = onOpenFile(path, line)
+
+            override fun onSessionReference(sessionId: String) = onOpenSession(sessionId)
 
             override fun onUrl(url: String, decision: HrefDecision) {
                 when (decision) {
