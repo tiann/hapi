@@ -7,12 +7,18 @@ async function main(): Promise<void> {
     // happen before any module side effects.
     await handleDisclaimExecEntry()
     const fallbackNote = takeDisclaimFallbackNote()
-    const { captureLauncherPid } = await import('./runtime/responsibility')
+    // Dependency-free, so `--help` and `--version` work even when HAPI_HOME cannot be created.
+    const { captureLauncherPid } = await import('./runtime/launcherPid')
     captureLauncherPid()
     const { runCli } = await import('./commands/runCli')
     if (fallbackNote) {
-        const { logger } = await import('./ui/logger')
-        logger.debug(`[WARN] [DISCLAIM] ${fallbackNote}`)
+        try {
+            // The logger creates HAPI_HOME; the note is best effort.
+            const { logger } = await import('./ui/logger')
+            logger.debug(`[WARN] [DISCLAIM] ${fallbackNote}`)
+        } catch {
+            // The note already went to stderr when the disclaim failed.
+        }
     }
     await runCli()
 }

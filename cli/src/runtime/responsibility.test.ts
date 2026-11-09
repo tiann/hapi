@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { captureLauncherPid, LAUNCHER_PID_ENV, ownsResponsibility } from './responsibility'
+import { captureLauncherPid, getLauncherPid, LAUNCHER_PID_ENV } from './launcherPid'
+import { ownsResponsibility } from './responsibility'
 
 // pid -> responsible pid
 function table(entries: Record<number, number>): (pid: number) => number {
@@ -42,6 +43,17 @@ describe('captureLauncherPid', () => {
         captureLauncherPid(env)
 
         expect(env).toEqual({ KEEP: 'x' })
+    })
+
+    it.each([
+        ['50', 50],
+        ['1', null],
+        ['stale', null],
+        [undefined, null],
+    ])('reads %s as launcher pid %s', (value, expected) => {
+        captureLauncherPid(value === undefined ? {} : { [LAUNCHER_PID_ENV]: value })
+
+        expect(getLauncherPid()).toBe(expected)
     })
 })
 

@@ -16,28 +16,11 @@
  * LAN access for new processes, so disclaiming its children is no worse.
  */
 import { logger } from '@/ui/logger'
-
-/** Set by the npm launcher to its own pid; read once at startup and never passed on. */
-export const LAUNCHER_PID_ENV = 'HAPI_LAUNCHER_PID'
+import { getLauncherPid } from './launcherPid'
 
 type ResponsibleFor = (pid: number) => number
 
 let lookup: ResponsibleFor | null | undefined
-let launcherPid: number | null = null
-
-function parsePid(value: string | undefined): number | null {
-    if (!value || !/^\d+$/.test(value)) {
-        return null
-    }
-    const pid = Number(value)
-    return pid > 1 ? pid : null
-}
-
-/** Reads and removes the launcher pid, so no child of this process inherits it. */
-export function captureLauncherPid(env: NodeJS.ProcessEnv = process.env): void {
-    launcherPid = parsePid(env[LAUNCHER_PID_ENV])
-    delete env[LAUNCHER_PID_ENV]
-}
 
 export interface ResponsibilityFacts {
     pid: number
@@ -92,7 +75,7 @@ export function canDisclaimForChildren(): boolean {
         return false
     }
     try {
-        return ownsResponsibility({ pid: process.pid, ppid: process.ppid, launcherPid, responsibleFor: lookup })
+        return ownsResponsibility({ pid: process.pid, ppid: process.ppid, launcherPid: getLauncherPid(), responsibleFor: lookup })
     } catch (error) {
         warnOnce(error instanceof Error ? error.message : String(error))
         lookup = null
