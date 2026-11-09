@@ -1165,9 +1165,8 @@ const SessionItem = memo(function SessionItem(props: {
                     data-session-scroll-anchor
                     draggable={!isTouch && isMentionableSession(s)}
                     onDragStart={(event) => {
-                        // A drag supersedes the press gesture: cancel any pending
-                        // long-press and close a menu already opened by a slow grab.
-                        longPressHandlers.onDragStart(event)
+                        // Native drag swallows mouseup: cancel the pending long-press.
+                        longPressHandlers.onMouseLeave(event)
                         setMenuOpen(false)
                         event.dataTransfer.effectAllowed = 'copy'
                         event.dataTransfer.setData(SESSION_MENTION_DRAG_MIME, JSON.stringify({
