@@ -16,6 +16,12 @@ interface PermissionResponseMessage {
     approved: boolean
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     reason?: string
+    answers?: Record<string, string[]>
+}
+
+export type UserAnswer = {
+    decision: NonNullable<PermissionResponseMessage['decision']>
+    answers?: Record<string, string[]>
 }
 
 function pickOptionId(request: PermissionRequest, preferredKinds: string[]): string | null {
@@ -47,6 +53,9 @@ function mapDecisionToOutcome(
 export class AcpPermissionHandler extends BasePermissionHandler<PermissionResponseMessage, void> {
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>()
     private readonly userWaitEnds = new Map<string, () => void>()
+    private readonly userQuestions = new Map<string, (answer: UserAnswer) => void>()
+    // Clients hide a pending request whose id was already completed.
+    private readonly usedIds = new Set<string>()
 
     constructor(
         session: ApiSessionClient,
@@ -63,7 +72,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             requiresUser?: (request: PermissionRequest) => boolean
             // Called when a request starts waiting for the user; the returned
             // callback runs once it is answered (agents timing their own work).
-            onUserWait?: (request: PermissionRequest) => () => void
+            onUserWait?: () => () => void
         } = {}
     ) {
         super(session)
@@ -94,8 +103,8 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         }
 
         this.pendingBackendRequests.set(request.id, request)
-        const endUserWait = this.options.onUserWait?.(request)
-        if (endUserWait) this.userWaitEnds.set(request.id, endUserWait)
+        this.usedIds.add(request.id)
+        this.startUserWait(request.id)
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
@@ -127,10 +136,37 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         }))
     }
 
+    /**
+     * A question the agent asks the user, shown as `toolName` with `input`.
+     * Never answered automatically, whatever the permission mode.
+     */
+    askUser(id: string, toolName: string, input: unknown): Promise<UserAnswer> {
+        return new Promise((resolve) => {
+            this.userQuestions.set(id, resolve)
+            this.usedIds.add(id)
+            this.startUserWait(id)
+            this.addPendingRequest(id, toolName, input, { resolve: () => {}, reject: () => {} })
+        })
+    }
+
     protected async handlePermissionResponse(
         response: PermissionResponseMessage,
         pending: PendingPermissionRequest<void>
     ): Promise<PermissionCompletion> {
+        const question = this.userQuestions.get(response.id)
+        if (question) {
+            this.userQuestions.delete(response.id)
+            const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
+            this.endUserWait(response.id)
+            question(response.answers ? { decision, answers: response.answers } : { decision })
+            pending.resolve()
+            return {
+                status: response.approved ? 'approved' : 'denied',
+                decision,
+                reason: response.reason,
+                answers: response.answers
+            }
+        }
         const request = this.pendingBackendRequests.get(response.id)
         this.pendingBackendRequests.delete(response.id)
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
@@ -155,17 +191,35 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         logger.debug('[ACP] Permission response received for unknown request', response.id)
     }
 
+    private startUserWait(id: string): void {
+        const end = this.options.onUserWait?.()
+        if (end) this.userWaitEnds.set(id, end)
+    }
+
     private endUserWait(id: string): void {
         const end = this.userWaitEnds.get(id)
         this.userWaitEnds.delete(id)
         end?.()
     }
 
+    /** Whether a request with this id is open or was already shown. */
+    isUsed(id: string): boolean {
+        return this.usedIds.has(id) || this.pendingRequests.has(id)
+    }
+
     hasPendingRequests(): boolean {
-        return this.pendingBackendRequests.size > 0
+        return this.pendingBackendRequests.size > 0 || this.userQuestions.size > 0
     }
 
     async cancelAll(reason: string): Promise<void> {
+        // Questions first: answering them cannot fail, while a permission
+        // reply can throw once the agent process is gone.
+        const questions = Array.from(this.userQuestions.entries())
+        this.userQuestions.clear()
+        for (const [id, answer] of questions) {
+            this.endUserWait(id)
+            answer({ decision: 'abort' })
+        }
         const pending = Array.from(this.pendingBackendRequests.values())
         this.pendingBackendRequests.clear()
         for (const request of pending) {

@@ -41,7 +41,7 @@ function setupWithHandler(mode: PermissionMode, options?: ConstructorParameters<
         () => mode,
         options
     )
-    return { backend, handler, request: (request: PermissionRequest) => onRequest!(request) }
+    return { backend, client, handler, request: (request: PermissionRequest) => onRequest!(request) }
 }
 
 const commandRequest: PermissionRequest = {
@@ -126,9 +126,9 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         const waits: string[] = []
         const { request, handler } = setupWithHandler('request-review', {
             autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
-            onUserWait: (req) => {
-                waits.push(`start ${req.id}`)
-                return () => waits.push(`end ${req.id}`)
+            onUserWait: () => {
+                waits.push('start')
+                return () => waits.push('end')
             }
         })
 
@@ -136,7 +136,7 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         await handler.cancelAll('Prompt finished')
         await handler.cancelAll('Prompt finished')
 
-        expect(waits).toEqual(['start perm-1', 'end perm-1'])
+        expect(waits).toEqual(['start', 'end'])
 
         const auto = setupWithHandler('always-proceed', { onUserWait: () => { throw new Error('not a user wait') } })
         auto.request(commandRequest)
@@ -150,5 +150,63 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         expect(backend.respondToPermission).not.toHaveBeenCalled()
         const update = client.updateAgentState.mock.calls[0]![0] as (state: object) => { requests: Record<string, unknown> }
         expect(update({}).requests['perm-1']).toBeDefined()
+    })
+})
+
+describe('AcpPermissionHandler questions for the user', () => {
+    const questionInput = { questions: [{ question: 'RED or BLUE?', header: null, options: [{ label: 'RED', description: null }], multiSelect: false }] }
+
+    function answerQuestion(client: ReturnType<typeof setupWithHandler>['client'], response: Record<string, unknown>) {
+        const register = client.rpcHandlerManager.registerHandler.mock.calls[0]!
+        const permissionRpc = register[1] as (payload: unknown) => Promise<void>
+        return permissionRpc(response)
+    }
+
+    it.each(['request-review', 'always-proceed', 'yolo', 'bypassPermissions'] as const)(
+        'waits for the user in %s and returns their answers',
+        async (mode) => {
+            const waits: string[] = []
+            const { client, handler, backend } = setupWithHandler(mode, {
+                onUserWait: () => {
+                    waits.push('start')
+                    return () => waits.push('end')
+                }
+            })
+            const answer = handler.askUser('call_q', 'AskUserQuestion', questionInput)
+            expect(handler.hasPendingRequests()).toBe(true)
+            const update = client.updateAgentState.mock.calls.at(-1)![0] as (state: object) => { requests: Record<string, { tool: string }> }
+            expect(update({}).requests['call_q']).toMatchObject({ tool: 'AskUserQuestion', arguments: questionInput })
+
+            await answerQuestion(client, { id: 'call_q', approved: true, answers: { '0': ['RED'] } })
+
+            await expect(answer).resolves.toEqual({ decision: 'approved', answers: { '0': ['RED'] } })
+            expect(handler.hasPendingRequests()).toBe(false)
+            expect(backend.respondToPermission).not.toHaveBeenCalled()
+            expect(waits).toEqual(['start', 'end'])
+        }
+    )
+
+    it('reports a declined question, and cancels an open one when everything is cancelled', async () => {
+        const { client, handler } = setupWithHandler('request-review')
+        const declined = handler.askUser('call_a', 'AskUserQuestion', questionInput)
+        await answerQuestion(client, { id: 'call_a', approved: false, decision: 'denied' })
+        await expect(declined).resolves.toEqual({ decision: 'denied' })
+
+        const open = handler.askUser('call_b', 'AskUserQuestion', questionInput)
+        await handler.cancelAll('User aborted')
+        await expect(open).resolves.toEqual({ decision: 'abort' })
+        expect(handler.hasPendingRequests()).toBe(false)
+    })
+
+    it('cancels an open question even when replying to a permission request fails', async () => {
+        const { backend, handler, request } = setupWithHandler('request-review', {
+            autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] }
+        })
+        request(commandRequest)
+        const open = handler.askUser('call_b', 'AskUserQuestion', questionInput)
+        backend.respondToPermission.mockRejectedValueOnce(new Error('agy is gone'))
+
+        await expect(handler.cancelAll('Antigravity stopped')).rejects.toThrow('agy is gone')
+        await expect(open).resolves.toEqual({ decision: 'abort' })
     })
 })
