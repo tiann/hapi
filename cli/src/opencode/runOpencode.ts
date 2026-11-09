@@ -159,8 +159,9 @@ export async function runOpencode(opts: {
         logTag: 'opencode',
         stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
         onBeforeClose: async () => {
-            await finishLocalHistory();
+            // Cancel pending permission/question forms first so none can publish after the history is finalized.
             await sessionWrapperRef.current?.kill();
+            await finishLocalHistory();
         },
         onAfterClose: () => {
             hookServer.stop();

@@ -655,6 +655,20 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
+    it('kills the session before draining the local transcript', async () => {
+        const order: string[] = [];
+        mockOpencodeSession.kill.mockImplementationOnce(async () => { order.push('kill'); });
+        mockOpencodeSession.localHistoryPublisher = {
+            finish: async () => { order.push('finish'); return true; }
+        } as unknown as LocalHistoryPublisher;
+        await runOpencode({ startedBy: 'runner' });
+        const lifecycleOptions = vi.mocked(createRunnerLifecycle).mock.calls[0]?.[0];
+
+        await lifecycleOptions?.onBeforeClose?.();
+
+        expect(order).toEqual(['kill', 'finish']);
+    });
+
     it('runs the session kill handler before the runner lifecycle closes the session', async () => {
         await runOpencode({ startedBy: 'runner' });
         const lifecycleOptions = vi.mocked(createRunnerLifecycle).mock.calls[0]?.[0];
