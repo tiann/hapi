@@ -152,8 +152,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         logger.debug('[start] Failed to update session metadata:', error);
     });
 
-    // Start HAPI MCP server (pass session cwd so spawn_peer "." anchors here)
-    const happyServer = await startHappyServer(session, { workingDirectory });
+    // Start HAPI MCP server (pass session cwd so spawn_peer "." anchors here;
+    // flavor selects Claude-correct display_* tool-name wording in descriptions)
+    const happyServer = await startHappyServer(session, { workingDirectory, flavor: 'claude' });
     logger.debug(`[START] HAPI MCP server started at ${happyServer.url}`);
 
     const formatFailureReason = (message: string): string => {

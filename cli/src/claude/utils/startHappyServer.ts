@@ -20,7 +20,12 @@ import {
     registerGeneratedImage,
 } from "@/modules/common/generatedImages";
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
+import {
+    DISPLAY_IMAGE_PROMPT_VARIANTS,
+    DISPLAY_MEDIA_PROMPT_VARIANTS,
+    DISPLAY_VIDEO_PROMPT_VARIANTS,
+    resolveDisplayToolPrompt,
+} from "@/modules/common/displayImagePrompt";
 import { resolveSkill } from "@/modules/common/skills";
 import { SESSION_NAME_MAX_LENGTH, toSessionSummaryMetadata } from '@hapi/protocol'
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
@@ -67,6 +72,14 @@ type StartHappyServerOptions = {
      * Falls back to `skillLookup.workingDirectory`, then hub metadata.path.
      */
     workingDirectory?: string;
+    /**
+     * Agent flavor calling this bridge (e.g. 'claude', 'codex', 'cursor').
+     * Selects which display_image/display_video/display_media hint text is
+     * baked into each tool's own `description` — distinct from `skillLookup`,
+     * which only gates the `skill_lookup` tool. Omit for flavors with no
+     * dedicated variant; falls back to the generic hapi-mcp-bridge wording.
+     */
+    flavor?: string;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -125,6 +138,7 @@ function createHapiMcpServer(
     skillLookup: StartHappyServerOptions['skillLookup'],
     workingDirectory: string | undefined,
     enabledTools: ReadonlySet<HapiMcpToolName>,
+    flavor: StartHappyServerOptions['flavor'],
     onChangeTitle?: StartHappyServerOptions['onChangeTitle']
 ): McpServer {
     const registerTool = (name: HapiMcpToolName, config: any, handler: any): void => {
@@ -342,7 +356,7 @@ function createHapiMcpServer(
     }
 
     registerTool('display_image', {
-        description: `Display a local image file to the human user inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
+        description: `Display a local image file to the human user inline in the current HAPI chat session. ${resolveDisplayToolPrompt(flavor, DISPLAY_IMAGE_PROMPT_VARIANTS)}`,
         title: 'Display Image',
         inputSchema: displayImageInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -376,7 +390,7 @@ function createHapiMcpServer(
     });
 
     registerTool('display_video', {
-        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
+        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${resolveDisplayToolPrompt(flavor, DISPLAY_VIDEO_PROMPT_VARIANTS)}`,
         title: 'Display Video',
         inputSchema: displayVideoInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -410,7 +424,7 @@ function createHapiMcpServer(
     });
 
     registerTool('display_media', {
-        description: `Send a local image, video, audio, or other file to the current HAPI chat session. Recognized media is shown inline; other files use a download card. ${DISPLAY_MEDIA_PROMPT_CURSOR}`,
+        description: `Send a local image, video, audio, or other file to the current HAPI chat session. Recognized media is shown inline; other files use a download card. ${resolveDisplayToolPrompt(flavor, DISPLAY_MEDIA_PROMPT_VARIANTS)}`,
         title: 'Display Media',
         inputSchema: displayMediaInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -727,6 +741,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             options.skillLookup,
             options.workingDirectory,
             enabledTools,
+            options.flavor,
             options.onChangeTitle
         );
         const transport = new StreamableHTTPServerTransport({

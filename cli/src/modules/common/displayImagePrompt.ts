@@ -14,12 +14,21 @@ export const DISPLAY_IMAGE_PROMPT_CODEX = trimIdent(`
     This tool sends the image to the human user for inline display in HAPI. It is not an image-reading or image-understanding tool: it does not provide image input to the model and cannot be used to read, inspect, or analyze image contents.
 `);
 
+export const DISPLAY_IMAGE_PROMPT_HAPI_MCP = trimIdent(`
+    When you create or find a local image file that the human user should see, call the tool "hapi_display_image" with the absolute filesystem path so HAPI can show it inline. If that exact tool name is unavailable, use an equivalent alias such as display_image or mcp__hapi__display_image.
+    This tool sends the image to the human user for inline display in HAPI. It is not an image-reading or image-understanding tool: it does not provide image input to the model and cannot be used to read, inspect, or analyze image contents.
+`);
+
 export const DISPLAY_VIDEO_PROMPT_CLAUDE = trimIdent(`
     When you create or find a local mp4 or webm recording the user should see, call the tool "mcp__hapi__display_video" with the file path so HAPI can show it inline.
 `);
 
 export const DISPLAY_VIDEO_PROMPT_CODEX = trimIdent(`
     When you create or find a local mp4 or webm file the user should see, call functions.hapi__display_video with the file path. If that exact tool name is unavailable, use an equivalent alias such as hapi__display_video, mcp__hapi__display_video, or hapi_display_video.
+`);
+
+export const DISPLAY_VIDEO_PROMPT_HAPI_MCP = trimIdent(`
+    When you create or find a local mp4 or webm recording the user should see, call the tool "hapi_display_video" with the file path so HAPI can show it inline. If that exact tool name is unavailable, use an equivalent alias such as display_video or mcp__hapi__display_video.
 `);
 
 export const DISPLAY_IMAGE_PROMPT_CURSOR = trimIdent(`
@@ -39,6 +48,10 @@ export const DISPLAY_MEDIA_PROMPT_CODEX = trimIdent(`
     When you create or find a local audio file or other non-image file that the user should receive, call functions.hapi__display_media with the file path. If that exact tool name is unavailable, use an equivalent alias such as hapi__display_media, mcp__hapi__display_media, or hapi_display_media.
 `);
 
+export const DISPLAY_MEDIA_PROMPT_HAPI_MCP = trimIdent(`
+    When you create or find a local audio file or other non-image file that the user should receive, call the tool "hapi_display_media" with the file path. If that exact tool name is unavailable, use an equivalent alias such as display_media or mcp__hapi__display_media.
+`);
+
 export const DISPLAY_MEDIA_PROMPT_CURSOR = trimIdent(`
     When you create or find a local audio file or other non-image file that the user should receive, call the tool "display_media" with the absolute filesystem path so HAPI can show a player or download card.
 `);
@@ -54,3 +67,56 @@ export const DISPLAY_TOOLS_PROMPT_HAPI_MCP = trimIdent(`
     - To call one: if hapi_<tool> is in your tool list, call it directly. Otherwise, if your Code Mode catalog lists tools.hapi.<tool>, call \`await tools.hapi.<tool>({ path })\` inside the \`execute\` tool. Do not guess other names.
     - display_image only shows the image to the user; it does not let you see or analyze it.
 `);
+
+/**
+ * Pick the flavor-correct display_image/video/media hint text for a tool's
+ * own MCP `description`. Each flavor calls these tools by a different name
+ * (`mcp__hapi__x` for Claude, `functions.hapi__x` for Codex, bare `x` for
+ * Cursor's native MCP overlay) — using the wrong variant tells the model to
+ * call a tool name that does not exist for its flavor. Shared by every place
+ * that registers these tools: the direct HTTP server (startHappyServer.ts,
+ * reached by Claude) and the stdio proxy (happyMcpStdioBridge.ts, reached by
+ * every other flavor via `hapi mcp --flavor <flavor>`).
+ *
+ * Distinct from `DISPLAY_TOOLS_PROMPT_HAPI_MCP`, which is the OpenCode system-
+ * prompt block covering all three tools at once.
+ */
+export type DisplayToolPromptVariants = { claude: string; codex: string; cursor: string; hapiMcp: string };
+
+/** One shared table per tool so the four-variant mapping is defined once, not re-typed at every call site. */
+export const DISPLAY_IMAGE_PROMPT_VARIANTS: DisplayToolPromptVariants = {
+    claude: DISPLAY_IMAGE_PROMPT_CLAUDE,
+    codex: DISPLAY_IMAGE_PROMPT_CODEX,
+    cursor: DISPLAY_IMAGE_PROMPT_CURSOR,
+    hapiMcp: DISPLAY_IMAGE_PROMPT_HAPI_MCP,
+};
+
+export const DISPLAY_VIDEO_PROMPT_VARIANTS: DisplayToolPromptVariants = {
+    claude: DISPLAY_VIDEO_PROMPT_CLAUDE,
+    codex: DISPLAY_VIDEO_PROMPT_CODEX,
+    cursor: DISPLAY_VIDEO_PROMPT_CURSOR,
+    hapiMcp: DISPLAY_VIDEO_PROMPT_HAPI_MCP,
+};
+
+export const DISPLAY_MEDIA_PROMPT_VARIANTS: DisplayToolPromptVariants = {
+    claude: DISPLAY_MEDIA_PROMPT_CLAUDE,
+    codex: DISPLAY_MEDIA_PROMPT_CODEX,
+    cursor: DISPLAY_MEDIA_PROMPT_CURSOR,
+    hapiMcp: DISPLAY_MEDIA_PROMPT_HAPI_MCP,
+};
+
+export function resolveDisplayToolPrompt(
+    flavor: string | undefined,
+    variants: DisplayToolPromptVariants
+): string {
+    switch (flavor) {
+        case 'claude':
+            return variants.claude;
+        case 'codex':
+            return variants.codex;
+        case 'cursor':
+            return variants.cursor;
+        default:
+            return variants.hapiMcp;
+    }
+}
