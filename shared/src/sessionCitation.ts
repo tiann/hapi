@@ -31,9 +31,9 @@ export const INSPECT_PEER_TOOL_DESCRIPTION =
  * Shared across spawn_peer / ping_peer / inspect_peer descriptions.
  */
 export const PEER_IDENTITY_UUID_RULE =
-    'Never invent peer titles (upstream, orchestrator, nicknames). '
-    + 'Always copy [title](/sessions/<uuid>) from the handoff or inspect_peer / search_peers; '
-    + 'title is decoration - UUID is identity. Rename of a parent is a non-event.'
+    'Never invent peer titles. '
+    + 'Copy [title](/sessions/<uuid>) from the handoff or inspect_peer / search_peers - '
+    + 'UUID is identity; rename is a non-event.'
 
 /** MCP `spawn_peer` tool description. Remit is required; empty shell is failure. */
 export const SPAWN_PEER_TOOL_DESCRIPTION =
@@ -103,9 +103,9 @@ export const PING_PEER_TOOL_DESCRIPTION =
 
 /** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
-    'Target HAPI session id or unique id prefix (another session - not this chat). ' +
-    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context. ' +
-    'Do not pass invented titles or nicknames - UUID only.'
+    'Target HAPI session id or unique prefix (not this chat). ' +
+    'Prefer full UUID from [title](/sessions/<id>) or Copy-reference. ' +
+    'UUID only - no invented titles.'
 
 /**
  * Hub session ids have no dots. Reject dotted tails so source paths like
