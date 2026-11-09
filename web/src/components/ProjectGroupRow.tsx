@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { MutationObserver, useMutation, useQueryClient } from '@tanstack/react-query'
 import { isLiveLifecycleState } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
@@ -10,6 +10,7 @@ import { queryKeys } from '@/lib/query-keys'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useLongPress } from '@/hooks/useLongPress'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
+import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
@@ -49,8 +50,7 @@ export function ProjectGroupRow(props: {
         anchorPoint: menuPoint ?? { x: 0, y: 0 },
         align: 'start'
     })
-    // Touch long-press and right-click only; taps keep the row's native click
-    // so the copy / new-session buttons inside it still work on touch.
+    // Touch long-press and right-click only; taps keep the row's native click.
     const { onTouchStart, onTouchMove, onTouchCancel, onContextMenu } = useLongPress({
         onLongPress: (point) => {
             haptic.impact('medium')
@@ -61,7 +61,12 @@ export function ProjectGroupRow(props: {
     const archiveAll = useMutation({
         mutationFn: async () => {
             if (!api) return
-            const results = await Promise.allSettled(liveSessions.map((s) => api.archiveSession(s.id)))
+            // Per-session archive key so row spinners and the delete dialog's
+            // waiting-for-archive guard see each request.
+            const results = await Promise.allSettled(liveSessions.map((s) => new MutationObserver(queryClient, {
+                mutationKey: sessionArchiveMutationKey(s.id),
+                mutationFn: () => api.archiveSession(s.id)
+            }).mutate()))
             void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
             const failed = results.filter((r) => r.status === 'rejected').length
             if (failed > 0) {
@@ -90,7 +95,10 @@ export function ProjectGroupRow(props: {
                 title={directory}
                 aria-haspopup="menu"
                 onClick={onClick && (() => { if (!menuPoint) onClick() })}
-                onTouchStart={onTouchStart}
+                onTouchStart={(event) => {
+                    // Copy / new-session buttons keep plain taps; no long-press there.
+                    if (!(event.target as Element).closest('button')) onTouchStart(event)
+                }}
                 onTouchMove={onTouchMove}
                 onTouchCancel={onTouchCancel}
                 onContextMenu={onContextMenu}
