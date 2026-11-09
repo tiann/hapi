@@ -854,11 +854,20 @@ export class SyncEngine {
         if (!session) return false
         if (session.metadata?.machineId !== payload.machineId) return false
         if (session.metadata?.hostPid !== payload.pid) return false
-        // hostStartMarker is written per spawn; when the row carries one it is
-        // the generation binding. A notice with a different (or missing)
-        // marker is about a pid that a newer process reused.
+        // A marker on either side binds the notice to one process generation:
+        // only an exact match proves the dying process is the registered owner.
+        // When BOTH sides lack a marker (the CLI's start-marker probe can fail),
+        // a pid-only match must still reject a notice older than the current
+        // owner's registration — a reused pid's late notice would otherwise
+        // deactivate the new owner. lifecycleStateSince is written by the CLI
+        // together with hostPid on every (re)spawn of the row.
         const ownerStartMarker = session.metadata?.hostStartMarker
-        if (ownerStartMarker !== undefined && ownerStartMarker !== payload.processStartMarker) return false
+        if (ownerStartMarker !== undefined || payload.processStartMarker !== undefined) {
+            if (ownerStartMarker !== payload.processStartMarker) return false
+        } else {
+            const ownerRegisteredAt = session.metadata?.lifecycleStateSince
+            if (ownerRegisteredAt === undefined || payload.time < ownerRegisteredAt) return false
+        }
         if (!session.active && !session.thinking) return false
 
         this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })

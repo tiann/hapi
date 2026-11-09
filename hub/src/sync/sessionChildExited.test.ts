@@ -169,6 +169,84 @@ describe('handleSessionChildExited owner guard', () => {
         }
     })
 
+    it('ignores a no-marker notice older than the current owner registration when the session has no start marker', () => {
+        const { engine } = createEngine()
+        try {
+            registerMachine(engine)
+            // sessionFactory leaves hostStartMarker undefined when the
+            // start-marker probe fails, so the guard must fall back to time.
+            const firstRegistrationAt = Date.now() - 5_000
+            const session = createOwnedSession(engine, 'child-exit-no-marker-stale', {
+                hostStartMarker: undefined,
+                lifecycleStateSince: firstRegistrationAt
+            })
+            markActive(engine, session.id)
+
+            // The pid was reused: a new owner generation re-registered the same
+            // pid (still without a marker) after the old process had exited.
+            const reregisteredAt = Date.now() - 1_000
+            const current = engine.getSession(session.id)!
+            current.metadata = {
+                ...current.metadata!,
+                hostPid: PID,
+                hostStartMarker: undefined,
+                lifecycleStateSince: reregisteredAt
+            }
+
+            const staleHandled = engine.handleSessionChildExited({
+                machineId: MACHINE,
+                namespace: NAMESPACE,
+                sid: session.id,
+                pid: PID,
+                processStartMarker: undefined,
+                time: firstRegistrationAt + 1_000
+            })
+            expect(staleHandled).toBe(false)
+            expect(engine.getSession(session.id)?.active).toBe(true)
+
+            // A notice at or after the current owner's registration is about
+            // the live owner and must still deactivate immediately.
+            const handled = engine.handleSessionChildExited({
+                machineId: MACHINE,
+                namespace: NAMESPACE,
+                sid: session.id,
+                pid: PID,
+                processStartMarker: undefined,
+                time: Date.now()
+            })
+            expect(handled).toBe(true)
+            expect(engine.getSession(session.id)?.active).toBe(false)
+            expect(engine.getSession(session.id)?.thinking).toBe(false)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('ignores a notice carrying a marker when the session registered none', () => {
+        const { engine } = createEngine()
+        try {
+            registerMachine(engine)
+            const session = createOwnedSession(engine, 'child-exit-notice-marker-only', {
+                hostStartMarker: undefined
+            })
+            markActive(engine, session.id)
+
+            const handled = engine.handleSessionChildExited({
+                machineId: MACHINE,
+                namespace: NAMESPACE,
+                sid: session.id,
+                pid: PID,
+                processStartMarker: 'Wed Jan  3 00:00:00 2024',
+                time: Date.now()
+            })
+
+            expect(handled).toBe(false)
+            expect(engine.getSession(session.id)?.active).toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('ignores notices from a different machine or namespace', () => {
         const { engine } = createEngine()
         try {
