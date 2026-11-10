@@ -140,6 +140,10 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    // Own-session progress meter (tiann/hapi#1404) — hub REST, not peer inject.
+    tools.session_job = {
+        approval_mode: 'approve'
+    };
     // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
     // server / stdio bridge, but are not auto-approved: they target another
     // session (resume + inject, read peer histories, or create + inject).

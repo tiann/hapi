@@ -140,7 +140,7 @@ export default function SettingsDisplayPage() {
     const { terminalFontSize, setTerminalFontSize } = useTerminalFontSize()
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
-    const { pinInProgressSessions, setPinInProgressSessions } = usePinInProgressSessions()
+    const { pinInProgressMode, setPinInProgressMode } = usePinInProgressSessions()
     const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
     const { openExternalLinksInNewTab, setOpenExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
@@ -181,7 +181,18 @@ export default function SettingsDisplayPage() {
             <SettingsSection title={t('settings.display.sessions')}>
                 <SessionPreviewLimitControl />
                 <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
-                <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
+                <SettingsChoiceGroup
+                    label={t('settings.display.pinInProgressSessions')}
+                    description={t('settings.display.pinInProgressSessions.desc')}
+                    value={pinInProgressMode}
+                    columns={3}
+                    options={[
+                        { value: 'off', label: t('settings.display.pinInProgressMode.off') },
+                        { value: 'jobs', label: t('settings.display.pinInProgressMode.jobs') },
+                        { value: 'all', label: t('settings.display.pinInProgressMode.all') },
+                    ]}
+                    onChange={setPinInProgressMode}
+                />
                 <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
                 <SettingsChoiceGroup

@@ -132,16 +132,17 @@ describe('startHappyServer skill_lookup', () => {
         const mcp = await connect(false)
         const tools = await mcp.listTools()
 
-        expect(tools.tools.map((tool) => tool.name)).toEqual([
+        expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
             'change_title',
-            'link_issue',
             'display_image',
-            'display_video',
             'display_media',
-            'ping_peer',
-            'spawn_peer',
+            'display_video',
             'inspect_peer',
-            'list_peers'
+            'link_issue',
+            'list_peers',
+            'ping_peer',
+            'session_job',
+            'spawn_peer',
         ])
     })
 
@@ -461,6 +462,7 @@ describe('startHappyServer skill_lookup', () => {
 
     it('does not expose change_title when native ACP titles are enabled', async () => {
         const sessionClient = {
+            sessionId: 'test-session-id',
             updateMetadata: vi.fn(),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
@@ -482,16 +484,18 @@ describe('startHappyServer skill_lookup', () => {
             'ping_peer',
             'inspect_peer',
             'spawn_peer',
+            'session_job',
         ])
-        expect(tools.tools.map((tool) => tool.name)).toEqual([
-            'link_issue',
+        expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
             'display_image',
-            'display_video',
             'display_media',
-            'ping_peer',
-            'spawn_peer',
+            'display_video',
             'inspect_peer',
-            'list_peers'
+            'link_issue',
+            'list_peers',
+            'ping_peer',
+            'session_job',
+            'spawn_peer',
         ])
     })
 
@@ -1180,12 +1184,14 @@ describe('toClaudeAllowedHapiMcpTools', () => {
             'ping_peer',
             'inspect_peer',
             'spawn_peer',
+            'session_job',
             'skill_lookup'
         ])).toEqual([
             'mcp__hapi__change_title',
             'mcp__hapi__link_issue',
             'mcp__hapi__display_image',
             'mcp__hapi__list_peers',
+            'mcp__hapi__session_job',
             'mcp__hapi__skill_lookup'
         ])
         expect(toClaudeAllowedHapiMcpTools(['display_video'])).not.toContain('mcp__hapi__display_video')
@@ -1301,13 +1307,27 @@ describe('startHappyServer peer tools kill switch', () => {
     it('omits peer tools from registration and toolNames when HAPI_DISABLE_PEER_TOOLS is set', async () => {
         process.env.HAPI_DISABLE_PEER_TOOLS = '1'
         const { toolNames } = await startServer()
-        expect(toolNames).toEqual(['change_title', 'link_pr', 'link_issue', 'display_image', 'display_video', 'display_media'])
+        // session_job is own-session (not peer) — stays available when peer tools are off.
+        expect(toolNames).toEqual([
+            'change_title',
+            'link_pr',
+            'link_issue',
+            'display_image',
+            'display_video',
+            'display_media',
+            'session_job',
+        ])
         const tools = await client!.listTools()
         const names = tools.tools.map((tool) => tool.name)
         expect(names).not.toContain('list_peers')
         expect(names).not.toContain('ping_peer')
         expect(names).not.toContain('inspect_peer')
         expect(names).not.toContain('spawn_peer')
-        expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
+        expect(names).toEqual(expect.arrayContaining([
+            'display_image',
+            'display_video',
+            'display_media',
+            'session_job',
+        ]))
     })
 })
