@@ -318,7 +318,7 @@ struct MessageWindowControllerTests {
         #expect(limit == MessageWindowConstants.pageSize)
         let state = await controller.state
         #expect(state.messages.map(\.id) == (1...9).map { "r-\($0)" } + ["call-row", "r-11", "r-12"])
-        #expect(state.messages.first(where: { $0.id == "call-row" })?.wire.content
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
             == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
         #expect(state.newestPosition?.seq == 12)
         #expect(state.oldestPosition?.seq == 1)
@@ -369,7 +369,7 @@ struct MessageWindowControllerTests {
             return
         }
         let state = await controller.state
-        #expect(state.messages.first(where: { $0.id == "call-row" })?.wire.content
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
             == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
         #expect(state.warning == nil)
     }
