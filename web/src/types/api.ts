@@ -34,6 +34,7 @@ export type {
     CopilotModelsResponse,
     CopilotModelSummary,
     GrokReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortOption,
     ListDirectoryResponse,
     MachineDirectoryEntry,

@@ -942,11 +942,20 @@ export function getSessionsByNamespace(db: Database, namespace: string): StoredS
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
+    // Refuse while a running attached job exists — CASCADE would erase the live
+    // meter for idle (active=false) outliving work. Callers must transfer/clear first.
+    // Also drop FTS rows before the session DELETE (#1598).
     return runInTransaction(db, () => {
         const existing = prepareCached(db,
             'SELECT 1 FROM sessions WHERE id = ? AND namespace = ?'
         ).get(id, namespace)
         if (!existing) return false
+        const blocked = prepareCached(db, `
+            SELECT 1 FROM session_jobs
+            WHERE session_id = ? AND status = 'running'
+            LIMIT 1
+        `).get(id)
+        if (blocked) return false
         removeMessageContentSearchForSession(db, id)
         const result = prepareCached(db,
             'DELETE FROM sessions WHERE id = ? AND namespace = ?'
