@@ -668,6 +668,7 @@ function toBoardItemComments(response: GhItemCommentsResponse): BoardItemComment
 const ISSUE_TEMPLATE_DIR_QUERY = `
 query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
+    isPrivate
     issueTemplateDir: object(expression: "HEAD:.github/ISSUE_TEMPLATE") {
       ... on Tree {
         entries {
@@ -682,6 +683,7 @@ query($owner: String!, $repo: String!) {
 type GhIssueTemplateDirResponse = {
     data?: {
         repository?: {
+            isPrivate?: boolean | null
             issueTemplateDir?: {
                 entries?: Array<{ name: string; object?: { text?: string | null } | null } | null>
             } | null
@@ -712,6 +714,18 @@ async function runGhGraphqlIssueTemplateDir(target: IssueTemplateDirTarget): Pro
 // templates of its own before considering the owner's `.github` fallback.
 function repoHasNoIssueTemplateDir(response: GhIssueTemplateDirResponse): boolean {
     return response.data?.repository?.issueTemplateDir == null
+}
+
+// GitHub only inherits default community files (issue templates, config.yml)
+// from an owner's `.github` repo when that repo is PUBLIC — a private
+// `.github` repo never contributes defaults to other repos, even ones the
+// same owner controls (review finding: the hub's gh account can often read
+// an org's private `.github` repo, which must not leak its templates/
+// blank-issues policy into a board whose own repo has none). Fail closed:
+// if visibility can't be determined, treat it as ineligible rather than
+// risk inheriting from a repo GitHub itself wouldn't use as a fallback.
+function isEligibleIssueTemplateFallback(response: GhIssueTemplateDirResponse): boolean {
+    return response.data?.repository?.isPrivate === false
 }
 
 function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; blankIssuesEnabled: boolean } {
@@ -1806,7 +1820,7 @@ export function createBoardRoutes(
             if (repoHasNoIssueTemplateDir(response) && repo.toLowerCase() !== '.github') {
                 try {
                     const inherited = await runGraphqlIssueTemplateDir({ host: board.host, owner, repo: '.github' })
-                    if (!inherited.errors?.length && !repoHasNoIssueTemplateDir(inherited)) {
+                    if (!inherited.errors?.length && !repoHasNoIssueTemplateDir(inherited) && isEligibleIssueTemplateFallback(inherited)) {
                         response = inherited
                     }
                 } catch (error) {

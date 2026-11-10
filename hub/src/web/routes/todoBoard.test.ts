@@ -1764,6 +1764,7 @@ body:
                     return {
                         data: {
                             repository: {
+                                isPrivate: false,
                                 issueTemplateDir: {
                                     entries: [
                                         { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
@@ -1782,6 +1783,43 @@ body:
         const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
         expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
         expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // Review finding: GitHub only inherits default community files from a
+    // PUBLIC .github repo — a private one (readable here only because the
+    // hub's gh account happens to have access) must not leak its templates/
+    // blank-issues policy into a board for a repo GitHub itself would never
+    // apply it to.
+    it('does not inherit from a private .github repo even when it has templates', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                isPrivate: true,
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
