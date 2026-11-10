@@ -245,7 +245,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
             nativeSucceeded = true;
-            await bind(root, response, true, initialOptions); return root;
+            await bind(root, response, true, initialOptions);
+            // A thread created in this process starts from zero cumulative
+            // usage. Forks are excluded: their totals arrive through the
+            // app-server's attach-time usage replay and include the source
+            // history, so seeding them would overstate the first turn.
+            if (method === 'thread/start') root.seedFreshUsage();
+            return root;
         } catch (error) {
             // A timed-out native mutation may have succeeded. Never replay it or kill unrelated roots.
             if (!nativeSucceeded && !isIndeterminateError(error)) {

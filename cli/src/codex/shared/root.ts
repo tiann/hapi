@@ -160,6 +160,21 @@ export class SharedCodexRoot {
         });
     }
 
+    /** The host's approval hooks: a wait for the user is not generation time. */
+    private readonly userWaitFor = (threadId: string): ((endedAt: number) => void) | undefined =>
+        threadId === this.threadId ? this.projection?.beginUserWait(Date.now()) : undefined;
+
+    /**
+     * Seeds a thread this runtime just created (thread/start) to zero
+     * cumulative usage so its first round's tok/s is measurable. Never call
+     * for resumed or forked threads: their totals arrive through the
+     * app-server's attach-time usage replay and already include inherited
+     * history.
+     */
+    seedFreshUsage(): void {
+        this.projection.seedFreshUsage();
+    }
+
     async prepare(): Promise<void> {
         // Descendants share this bridge. The projection applies successful
         // root title calls so a child cannot rename the parent session.
@@ -167,7 +182,7 @@ export class SharedCodexRoot {
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);
         this.asyncQuestions = new SharedCodexAsyncQuestions(this.session, (threadId, text, id) => this.submitQuestionAnswer(threadId, text, id));
-        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.asyncQuestions.answer(reply));
+        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.asyncQuestions.answer(reply), this.userWaitFor);
         this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
     }
     private async submitQuestionAnswer(threadId: string, text: string, clientUserMessageId: string): Promise<void> {
@@ -446,7 +461,7 @@ export class SharedCodexRoot {
                 try {
                     await initializeSharedClient(this.client);
                     if (this.stopping) return;
-                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.asyncQuestions.answer(reply));
+                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.asyncQuestions.answer(reply), this.userWaitFor);
                     this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
                     const settingsRevision = this.settingsRevision;
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
