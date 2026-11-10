@@ -124,6 +124,7 @@ import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorMode
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
+import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReasoningEffortOptions'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
@@ -1180,6 +1181,12 @@ function SessionChatInner(props: SessionChatProps) {
     const copilotModelsState = useCopilotModels({
         api: props.api,
         sessionId: props.session.id,
+        enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
+    })
+    const copilotEffortOptions = useCopilotReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        model: props.session.model,
         enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
     })
     const copilotModelOptions = useMemo(() => (
@@ -2358,6 +2365,8 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? agyEffortOptions
                                 : agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
+                                : agentFlavor === 'copilot'
+                                ? copilotEffortOptions
                                 : agentFlavor === 'kimi'
                                 ? kimiEffortOptions
                                 : claudeEffortOptions
@@ -2462,6 +2471,10 @@ function SessionChatInner(props: SessionChatProps) {
                                     : undefined)
                                 : agentFlavor === 'grok'
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'copilot'
+                                ? (props.session.active && !controlledByUser && copilotEffortOptions.length > 0
                                     ? handleEffortChange
                                     : undefined)
                                 : agentFlavor === 'kimi'

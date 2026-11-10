@@ -58,6 +58,7 @@ import type {
     KimiModelsResponse,
     CopilotModelsResponse,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
     KimiReasoningEffortResponse,
     ListDirectoryResponse,
     MachineListDirectoryResponse,
@@ -1270,6 +1271,12 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ mode })
         })
+    }
+
+    async getSessionCopilotReasoningEffortOptions(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.request<CopilotReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/copilot-reasoning-effort-options`
+        )
     }
 
     async getSessionKimiReasoningEffortOptions(sessionId: string): Promise<KimiReasoningEffortResponse> {
