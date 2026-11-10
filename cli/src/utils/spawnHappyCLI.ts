@@ -45,7 +45,7 @@ const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
 // raising the limit in the parent before exec: wrap the spawn in a tiny
 // /bin/sh that bumps the soft limit, then execs the real command (exec keeps
 // signals/stdio/pid semantics identical).
-const NOFILE_BUMP_THRESHOLD = 65536;
+export const NOFILE_BUMP_THRESHOLD = 65536;
 const NOFILE_BUMP_TARGET = 1048576;
 
 let cachedNofileSoft: number | undefined;
@@ -69,7 +69,7 @@ function probeUlimitLimit(flag: '-Sn' | '-Hn'): number {
   return Number.NaN;
 }
 
-function getNofileSoftLimit(): number {
+export function getNofileSoftLimit(): number {
   if (cachedNofileSoft === undefined) {
     cachedNofileSoft = probeUlimitLimit('-Sn');
   }
