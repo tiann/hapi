@@ -640,9 +640,16 @@ export class SharedCodexRoot {
         if (slash.kind === 'passthrough') return text;
         if (slash.kind === 'goal') {
             const params = { threadId: this.threadId };
+            const goal = slash.action === 'set'
+                ? record(record(await this.client.request('thread/goal/get', params)).goal) : null;
+            if (goal?.status === 'complete') {
+                await this.client.request('thread/goal/clear', params);
+            }
             const response = slash.action === 'show' ? await this.client.request('thread/goal/get', params)
                 : slash.action === 'clear' ? await this.client.request('thread/goal/clear', params)
-                : await this.client.request('thread/goal/set', { ...params, ...(slash.action === 'set' ? { objective: slash.objective } : { status: slash.action === 'pause' ? 'paused' : 'active' }) });
+                : await this.client.request('thread/goal/set', { ...params, ...(slash.action === 'set'
+                    ? { objective: slash.objective, ...(goal?.status === 'complete' ? { status: 'active' } : {}) }
+                    : { status: slash.action === 'pause' ? 'paused' : 'active' }) });
             this.notice(JSON.stringify(response)); return null;
         }
         if (slash.updates?.proactiveMultiAgent !== undefined) throw new Error('This Codex version uses Ultra reasoning effort instead of a multi-agent toggle');
