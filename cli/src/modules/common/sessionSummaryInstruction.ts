@@ -1,10 +1,10 @@
 /**
- * Optional session-status summary instruction for non-Cursor agent flavors.
+ * Optional session-status summary instruction for agent flavors with a
+ * system-prompt / developer-instructions seam (Claude / Codex / OpenCode / Grok).
  *
- * Cursor ACP has no system-prompt / rules-overlay seam in upstream today, so
- * it is intentionally not covered here. Claude / Codex / OpenCode / Grok get
- * this text via their existing system-prompt / developer-instructions /
- * one-shot instruction paths when the operator opts in.
+ * Cursor ACP has no HAPI system-prompt channel; when this toggle is on, the
+ * Cursor ACP launcher installs a transient workspace `.cursor/rules` overlay
+ * (`installCursorNotifyRuleOverlay`) instead — same opt-in gate, different inject path.
  *
  * Resolution order:
  * 1. Explicit `HAPI_SESSION_SUMMARY_CONTRACT` env (0|false|off|no → off; anything else → on)

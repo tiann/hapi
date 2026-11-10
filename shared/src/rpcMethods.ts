@@ -51,6 +51,7 @@ export const RPC_METHODS = {
     ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
     ListCopilotModelsForCwd: 'listCopilotModelsForCwd',
     ListCopilotModels: 'listCopilotModels',
+    ListCopilotReasoningEffortOptions: 'listCopilotReasoningEffortOptions',
     ListKimiReasoningEffortOptions: 'listKimiReasoningEffortOptions',
     ListKimiModelsForCwd: 'listKimiModelsForCwd',
     ListKimiModels: 'listKimiModels',

@@ -31,6 +31,7 @@ export function ProjectGroupRow(props: {
     sessions: SessionSummary[]
     api: ApiClient | null
     onClick?: () => void
+    expanded?: boolean
     onNewSession?: () => void
     children: ReactNode
 }) {
@@ -97,8 +98,24 @@ export function ProjectGroupRow(props: {
                 className={props.className}
                 style={{ WebkitTouchCallout: 'none' }}
                 title={directory}
+                role="button"
+                tabIndex={0}
+                aria-expanded={props.expanded}
                 aria-haspopup="menu"
                 onClick={onClick && (() => { if (!menuPoint) onClick() })}
+                onKeyDown={(event) => {
+                    // Ignore keys bubbling from the copy / new-session buttons.
+                    if (event.target !== event.currentTarget) return
+                    const menuKey = event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')
+                    if (!menuKey && event.key !== 'Enter' && event.key !== ' ') return
+                    event.preventDefault()
+                    if (menuKey || !onClick) {
+                        const rect = event.currentTarget.getBoundingClientRect()
+                        setMenuPoint({ x: rect.left, y: rect.bottom })
+                    } else {
+                        onClick()
+                    }
+                }}
                 onTouchStart={(event) => {
                     // Copy / new-session buttons keep plain taps; no long-press there.
                     if (!(event.target as Element).closest('button')) onTouchStart(event)

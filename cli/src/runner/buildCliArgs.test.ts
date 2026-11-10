@@ -327,6 +327,14 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --effort for copilot agent so resume keeps the selection', () => {
+        const args = buildCliArgs('copilot', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args.slice(args.indexOf('--effort'))).toEqual(expect.arrayContaining(['--effort', 'high']))
+    })
+
     it('passes --effort for claude agent', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',

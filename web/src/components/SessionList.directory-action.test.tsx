@@ -154,6 +154,26 @@ describe('SessionList directory action', () => {
         expect(archiveSession).toHaveBeenCalledWith('stale')
     })
 
+    it('opens the project menu from the keyboard with Shift+F10', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({ id: 's1', metadata: { path: '/work/proj', name: 'S1', flavor: 'codex' } })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const header = screen.getByTitle('/work/proj')
+        expect(header).toHaveAttribute('tabindex', '0')
+        fireEvent.keyDown(header, { key: 'F10', shiftKey: true })
+        expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
+    })
+
     it('keeps the sticky project header opaque and aligned with the list viewport', () => {
         const session = makeSession({
             id: 'session-1',

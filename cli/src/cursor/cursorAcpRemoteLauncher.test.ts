@@ -44,6 +44,8 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
+    notifyRuleInstallCalls: [] as Array<{ cwd: string; project?: string | null; agentId?: string | null }>,
+    notifyRuleCleanup: null as ReturnType<typeof vi.fn> | null,
     agentActivityListener: null as ((thinking: boolean, source?: string) => void) | null,
     titleSyncControllers: [] as unknown[],
     titleSyncRegistered: [] as unknown[],
@@ -285,6 +287,18 @@ vi.mock('./utils/cursorMcpOverlay', () => ({
     },
 }));
 
+vi.mock('./utils/cursorNotifyRuleOverlay', () => ({
+    installCursorNotifyRuleOverlay: (opts: {
+        cwd: string
+        project?: string | null
+        agentId?: string | null
+    }) => {
+        harness.notifyRuleInstallCalls.push(opts);
+        harness.notifyRuleCleanup = vi.fn();
+        return { rulePath: `${opts.cwd}/.cursor/rules/hapi-session.mdc`, cleanup: harness.notifyRuleCleanup };
+    },
+}));
+
 vi.mock('@/ui/ink/OpencodeDisplay', () => ({
     OpencodeDisplay: () => null
 }));
@@ -298,6 +312,10 @@ import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
+import {
+    applyHubSessionSummaryContract,
+    resetSessionSummaryContractForTests
+} from '@/modules/common/sessionSummaryInstruction';
 import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
@@ -394,7 +412,11 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.stderrErrorHandler = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
+        harness.notifyRuleInstallCalls = [];
+        harness.notifyRuleCleanup = null;
         harness.agentActivityListener = null;
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
         harness.titleSyncControllers = [];
         harness.titleSyncRegistered = [];
         harness.onChangeTitle = null;
@@ -412,6 +434,8 @@ describe('cursorAcpRemoteLauncher', () => {
     afterEach(() => {
         vi.clearAllMocks();
         _resetSharedCursorModelsCacheForTests();
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
     });
 
     it('ends the launcher when a soft steer outlives an abort', async () => {
@@ -1150,6 +1174,35 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
         expect(harness.overlayCleanup).toHaveBeenCalled();
+    });
+
+    it('installs the notify-rule overlay when emit status summaries is on', async () => {
+        applyHubSessionSummaryContract(true);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([
+            { cwd: '/tmp/project', project: 'project', agentId: 'test-session-id' }
+        ]);
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
+    });
+
+    it('skips the notify-rule overlay when emit status summaries is off', async () => {
+        applyHubSessionSummaryContract(false);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([]);
+        expect(harness.notifyRuleCleanup).toBeNull();
+    });
+
+    it('removes the notify-rule overlay even when backend.disconnect rejects', async () => {
+        applyHubSessionSummaryContract(true);
+        harness.disconnectError = new Error('disconnect failed');
+        const session = makeSession(null);
+
+        await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
     });
 
     it('drops post-done harness speech after the HAPI prompt ends (#2267)', async () => {
