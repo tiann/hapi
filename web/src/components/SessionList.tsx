@@ -2131,6 +2131,7 @@ export function SessionList(props: {
                     sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
                     api={api}
                     onClick={() => toggleGroup(group.key, isCollapsed)}
+                    expanded={!isCollapsed}
                     onNewSession={getNewSessionInGroup(group)}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />

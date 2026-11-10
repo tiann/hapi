@@ -178,7 +178,7 @@ describe('SessionList machine filter', () => {
     it('filters directory groups when a machine chip is selected', () => {
         renderSessionList(multiMachineSessions)
 
-        fireEvent.click(screen.getByRole('button', { name: /Teemo \(1\)/ }))
+        fireEvent.click(screen.getByRole('button', { name: /^Teemo \(1\)/ }))
 
         expect(screen.queryByTitle('/work/hapi')).toBeNull()
         expect(screen.getByTitle('/work/docs')).toBeTruthy()
@@ -212,7 +212,7 @@ describe('SessionList machine filter', () => {
 
         fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
         fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'alpha' } })
-        fireEvent.click(screen.getByRole('button', { name: /Teemo \(1\)/ }))
+        fireEvent.click(screen.getByRole('button', { name: /^Teemo \(1\)/ }))
 
         expect(screen.getByText('No sessions match your filters.')).toBeTruthy()
         expect(screen.queryByTitle('/work/hapi')).toBeNull()
