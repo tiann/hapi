@@ -388,6 +388,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.continuationMode = close.reason === 'quiet' && close.surfacedFully ? 'drop' : 'label';
                 }
             }
+            // Stop or exit during the hold: the captured signal no longer
+            // governs runTurn (Stop replaces the controller), so the held
+            // batch must not dispatch on the fresh one. Acknowledge the
+            // delivery and hand the text back to the composer, matching the
+            // cancelled-prompt restore path.
+            if (signal.aborted || this.shouldExit) {
+                const heldIds = batch.items
+                    .map((item) => item.localId)
+                    .filter((localId): localId is string => Boolean(localId));
+                if (heldIds.length > 0) session.client.emitMessagesConsumed(heldIds);
+                session.sendSessionEvent({ type: 'abort-restore', text: batch.message });
+                if (this.shouldExit) break;
+                continue;
+            }
             const localIds = batch.items
                 .map((item) => item.localId)
                 .filter((localId): localId is string => Boolean(localId));
