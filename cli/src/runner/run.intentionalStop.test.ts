@@ -197,4 +197,43 @@ describe('runner intentional-stop marker cleanup', () => {
         await Promise.resolve()
         expect(mocks.reportChildExit).not.toHaveBeenCalled()
     })
+
+    it('releases the intentional marker when a stop preserves the shared wrapper for siblings', async () => {
+        const wrapper = makeFakeChild(6200)
+        mocks.spawnHappyCLI.mockImplementation(() => wrapper)
+        const spawnPromise = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'wrapper-main' })
+        await confirmSpawn(spawnPromise, 'wrapper-main', 6200)
+        await expect(spawnPromise).resolves.toEqual({ type: 'success', sessionId: 'wrapper-main' })
+        for (const root of ['root-a', 'sibling-b']) {
+            handlers.onHappySessionWebhook(root, {
+                path: home,
+                host: 'localhost',
+                machineId: 'machine',
+                hostPid: 6200,
+                startedBy: 'runner',
+                lifecycleState: 'running',
+                capabilities: { concurrentClients: true },
+            } as never)
+        }
+
+        // Archiving the primary root keeps the wrapper alive for the sibling.
+        mocks.readRuntimes.mockResolvedValue([{
+            id: 'runtime', pid: 6200, marker: 'generation', endpoint: 'unused',
+            command: 'codex', args: [], codexHome: home,
+            hub: configuration.apiUrl, authHash: 'test-auth',
+            sessions: {
+                'root-a': { threadId: 'a', namespace: 'test', active: false },
+                'sibling-b': { threadId: 'b', namespace: 'test', active: true },
+            },
+        }])
+        await expect(handlers.stopSession('root-a')).resolves.toBe('stopped')
+        expect(mocks.kill).not.toHaveBeenCalled()
+
+        // The surviving wrapper later crashes on its own: the sibling's death
+        // must still be reported, not suppressed by the root's stop marker.
+        wrapper.emit('exit', 1, null)
+        await vi.waitFor(() => expect(mocks.reportChildExit).toHaveBeenCalledWith(
+            expect.objectContaining({ sid: 'sibling-b', pid: 6200 })
+        ))
+    })
 })

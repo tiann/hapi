@@ -1204,10 +1204,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       return { marked, withExitListener };
     };
 
-    // Stop a session by sessionId or PID fallback
+    // Stop a session by sessionId or PID fallback. `terminated` collects the
+    // marked PIDs this attempt actually killed, so the caller can keep their
+    // suppression only while their own exit event is still pending.
     const attemptStopSession = async (
       sessionId: string,
-      opts?: { processStartMarker?: string }
+      opts?: { processStartMarker?: string },
+      terminated: Set<number> = new Set<number>()
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
@@ -1390,6 +1393,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             return await finishWithOrphanSweep('stopped');
           }
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
+          terminated.add(pid);
           rememberVerifiedExit(sessionId);
           return await finishWithOrphanSweep('stopped');
         }
@@ -1495,6 +1499,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 return 'still_alive';
               }
               treeTerminationVerified = true;
+              terminated.add(pid);
               logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill session ${sessionId}:`, error);
@@ -1504,6 +1509,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             // For externally started sessions, try to kill by PID
             try {
               if (!(await killProcess(pid))) return 'still_alive';
+              terminated.add(pid);
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill external session PID ${pid}:`, error);
@@ -1581,6 +1587,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             return decision;
           }
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
+          terminated.add(pid);
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
           if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
           rememberVerifiedExit(`PID-${pid}`);
@@ -1655,19 +1662,20 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
 
     // Late RPC retries join the same operation, but every attempt records its
-    // own intentional PIDs and releases the ones that no exit event will
-    // consume (see markIntentionalStop): a stale entry would suppress the real
-    // unexpected exit of a later child that reused the PID.
+    // own intentional PIDs and releases the ones this attempt did not
+    // terminate: a preserved shared wrapper or a child the stop left alive
+    // must not suppress its later real unexpected exit.
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       const intentional = markIntentionalStop(sessionId);
+      const terminated = new Set<number>();
       try {
-        return await attemptStopSession(sessionId, opts);
+        return await attemptStopSession(sessionId, opts, terminated);
       } finally {
         for (const pid of intentional.marked) {
-          if (!intentional.withExitListener.has(pid)) intentionallyStoppedPids.delete(pid);
+          if (!(intentional.withExitListener.has(pid) && terminated.has(pid))) intentionallyStoppedPids.delete(pid);
         }
       }
     });
