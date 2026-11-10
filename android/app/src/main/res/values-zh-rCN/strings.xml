@@ -211,8 +211,8 @@
     <string name="channel_input_requests_desc">智能体需要您进入会话回答问题</string>
     <string name="channel_ready">代理就绪</string>
     <string name="channel_ready_desc">智能体已完成并正在等待输入</string>
-    <string name="channel_task_notifications">任务通知</string>
-    <string name="channel_task_notifications_desc">任务完成或失败等更新</string>
+    <string name="channel_other">其他通知</string>
+    <string name="channel_other_desc">来自 HAPI 的其他更新</string>
     <string name="notif_action_allow">允许</string>
     <string name="notif_action_deny">拒绝</string>
     <string name="notif_action_reply">回复</string>

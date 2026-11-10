@@ -204,8 +204,8 @@
     <string name="channel_input_requests_desc">Агенту нужен ваш ответ на вопрос в сессии</string>
     <string name="channel_ready">Агент готов</string>
     <string name="channel_ready_desc">Агент завершил работу и ждёт ввода</string>
-    <string name="channel_task_notifications">Уведомления о задачах</string>
-    <string name="channel_task_notifications_desc">Задача выполнена или завершилась с ошибкой, а также другие обновления</string>
+    <string name="channel_other">Другие уведомления</string>
+    <string name="channel_other_desc">Прочие обновления от HAPI</string>
     <string name="notif_action_allow">Разрешить</string>
     <string name="notif_action_deny">Отклонить</string>
     <string name="notif_action_reply">Ответить</string>

@@ -204,8 +204,8 @@
     <string name="channel_input_requests_desc">An agent needs you to answer a question in the session</string>
     <string name="channel_ready">Agent ready</string>
     <string name="channel_ready_desc">An agent finished and is waiting for input</string>
-    <string name="channel_task_notifications">Task notifications</string>
-    <string name="channel_task_notifications_desc">Task completed or failed, and other updates</string>
+    <string name="channel_other">Other notifications</string>
+    <string name="channel_other_desc">Other updates from HAPI</string>
     <string name="notif_action_allow">Allow</string>
     <string name="notif_action_deny">Deny</string>
     <string name="notif_action_reply">Reply</string>

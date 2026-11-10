@@ -7,15 +7,12 @@ public enum PushType: String, Sendable {
     case ready
     case permissionRequest = "permission-request"
     case inputRequest = "input-request"
-    case taskNotification = "task-notification"
 }
 
 /// `severity` — visual urgency accent (`hub/src/fcm/fcmService.ts`).
 public enum PushSeverity: String, Sendable {
     case info
-    case success
     case warning
-    case error
 }
 
 /// Parsed `notifySummary` (JSON string, only on `ready`): the agent's
@@ -92,7 +89,7 @@ public struct PushPayload: Equatable, Sendable {
         switch type {
         case .permissionRequest: return requestId != nil
         case .inputRequest: return false // Answer in the session, never via Allow/Deny or message Reply.
-        case .ready, .taskNotification: return true
+        case .ready: return true
         case nil: return false
         }
     }
