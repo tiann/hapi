@@ -883,7 +883,23 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
         const canIncrement = initialCursor !== null
             && initial.epoch !== null
             && !initial.requiresLatestReset
-            && !preferLatestOnActivation
+            // A pending gap recovery must run its cursor catch-up even when a
+            // cached activation asked for a direct latest page: the activation
+            // shortcut fetches only the newest rows and leaves the interval
+            // between the cached tail and the page unreachable below the
+            // advanced newest cursor.
+            && (!preferLatestOnActivation || pendingGapRecovery)
+
+        if (canIncrement && preferLatestOnActivation) {
+            // The recovery's catch-up + latest-page reconciliation subsumes
+            // the cached-activation refresh. Defer the activation shortcut for
+            // this run: left set, it would force-break the catch-up loop after
+            // its first chunk.
+            updateState(sessionId, (previous) => {
+                if (previous.syncGeneration !== generation) return previous
+                return buildState(previous, { preferLatestOnActivation: false })
+            })
+        }
 
         if (!canIncrement) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
@@ -1015,7 +1031,10 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 // under the server's epoch; there is nothing left to refresh.
                 updateState(sessionId, (previous) => {
                     if (previous.syncGeneration !== generation) return previous
-                    return buildState(previous, { pendingGapRecovery: false })
+                    return buildState(previous, {
+                        pendingGapRecovery: false,
+                        preferLatestOnActivation: false
+                    })
                 })
             } else {
                 // The cursor phase caught the window up without error. Only
@@ -1037,7 +1056,10 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         requestBaseline,
                         trimLimit
                     })
-                    return buildState(next, { pendingGapRecovery: false })
+                    return buildState(next, {
+                        pendingGapRecovery: false,
+                        preferLatestOnActivation: false
+                    })
                 })
             }
         }
