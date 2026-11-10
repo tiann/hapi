@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { resolveAgyTurnModels, resolveAgyTurnModelsFromRows } from './agyConversationModel'
+import { agyStepActivityFromCells, readAgyStepActivity, resolveAgyTurnModels, resolveAgyTurnModelsFromRows } from './agyConversationModel'
 
 function varint(value: number): Buffer {
     const bytes: number[] = []
@@ -124,5 +124,25 @@ describe('resolveAgyTurnModels', () => {
 
         await expect(resolveAgyTurnModels('../../conversations/other', [1], queryRows)).resolves.toEqual(new Map([[1, null]]))
         expect(queryRows).not.toHaveBeenCalled()
+    })
+})
+
+describe('readAgyStepActivity / agyStepActivityFromCells', () => {
+    it('maps numeric SQL cells onto the activity shape', () => {
+        expect(agyStepActivityFromCells(6, 1)).toEqual({ latestIdx: 6, plannerCount: 1 })
+        expect(agyStepActivityFromCells(0, 0)).toEqual({ latestIdx: 0, plannerCount: 0 })
+    })
+
+    it('maps non-numeric SQL cells (missing table columns) onto nulls', () => {
+        expect(agyStepActivityFromCells(undefined, null)).toEqual({ latestIdx: null, plannerCount: null })
+        expect(agyStepActivityFromCells('7', 3.5)).toEqual({ latestIdx: null, plannerCount: null })
+    })
+
+    it('returns nulls when the database cannot be opened (bun:sqlite unavailable or file missing)', async () => {
+        const { mkdtempSync } = await import('node:fs')
+        const { tmpdir } = await import('node:os')
+        const { join } = await import('node:path')
+        const activity = await readAgyStepActivity('missing', 0, join(mkdtempSync(join(tmpdir(), 'agy-activity-')), 'nope.db'))
+        expect(activity).toEqual({ latestIdx: null, plannerCount: null })
     })
 })

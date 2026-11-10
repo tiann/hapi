@@ -170,3 +170,54 @@ export async function resolveAgyTurnModels(
         return unknown
     }
 }
+
+export type AgyStepActivity = {
+    /** Highest step idx in the conversation, or null when unreadable. */
+    latestIdx: number | null
+    /** PLANNER_RESPONSE (model-call) steps with idx > sinceIdxExclusive. */
+    plannerCount: number | null
+}
+
+/** Pure mapper over the two raw SQL cells; non-numeric cells become nulls. */
+export function agyStepActivityFromCells(latest: unknown, count: unknown): AgyStepActivity {
+    return {
+        latestIdx: typeof latest === 'number' && Number.isSafeInteger(latest) ? latest : null,
+        plannerCount: typeof count === 'number' && Number.isSafeInteger(count) ? count : null
+    }
+}
+
+async function queryStepActivityCells(dbPath: string, sinceIdxExclusive: number): Promise<{ latest: unknown; count: unknown }> {
+    const { Database } = await import('bun:sqlite')
+    const db = new Database(dbPath, { readonly: true })
+    try {
+        const latest = db.query('SELECT MAX(idx) AS latest FROM steps').get() as { latest?: unknown } | undefined
+        const counted = db.query(
+            'SELECT COUNT(*) AS count FROM steps WHERE idx > ? AND step_type = 15'
+        ).get(sinceIdxExclusive) as { count?: unknown } | undefined
+        return { latest: latest?.latest, count: counted?.count }
+    } finally {
+        db.close()
+    }
+}
+
+/**
+ * Plain-column activity probe over `conversations/<sessionId>.db` for the
+ * late-continuation watcher (see `cli/src/agy/utils/agyLateContinuation.ts`,
+ * workaround for google-antigravity/antigravity-cli#1461). The step CONTENT is
+ * protobuf (verified on agy 1.5.3/1.5.4) and is read from the brain
+ * transcript JSONL instead — this query only feeds the cheap integer signals:
+ * the newest idx (activity) and the model-call count for google-antigravity/antigravity-cli#1045 turn counts.
+ * Database absence/locks/format drift never throw.
+ */
+export async function readAgyStepActivity(
+    sessionId: string,
+    sinceIdxExclusive: number,
+    dbPath: string = join(CONVERSATIONS_DIR, `${sessionId}.db`)
+): Promise<AgyStepActivity> {
+    try {
+        const cells = await queryStepActivityCells(dbPath, sinceIdxExclusive)
+        return agyStepActivityFromCells(cells.latest, cells.count)
+    } catch {
+        return { latestIdx: null, plannerCount: null }
+    }
+}

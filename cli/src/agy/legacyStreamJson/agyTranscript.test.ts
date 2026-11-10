@@ -1,5 +1,12 @@
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { sendAgyTranscriptEntry } from './agyTranscript'
+import { AgyTranscriptChunkReader, sendAgyTranscriptEntry, stepKindFromType, stepStatusFromType } from './agyTranscript'
+
+function entry(overrides: Record<string, unknown>): Record<string, unknown> {
+    return { status: 'DONE', created_at: '2026-11-10T05:00:00Z', ...overrides }
+}
 
 function fakeClient() {
     return { sendClaudeSessionMessage: vi.fn(), sendUserMessage: vi.fn() }
@@ -59,5 +66,117 @@ describe('sendAgyTranscriptEntry', () => {
             toolName: 'run_command',
             input: { CommandLine: 'echo hi' }
         })
+    })
+})
+
+describe('stepKindFromType', () => {
+    it('maps the known transcript step types onto surface kinds', () => {
+        expect(stepKindFromType('USER_INPUT')).toBe('user_input')
+        expect(stepKindFromType('EPHEMERAL_MESSAGE')).toBe('ephemeral')
+        expect(stepKindFromType('PLANNER_RESPONSE')).toBe('planner')
+        expect(stepKindFromType('SYSTEM_MESSAGE')).toBe('system')
+        expect(stepKindFromType('GENERIC')).toBe('tool')
+        expect(stepKindFromType('RUN_COMMAND')).toBe('tool')
+        expect(stepKindFromType('SOMETHING_NEW')).toBe('other')
+    })
+})
+
+describe('stepStatusFromType', () => {
+    it('maps transcript status strings', () => {
+        expect(stepStatusFromType('DONE')).toBe('done')
+        expect(stepStatusFromType('RUNNING')).toBe('running')
+        expect(stepStatusFromType('ACTIVE')).toBe('running')
+        expect(stepStatusFromType('ERROR')).toBe('error')
+        expect(stepStatusFromType('UNKNOWN')).toBe('done')
+    })
+})
+
+describe('AgyTranscriptChunkReader', () => {
+    it('reads appended lines across chunk rotation and emits only new steps', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-transcript-'))
+        const reader = new AgyTranscriptChunkReader(dir)
+
+        expect(await reader.readNew()).toEqual([])
+
+        writeFileSync(join(dir, '00000000.jsonl'), JSON.stringify(entry({
+            step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>hi</USER_REQUEST>'
+        })) + '\n')
+        writeFileSync(join(dir, '00000001.jsonl'), JSON.stringify(entry({
+            step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'first answer'
+        })) + '\n')
+
+        const first = await reader.readNew()
+        expect(first).toHaveLength(2)
+        expect(first[0]).toMatchObject({ idx: 0, kind: 'user_input', status: 'done' })
+        expect(first[1]).toMatchObject({
+            idx: 1, kind: 'planner', content: 'first answer', toolCalls: [], createdAt: '2026-11-10T05:00:00Z'
+        })
+
+        // Appending to the last chunk surfaces only the appended step.
+        writeFileSync(join(dir, '00000001.jsonl'), JSON.stringify(entry({
+            step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'first answer'
+        })) + '\n' + JSON.stringify(entry({
+            step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', content: 'task finished'
+        })) + '\n')
+        const second = await reader.readNew()
+        expect(second).toHaveLength(1)
+        expect(second[0]).toMatchObject({ idx: 2, kind: 'system', content: 'task finished' })
+
+        // A new chunk file is picked up wholesale.
+        writeFileSync(join(dir, '00000002.jsonl'), JSON.stringify(entry({
+            step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'next', tool_calls: [{ name: 'run_command', args: { CommandLine: 'echo next' } }]
+        })) + '\n')
+        const third = await reader.readNew()
+        expect(third).toHaveLength(1)
+        expect(third[0]).toMatchObject({
+            idx: 3, kind: 'planner', content: 'next', toolCalls: [{ name: 'run_command', args: { CommandLine: 'echo next' } }]
+        })
+    })
+
+    it('parses planner tool calls and tolerates malformed lines', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-transcript-'))
+        writeFileSync(join(dir, '00000000.jsonl'), [
+            'not json at all',
+            JSON.stringify(entry({ step_index: 5, source: 'MODEL', type: 'PLANNER_RESPONSE', content: '', tool_calls: [{ name: 'read_file', args: { Path: 'sample.txt' } }] })),
+            ''
+        ].join('\n'))
+        const reader = new AgyTranscriptChunkReader(dir)
+        const steps = await reader.readNew()
+        expect(steps).toHaveLength(1)
+        expect(steps[0]).toMatchObject({ idx: 5, kind: 'planner', toolCalls: [{ name: 'read_file', args: { Path: 'sample.txt' } }] })
+    })
+
+    it('keeps reading after a chunk shrank below the tracked offset', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-transcript-'))
+        const file = join(dir, '00000000.jsonl')
+        writeFileSync(file, JSON.stringify(entry({ step_index: 0, type: 'USER_INPUT', content: 'a'.repeat(400) })) + '\n')
+        const reader = new AgyTranscriptChunkReader(dir)
+        expect(await reader.readNew()).toHaveLength(1)
+
+        // A rewrite that loses the tracked offset must not wedge the reader.
+        writeFileSync(file, JSON.stringify(entry({ step_index: 1, type: 'PLANNER_RESPONSE', content: 'b' })) + '\n')
+        const steps = await reader.readNew()
+        expect(steps.map((step) => step.idx)).toEqual([1])
+    })
+
+    it('returns nothing for a missing transcript directory', async () => {
+        const reader = new AgyTranscriptChunkReader(join(tmpdir(), 'agy-transcript-missing-dir'))
+        expect(await reader.readNew()).toEqual([])
+    })
+})
+
+describe('transcript reader fixture', () => {
+    it('shapes the synthetic wakeup fixture used by the launcher tests', async () => {
+        const fixture = await import('@/agent/backends/acp/__fixtures__/agy-bg-wakeup-transcript.json')
+        const steps = (fixture.default as Record<string, unknown>[]).map((raw) => ({
+            idx: raw.step_index,
+            kind: stepKindFromType(raw.type as string),
+            status: stepStatusFromType(raw.status as string),
+            content: raw.content ?? '',
+            toolCalls: raw.tool_calls ?? []
+        }))
+        expect(steps.map((step) => step.kind)).toEqual(['user_input', 'ephemeral', 'planner', 'tool', 'planner', 'system', 'planner'])
+        expect(steps[5]).toMatchObject({ kind: 'system', status: 'done' })
+        expect(steps[6].content.length).toBeGreaterThan(0)
     })
 })

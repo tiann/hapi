@@ -1,6 +1,141 @@
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { RawJSONLines } from '@/claude/types';
 import { extractUserRequest } from './agyMessageText';
+
+/**
+ * One brain-transcript step, normalized for the late-continuation surfacer
+ * (see `cli/src/agy/utils/agyLateContinuation.ts`, workaround for
+ * google-antigravity/antigravity-cli#1461). `idx` equals the conversation
+ * DB's `steps.idx` (verified 1:1 on agy 1.5.3/1.5.4 transcripts).
+ */
+export type AgyTranscriptStep = {
+    idx: number
+    kind: 'user_input' | 'ephemeral' | 'planner' | 'tool' | 'system' | 'other'
+    status: 'done' | 'running' | 'error'
+    createdAt: string | null
+    content: string
+    toolCalls: Array<{ name: string; args: Record<string, unknown> }>
+};
+
+export function stepKindFromType(type: string): AgyTranscriptStep['kind'] {
+    switch (type) {
+        case 'USER_INPUT':
+            return 'user_input';
+        case 'EPHEMERAL_MESSAGE':
+            return 'ephemeral';
+        case 'PLANNER_RESPONSE':
+            return 'planner';
+        case 'SYSTEM_MESSAGE':
+            return 'system';
+        // 1.5.x writes tool executions as GENERIC; older builds named the tool.
+        case 'GENERIC':
+        case 'RUN_COMMAND':
+        case 'VIEW_FILE':
+        case 'LIST_DIRECTORY':
+        case 'CODE_ACTION':
+            return 'tool';
+        default:
+            return 'other';
+    }
+}
+
+export function stepStatusFromType(status: string): AgyTranscriptStep['status'] {
+    switch (status) {
+        case 'RUNNING':
+        case 'ACTIVE':
+            return 'running';
+        case 'ERROR':
+            return 'error';
+        default:
+            return 'done';
+    }
+}
+
+function parseTranscriptLine(line: string): AgyTranscriptStep | null {
+    let raw: Record<string, unknown>;
+    try {
+        raw = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+        return null;
+    }
+    const idx = typeof raw.step_index === 'number' && Number.isSafeInteger(raw.step_index) ? raw.step_index : null;
+    if (idx === null || typeof raw.type !== 'string') return null;
+    const toolCalls = Array.isArray(raw.tool_calls)
+        ? raw.tool_calls
+            .filter((call): call is { name: string; args: Record<string, unknown> } => {
+                return typeof call === 'object' && call !== null
+                    && typeof (call as { name?: unknown }).name === 'string'
+                    && typeof (call as { args?: unknown }).args === 'object'
+                    && (call as { args?: unknown }).args !== null;
+            })
+            .map((call) => ({ name: call.name, args: call.args }))
+        : [];
+    return {
+        idx,
+        kind: stepKindFromType(raw.type),
+        status: typeof raw.status === 'string' ? stepStatusFromType(raw.status) : 'done',
+        createdAt: typeof raw.created_at === 'string' ? raw.created_at : null,
+        content: typeof raw.content === 'string' ? raw.content : '',
+        toolCalls
+    };
+}
+
+/**
+ * Incremental reader over one session's `transcript_full/NNNNNNNN.jsonl`
+ * chunks: agy appends lines to the newest chunk and rolls to the next file at
+ * ~100 KiB. The reader tracks the last file and byte offset, so each poll only
+ * parses appended lines; a file that shrank below the offset (rewrite) is read
+ * whole again and the caller dedupes by step idx.
+ */
+export class AgyTranscriptChunkReader {
+    private lastFile: string | null = null;
+    private offset = 0;
+
+    constructor(private readonly dir: string) {}
+
+    async readNew(): Promise<AgyTranscriptStep[]> {
+        let files: string[];
+        try {
+            files = (await readdir(this.dir)).filter((name) => name.endsWith('.jsonl')).sort();
+        } catch {
+            return [];
+        }
+        if (files.length === 0) return [];
+
+        const steps: AgyTranscriptStep[] = [];
+        for (const file of files) {
+            if (this.lastFile !== null && file < this.lastFile) continue;
+            let text: string;
+            try {
+                text = await readFile(join(this.dir, file), 'utf8');
+            } catch {
+                continue;
+            }
+            const isTracked = file === this.lastFile;
+            let startAt = 0;
+            if (isTracked) {
+                if (text.length < this.offset) {
+                    // Rewritten/shrunk: re-read whole; the caller dedupes by idx.
+                    startAt = 0;
+                } else {
+                    startAt = this.offset;
+                }
+            }
+            const tail = text.slice(startAt);
+            for (const line of tail.split('\n')) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                const step = parseTranscriptLine(trimmed);
+                if (step) steps.push(step);
+            }
+            this.lastFile = file;
+            this.offset = text.length;
+        }
+        return steps;
+    }
+}
 
 type AgyTranscriptClient = Pick<ApiSessionClient, 'sendClaudeSessionMessage' | 'sendUserMessage'>;
 
