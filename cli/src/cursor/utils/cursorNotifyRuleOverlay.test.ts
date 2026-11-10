@@ -6,8 +6,11 @@ import { join, resolve } from 'node:path';
 import { SESSION_SUMMARY_CONTRACT_LINE } from '@/modules/common/sessionSummaryInstruction';
 import {
     buildNotifyRuleContent,
+    HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX,
     HAPI_SESSION_RULE_SENTINEL,
-    installCursorNotifyRuleOverlay
+    installCursorNotifyRuleOverlay,
+    RULE_FILENAME_ALTERNATE,
+    RULE_FILENAME_PRIMARY
 } from './cursorNotifyRuleOverlay';
 
 describe('buildNotifyRuleContent', () => {
@@ -175,8 +178,9 @@ describe('installCursorNotifyRuleOverlay', () => {
         expect(existsSync(rulePath)).toBe(false);
     });
 
-    it('does not clobber or delete a git-tracked hapi-session.mdc', () => {
-        const rulePath = rulePathOf(cwd);
+    it('installs the alternate rule when the primary path is git-tracked', () => {
+        const primary = rulePathOf(cwd);
+        const alternate = join(cwd, '.cursor', 'rules', RULE_FILENAME_ALTERNATE);
         mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
         const tracked = [
             '---',
@@ -189,14 +193,86 @@ describe('installCursorNotifyRuleOverlay', () => {
             'Tracked repo copy.',
             ''
         ].join('\n');
-        writeFileSync(rulePath, tracked, 'utf-8');
+        writeFileSync(primary, tracked, 'utf-8');
         execFileSync('git', ['init'], { cwd });
-        execFileSync('git', ['add', '.cursor/rules/hapi-session.mdc'], { cwd });
+        execFileSync('git', ['add', `.cursor/rules/${RULE_FILENAME_PRIMARY}`], { cwd });
 
-        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'should-not-bake' });
-        expect(readFileSync(rulePath, 'utf-8')).toBe(tracked);
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'alt' });
+        expect(readFileSync(primary, 'utf-8')).toBe(tracked);
+        expect(overlay.rulePath).toBe(alternate);
+        expect(readFileSync(alternate, 'utf-8')).toContain('"project":"alt"');
         overlay.cleanup();
-        expect(readFileSync(rulePath, 'utf-8')).toBe(tracked);
+        expect(readFileSync(primary, 'utf-8')).toBe(tracked);
+        expect(existsSync(alternate)).toBe(false);
+    });
+
+    it('restores a post-crash user replacement instead of a stale snapshot', () => {
+        const rulePath = rulePathOf(cwd);
+        installCursorNotifyRuleOverlay({ cwd, project: 'crash' });
+        expect(existsSync(rulePath)).toBe(true);
+
+        const overlayRoot = join(hapiHome, 'cursor-notify-overlays');
+        const stateDirName = readdirSync(overlayRoot)[0];
+        expect(stateDirName).toBeTruthy();
+        const statePath = join(overlayRoot, stateDirName!, 'state.json');
+        const state = JSON.parse(readFileSync(statePath, 'utf-8')) as {
+            owners: Array<{ id: string; pid: number }>
+            snapshotTaken: boolean
+            restore: string | null
+        };
+        expect(state.restore).toBeNull();
+        state.owners = [{ id: 'dead', pid: 2_147_483_646 }];
+        writeFileSync(statePath, JSON.stringify(state));
+
+        const userReplacement = '# operator replaced generated rule after crash\n';
+        writeFileSync(rulePath, userReplacement, 'utf-8');
+
+        const recovered = installCursorNotifyRuleOverlay({ cwd, project: 'after' });
+        expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"after"');
+        recovered.cleanup();
+        expect(readFileSync(rulePath, 'utf-8')).toBe(userReplacement);
+    });
+
+    it('excludes the transient rule from ordinary git staging', () => {
+        execFileSync('git', ['init'], { cwd });
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'stage' });
+        const exclude = readFileSync(join(cwd, '.git', 'info', 'exclude'), 'utf-8');
+        expect(exclude).toContain(HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX);
+        expect(exclude).toContain(`.cursor/rules/${RULE_FILENAME_PRIMARY}`);
+
+        const ignored = execFileSync(
+            'git',
+            ['-C', cwd, 'check-ignore', '-v', `--`, `.cursor/rules/${RULE_FILENAME_PRIMARY}`],
+            { encoding: 'utf-8' }
+        );
+        expect(ignored).toContain(`.cursor/rules/${RULE_FILENAME_PRIMARY}`);
+
+        overlay.cleanup();
+        const after = readFileSync(join(cwd, '.git', 'info', 'exclude'), 'utf-8');
+        expect(after).not.toContain(HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX);
+    });
+
+    it('preserves pre-existing .git/info/exclude rules across install and cleanup', () => {
+        execFileSync('git', ['init'], { cwd });
+        const excludePath = join(cwd, '.git', 'info', 'exclude');
+        writeFileSync(excludePath, '# keep-me\nlocal-notes.txt\n', 'utf-8');
+        const overlay = installCursorNotifyRuleOverlay({ cwd });
+        overlay.cleanup();
+        expect(readFileSync(excludePath, 'utf-8')).toBe('# keep-me\nlocal-notes.txt\n');
+    });
+
+    it('clears ownership state without recursively deleting a concurrent install dir', () => {
+        const first = installCursorNotifyRuleOverlay({ cwd, project: 'first' });
+        first.cleanup();
+
+        const second = installCursorNotifyRuleOverlay({ cwd, project: 'second' });
+        expect(readFileSync(second.rulePath, 'utf-8')).toContain('"project":"second"');
+        // Simulate last-owner cleanup racing a live peer: second still owns the cwd.
+        const third = installCursorNotifyRuleOverlay({ cwd, project: 'third' });
+        second.cleanup();
+        expect(readFileSync(third.rulePath, 'utf-8')).toContain('"project":"third"');
+        third.cleanup();
+        expect(existsSync(third.rulePath)).toBe(false);
     });
 
     it('preserves mid-session user replacement without sentinel', () => {

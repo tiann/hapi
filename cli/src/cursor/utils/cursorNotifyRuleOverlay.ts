@@ -17,8 +17,8 @@
  * already has a file at the same path we back up its contents and restore them on
  * cleanup; a file that already carries our sentinel is one of ours (a prior or
  * concurrent session in the same cwd), so we never treat it as user content —
- * UNLESS git tracks that path. All fs work is fail-open — a missing rule must
- * never crash a session.
+ * UNLESS git tracks that path (then we fall through to an alternate filename).
+ * All fs work is fail-open — a missing rule must never crash a session.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -30,20 +30,25 @@ import {
     openSync,
     readFileSync,
     readdirSync,
-    rmSync,
     rmdirSync,
     unlinkSync,
     writeFileSync
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { SESSION_SUMMARY_CONTRACT_LINE } from '@/modules/common/sessionSummaryInstruction';
 import { logger } from '@/ui/logger';
 import { isProcessAlive } from '@/utils/process';
 
-const RULE_FILENAME = 'hapi-session.mdc';
-const RULE_RELPATH = join('.cursor', 'rules', RULE_FILENAME);
+/** Preferred rule filename; fall back when Git already tracks this path. */
+export const RULE_FILENAME_PRIMARY = 'hapi-session.mdc';
+/** Alternate when the primary path is git-tracked (still alwaysApply). */
+export const RULE_FILENAME_ALTERNATE = 'hapi-session-summary.mdc';
+const RULE_CANDIDATES = [RULE_FILENAME_PRIMARY, RULE_FILENAME_ALTERNATE] as const;
 const OWNERSHIP_LOCK_TIMEOUT_MS = 5_000;
+
+/** Prefix for `.git/info/exclude` lease markers (do not commit transient rule). */
+export const HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX = '# hapi-cursor-notify-rule';
 
 /**
  * Hidden marker identifying files this overlay owns. Lets us distinguish a
@@ -84,6 +89,13 @@ type OverlayOwnershipState = {
     snapshotTaken: boolean;
     /** Pre-HAPI rule bytes when `snapshotTaken`; null means no file existed. */
     restore: string | null;
+};
+
+type RuleTarget = {
+    ruleFilename: string;
+    /** Repo-relative path using `/` separators (git exclude / ls-files). */
+    ruleRelPosix: string;
+    rulePath: string;
 };
 
 /**
@@ -136,7 +148,7 @@ export function buildNotifyRuleContent(opts: { project?: string | null; agentId?
 }
 
 /**
- * Install the rule file at `<cwd>/.cursor/rules/hapi-session.mdc`, backing up any
+ * Install the rule file under `<cwd>/.cursor/rules/`, backing up any
  * pre-existing user file. Returns an overlay handle whose `cleanup()` restores
  * the prior state. Never throws: on failure it returns a no-op cleanup so callers
  * can wire it unconditionally.
@@ -147,10 +159,13 @@ export function installCursorNotifyRuleOverlay(
     const absCwd = resolve(opts.cwd);
     const cursorDir = join(absCwd, '.cursor');
     const rulesDir = join(cursorDir, 'rules');
-    const rulePath = join(rulesDir, RULE_FILENAME);
+    const target = resolveRuleTarget(absCwd);
+    const rulePath = target?.rulePath ?? join(rulesDir, RULE_FILENAME_PRIMARY);
     const stateDir = getOverlayStateDir(absCwd);
     const statePath = join(stateDir, 'state.json');
-    const lockPath = join(stateDir, 'state.lock');
+    // Lock lives beside stateDir so last-owner cleanup can clear state.json
+    // while holding the lock without recursively deleting the lock's parent.
+    const lockPath = `${stateDir}.lock`;
     const ownerId = randomUUID();
     const pid = process.pid;
 
@@ -161,6 +176,18 @@ export function installCursorNotifyRuleOverlay(
     let registered = false;
     /** Workspace rule successfully overwritten with generated content. */
     let installed = false;
+    let undoGitExclude: (() => void) | null = null;
+
+    if (!target) {
+        logger.debug('[cursor-notify-rule] skip install — all candidate rule paths are git-tracked');
+        return {
+            rulePath,
+            cleanup: () => {
+                if (cleaned) return;
+                cleaned = true;
+            }
+        };
+    }
 
     try {
         if (!existsSync(cursorDir)) {
@@ -170,18 +197,6 @@ export function installCursorNotifyRuleOverlay(
         if (!existsSync(rulesDir)) {
             mkdirSync(rulesDir, { recursive: true });
             createdDirs.push(rulesDir);
-        }
-
-        const existing = existsSync(rulePath) ? safeRead(rulePath) : null;
-        if (shouldPreserveTrackedSessionRule(absCwd, existing)) {
-            logger.debug(`[cursor-notify-rule] skip clobber of tracked ${rulePath}`);
-            return {
-                rulePath,
-                cleanup: () => {
-                    if (cleaned) return;
-                    cleaned = true;
-                }
-            };
         }
 
         if (!existsSync(stateDir)) {
@@ -200,8 +215,21 @@ export function installCursorNotifyRuleOverlay(
                     restore: existsSync(rulePath) ? safeRead(rulePath) : null
                 };
             } else if (state.owners.length === 0) {
-                // Crash recovery: keep the prior snapshot (including restore:null).
-                state = { ...state, owners: [] };
+                // Crash recovery: if the operator replaced our generated rule with
+                // untracked personal content, refresh the snapshot so cleanup
+                // restores that replacement instead of a stale pre-crash original.
+                const current = existsSync(rulePath) ? safeRead(rulePath) : null;
+                const stillOurs = current !== null && current.includes(HAPI_SESSION_RULE_SENTINEL);
+                if (!stillOurs) {
+                    state = {
+                        cwd: absCwd,
+                        owners: [],
+                        snapshotTaken: true,
+                        restore: current
+                    };
+                } else {
+                    state = { ...state, owners: [] };
+                }
             }
 
             state.owners.push({ id: ownerId, pid });
@@ -209,19 +237,33 @@ export function installCursorNotifyRuleOverlay(
             registered = true;
         });
 
+        undoGitExclude = installGitExcludeLease(absCwd, rulePath, ownerId);
         writeFileSync(rulePath, buildNotifyRuleContent(opts), 'utf-8');
         installed = true;
         logger.debug(`[cursor-notify-rule] installed alwaysApply rule at ${rulePath}`);
     } catch (error) {
         logger.debug('[cursor-notify-rule] install failed', error);
+        try {
+            undoGitExclude?.();
+        } catch {
+            // ignore
+        }
+        undoGitExclude = null;
     }
 
     const cleanup = (): void => {
         if (cleaned) return;
         cleaned = true;
-        if (!registered) return;
+        if (!registered) {
+            try {
+                undoGitExclude?.();
+            } catch {
+                // ignore
+            }
+            return;
+        }
         try {
-            let clearStateDir = false;
+            let clearStateFile = false;
             withOwnershipLock(lockPath, () => {
                 let state = reapOwners(readOwnershipState(statePath, absCwd));
                 state.owners = state.owners.filter((owner) => owner.id !== ownerId);
@@ -241,16 +283,40 @@ export function installCursorNotifyRuleOverlay(
                             writeFileSync(rulePath, state.restore, 'utf-8');
                         } else if (state.snapshotTaken && state.restore === null) {
                             if (existsSync(rulePath)) {
-                                rmSync(rulePath, { force: true });
+                                unlinkSync(rulePath);
                             }
                         }
                     }
                 }
 
-                clearStateDir = true;
+                // Clear ownership state while still holding the lock. Do not
+                // recursively delete stateDir after unlock — that races a new
+                // install that already registered under the same lock.
+                try {
+                    if (existsSync(statePath)) {
+                        unlinkSync(statePath);
+                    }
+                } catch {
+                    // ignore
+                }
+                clearStateFile = true;
             });
-            if (clearStateDir) {
-                rmSync(stateDir, { recursive: true, force: true });
+
+            try {
+                undoGitExclude?.();
+            } catch (error) {
+                logger.debug('[cursor-notify-rule] git exclude cleanup failed', error);
+            }
+            undoGitExclude = null;
+
+            if (clearStateFile) {
+                try {
+                    if (isEmptyDir(stateDir)) {
+                        rmdirSync(stateDir);
+                    }
+                } catch {
+                    // New install may have recreated state — leave it.
+                }
             }
 
             for (const dir of [...createdDirs].reverse()) {
@@ -266,12 +332,119 @@ export function installCursorNotifyRuleOverlay(
     return { rulePath, cleanup };
 }
 
-function shouldPreserveTrackedSessionRule(cwd: string, _existing: string | null): boolean {
-    const probe = spawnSync('git', ['-C', cwd, 'ls-files', '--error-unmatch', RULE_RELPATH], {
+/** Pick the first candidate rule path that Git does not already track. */
+export function resolveRuleTarget(absCwd: string): RuleTarget | null {
+    for (const ruleFilename of RULE_CANDIDATES) {
+        const ruleRelPosix = `.cursor/rules/${ruleFilename}`;
+        if (!isGitTrackedPath(absCwd, ruleRelPosix)) {
+            return {
+                ruleFilename,
+                ruleRelPosix,
+                rulePath: join(absCwd, '.cursor', 'rules', ruleFilename)
+            };
+        }
+    }
+    return null;
+}
+
+function isGitTrackedPath(cwd: string, relPosix: string): boolean {
+    const probe = spawnSync('git', ['-C', cwd, 'ls-files', '--error-unmatch', '--', relPosix], {
         encoding: 'utf-8',
         stdio: ['ignore', 'ignore', 'ignore']
     });
     return probe.status === 0;
+}
+
+function installGitExcludeLease(absCwd: string, rulePath: string, leaseId: string): (() => void) | null {
+    const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd: absCwd,
+        encoding: 'utf-8'
+    });
+    if (top.status !== 0) {
+        return null;
+    }
+    const root = top.stdout.trim();
+    if (!root) {
+        return null;
+    }
+    const relRaw = relative(root, rulePath);
+    if (!relRaw || relRaw.startsWith('..') || isAbsolute(relRaw)) {
+        return null;
+    }
+    const pattern = relRaw.replaceAll('\\', '/');
+    const excludePath = resolveGitExcludePath(root);
+    if (!excludePath) {
+        return null;
+    }
+
+    withExcludeLock(`${excludePath}.hapi-notify.lock`, () => {
+        appendExcludeLeaseUnlocked(excludePath, pattern, leaseId);
+    });
+
+    return () => {
+        withExcludeLock(`${excludePath}.hapi-notify.lock`, () => {
+            removeExcludeLeaseUnlocked(excludePath, pattern, leaseId);
+        });
+    };
+}
+
+function resolveGitExcludePath(root: string): string | null {
+    const excludeProc = spawnSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+        cwd: root,
+        encoding: 'utf-8'
+    });
+    if (excludeProc.status !== 0) {
+        return null;
+    }
+    const raw = excludeProc.stdout.trim();
+    if (!raw) {
+        return null;
+    }
+    return isAbsolute(raw) ? raw : resolve(root, raw);
+}
+
+function hapiNotifyGitExcludeMarker(leaseId: string): string {
+    return `${HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX} ${leaseId}`;
+}
+
+function appendExcludeLeaseUnlocked(excludePath: string, pattern: string, leaseId: string): void {
+    const marker = hapiNotifyGitExcludeMarker(leaseId);
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
+    const lines = existing.split(/\r?\n/);
+    if (lines.includes(marker)) {
+        return;
+    }
+    mkdirSync(dirname(excludePath), { recursive: true });
+    const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+    writeFileSync(excludePath, `${existing}${prefix}${marker}\n${pattern}\n`, {
+        encoding: 'utf-8',
+        mode: 0o644
+    });
+}
+
+function removeExcludeLeaseUnlocked(excludePath: string, pattern: string, leaseId: string): void {
+    if (!existsSync(excludePath)) {
+        return;
+    }
+    const marker = hapiNotifyGitExcludeMarker(leaseId);
+    const lines = readFileSync(excludePath, 'utf-8').split(/\r?\n/);
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i] === marker && lines[i + 1] === pattern) {
+            i += 1;
+            continue;
+        }
+        out.push(lines[i]!);
+    }
+    while (out.length > 0 && out[out.length - 1] === '') {
+        out.pop();
+    }
+    const body = out.length === 0 ? '' : `${out.join('\n')}\n`;
+    writeFileSync(excludePath, body, { encoding: 'utf-8', mode: 0o644 });
+}
+
+function withExcludeLock(lockPath: string, fn: () => void): void {
+    withOwnershipLock(lockPath, fn);
 }
 
 function getHapiHomeDir(): string {
@@ -342,6 +515,7 @@ function withOwnershipLock(lockPath: string, fn: () => void): void {
     const started = Date.now();
     while (true) {
         try {
+            mkdirSync(dirname(lockPath), { recursive: true });
             const fd = openSync(lockPath, 'wx');
             try {
                 fn();
