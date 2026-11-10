@@ -13,13 +13,13 @@ export type FcmDataPayload = {
     /**
      * Visual urgency hint for the client. Drives the notification accent
      * color on Wear OS / phone, and may be used for sound channel routing
-     * later. Independent of `type` because `task-notification` is one
-     * type that splits across success and failure outcomes.
+     * later. The hub currently emits:
      *
      *  - `info`     ready / input request                -> blue
-     *  - `success`  task completed                       -> green
      *  - `warning`  permission request                   -> amber
-     *  - `error`    task failed / aborted                -> red
+     *
+     * `success` / `error` remain in the client contract vocabulary; clients
+     * still render them, but the hub does not send them today.
      */
     severity?: 'info' | 'success' | 'warning' | 'error'
     /**

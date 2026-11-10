@@ -127,7 +127,6 @@ HAPI supports push notifications to alert you when agents need attention.
 |------|-----------|
 | Permission Request | Agent needs your approval |
 | Ready | Agent finished and awaits input |
-| Task completed / Task failed | A background task finishes (success or failure) |
 
 ### Native app notifications
 
