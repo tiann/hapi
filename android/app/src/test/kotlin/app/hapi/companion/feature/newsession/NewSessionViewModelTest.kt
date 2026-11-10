@@ -279,6 +279,30 @@ class SpawnBodyTest {
     }
 
     @Test
+    fun `hermes and berry keep the yolo flag and send no permissionMode`() {
+        // hermes/berry 非 native-select flavor:权限走 YOLO 开关(映射原生
+        // yolo 模式),spawn body 照发 yolo 旗标(含 true/false),不带
+        // permissionMode——与 dsh 的 agent 自管(全 omit)区分开。
+        val hermes = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "hermes", yolo = true),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "yolo", "sessionType"), hermes.keys)
+        assertEquals(true, hermes["yolo"]!!.jsonPrimitive.boolean)
+
+        val berryOff = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "berry", yolo = false),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "yolo", "sessionType"), berryOff.keys)
+        assertEquals(false, berryOff["yolo"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
     fun `codex default selections send no optional fields, fast tier hidden sends no serviceTier`() {
         val body = encode(
             NewSessionLogic.buildSpawnRequest(
@@ -1131,6 +1155,26 @@ class NewSessionViewModelTest {
         val toggle = vm.uiState.value.permission
         assertTrue(toggle is PermissionUi.YoloToggle)
         assertEquals("Yolo", (toggle as PermissionUi.YoloToggle).nativeModeLabel)
+    }
+
+    @Test
+    fun `hermes and berry offer the yolo toggle, not the managed placeholder`() = runTest {
+        // 对齐 iOS(bc2e97fe):hermes/berry 不再标记为 agent 自管,建会话
+        // 表单走 YOLO 开关,caption 是映射到的原生 yolo 模式。
+        val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("hermes")
+        advanceUntilIdle()
+        val hermesToggle = vm.uiState.value.permission
+        assertTrue(hermesToggle is PermissionUi.YoloToggle)
+        assertEquals("Yolo", (hermesToggle as PermissionUi.YoloToggle).nativeModeLabel)
+
+        vm.setAgent("berry")
+        advanceUntilIdle()
+        val berryToggle = vm.uiState.value.permission
+        assertTrue(berryToggle is PermissionUi.YoloToggle)
+        assertEquals("Yolo", (berryToggle as PermissionUi.YoloToggle).nativeModeLabel)
     }
 
     @Test

@@ -11,6 +11,8 @@ sealed interface AgentFlavor {
     val id: String
 
     data object Agy : AgentFlavor { override val id = "agy" }
+    // Berry Agent:ACP 自有 SQLite 会话存储,berrySessionId 持久 resume(对齐 iOS AgentFlavor.swift)。
+    data object Berry : AgentFlavor { override val id = "berry" }
     data object Claude : AgentFlavor { override val id = "claude" }
     data object Codex : AgentFlavor { override val id = "codex" }
     data object Dsh : AgentFlavor { override val id = "dsh" }
@@ -18,6 +20,8 @@ sealed interface AgentFlavor {
     data object Cursor : AgentFlavor { override val id = "cursor" }
     data object Gemini : AgentFlavor { override val id = "gemini" }
     data object Grok : AgentFlavor { override val id = "grok" }
+    // Hermes:gateway 持久会话 id,hermesSessionId 跨进程 resume(对齐 iOS AgentFlavor.swift)。
+    data object Hermes : AgentFlavor { override val id = "hermes" }
     data object Kimi : AgentFlavor { override val id = "kimi" }
     data object Opencode : AgentFlavor { override val id = "opencode" }
     data object Pi : AgentFlavor { override val id = "pi" }
@@ -30,7 +34,7 @@ sealed interface AgentFlavor {
     companion object {
         /** `AGENT_FLAVORS` — declaration order preserved. */
         val KNOWN: List<AgentFlavor> = listOf(
-            Agy, Claude, Codex, Dsh, Copilot, Cursor, Gemini, Grok, Kimi, Opencode, Pi,
+            Agy, Berry, Claude, Codex, Dsh, Copilot, Cursor, Gemini, Grok, Hermes, Kimi, Opencode, Pi,
         )
 
         /**
@@ -69,6 +73,8 @@ object Flavors {
         "grok" to setOf(FlavorCapability.ModelChange, FlavorCapability.Effort),
         "codex" to setOf(FlavorCapability.ModelChange),
         "dsh" to emptySet(),
+        "hermes" to setOf(FlavorCapability.ModelChange),
+        "berry" to setOf(FlavorCapability.ModelChange),
         "cursor" to setOf(FlavorCapability.ModelChange),
         "opencode" to setOf(FlavorCapability.ModelChange),
         "pi" to setOf(FlavorCapability.ModelChange, FlavorCapability.Effort),
@@ -83,6 +89,8 @@ object Flavors {
         "grok" to "Grok Build",
         "codex" to "Codex",
         "dsh" to "DeepSeek Harness",
+        "hermes" to "Hermes",
+        "berry" to "Berry Agent",
         "cursor" to "Cursor",
         "opencode" to "OpenCode",
         "pi" to "Pi",

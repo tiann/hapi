@@ -106,8 +106,8 @@ object SummaryPatching {
     /**
      * `getSummaryAgentSessionId`: with a known flavor, only that flavor's id
      * field counts (trimmed, blank ⇒ null). The legacy fallback chain (raw,
-     * untrimmed, `pi` excluded — replicated) applies only when the flavor is
-     * missing or unknown.
+     * untrimmed, `pi`/`hermes`/`berry` excluded — replicated) applies only
+     * when the flavor is missing or unknown.
      */
     private fun summaryAgentSessionId(metadata: SessionMetadata): String? {
         val flavor = metadata.flavor
@@ -124,6 +124,10 @@ object SummaryPatching {
                 "copilot" -> metadata.copilotSessionId
                 "pi" -> metadata.piSessionId
                 "dsh" -> metadata.dshSessionId
+                // hermes/berry:各自的持久会话 id;已知 flavor 下绝不回落到
+                // 跨 flavor 的陈旧 id(hub resolveAgentResumeId 同款语义)。
+                "hermes" -> metadata.hermesSessionId
+                "berry" -> metadata.berrySessionId
                 else -> null
             }
             return flavorSessionId?.trim()?.takeIf { it.isNotEmpty() }

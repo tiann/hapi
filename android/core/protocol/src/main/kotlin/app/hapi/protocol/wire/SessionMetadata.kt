@@ -46,6 +46,10 @@ data class SessionMetadata(
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
     val dshSessionId: String? = null,
+    // Hermes:gateway 持久会话 id,跨进程 resume 的句柄(MetadataSchema)。
+    val hermesSessionId: String? = null,
+    // Berry Agent:自有 SQLite 会话存储的持久 id,resume 句柄(MetadataSchema)。
+    val berrySessionId: String? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */
