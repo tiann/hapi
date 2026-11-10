@@ -53,9 +53,9 @@ describe('hasCapability', () => {
         expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
     })
 
-    test('kimi supports model-change but not effort', () => {
+    test('kimi supports model-change and effort', () => {
         expect(hasCapability('kimi', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('kimi', Capabilities.Effort)).toBe(true)
     })
 
     test('copilot supports model-change but not effort', () => {
@@ -149,7 +149,7 @@ describe('convenience functions', () => {
         expect(supportsEffort('gemini')).toBe(false)
         expect(supportsEffort('pi')).toBe(true)
         expect(supportsEffort('grok')).toBe(true)
-        expect(supportsEffort('kimi')).toBe(false)
+        expect(supportsEffort('kimi')).toBe(true)
         expect(supportsEffort(null)).toBe(false)
     })
 })

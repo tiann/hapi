@@ -26,6 +26,8 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         backgroundTaskCount: 2,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         contentRevision: overrides.updatedAt ?? 0,
@@ -164,7 +166,7 @@ describe('SessionRowSummary background status', () => {
         expectUnread()
     })
 
-    it('marks unread without a dot while the presence badge keeps pulsing', () => {
+    it('shows the unread dot separately from the pulsing presence badge', () => {
         const session = makeSummary({
             id: 'selected-thinking-unread',
             thinking: true,
@@ -186,9 +188,9 @@ describe('SessionRowSummary background status', () => {
 
         expectUnread()
         const dots = container.querySelectorAll('.rounded-full')
-        expect(dots).toHaveLength(1)
-        expect(dots[0]).toHaveAttribute('data-testid', 'session-presence')
-        expect(dots[0]).toHaveClass('animate-pulse')
+        expect(dots).toHaveLength(2)
+        expect(container.querySelector('[data-testid="session-unread"]')).toBeInTheDocument()
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('animate-pulse')
     })
 
     it('shows unseen output from a running session', () => {
@@ -203,6 +205,15 @@ describe('SessionRowSummary background status', () => {
 
         expectUnread()
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('bg-blue-400', 'animate-pulse')
+    })
+
+    it('shows and clears the unread dot in standard session rows', () => {
+        const session = makeSummary({ id: 'standard-unread', backgroundTaskCount: 0, contentRevision: 5 })
+        const view = render(<I18nProvider><SessionRowSummary session={session} showDetailedStatus={false} lastSeenVersion={0} /></I18nProvider>)
+        expect(screen.getByTestId('session-unread')).toBeInTheDocument()
+        markSessionSeen(session.id, 5)
+        view.rerender(<I18nProvider><SessionRowSummary session={session} showDetailedStatus={false} lastSeenVersion={1} /></I18nProvider>)
+        expect(screen.queryByTestId('session-unread')).toBeNull()
     })
 
     it('shows pending requests as an amber symbol, not a dot', () => {
@@ -238,6 +249,112 @@ describe('SessionRowSummary background status', () => {
 
         expect(screen.getByLabelText('This message was truncated for search; some content may be missing.'))
             .toBeInTheDocument()
+    })
+})
+
+describe('SessionRowSummary attached job progress', () => {
+    beforeEach(() => {
+        localStorage.clear()
+        vi.useFakeTimers()
+        vi.setSystemTime(1_000_000)
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('renders a subtle indeterminate striped bar (no %) when fraction is unknown', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'countdown',
+                            label: 'dogfood countdown',
+                            status: 'running',
+                            remaining: 172_800,
+                            unit: 's',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 60_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText(/172800 s left/)).toBeInTheDocument()
+        const bar = screen.getByTestId('attached-job-progress-bar')
+        expect(bar).toHaveAttribute('data-progress', 'indeterminate')
+        expect(bar).toHaveAttribute('role', 'progressbar')
+        expect(bar).not.toHaveAttribute('aria-valuenow')
+        // Soft drifting stripes on a track — not spinner-only, not empty, not fake inline %, not loud chunk marquee.
+        expect(bar.querySelector('.animate-attached-job-indeterminate')).not.toBeNull()
+        expect(bar.querySelector('.animate-attached-job-marquee')).toBeNull()
+        expect(container.querySelector('[class*="w-1/3"]')).toBeNull()
+        expect(container.querySelector('[style*="width"]')).toBeNull()
+    })
+
+    it('renders label-only unknown jobs with striped indeterminate bar + running · elapsed (shape B)', () => {
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'beets',
+                            label: 'beets import',
+                            status: 'running',
+                            detail: 'phase: match',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 120_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText(/running · 2m/)).toBeInTheDocument()
+        const bar = screen.getByTestId('attached-job-progress-bar')
+        expect(bar).toHaveAttribute('data-progress', 'indeterminate')
+        expect(bar.querySelector('.animate-attached-job-indeterminate')).not.toBeNull()
+        expect(bar).not.toHaveAttribute('aria-valuenow')
+    })
+
+    it('renders a real fill only when total yields a fraction', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'countdown',
+                            label: 'dogfood countdown',
+                            status: 'running',
+                            remaining: 86_400,
+                            total: 172_800,
+                            unit: 's',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 60_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        const bar = screen.getByTestId('attached-job-progress-bar')
+        expect(bar).toHaveAttribute('data-progress', 'determinate')
+        expect(bar).toHaveAttribute('aria-valuenow', '50')
+        const fill = container.querySelector('[style*="width"]') as HTMLElement | null
+        expect(fill).not.toBeNull()
+        expect(fill!.style.width).toBe('50%')
+        expect(bar.querySelector('.animate-attached-job-indeterminate')).toBeNull()
     })
 })
 

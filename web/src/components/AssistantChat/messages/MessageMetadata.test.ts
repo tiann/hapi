@@ -212,7 +212,7 @@ describe('buildMessageMetadataLabels', () => {
             'Models: claude-opus-5, claude-haiku-4-5, claude-empty-5',
             'Tokens: 24 (10 in · 14 out)',
             'Cost: <$0.0001',
-            'Round: 0.0s'
+            'Round: 0s'
         ])
     })
 })
@@ -269,5 +269,60 @@ describe('Codex cached input metadata', () => {
     ])('omits an invalid cache ratio for input=%s cached=%s', (input, cached) => {
         expect(labels(input, cached).some(label => label.startsWith('Cached input:'))).toBe(false)
         expect(labels(input, cached).join(' ')).not.toMatch(/NaN|Infinity/)
+    })
+})
+
+
+describe('provider throughput metadata', () => {
+    const summary = {
+        modelUsage: { 'fixture/model': { outputTokens: 1_000 } },
+        durationMs: 9_000, numTurns: 2, generationMs: 1_500, generationOutputTokens: 30
+    }
+    it('uses provider time and assistant-only output instead of wall time or compaction usage', () => {
+        expect(buildMessageMetadataLabels({ roundSummary: summary })).toContain('Round: 9s · 2 turns · 20.0 tok/s')
+    })
+    it.each([undefined, 0, -1, NaN, Infinity, Number.MIN_VALUE])('hides invalid or overflowing duration %s', (generationMs) => {
+        expect(buildMessageMetadataLabels({ roundSummary: { ...summary, generationMs } }).join(' ')).not.toContain('tok/s')
+    })
+    it.each([undefined, 0, -1, NaN, Infinity, 1.5])('hides invalid output %s', (generationOutputTokens) => {
+        expect(buildMessageMetadataLabels({ roundSummary: { ...summary, generationOutputTokens } }).join(' ')).not.toContain('tok/s')
+    })
+    it('renders the agy usage breakdown, cache share and round time', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: { 'gemini-3-flash-low': {} },
+                agyUsage: { input_tokens: 30_458, output_tokens: 58, thinking_tokens: 120, cache_read_tokens: 10_000, total_tokens: 30_636 },
+                durationMs: 9_500
+            }
+        })
+
+        expect(parts).toEqual([
+            'Model: gemini-3-flash-low',
+            'Tokens: 30.6k (30.5k in · 58 out · 120 thinking)',
+            'Cached input: 24.7%',
+            'Round: 9.5s'
+        ])
+    })
+
+    it('adds agy tok/s to the Round line when the summary carries generation time', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: {},
+                agyUsage: { input_tokens: 4_422, output_tokens: 58, thinking_tokens: 12, total_tokens: 35_530 },
+                durationMs: 14_900,
+                generationMs: 2_500,
+                generationOutputTokens: 70
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 28.0 tok/s')
+    })
+
+    it('omits the agy cache share without cache reads and shows partial usage as reported', () => {
+        expect(buildMessageMetadataLabels({
+            model: 'fallback-model',
+            roundSummary: { provider: 'agy', modelUsage: {}, agyUsage: { input_tokens: 15_172, output_tokens: 44, cache_read_tokens: 0 } }
+        })).toEqual(['Model: fallback-model', 'Tokens: 15.2k in · 44 out'])
     })
 })

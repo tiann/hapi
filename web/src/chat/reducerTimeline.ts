@@ -572,14 +572,20 @@ export function reduceTimeline(
                     && !(block.kind === 'cli-output' && block.source === 'user')
                 let firstIndex = -1
                 for (let index = blocks.length - 1; index >= 0; index -= 1) {
-                    if (!isSummaryTarget(blocks[index])) break
+                    const block = blocks[index]
+                    if (block.kind === 'user-text' || (block.kind === 'cli-output' && block.source === 'user')) break
+                    // Ignore trailing notices, but never cross a rendered response
+                    // boundary after locating the latest assistant group.
+                    if (block.kind === 'agent-event') {
+                        if (firstIndex !== -1) break
+                        continue
+                    }
+                    if (!isSummaryTarget(block)) break
                     firstIndex = index
                 }
                 if (firstIndex !== -1) {
-                    const firstBlock = blocks[firstIndex]
-                    if (isSummaryTarget(firstBlock)) {
-                        firstBlock.roundSummary = summary
-                    }
+                    const summaryTarget = blocks[firstIndex]
+                    if (isSummaryTarget(summaryTarget)) summaryTarget.roundSummary = summary
                 }
                 continue
             }
@@ -946,6 +952,11 @@ export function reduceTimeline(
                             continue
                         }
                     }
+
+                    // Claude Code stores thinking with an empty body when the
+                    // content is not displayed. An empty block renders nothing
+                    // but still splits adjacent tool calls out of their group.
+                    if (c.text.trim().length === 0) continue
 
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',

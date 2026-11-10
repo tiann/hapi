@@ -53,9 +53,17 @@ function areRoundSummariesEqual(left?: RoundSummary, right?: RoundSummary): bool
     if (!left || !right) return false
     const leftModels = Object.keys(left.modelUsage)
     const rightModels = Object.keys(right.modelUsage)
-    return left.totalCostUsd === right.totalCostUsd
+    return left.provider === right.provider
+        && left.agyUsage?.input_tokens === right.agyUsage?.input_tokens
+        && left.agyUsage?.output_tokens === right.agyUsage?.output_tokens
+        && left.agyUsage?.thinking_tokens === right.agyUsage?.thinking_tokens
+        && left.agyUsage?.cache_read_tokens === right.agyUsage?.cache_read_tokens
+        && left.agyUsage?.total_tokens === right.agyUsage?.total_tokens
+        && left.totalCostUsd === right.totalCostUsd
         && left.numTurns === right.numTurns
         && left.durationMs === right.durationMs
+        && left.generationMs === right.generationMs
+        && left.generationOutputTokens === right.generationOutputTokens
         && areUsageDataEqual(left.usage, right.usage)
         && leftModels.length === rightModels.length
         && leftModels.every(model => right.modelUsage[model] !== undefined

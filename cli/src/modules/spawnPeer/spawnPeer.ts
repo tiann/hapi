@@ -129,6 +129,9 @@ export type SpawnPeerOptions = {
 export type SpawnPeerResult = {
     sessionId: string
     name: string
+    /** The remit's ping-peer localId; unknown when its delivery call failed but the remit still landed. */
+    localId?: string
+    flavor: AgentFlavor
 }
 
 const DEFAULT_WAIT_ACTIVE_SECS = 60
@@ -673,7 +676,7 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
     }
 
     onProgress?.(`delivering remit (${message.length} chars) via ping-peer path...`)
-    let pingResult: { sessionId: string; name: string } | undefined
+    let pingResult: { sessionId: string; name: string; localId: string } | undefined
     let deliveryError: unknown
     try {
         pingResult = await pingPeer({
@@ -681,6 +684,8 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
             message,
             waitActiveSecs,
             waitForInitialActive: true,
+            // The remit targets a session this call just created.
+            wake: true,
             apiUrl,
             accessToken,
             http,
@@ -705,7 +710,9 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
                 sessionId,
                 name: renamed
                     ? requestedName
-                    : pingResult?.name || sessionId.slice(0, 8)
+                    : pingResult?.name || sessionId.slice(0, 8),
+                localId: pingResult?.localId,
+                flavor: resolved.agent
             }
         }
         lastVerify = verify
@@ -734,7 +741,9 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
             throw new SpawnPeerError(deliveryError.code, `${deliveryError.message}; ${leaveRunning}`)
         }
         if (deliveryError instanceof PingPeerError) {
-            throw new SpawnPeerError(deliveryError.code, `${deliveryError.message}; ${leaveRunning}`)
+            // Remit delivery passes wake, so 'inactive' only means the child never stayed up.
+            const code = deliveryError.code === 'inactive' ? 'send_failed' : deliveryError.code
+            throw new SpawnPeerError(code, `${deliveryError.message}; ${leaveRunning}`)
         }
         throw new SpawnPeerError(
             'send_failed',

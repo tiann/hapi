@@ -20,7 +20,11 @@ import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from '@/modules/common/displayImagePrompt';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
+  LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
+  LIST_PEERS_TOOL_DESCRIPTION,
   PEER_DELIVERY_MODE_DESCRIPTION,
+  PEER_WAKE_PARAM_DESCRIPTION,
+  PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION,
   PING_PEER_TOOL_DESCRIPTION,
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
   SPAWN_PEER_TOOL_DESCRIPTION,
@@ -29,8 +33,23 @@ import { SESSION_NAME_MAX_LENGTH } from '@hapi/protocol';
 import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol/modes';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { isPeerToolsDisabled, PEER_TOOL_NAMES } from '@/modules/common/peerTools';
+import {
+  SESSION_JOB_TOOL_DESCRIPTION,
+  SESSION_JOB_TOOL_NAME,
+  sessionJobInputSchema,
+} from '@/modules/sessionJob/sessionJobMcp';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'];
+const DEFAULT_TOOL_NAMES = [
+  'change_title',
+  'display_image',
+  'display_video',
+  'display_media',
+  'list_peers',
+  'ping_peer',
+  'inspect_peer',
+  'spawn_peer',
+  SESSION_JOB_TOOL_NAME,
+];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -215,10 +234,40 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    if (toolNames.has(SESSION_JOB_TOOL_NAME)) {
+      server.registerTool<any, any>(
+        SESSION_JOB_TOOL_NAME,
+        {
+          description: SESSION_JOB_TOOL_DESCRIPTION,
+          title: 'Session-Attached Job',
+          inputSchema: sessionJobInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: SESSION_JOB_TOOL_NAME, arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Failed to run session_job: ${error instanceof Error ? error.message : String(error)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
       sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
       deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
+      wake: z.boolean().optional().describe(PEER_WAKE_PARAM_DESCRIPTION),
+      waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('ping_peer')) {
@@ -269,6 +318,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           'Permission mode for the new session. Omit to use hub/stock default (yolo). '
           + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
         ),
+      waitForReply: z.boolean().optional().describe(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('spawn_peer')) {
@@ -332,13 +382,14 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       limit: z.number().int().min(1).max(100).optional().describe(
         'Max sessions to return (default 30, max 100). Newest updatedAt first.'
       ),
+      includeInactive: z.boolean().optional().describe(LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION),
     });
 
     if (toolNames.has('list_peers')) {
       server.registerTool<any, any>(
         'list_peers',
         {
-          description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id, or spawn_peer to create a new peer with a remit.',
+          description: LIST_PEERS_TOOL_DESCRIPTION,
           title: 'List Peer Sessions',
           inputSchema: listPeersInputSchema,
         },
