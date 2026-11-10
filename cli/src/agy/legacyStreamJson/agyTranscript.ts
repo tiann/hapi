@@ -124,14 +124,22 @@ export class AgyTranscriptChunkReader {
                 }
             }
             const tail = text.slice(startAt);
-            for (const line of tail.split('\n')) {
+            // Only consume through the last complete record: a trailing
+            // fragment means agy is mid-write, and committing the offset past
+            // it would skip the record's head on the next read.
+            let consumable = tail;
+            if (!tail.endsWith('\n')) {
+                const lastComplete = tail.lastIndexOf('\n');
+                consumable = lastComplete >= 0 ? tail.slice(0, lastComplete + 1) : '';
+            }
+            for (const line of consumable.split('\n')) {
                 const trimmed = line.trim();
                 if (!trimmed) continue;
                 const step = parseTranscriptLine(trimmed);
                 if (step) steps.push(step);
             }
             this.lastFile = file;
-            this.offset = text.length;
+            this.offset = startAt + consumable.length;
         }
         return steps;
     }

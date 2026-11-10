@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -179,5 +179,29 @@ describe('transcript reader fixture', () => {
         expect(steps.map((step) => step.kind)).toEqual(['user_input', 'ephemeral', 'planner', 'tool', 'planner', 'system', 'planner'])
         expect(steps[5]).toMatchObject({ kind: 'system', status: 'done' })
         expect(steps[6].content.length).toBeGreaterThan(0)
+    })
+
+    it('keeps an incomplete trailing record across reads instead of skipping its head', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-transcript-'))
+        const reader = new AgyTranscriptChunkReader(dir)
+
+        writeFileSync(join(dir, '00000000.jsonl'), JSON.stringify(entry({
+            step_index: 0, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'complete record'
+        })) + '\n')
+        expect((await reader.readNew()).map((step) => step.idx)).toEqual([0])
+
+        // agy is mid-write: the record lands in two parts, with a reader poll
+        // between the halves.
+        const file = join(dir, '00000001.jsonl')
+        const record = JSON.stringify(entry({
+            step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'late but complete'
+        }))
+        writeFileSync(file, record.slice(0, 40))
+        expect(await reader.readNew()).toEqual([])
+
+        appendFileSync(file, record.slice(40) + '\n')
+        const steps = await reader.readNew()
+        expect(steps).toHaveLength(1)
+        expect(steps[0]).toMatchObject({ idx: 1, content: 'late but complete' })
     })
 })
