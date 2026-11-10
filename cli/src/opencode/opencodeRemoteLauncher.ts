@@ -300,6 +300,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private detachEntryHandoff: (() => void) | undefined;
     private drainReconnect: (() => void) | undefined;
     private rewindReconnectPending = false;
+    private entryRetryTimer: NodeJS.Timeout | undefined;
+    private entryRetryAttempt = 0;
     private rewindStopped = false;
     private readonly rewindEntryAbortController = new AbortController();
     private rewindSupersededId: string | undefined;
@@ -321,6 +323,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.entryFence = this.runtimeGate.adoptInitialEntryFence(this.entryFence);
             this.entryEpoch++;
             this.rewindReconnectPending = true;
+            this.entryRetryAttempt = 0;
             this.drainReconnect?.();
         });
         this.rewindConnectionStart = () => {
@@ -332,6 +335,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (this.rewindStopped) return;
             this.rewindConnectionStart?.();
             this.rewindReconnectPending = true;
+            this.entryRetryAttempt = 0;
             this.drainReconnect?.();
         };
         session.client.on('connection-start', this.rewindConnectionStart);
@@ -347,9 +351,45 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    /** A dropped GET, a stale snapshot or a withheld flush can all clear on
+     *  their own while the socket stays connected, so admission stays fenced
+     *  but the entry is retried with backoff. Journal/identity mismatches and
+     *  superseded operations are decisions, not outages: only a fresh
+     *  connection event re-drives those. */
+    private entryFailureRetriable(error: unknown): boolean {
+        if (this.rewindStopped || this.rewindEntryAbortController.signal.aborted) return false;
+        if (error instanceof OpenCodeRewindSupersededError) return false;
+        const permanent = ['OpenCode entry journal native identity mismatch', 'OpenCode entry native identity mismatch',
+            'OpenCode entry has an unresolved journal', 'OpenCode rewind requires remote reconciliation',
+            'OpenCode entry is not reconciled', 'OpenCode entry journal remains unresolved'];
+        return !(error instanceof Error && permanent.includes(error.message));
+    }
+
+    private clearEntryRetryTimer(): void {
+        if (!this.entryRetryTimer) return;
+        clearTimeout(this.entryRetryTimer);
+        this.entryRetryTimer = undefined;
+    }
+
+    private scheduleEntryRetry(): void {
+        this.clearEntryRetryTimer();
+        const delay = Math.min(500 * 2 ** this.entryRetryAttempt, 15_000);
+        this.entryRetryAttempt++;
+        const timer = setTimeout(() => {
+            this.entryRetryTimer = undefined;
+            if (this.rewindStopped || this.rewindInFlight || this.rewindReconnectPending) return;
+            this.rewindReconnectPending = true;
+            this.drainReconnect?.();
+        }, delay);
+        // A pending retry must never hold the process open during teardown.
+        timer.unref?.();
+        this.entryRetryTimer = timer;
+    }
+
     private detachRewindEntry(): void {
         this.detachEntryHandoff?.();
         this.detachEntryHandoff = undefined;
+        this.clearEntryRetryTimer();
         if (this.rewindConnectionStart) this.session.client.off('connection-start', this.rewindConnectionStart);
         if (this.rewindReconnect) this.session.client.off('connected', this.rewindReconnect);
         this.rewindConnectionStart = null;
@@ -875,10 +915,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         };
         this.drainReconnect = () => {
             if (this.rewindStopped || this.rewindInFlight || !this.rewindReconnectPending) return;
+            // A fresh drain supersedes whatever backoff a failed attempt scheduled.
+            this.clearEntryRetryTimer();
             this.rewindReconnectPending = false;
             this.rewindInFlight = true;
             void reconcileEntry().then(async () => {
                 if (this.rewindStopped) return;
+                this.entryRetryAttempt = 0;
                 this.conversationHistory.setRewindReady(!this.runtimeGate.isBlocked());
                 if (!this.runtimeGate.isBlocked() && this.rewind && this.nativeProcess && workerStartMarker) {
                     session.client.updateMetadata(metadata => metadata.opencodeRewind && !this.runtimeGate.hasReconciled(metadata.opencodeRewind.operationId)
@@ -890,6 +933,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 await this.conversationHistory.publish();
             }).catch(error => {
                 this.noteSupersededRewind(error);
+                if (this.entryFailureRetriable(error)) this.scheduleEntryRetry();
                 logger.warn('[opencode-rewind] Reconnect recovery remains blocked', error);
             }).finally(() => { this.rewindInFlight = false; this.drainReconnect?.(); });
         };
@@ -901,6 +945,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (initialSnapshot) await reconcileEntry();
         } catch (error) {
             this.noteSupersededRewind(error);
+            if (this.entryFailureRetriable(error)) this.scheduleEntryRetry();
             logger.warn('[opencode-rewind] Initial entry remains blocked', error);
             if (strictHistoryVerification) throw error;
         } finally {

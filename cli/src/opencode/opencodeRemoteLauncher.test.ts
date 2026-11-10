@@ -994,6 +994,49 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         } finally { session.queue.close(); await launcher; }
     });
 
+    it('retries a transient entry failure while connected and admits exactly one queued prompt', async () => {
+        const gate = new OpenCodeRuntimeGate();
+        harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        let dequeuedRelease: (() => void) | undefined; const acknowledged: string[] = [];
+        session.queue.beforeDequeue = () => { dequeuedRelease = gate.enterRuntime(); };
+        session.queue.onBatchConsumed = ids => acknowledged.push(...ids);
+        Object.assign(session, { takeDequeuedRuntimeRelease: () => { const release = dequeuedRelease; dequeuedRelease = undefined; return release; } });
+        let start: (() => void) | undefined; let connected: (() => void) | undefined;
+        let reads = 0; let failNextRead = false;
+        Object.assign(session.client, {
+            on: vi.fn((event: string, handler: () => void) => {
+                if (event === 'connection-start') start = handler;
+                if (event === 'connected') connected = handler;
+            }),
+            readRewindMetadata: async () => {
+                reads++;
+                if (failNextRead) { failNextRead = false; return null; }
+                return { metadata: { ...harness.clientMetadata }, version: 1 };
+            }
+        });
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has('fork-conversation')).toBe(true));
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false));
+            start!();
+            expect(gate.isBlocked()).toBe(true);
+            session.queue.push('queued input', createMode(), 'queued');
+            const beforeReads = reads;
+            failNextRead = true;
+            connected!();
+            await vi.waitFor(() => expect(reads).toBeGreaterThan(beforeReads));
+            // The only connected event of this test already fired: the transient
+            // failure must recover through the scheduled retry, not a reconnect.
+            await vi.waitFor(() => expect(gate.isBlocked()).toBe(false), { timeout: 5000 });
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(acknowledged).toEqual(['queued']);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(harness.promptCount).toBe(1);
+        } finally { session.queue.close(); await launcher; }
+    });
+
     it('does not wait for an unrelated active turn when reconnect proves a genuine no-op', async () => {
         const gate = new OpenCodeRuntimeGate();
         harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
