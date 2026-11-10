@@ -1195,6 +1195,13 @@ export function syncTailMessages(
  * fetch leaves the flag set, so the next sync retries the latest page. Cold
  * or structurally invalidated windows have nothing to preserve and keep the
  * plain reset choreography.
+ *
+ * The latest page only covers the newest rows, so a warm window whose cached
+ * tail sits below the page's oldest row would keep a permanent hole between
+ * the two (the advanced newest cursor never fills it). The catch-up therefore
+ * runs first: a plain cursor sync pulls every row the window missed, then the
+ * upsert refreshes in-place merged rows. Cost: one extra round trip on
+ * reconnect.
  */
 export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): Promise<void> {
     if (messageWindowTargetLocks.has(sessionId)) {
@@ -1209,8 +1216,11 @@ export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): 
     ) {
         return syncTailMessages(api, sessionId)
     }
-    updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
-    return syncTailMessages(api, sessionId)
+    return syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
+        .then(() => {
+            updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
+            return syncTailMessages(api, sessionId)
+        })
 }
 
 /**

@@ -2933,4 +2933,46 @@ describe('gap recovery', () => {
         expect(outcome.kind).toBe('applied')
         expect(olderQueries).toEqual([{ beforeAt: 900, beforeSeq: 5, limit: 200 }])
     })
+
+    it('catches up the disconnected interval before the recovery latest page', async () => {
+        const id = sessionId('gap-recovery-interval')
+        const cached = [
+            makeUserMessage({ id: 'r15', seq: 15, invokedAt: 1_500, createdAt: 1_500 }),
+            makeUserMessage({ id: 'r20', seq: 20, invokedAt: 2_000, createdAt: 2_000 })
+        ]
+        // Rows that arrived while disconnected but fall between the cached
+        // tail and the recovery latest page's oldest row.
+        const interval = [21, 22, 23, 24, 25].map((seq) => (
+            makeUserMessage({ id: `r${seq}`, seq, invokedAt: seq * 100, createdAt: seq * 100 })
+        ))
+        // The recovery latest page only holds the newest rows: upserting it
+        // alone would leave rows 21-25 as a permanent hole below the advanced
+        // newest cursor.
+        const page = [26, 27, 28, 29, 30].map((seq) => (
+            makeUserMessage({ id: `r${seq}`, seq, invokedAt: seq * 100, createdAt: seq * 100 })
+        ))
+        let latestPayload = cached
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse(interval, {
+                    epoch: 1,
+                    nextAfterAt: 3_000,
+                    nextAfterSeq: 30,
+                    snapshotHeadAt: 3_000,
+                    snapshotHeadSeq: 30
+                })
+            }
+            return latestResponse(latestPayload, { epoch: 1 })
+        })
+
+        await syncTailMessages(api, id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['r15', 'r20'])
+
+        latestPayload = page
+        await recoverWindowAfterGapResume(api, id)
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'r15', 'r20', 'r21', 'r22', 'r23', 'r24', 'r25', 'r26', 'r27', 'r28', 'r29', 'r30'
+        ])
+    })
 })
