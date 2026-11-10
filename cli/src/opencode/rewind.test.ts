@@ -9,6 +9,30 @@ import { OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
 
+// Windows FlushFileBuffers requires GENERIC_WRITE, which a read-only directory
+// handle does not carry, so fsyncSync on a directory fd fails there. The guard
+// lets tests simulate that EPERM for directory fds while file fds stay real.
+const windowsDirectoryFsync = vi.hoisted(() => ({
+    guard: undefined as (() => never) | undefined,
+    markerOverride: undefined as ((pid: number) => string | null) | undefined
+}));
+vi.mock('node:fs', async importOriginal => {
+    const actual = await importOriginal<typeof import('node:fs')>();
+    const fsyncSync: typeof actual.fsyncSync = fd => {
+        if (windowsDirectoryFsync.guard && actual.fstatSync(fd).isDirectory()) windowsDirectoryFsync.guard();
+        return actual.fsyncSync(fd);
+    };
+    return { ...actual, fsyncSync };
+});
+// The Windows stub must not disturb the worker-generation proof: while active,
+// getProcessStartMarker keeps answering with the real Linux marker.
+vi.mock('@/utils/process', async importOriginal => {
+    const actual = await importOriginal<typeof import('@/utils/process')>();
+    const getProcessStartMarker: typeof actual.getProcessStartMarker = pid =>
+        windowsDirectoryFsync.markerOverride ? windowsDirectoryFsync.markerOverride(pid) : actual.getProcessStartMarker(pid);
+    return { ...actual, getProcessStartMarker };
+});
+
 const rows = [
     { id: 'u1', type: 'user', text: 'one' },
     { id: 'a1', type: 'assistant', content: [{ type: 'text', text: 'first answer' }] },
@@ -20,6 +44,20 @@ const operation = { operationId: 'operation', nativeSessionId: 'native', workerI
     workerPid: process.pid, workerStartMarker: getProcessStartMarker(process.pid)!, phase: 'reserved' as const };
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const f of cleanups.splice(0)) f(); });
+
+/** Pretends the test runs on Windows: platform reports win32 and directory fsync
+ *  fails with EPERM, per the documented FlushFileBuffers access rights. */
+function stubWindowsDirectoryFsync(): () => void {
+    const marker = getProcessStartMarker(process.pid);
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    windowsDirectoryFsync.markerOverride = () => marker;
+    windowsDirectoryFsync.guard = () => {
+        const error: NodeJS.ErrnoException = new Error('EPERM: FlushFileBuffers requires GENERIC_WRITE on a read-only directory handle');
+        error.code = 'EPERM';
+        throw error;
+    };
+    return () => { platform.mockRestore(); windowsDirectoryFsync.markerOverride = undefined; windowsDirectoryFsync.guard = undefined; };
+}
 
 function fixture() {
     const directory = mkdtempSync(join(tmpdir(), 'opencode-rewind-'));
@@ -74,6 +112,30 @@ describe('OpenCode same-native-ID durable rewind', () => {
         expect(statSync(join(dirname(journal.backupPath), 'intent.json')).mode & 0o777).toBe(0o600);
         expect(f.consumeCommitted).toHaveBeenCalledOnce();
         expect(f.gate.isBlocked()).toBe(false);
+    });
+
+    it('finalizes the journal on Windows where a directory fsync is unavailable', async () => {
+        const f = fixture();
+        const restore = stubWindowsDirectoryFsync();
+        try {
+            expect(await f.rewind.execute(operation)).toMatchObject({ success: true });
+            expect(f.reports.map(r => r.phase)).toEqual(['prepared', 'applied']);
+            expect(f.rewind.readIntent()?.phase).toBe('finalized');
+            expect(f.gate.isBlocked()).toBe(false);
+        } finally { restore(); }
+    });
+
+    it('reports unknown and stays recoverable on Windows where a directory fsync is unavailable', async () => {
+        const f = fixture(); f.report.mockRejectedValueOnce(new Error('prepared ACK lost'));
+        const restore = stubWindowsDirectoryFsync();
+        try {
+            expect(await f.rewind.execute(operation)).toMatchObject({ success: false, outcome: 'unknown' });
+            expect(f.reports.map(r => r.phase)).toEqual(['unknown']);
+            expect(f.rewind.readIntent()).toMatchObject({ phase: 'unknown', pendingRequest: false });
+            expect(await f.rewind.recover({ ...operation, phase: 'unknown' })).toMatchObject({ success: false, outcome: 'rejected' });
+            expect(f.rewind.readIntent()?.phase).toBe('finalized');
+            expect(f.gate.isBlocked()).toBe(false);
+        } finally { restore(); }
     });
 
     it('keeps independently owned entry fences and rewind blocks isolated', async () => {

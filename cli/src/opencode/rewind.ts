@@ -238,6 +238,9 @@ export class OpenCodeRewind {
     }
     private save(intent: Intent): void {
         protectedWrite(this.path, intent);
+        // Windows FlushFileBuffers requires GENERIC_WRITE, so fsyncing the
+        // read-only directory handle fails even though the rename persisted.
+        if (process.platform === 'win32') return;
         const fd = openSync(this.directory, 'r');
         try { fsyncSync(fd); } finally { closeSync(fd); }
     }
