@@ -28,6 +28,7 @@ import {
     setMessageWindowTargetLock,
     setMessageViewMode,
     syncTailMessages,
+    recoverWindowAfterGapResume,
     updateMessageStatus,
 } from '@/lib/message-window-store'
 
@@ -2796,5 +2797,140 @@ describe('reasoning snapshot compaction', () => {
         const state = getMessageWindowState(id)
         expect(state.oldestSeq).toBe(2)
         expect(state.newestSeq).toBe(3)
+    })
+})
+
+describe('gap recovery', () => {
+    function toolCallRow(id: string, seq: number, at: number, status: 'in_progress' | 'completed'): DecryptedMessage {
+        return {
+            id,
+            seq,
+            localId: null,
+            content: {
+                role: 'agent',
+                content: { type: 'codex', data: { type: 'tool-call', callId: 'call-1', name: 'Bash', input: { command: 'ls' }, status } }
+            },
+            createdAt: at,
+            invokedAt: at
+        } as DecryptedMessage
+    }
+
+    function mergedContentOf(state: ReturnType<typeof getMessageWindowState>): unknown {
+        return state.messages.find(message => message.id === 'call-row')?.content
+    }
+
+    it('replaces a merged row with its current content after a gap resume', async () => {
+        const id = sessionId('gap-recovery')
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const merged = toolCallRow('call-row', 10, 1_000, 'completed')
+        let latestPayload = stale
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                // The cursor delta after the gap is empty: the merged row kept
+                // its original position, which is why the window must be
+                // invalidated instead of synced incrementally.
+                return afterResponse([], {
+                    epoch: 1,
+                    nextAfterAt: 1_000,
+                    nextAfterSeq: 10,
+                    snapshotHeadAt: 1_000,
+                    snapshotHeadSeq: 10
+                })
+            }
+            return latestResponse([latestPayload], { epoch: 1 })
+        })
+
+        await syncTailMessages(api, id)
+        expect(mergedContentOf(getMessageWindowState(id))).toEqual(stale.content)
+
+        // While the window is disconnected the hub merges the tick in place;
+        // the next latest page carries the merged content.
+        latestPayload = merged
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(mergedContentOf(state)).toEqual(merged.content)
+        expect(state.messages).toHaveLength(1)
+    })
+
+    it('keeps the stale merged row when only a cursor sync runs (documents the gap hole)', async () => {
+        const id = sessionId('gap-cursor-only')
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const merged = toolCallRow('call-row', 10, 1_000, 'completed')
+        let latestPayload = stale
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse([], {
+                    epoch: 1,
+                    nextAfterAt: 1_000,
+                    nextAfterSeq: 10,
+                    snapshotHeadAt: 1_000,
+                    snapshotHeadSeq: 10
+                })
+            }
+            return latestResponse([latestPayload], { epoch: 1 })
+        })
+
+        await syncTailMessages(api, id)
+        expect(mergedContentOf(getMessageWindowState(id))).toEqual(stale.content)
+
+        // The hub merged the tick, but a bare cursor sync never re-delivers it.
+        latestPayload = merged
+        await syncTailMessages(api, id)
+
+        expect(mergedContentOf(getMessageWindowState(id))).toEqual(stale.content)
+    })
+
+    it('preserves loaded older rows, hasMore and the oldest cursor across gap recovery', async () => {
+        const id = sessionId('gap-recovery-history')
+        const older = makeUserMessage({ id: 'older-1', seq: 5, invokedAt: 900, createdAt: 900 })
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const merged = toolCallRow('call-row', 10, 1_000, 'completed')
+        let latestPayload: DecryptedMessage[] = [older, stale]
+        let latestPage = { hasMore: true, nextBeforeAt: 900, nextBeforeSeq: 5 }
+        const olderQueries: Array<{ beforeAt?: number | null; beforeSeq?: number | null }> = []
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse([], {
+                    epoch: 1,
+                    nextAfterAt: 1_000,
+                    nextAfterSeq: 10,
+                    snapshotHeadAt: 1_000,
+                    snapshotHeadSeq: 10
+                })
+            }
+            if (query.beforeAt !== undefined) {
+                olderQueries.push(query)
+                return beforeResponse([], { epoch: 1, hasMore: false, nextBeforeAt: null, nextBeforeSeq: null })
+            }
+            // The recovery latest page carries the merged tick and its own
+            // older bound; rows older than the newest page are not re-fetched.
+            return latestResponse(latestPayload, { epoch: 1, ...latestPage })
+        })
+
+        await syncTailMessages(api, id)
+        const before = getMessageWindowState(id)
+        expect(before.messages).toHaveLength(2)
+        expect(before.hasMore).toBe(true)
+        expect(before.oldestSeq).toBe(5)
+
+        // While disconnected the hub merged the tick in place; the recovery
+        // latest page only holds the newest rows.
+        latestPayload = [merged]
+        latestPage = { hasMore: true, nextBeforeAt: 1_000, nextBeforeSeq: 10 }
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(state.messages.map((message) => message.id)).toEqual(['older-1', 'call-row'])
+        expect(mergedContentOf(state)).toEqual(merged.content)
+        expect(state.messages.find((message) => message.id === 'older-1')?.content).toEqual(older.content)
+        expect(state.hasMore).toBe(true)
+        expect(state.oldestSeq).toBe(5)
+
+        // The preserved oldest cursor: the next older-page load pages from
+        // the loaded history, not from the recovery page's own bound.
+        const outcome = await fetchOlderMessages(api, id)
+        expect(outcome.kind).toBe('applied')
+        expect(olderQueries).toEqual([{ beforeAt: 900, beforeSeq: 5, limit: 200 }])
     })
 })
