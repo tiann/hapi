@@ -1067,6 +1067,9 @@ export type GrokReasoningEffortResponse = {
     error?: string
 }
 
+/** Kimi's ACP `thought_level` (`thinking`) option for the active model. */
+export type KimiReasoningEffortResponse = GrokReasoningEffortResponse
+
 export type OpencodeReasoningEffortOption = {
     value: string
     name?: string

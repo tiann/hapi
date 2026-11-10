@@ -433,16 +433,17 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * Signals are sent synchronously (children first) to work in exit handlers,
  * then waits asynchronously for processes to die.
  */
-async function killProcessTree(pid: number, force: boolean, deadlineMs?: number): Promise<boolean> {
+async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
+  signal: NodeJS.Signals = 'SIGTERM'): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
-    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    const killSignal = force ? 'SIGKILL' : signal;
     try {
       if (!signalAllowed(deadlineMs)) return false;
-      process.kill(pid, signal);
+      process.kill(pid, killSignal);
     } catch {
       // already gone
     }
@@ -450,12 +451,14 @@ async function killProcessTree(pid: number, force: boolean, deadlineMs?: number)
     return false;
   }
 
-  // Signal all processes synchronously (children first, then root)
-  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  // Signal all processes synchronously (children first, then root).
+  // Preserve the caller's signal when soft-killing so Ctrl-C stays SIGINT
+  // (exit 130) instead of always remapping to SIGTERM (exit 143).
+  const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
       if (!signalAllowed(deadlineMs)) return false;
-      process.kill(p, signal);
+      process.kill(p, killSignal);
     } catch {
       // Process may have already exited
     }
@@ -473,15 +476,24 @@ async function killProcessTree(pid: number, force: boolean, deadlineMs?: number)
 export async function killProcessTreeByPid(
   pid: number,
   force: boolean = false,
-  report?: (result: WindowsStopReport) => void,
-  deadlineMs?: number
+  // 3rd arg: soft POSIX signal (#1424 job Ctrl-C → exit 130) OR Windows stop report (#1911).
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
+  // report fallback used when the 3rd arg is a signal (#1911).
+  deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
+  fallbackReport?: (report: WindowsStopReport) => void
 ): Promise<boolean> {
+  const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
+  const onReport = typeof signalOrReport === 'function' ? signalOrReport
+    : typeof deadlineOrFallbackReport === 'function' ? deadlineOrFallbackReport
+    : fallbackReport;
+  const signal: NodeJS.Signals = typeof signalOrReport === 'function' ? 'SIGTERM' : signalOrReport;
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    return stopWindowsProcessTree(n, force, report, deadlineMs);
+    return stopWindowsProcessTree(n, force, onReport, deadlineMs);
   }
-  return killProcessTree(n, force, deadlineMs);
+  return killProcessTree(n, force, deadlineMs, signal);
 }
 
 /**
@@ -527,14 +539,17 @@ async function waitForProcessToDie(pid: number, force: boolean, deadlineMs?: num
 export async function killProcessByChildProcess(
   child: ChildProcess,
   force: boolean = false,
-  report?: (result: WindowsStopReport) => void,
-  deadlineMs?: number
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
+  fallbackReport?: (report: WindowsStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
     return false;
   }
 
-  // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force, report, deadlineMs);
+  // Both platforms: tree-kill + full-tree verify (win32 must not trust
+  // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
+  // exit 130 (#1424).
+  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
 }
