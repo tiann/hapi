@@ -2975,4 +2975,44 @@ describe('gap recovery', () => {
             'r15', 'r20', 'r21', 'r22', 'r23', 'r24', 'r25', 'r26', 'r27', 'r28', 'r29', 'r30'
         ])
     })
+
+    it('replaces retained rows when gap recovery observes a different epoch', async () => {
+        const id = sessionId('gap-recovery-epoch')
+        const keep = makeUserMessage({ id: 'keep-1', seq: 5, invokedAt: 500, createdAt: 500 })
+        const removed = makeUserMessage({ id: 'removed-1', seq: 6, invokedAt: 600, createdAt: 600 })
+        const stale = toolCallRow('tool-1', 10, 1_000, 'in_progress')
+        let latestPayload: DecryptedMessage[] = [keep, removed, stale]
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse([], {
+                    epoch: 1,
+                    nextAfterAt: 1_000,
+                    nextAfterSeq: 10,
+                    snapshotHeadAt: 1_000,
+                    snapshotHeadSeq: 10
+                })
+            }
+            // The catch-up cursor sync still sees the old epoch; the recovery
+            // page comes back under the new one.
+            return latestResponse(latestPayload, { epoch: latestPayload === stalePayload ? 1 : 2 })
+        })
+        const stalePayload: DecryptedMessage[] = [keep, removed, stale]
+
+        await syncTailMessages(api, id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'keep-1', 'removed-1', 'tool-1'
+        ])
+
+        // A remote rewind removed the row while we were disconnected and the
+        // messages-invalidated event was missed; the recovery page comes back
+        // under a new epoch without the removed row.
+        latestPayload = [keep, toolCallRow('tool-1', 10, 1_000, 'completed')]
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(state.messages.map((message) => message.id)).toEqual(['keep-1', 'tool-1'])
+        expect(state.messages.find((message) => message.id === 'tool-1')?.content)
+            .toEqual(toolCallRow('tool-1', 10, 1_000, 'completed').content)
+        expect(state.epoch).toBe(2)
+    })
 })

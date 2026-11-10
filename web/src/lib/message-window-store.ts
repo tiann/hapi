@@ -913,9 +913,12 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 const next = applyLatestResponse(previous, response, {
                     // Gap recovery reconciles by id so already-loaded history
                     // outside the latest page survives; only a structural
-                    // reset or a server reset verdict may replace rows.
+                    // reset, a server reset verdict, or an epoch change (a
+                    // remote rewind whose messages-invalidated event was
+                    // missed can have deleted held rows) may replace rows.
                     replaceServerRows: initial.requiresLatestReset
                         || response.page.reset
+                        || (initial.epoch !== null && response.page.epoch !== initial.epoch)
                         || (preferLatestOnActivation && !pendingGapRecovery),
                     requestBaseline
                 })
