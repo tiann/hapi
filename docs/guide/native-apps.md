@@ -114,14 +114,16 @@ attachment behavior applies: leaving the chat discards unsent attachments.
 ### Session-list parity
 
 Android and iOS use the shared base session-list order: global-pinned sessions,
-project-pinned sessions, active sessions, pending-request priority among active
-sessions, then `updatedAt` descending. Ties preserve their incoming order. The
-Web sidebar may apply additional directory grouping and client-side search
-ranking; it also exposes text, date-range and unread-only session-list filters.
-Both native apps offer machine filtering and relevance-ranked text search.
-Android adds a date range; iOS adds an unread-only lens and **Mark All as
-Read**. Android and iOS README files describe their platform-specific filter
-presentation and session-row differences.
+project-pinned sessions, then your most recent input (`lastUserMessageAt`,
+falling back to creation time) descending, with creation time and session ID
+breaking ties; see [Session list](./session-list.md#ordering-and-grouping). The
+Web sidebar adds directory grouping, client-side search ranking and a sort and
+filter menu. Both native apps offer machine filtering and relevance-ranked text
+search. Android adds a date range. iOS mirrors the Web sort and filter menu:
+sort by last message or date created, **Active first** (on by default; manual
+pins still come first), show all, active or archived sessions, plus an
+unread-only lens and **Mark All as Read**. Android and iOS README files describe
+their platform-specific filter presentation and session-row differences.
 
 Selecting an attachment starts its upload after preparation, before you send
 the message or save the Scratchlist entry. Removing it requests cleanup of

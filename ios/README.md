@@ -704,17 +704,29 @@ TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
 ### Home filtering
 
 Home keeps a fixed Sessions title: hub switching on the leading edge,
-Filters and New Session on the trailing edge. The native menu offers an
-**Unread Only** lens, machine single-selection (two or more machines) and
-**Mark All as Read** (shared read state, confirmed first); only applied filters
-add a summary line. The unread lens keeps the iPad's selected chat listed.
+**Sort & Filter** and New Session on the trailing edge. The native menu mirrors
+the web sort and filter menu: **Sort By** last message (default) or date
+created, **Active First** (on by default: connected sessions lead the pinned
+and recent sections, below manual pins), **Show** all / active only / archived
+only, an **Unread Only** lens, machine single-selection (two or more machines)
+and **Mark All as Read** (shared read state, confirmed first). Only applied
+filters add a summary line; a non-default order just tints the menu button.
+The status and unread filters keep the iPad's selected chat listed.
 The search field (`.searchable`) ranks matches with the web relevance rules
 (`SessionListSearch`: title, worktree, summary, agent, machine, path and id;
-every word must match; `*`/`?` wildcards) while keeping pinned sections first.
-Filters and search are transient per home/hub and never select a new session's machine.
+every word must match; `*`/`?` wildcards) while keeping pinned sections first;
+relevance ties use the base order, not the chosen sort, as on web.
+Sort and Active First persist app-wide (`SessionListOrderPrefs`). Filters and
+search are transient per home/hub and never select a new session's machine.
 Options/counts come from all session summaries, including historical machines;
 the online roster supplies names only. Missing names use a labeled short ID.
 Session-count updates do not reorder options or reset the list's scroll position.
+
+Each row's agent icon carries the web presence badge (one mark per state):
+solid green pulsing while working, solid blue pulsing when only background
+tasks run, a green ring when connected and waiting, and a power mark when
+stopped or archived. Pending requests stay a separate attention symbol on the
+second line.
 
 App-hosted filter tests use observable in-memory stores (no network or pairing).
 Optional layout captures are test specimens, not live or App Store screenshots:

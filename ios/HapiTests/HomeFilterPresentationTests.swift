@@ -155,6 +155,8 @@ final class HomeFilterPresentationTests: XCTestCase {
             row.pendingRequestsCount = [1, 2, 7, 0, 0, 1][sample]
             row.pendingRequestKinds = sample == 1 ? [.permission] : (sample == 2 ? [.input, .permission] : [.input])
             row.thinking = sample == 0 || sample == 3
+            // One mark per presence: working, waiting, background, stopped.
+            row.backgroundTaskCount = sample == 4 ? 2 : 0
             row.active = sample != 5
             if sample == 0 || sample == 3 || sample == 4 {
                 row.todoProgress = .init(completed: sample == 4 ? 5 : 3, total: 5)
