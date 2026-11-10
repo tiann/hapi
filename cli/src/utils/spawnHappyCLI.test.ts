@@ -3,12 +3,14 @@ import type { SpawnOptions } from 'child_process';
 
 const {
   spawnMock,
+  spawnSyncMock,
   existsSyncMock,
   isBunCompiledMock,
   projectPathMock,
   canDisclaimForChildrenMock
 } = vi.hoisted(() => ({
   spawnMock: vi.fn((..._args: any[]) => ({ pid: 12345 }) as any),
+  spawnSyncMock: vi.fn(() => ({ status: 0, stdout: '1048576\n' }) as any),
   existsSyncMock: vi.fn((path: string) => !path.includes('missing-hapi.exe')),
   isBunCompiledMock: vi.fn(() => false),
   projectPathMock: vi.fn(() => process.cwd()),
@@ -23,7 +25,8 @@ vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
-    spawn: spawnMock
+    spawn: spawnMock,
+    spawnSync: spawnSyncMock
   };
 });
 
@@ -76,6 +79,7 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     isBunCompiledMock.mockReturnValue(false);
     projectPathMock.mockReturnValue(process.cwd());
     canDisclaimForChildrenMock.mockReturnValue(false);
+    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '1048576\n' }) as any);
     if (originalInvokedCwd === undefined) {
       delete process.env.HAPI_INVOKED_CWD;
     } else {
@@ -326,5 +330,120 @@ describe('spawnHappyCLI windowsHide behavior', () => {
 
     const options = getSpawnOptionsOrThrow();
     expect(options.env?.HAPI_INVOKED_CWD).toBe(inheritedInvokedCwd);
+  });
+});
+
+describe('applyNofileBump', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it('wraps a low-soft-limit spawn in a ulimit-raising /bin/sh exec', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude', '--started-by', 'runner'], {
+      platform: 'darwin',
+      softLimit: 10240
+    });
+
+    expect(result.command).toBe('/bin/sh');
+    expect(result.args[0]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
+    expect(result.args[1]).toBe('/usr/local/bin/hapi');
+    expect(result.args.slice(2)).toEqual(['claude', '--started-by', 'runner']);
+  });
+
+  it('leaves the command unchanged when the soft limit is already comfortable', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 1048576
+    });
+
+    expect(result).toEqual({ command: '/usr/local/bin/hapi', args: ['claude'] });
+  });
+
+  it('leaves the command unchanged when the soft limit is exactly at the threshold', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 65536
+    });
+
+    expect(result).toEqual({ command: '/usr/local/bin/hapi', args: ['claude'] });
+  });
+
+  it('leaves the command unchanged on win32 regardless of the soft limit', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('C:\\hapi\\hapi.exe', ['claude'], {
+      platform: 'win32',
+      softLimit: 10240
+    });
+
+    expect(result).toEqual({ command: 'C:\\hapi\\hapi.exe', args: ['claude'] });
+  });
+
+  it('leaves the command unchanged when the soft limit cannot be determined', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: Number.NaN
+    });
+
+    expect(result).toEqual({ command: '/usr/local/bin/hapi', args: ['claude'] });
+  });
+
+  it('reads the inherited soft limit via /bin/sh ulimit -Sn when not injected', async () => {
+    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '10240\n' }) as any);
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], { platform: 'darwin' });
+
+    expect(spawnSyncMock).toHaveBeenCalledWith('/bin/sh', ['-c', 'ulimit -Sn'], expect.anything());
+    expect(result.command).toBe('/bin/sh');
+  });
+
+  it('does not wrap dev-mode spawns even when the soft limit is low', async () => {
+    setPlatform('darwin');
+    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '10240\n' }) as any);
+    isBunCompiledMock.mockReturnValue(false);
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['runner', 'start-sync'], { stdio: 'ignore' });
+
+    const [command] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).not.toBe('/bin/sh');
+  });
+
+  it('wraps compiled-mode spawns when the soft limit is low, keeping HAPI_CLI_EXECUTABLE on the real binary', async () => {
+    setPlatform('darwin');
+    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '10240\n' }) as any);
+    isBunCompiledMock.mockReturnValue(true);
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { stdio: 'ignore' });
+
+    const [command, args, options] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).toBe('/bin/sh');
+    expect((args as string[])[0]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
+    const env = (options as SpawnOptions).env as Record<string, string | undefined>;
+    expect(env?.HAPI_CLI_EXECUTABLE).not.toBe('/bin/sh');
+    expect(typeof env?.HAPI_CLI_EXECUTABLE).toBe('string');
+  });
+
+  it('does not wrap compiled-mode spawns when the soft limit is comfortable', async () => {
+    setPlatform('darwin');
+    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '1048576\n' }) as any);
+    isBunCompiledMock.mockReturnValue(true);
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+    spawnHappyCLI(['claude', '--started-by', 'runner'], { stdio: 'ignore' });
+
+    const [command] = spawnMock.mock.calls[0] as unknown[];
+    expect(command).not.toBe('/bin/sh');
   });
 });

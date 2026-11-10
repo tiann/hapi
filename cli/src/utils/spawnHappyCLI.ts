@@ -25,7 +25,7 @@
  * the appropriate command and arguments.
  */
 
-import { spawn, SpawnOptions, type ChildProcess } from 'child_process';
+import { spawn, spawnSync, SpawnOptions, type ChildProcess } from 'child_process';
 import { join, isAbsolute, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isBunCompiled, projectPath } from '@/projectPath';
@@ -35,6 +35,68 @@ import { DISCLAIM_RESPONSIBILITY_ENV, shouldDisclaimResponsibility } from '@/run
 import { canDisclaimForChildren } from '@/runtime/responsibility';
 
 const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
+
+// Bun-compiled HAPI binaries die during runtime init (before any JS runs) when
+// the inherited RLIMIT_NOFILE soft limit is low. Launch Services (launchd)
+// defaults the soft limit to 2560/10240, so every child spawned from a
+// runner that launchd (or a launchd-spawned guard) started crashes at startup
+// with "error: An unknown error occurred (Unexpected)" and never writes a log.
+// Bun has no process.setrlimit and the child dies pre-JS, so the only fix is
+// raising the limit in the parent before exec: wrap the spawn in a tiny
+// /bin/sh that bumps the soft limit, then execs the real command (exec keeps
+// signals/stdio/pid semantics identical).
+const NOFILE_BUMP_THRESHOLD = 65536;
+const NOFILE_BUMP_TARGET = 1048576;
+
+let cachedNofileSoft: number | undefined;
+
+function getNofileSoftLimit(): number {
+  if (cachedNofileSoft === undefined) {
+    cachedNofileSoft = Number.NaN;
+    try {
+      const result = spawnSync('/bin/sh', ['-c', 'ulimit -Sn'], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      if (result.status === 0) {
+        const parsed = Number.parseInt(result.stdout.trim(), 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          cachedNofileSoft = parsed;
+        }
+      }
+    } catch {
+      // Leave NaN — treated as "unknown", no wrapping.
+    }
+  }
+  return cachedNofileSoft;
+}
+
+/**
+ * Wrap a spawn command in `/bin/sh -c 'ulimit -n <target>; exec "$@"'` when the
+ * inherited RLIMIT_NOFILE soft limit is low enough to crash Bun-compiled
+ * binaries. Returns the command unchanged on Windows, when the soft limit is
+ * already comfortable (or unknown), or when it cannot be raised.
+ *
+ * `platform` and `softLimit` are injectable for tests.
+ */
+export function applyNofileBump(
+  command: string,
+  args: string[],
+  opts: { platform?: NodeJS.Platform; softLimit?: number } = {}
+): HappyCliCommand {
+  const platform = opts.platform ?? process.platform;
+  if (platform === 'win32') {
+    return { command, args };
+  }
+  const softLimit = opts.softLimit ?? getNofileSoftLimit();
+  if (!Number.isFinite(softLimit) || softLimit >= NOFILE_BUMP_THRESHOLD) {
+    return { command, args };
+  }
+  return {
+    command: '/bin/sh',
+    args: [`ulimit -n ${NOFILE_BUMP_TARGET} 2>/dev/null; exec "$@"`, command, ...args]
+  };
+}
 
 /**
  * Resolve the TypeScript entrypoint for development mode.
@@ -198,5 +260,10 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   if (process.platform === 'win32' && options.detached) {
     finalOptions.windowsHide = true;
   }
-  return spawn(spawnCommand, spawnArgs, finalOptions);
+  // Only Bun-compiled binaries crash at low RLIMIT_NOFILE (plain `bun` runs
+  // fine) — dev-mode spawns keep their direct command line.
+  // Applied after the env assembly above so HAPI_CLI_EXECUTABLE keeps pointing
+  // at the real hapi binary even when the exec line is wrapped.
+  const bumped = compiledMode ? applyNofileBump(spawnCommand, spawnArgs) : { command: spawnCommand, args: spawnArgs };
+  return spawn(bumped.command, bumped.args, finalOptions);
 }
