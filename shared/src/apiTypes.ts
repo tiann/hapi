@@ -227,7 +227,8 @@ export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionM
 
 export const CursorChatStoreStatusSchema = z.object({
     onDisk: z.boolean(),
-    store: z.enum(['legacy', 'acp']).nullable()
+    // 'empty': ACP thread dir exists but no store.db, i.e. no chat was ever persisted.
+    store: z.enum(['legacy', 'acp', 'empty']).nullable()
 })
 
 export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
@@ -1051,6 +1052,12 @@ export type GrokReasoningEffortResponse = {
     currentValue?: string | null
     error?: string
 }
+
+/** Copilot's ACP `thought_level` option for the active model. */
+export type CopilotReasoningEffortResponse = GrokReasoningEffortResponse
+
+/** Kimi's ACP `thought_level` (`thinking`) option for the active model. */
+export type KimiReasoningEffortResponse = GrokReasoningEffortResponse
 
 export type OpencodeReasoningEffortOption = {
     value: string

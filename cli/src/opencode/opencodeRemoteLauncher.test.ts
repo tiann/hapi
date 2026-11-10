@@ -53,6 +53,7 @@ const harness = vi.hoisted(() => ({
     newSessionImpl: null as null | (() => Promise<string>),
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
+    permissionCancelReasons: [] as string[],
     serverStopError: null as Error | null,
     eventStreamOptions: [] as Array<{
         baseUrl: string;
@@ -240,7 +241,8 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 
 vi.mock('./utils/permissionHandler', () => ({
     OpencodePermissionHandler: class {
-        async cancelAll(): Promise<void> { harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
+        beginTurn(): void {}
+        async cancelAll(reason?: string): Promise<void> { harness.permissionCancelReasons.push(String(reason)); harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
     }
 }));
 
@@ -533,6 +535,7 @@ function createSessionStub(
         setSteerDeliveryState: steerStateImpl
     };
 
+    const killHandlers: Array<() => void | Promise<void>> = [];
     const session = {
         path: '/tmp/hapi-opencode-test',
         logPath: '/tmp/hapi-opencode-test/test.log',
@@ -564,10 +567,13 @@ function createSessionStub(
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
         },
-        sendUserMessage(_text: string) {}
+        sendUserMessage(_text: string) {},
+        setKillHandler(handler: () => void | Promise<void>) {
+            killHandlers.push(handler);
+        }
     };
 
-    return { session, sessionEvents, sentAgentMessages, deliveryEvents, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls, steeringActiveCalls, steerIndeterminateCalls, steerStateImpl };
+    return { killHandlers, session, sessionEvents, sentAgentMessages, deliveryEvents, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls, steeringActiveCalls, steerIndeterminateCalls, steerStateImpl };
 
 }
 
@@ -628,6 +634,7 @@ afterEach(async () => {
     harness.newSessionImpl = null;
     harness.disconnectImpl = null;
     harness.permissionCancelError = null;
+    harness.permissionCancelReasons = [];
     harness.serverStopError = null;
     harness.eventStreamOptions = [];
     harness.eventStreamCloseCount = 0;
@@ -2625,6 +2632,101 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(addMessage).toHaveBeenCalledWith('partial settled', 'assistant');
         await launcherPromise;
         addMessage.mockRestore();
+    });
+
+    it('forwards the native question tool as AskUserQuestion with the multiSelect flag the web reads', async () => {
+        const { session, agentMessages } = createSessionStub([{ message: 'first', mode: createMode() }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        while (!harness.events.includes('prompt:start')) await new Promise<void>(resolve => setImmediate(resolve));
+
+        harness.promptOnMessage!({
+            type: 'tool_call',
+            id: 'call-question',
+            name: 'question',
+            status: 'in_progress',
+            input: { questions: [{ header: '승인', question: '진행할까요?', options: [{ label: '승인', description: 'ok' }], multiple: true }] }
+        });
+        harness.promptOnMessage!({
+            type: 'tool_call',
+            id: 'call-other',
+            name: 'bash',
+            status: 'in_progress',
+            input: { command: 'ls' }
+        });
+
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            callId: 'call-question',
+            name: 'AskUserQuestion',
+            input: { questions: [{ header: '승인', question: '진행할까요?', options: [{ label: '승인', description: 'ok' }], multiSelect: true }] }
+        }));
+        expect(agentMessages).toContainEqual(expect.objectContaining({ type: 'tool-call', callId: 'call-other', name: 'bash' }));
+        await launcherPromise;
+    });
+
+    it('surfaces a question OpenCode could not show as a failed tool result with its message', async () => {
+        const { session, agentMessages } = createSessionStub([{ message: 'first', mode: createMode() }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+        while (!harness.events.includes('prompt:start')) await new Promise<void>(resolve => setImmediate(resolve));
+        const unshown = "The question couldn't be shown to the user in this client. Continue without an answer.";
+
+        harness.promptOnMessage!({ type: 'tool_call', id: 'call-question', name: 'question', status: 'failed', input: { questions: [] } });
+        harness.promptOnMessage!({ type: 'tool_result', id: 'call-question', status: 'failed', output: { error: unshown } });
+
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call', callId: 'call-question', name: 'AskUserQuestion', status: 'failed'
+        }));
+        expect(agentMessages).toContainEqual({
+            type: 'tool-call-result', callId: 'call-question', output: { error: unshown }, is_error: true
+        });
+        await launcherPromise;
+    });
+
+    describe('pending question forms are cancelled', () => {
+        it('when the turn ends', async () => {
+            const { session } = createSessionStub([{ message: 'first', mode: createMode() }]);
+
+            await opencodeRemoteLauncher(session as never);
+
+            expect(harness.permissionCancelReasons).toContain('Prompt finished');
+        });
+
+        it('when the user aborts the turn', async () => {
+            harness.hangPrompt = true;
+            const { session, rpcHandlers } = createSessionStub([{ message: 'first', mode: createMode() }], { keepOpen: true });
+            const launcherPromise = opencodeRemoteLauncher(session as never);
+            await vi.waitFor(() => expect(harness.events).toContain('prompt:start'));
+
+            await (rpcHandlers.get('abort') as () => Promise<void>)();
+
+            expect(harness.permissionCancelReasons).toContain('User aborted');
+            harness.resolvePrompt!();
+            session.queue.close();
+            await launcherPromise;
+        });
+
+        it('when the session ends', async () => {
+            const { session } = createSessionStub([]);
+
+            await opencodeRemoteLauncher(session as never);
+
+            expect(harness.permissionCancelReasons).toContain('Session ended');
+        });
+
+        it('when the process is asked to shut down (archive, SIGTERM)', async () => {
+            harness.hangPrompt = true;
+            const { session, killHandlers } = createSessionStub([{ message: 'first', mode: createMode() }], { keepOpen: true });
+            const launcherPromise = opencodeRemoteLauncher(session as never);
+            await vi.waitFor(() => expect(harness.events).toContain('prompt:start'));
+            expect(killHandlers).toHaveLength(1);
+
+            await killHandlers[0]!();
+
+            expect(harness.permissionCancelReasons).toContain('Session terminated');
+            harness.resolvePrompt!();
+            session.queue.close();
+            await launcherPromise;
+        });
     });
 });
 

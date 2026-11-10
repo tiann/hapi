@@ -125,6 +125,49 @@ describe('claudeRemote async message handling', () => {
         }
     });
 
+    it('marks every follow-up turn as thinking until its result', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const result = { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<unknown> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const promptIterator = prompt[Symbol.asyncIterator]();
+                await promptIterator.next();
+                yield result;
+                await promptIterator.next();
+                yield result;
+            }
+        }));
+
+        const thinking: boolean[] = [];
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ < 2
+                    ? { message: `turn ${nextCallCount}`, mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onThinkingChange: (value) => thinking.push(value)
+            });
+
+            expect(thinking).toEqual([true, false, true, false]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
     it('waits for async onReady work before completing the result stream', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');

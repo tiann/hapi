@@ -83,6 +83,23 @@ describe('hapi binary launcher package versions', () => {
         expect(result.stderr).not.toContain('Failed to execute:');
     });
 
+    it.skipIf(process.platform === 'win32')('passes its own pid to the platform binary as HAPI_LAUNCHER_PID', () => {
+        const binaryPath = installPlatformPackage(version);
+        mkdirSync(path.dirname(binaryPath), { recursive: true });
+        writeFileSync(binaryPath, '#!/bin/sh\necho "$HAPI_LAUNCHER_PID $PPID $*"\n', { mode: 0o755 });
+
+        const result = spawnSync(process.execPath, [launcherPath, 'runner', 'start-sync'], {
+            encoding: 'utf-8',
+            env: { ...process.env, HAPI_LAUNCHER_PID: 'stale' },
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        const [launcherPid, parentPid, ...args] = result.stdout.trim().split(' ');
+        expect(launcherPid).toMatch(/^\d+$/);
+        expect(launcherPid).toBe(parentPid);
+        expect(args).toEqual(['runner', 'start-sync']);
+    });
+
     it('still diagnoses a missing optional dependency', () => {
         expect(require(launcherPath).getBinaryPath()).toBeNull();
 

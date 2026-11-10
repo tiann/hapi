@@ -158,6 +158,18 @@ describe('getToolResultViewComponent registry', () => {
         expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
     })
 
+    it('routes shell-shaped unknown cards to the Bash terminal result view', () => {
+        // OpenCode v2 names the card after the raw command ("ls"); its shell
+        // signal is the `execute` native kind on the wire.
+        const shellBlock = makeShellBlock()
+        expect(getToolResultViewComponent('ls', shellBlock)).toBe(getToolResultViewComponent('Bash'))
+        // Gemini ACP names shell calls after the command too.
+        expect(getToolResultViewComponent('cat /tmp/hello.txt', shellBlock)).toBe(getToolResultViewComponent('Bash'))
+        // Without the block (or for non-shell unknown tools) it stays generic.
+        expect(getToolResultViewComponent('ls')).toBe(getToolResultViewComponent('SomeUnknownTool'))
+        expect(getToolResultViewComponent('SomeUnknownTool', makeReadBlock())).toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+
     it('uses a dedicated result view for Codex agent tools', () => {
         expect(getToolResultViewComponent('spawn_agent')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
         expect(getToolResultViewComponent('wait_agent')).toBe(getToolResultViewComponent('spawn_agent'))
@@ -680,3 +692,38 @@ describe('unwrapOpencodeReadOutput', () => {
         expect(out.body).toBe('1: alpha\n2: beta\n\n')
     })
 })
+
+function makeResultBlock(overrides: Partial<ToolCallBlock['tool']> & { name: string }): ToolCallBlock {
+    return {
+        kind: 'tool-call',
+        id: 'tool-1',
+        localId: null,
+        createdAt: 0,
+        tool: {
+            id: 'tool-1',
+            state: 'completed',
+            input: {},
+            createdAt: 0,
+            startedAt: 0,
+            completedAt: 0,
+            execStartedAt: null,
+            execCompletedAt: null,
+            description: null,
+            result: 'ok',
+            ...overrides,
+        },
+        children: [],
+    }
+}
+
+function makeShellBlock(): ToolCallBlock {
+    return makeResultBlock({
+        name: 'ls',
+        nativeKind: 'execute',
+        input: { command: 'ls', description: 'List demo files' },
+    })
+}
+
+function makeReadBlock(): ToolCallBlock {
+    return makeResultBlock({ name: 'SomeUnknownTool', input: { file_path: 'src/a.ts' } })
+}

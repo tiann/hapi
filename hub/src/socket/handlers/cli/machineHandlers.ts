@@ -35,16 +35,30 @@ const machineUpdateStateSchema = z.object({
     runnerState: z.unknown().nullable()
 })
 
+// A runner reports a child that exited without the CLI's session-end
+// handshake. `pid` + `processStartMarker` identify the OS generation so the
+// hub can refuse a notice about a process that was replaced by a resume.
+const sessionChildExitedSchema = z.object({
+    machineId: z.string(),
+    sid: z.string(),
+    pid: z.number().int().positive(),
+    processStartMarker: z.string().optional(),
+    time: z.number()
+})
+
+export type SessionChildExitedPayload = z.infer<typeof sessionChildExitedSchema>
+
 export type MachineHandlersDeps = {
     store: Store
     resolveMachineAccess: ResolveMachineAccess
     emitAccessError: EmitAccessError
     onMachineAlive?: (payload: MachineAlivePayload) => void
+    onSessionChildExited?: (payload: SessionChildExitedPayload & { namespace: string }) => void
     onWebappEvent?: (event: SyncEvent) => void
 }
 
 export function registerMachineHandlers(socket: CliSocketWithData, deps: MachineHandlersDeps): void {
-    const { store, resolveMachineAccess, emitAccessError, onMachineAlive, onWebappEvent } = deps
+    const { store, resolveMachineAccess, emitAccessError, onMachineAlive, onSessionChildExited, onWebappEvent } = deps
 
     socket.on('machine-alive', (data: MachineAlivePayload) => {
         if (!data || typeof data.machineId !== 'string' || typeof data.time !== 'number') {
@@ -159,4 +173,22 @@ export function registerMachineHandlers(socket: CliSocketWithData, deps: Machine
 
     socket.on('machine-update-metadata', handleMachineMetadataUpdate)
     socket.on('machine-update-state', handleMachineStateUpdate)
+
+    socket.on('session-child-exited', (data: unknown) => {
+        const parsed = sessionChildExitedSchema.safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+        const machineAccess = resolveMachineAccess(parsed.data.machineId)
+        if (!machineAccess.ok) {
+            emitAccessError('machine', parsed.data.machineId, machineAccess.reason)
+            return
+        }
+        onSessionChildExited?.({
+            ...parsed.data,
+            // The socket's namespace is the authorization scope; the session
+            // owner check happens engine-side against this namespace.
+            namespace: machineAccess.value.namespace
+        })
+    })
 }
