@@ -145,6 +145,14 @@ describe('agy round summary carrier', () => {
         }
     })
 
+    it('keeps the model-call turn count only when positive (google-antigravity/antigravity-cli#1045)', () => {
+        const base = { provider: 'agy', agy_usage: { output_tokens: 70 }, duration_ms: 14_900 }
+        expect(normalizeCarrier({ ...base, num_turns: 3 })?.content).toMatchObject({ summary: { numTurns: 3 } })
+        for (const numTurns of [undefined, 0, -2, 'many', 1.5]) {
+            expect(normalizeCarrier({ ...base, num_turns: numTurns })?.content).not.toHaveProperty('summary.numTurns')
+        }
+    })
+
     it('drops invalid token counts and empty agy summaries', () => {
         const normalized = normalizeCarrier({
             provider: 'agy',
