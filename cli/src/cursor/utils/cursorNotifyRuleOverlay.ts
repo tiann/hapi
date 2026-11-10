@@ -567,11 +567,17 @@ function withExcludeLock(lockPath: string, fn: () => void): void {
     withOwnershipLock(lockPath, fn);
 }
 
+/** Discriminated lock-file read so ENOENT is not collapsed into "invalid". */
+export type NotifyOverlayLockOwnerRead =
+    | { status: 'ok'; owner: NotifyOverlayLockOwner }
+    | { status: 'missing' }
+    | { status: 'invalid' };
+
 /**
- * Read a notify-overlay lock owner record. Empty / corrupt locks (including the
- * pre-token empty `wx` files) return null and are treated as abandoned.
+ * Read a notify-overlay lock owner record, distinguishing absence from
+ * empty/corrupt contents (including pre-token empty `wx` survivors).
  */
-export function readNotifyOverlayLockOwner(lockPath: string): NotifyOverlayLockOwner | null {
+export function readNotifyOverlayLockOwnerStatus(lockPath: string): NotifyOverlayLockOwnerRead {
     try {
         const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as unknown;
         if (
@@ -580,12 +586,24 @@ export function readNotifyOverlayLockOwner(lockPath: string): NotifyOverlayLockO
             && typeof (parsed as NotifyOverlayLockOwner).pid === 'number'
             && typeof (parsed as NotifyOverlayLockOwner).token === 'string'
         ) {
-            return parsed as NotifyOverlayLockOwner;
+            return { status: 'ok', owner: parsed as NotifyOverlayLockOwner };
         }
-    } catch {
-        // corrupt / empty lock
+        return { status: 'invalid' };
+    } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error
+            ? (error as { code?: string }).code
+            : undefined;
+        if (code === 'ENOENT') {
+            return { status: 'missing' };
+        }
+        return { status: 'invalid' };
     }
-    return null;
+}
+
+/** Convenience: owner record or null (missing / invalid). */
+export function readNotifyOverlayLockOwner(lockPath: string): NotifyOverlayLockOwner | null {
+    const read = readNotifyOverlayLockOwnerStatus(lockPath);
+    return read.status === 'ok' ? read.owner : null;
 }
 
 /** Fail closed for lock recovery: only ESRCH means the holder is confirmed gone. */
@@ -611,19 +629,31 @@ function staleNotifyOverlayLockError(lockPath: string): Error {
     );
 }
 
+export type ClassifyContendedNotifyOverlayLockDeps = {
+    exists?: (path: string) => boolean;
+    read?: (path: string) => NotifyOverlayLockOwnerRead;
+};
+
 /**
  * After link(2) EEXIST: decide whether to wait on a live holder, retry because
  * the lock disappeared, or fail closed on an abandoned / corrupt lock file.
- * Exported for regression coverage of the release-between-EEXIST-and-read race.
+ * Optional deps exist for regression coverage of the exists→read TOCTOU.
  */
 export function classifyContendedNotifyOverlayLock(
-    lockPath: string
+    lockPath: string,
+    deps: ClassifyContendedNotifyOverlayLockDeps = {}
 ): 'wait' | 'retry' | 'stale' {
-    if (!existsSync(lockPath)) {
+    const exists = deps.exists ?? ((path: string) => existsSync(path));
+    const read = deps.read ?? readNotifyOverlayLockOwnerStatus;
+    if (!exists(lockPath)) {
         return 'retry';
     }
-    const existing = readNotifyOverlayLockOwner(lockPath);
-    if (existing && isLockHolderAlive(existing.pid)) {
+    const existing = read(lockPath);
+    if (existing.status === 'missing') {
+        // Holder released between existsSync and the owner read.
+        return 'retry';
+    }
+    if (existing.status === 'ok' && isLockHolderAlive(existing.owner.pid)) {
         return 'wait';
     }
     return 'stale';

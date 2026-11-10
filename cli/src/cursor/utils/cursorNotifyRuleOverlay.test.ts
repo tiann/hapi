@@ -645,4 +645,14 @@ describe('withNotifyOverlayLock', () => {
         expect(classifyContendedNotifyOverlayLock(emptyPath)).toBe('stale');
     });
 
+    it('retries when the lock is removed after existsSync but before the owner read', () => {
+        const lockPath = join(lockDir, 'gone-during-read.lock');
+        expect(
+            classifyContendedNotifyOverlayLock(lockPath, {
+                exists: () => true,
+                read: () => ({ status: 'missing' })
+            })
+        ).toBe('retry');
+    });
+
 });
