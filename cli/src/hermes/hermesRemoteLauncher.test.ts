@@ -6,9 +6,15 @@ const GLM = 'newapi:glm-5.3'
 const GLM_FLASH = 'newapi:glm-5.3-flash'
 
 const harness = vi.hoisted(() => ({
+    // Latest created backend (existing tests assert against it); `backends`
+    // records every creation in order so respawn tests can tell the dead
+    // backend from its replacement apart.
     backend: null as Record<string, ReturnType<typeof vi.fn>> | null,
+    backends: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
     newSessionConfig: null as unknown,
     prompts: [] as unknown[][],
+    promptErrorQueue: [] as unknown[],
+    initializeErrorQueue: [] as unknown[],
     resumeError: null as Error | null,
     resumeSupported: true,
     // Set while suppressUpdatesDuring's callback runs; lets the resumeSession
@@ -34,7 +40,12 @@ const harness = vi.hoisted(() => ({
 vi.mock('./utils/hermesBackend', () => ({
     createHermesBackend: vi.fn(() => {
         const backend = {
-            initialize: vi.fn(async () => {}),
+            initialize: vi.fn(async () => {
+                if (harness.initializeErrorQueue.length > 0) {
+                    const error = harness.initializeErrorQueue.shift()
+                    if (error) throw error
+                }
+            }),
             supportsSessionResume: vi.fn(() => harness.resumeSupported),
             suppressUpdatesDuring: vi.fn(async (fn: () => Promise<unknown>) => {
                 harness.suppressCalls += 1
@@ -58,7 +69,13 @@ vi.mock('./utils/hermesBackend', () => ({
                 return config.sessionId
             }),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
+                // Record every attempt (failed ones too) so respawn tests can
+                // prove the SAME batch was retried.
                 harness.prompts.push(content)
+                if (harness.promptErrorQueue.length > 0) {
+                    const error = harness.promptErrorQueue.shift()
+                    if (error) throw error
+                }
                 onUpdate({ type: 'text', text: 'answer' })
             }),
             cancelPrompt: vi.fn(async () => {}),
@@ -81,6 +98,7 @@ vi.mock('./utils/hermesBackend', () => ({
             }),
             disconnect: vi.fn(async () => {})
         }
+        harness.backends.push(backend)
         harness.backend = backend
         return backend
     })
@@ -95,7 +113,17 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
+import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport'
 import { HermesRemoteLauncher } from './hermesRemoteLauncher'
+
+/** The transport's own typed marker for dead-transport failures (process
+ *  exit, closed transport, failed stdin write) — what a real dead-child
+ *  session/prompt rejection carries. */
+function deadTransportError(message = 'ACP process exited (code=1, signal=null)'): Error {
+    const error = new Error(message)
+    Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true })
+    return error
+}
 
 function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionId: string | null = null) {
     const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
@@ -131,8 +159,11 @@ function createSession(mode?: HermesMode, sessionId: string | null = null) {
 describe('HermesRemoteLauncher', () => {
     afterEach(() => {
         harness.backend = null
+        harness.backends = []
         harness.newSessionConfig = null
         harness.prompts = []
+        harness.promptErrorQueue = []
+        harness.initializeErrorQueue = []
         harness.resumeError = null
         harness.resumeSupported = true
         harness.insideSuppress = false
@@ -478,5 +509,126 @@ describe('HermesRemoteLauncher', () => {
             ],
             currentModelId: GLM
         })
+    })
+
+    it('respawns the ACP backend and retries the same batch when the child process dies', async () => {
+        // Gateway daemon restart killed the `hermes acp` child: the first
+        // prompt rejects with the transport's typed dead-marker.
+        harness.promptErrorQueue = [deadTransportError()]
+        const session = createSessionWithBatches([['hello', {}]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // The dead backend was disconnected and a fresh one created + initialized.
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.backends[0].disconnect).toHaveBeenCalled()
+        expect(harness.backends[1].initialize).toHaveBeenCalled()
+        // The respawn resumes the persisted daemon session id, inside the
+        // same replay suppression as the initial resume.
+        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: []
+        })
+        expect(harness.resumeInsideSuppress).toBe(true)
+        // The SAME batch ran against the dead transport and again on the
+        // replacement — and the retry's answer reached the hub.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'hello' }]
+        ])
+        expect(session.sendAgentMessage).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'answer'
+        })
+        // Exactly one reconnect status line for the whole respawn.
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const reconnectLines = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '').includes('reconnecting'))
+        expect(reconnectLines).toHaveLength(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes connection lost; reconnecting…'
+        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+        expect(harness.backends[1].disconnect).toHaveBeenCalled()
+    })
+
+    it('re-applies the edit mode on the respawned backend before the retried batch', async () => {
+        harness.promptErrorQueue = [deadTransportError()]
+        const session = createSessionWithBatches([['hello', { permissionMode: 'yolo' }]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // Startup default + queued yolo on the first backend; the respawn
+        // re-issues the session-stored default and then yolo for the retry —
+        // the fresh process must not silently fall back to default mode.
+        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual([
+            'default',
+            'dont_ask',
+            'default',
+            'dont_ask'
+        ])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'hello' }]
+        ])
+    })
+
+    it('surfaces the error and keeps the loop alive when the respawn also fails', async () => {
+        harness.promptErrorQueue = [deadTransportError()]
+        // First initialize succeeds (initial establishment), the respawn's
+        // initialize fails (gateway still down); the next message's fresh
+        // respawn attempt succeeds again.
+        harness.initializeErrorQueue = [null, new Error('Failed to spawn hermes: not found')]
+        // Distinct modes so the queue keeps the two messages as separate
+        // batches instead of merging them into one turn.
+        const session = createSessionWithBatches([
+            ['a', {}],
+            ['b', { permissionMode: 'yolo' }]
+        ], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+        // Initial backend, the failed respawn's partial backend (dropped and
+        // disconnected), and the successful respawn for the later message.
+        expect(harness.backends).toHaveLength(3)
+        expect(harness.backends[0].disconnect).toHaveBeenCalled()
+        expect(harness.backends[1].disconnect).toHaveBeenCalled()
+        // 'a' ran once against the dead transport (no retry — the respawn
+        // failed); the error was surfaced and the loop continued into 'b',
+        // which respawned fresh and ran on the new backend.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'a' }],
+            [{ type: 'text', text: 'b' }]
+        ])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes reconnect failed: Failed to spawn hermes: not found'
+        })
+        expect(harness.backends[2].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: []
+        })
+    })
+
+    it('does not respawn when the prompt fails with a regular agent error', async () => {
+        harness.promptErrorQueue = [new Error('unknown session')]
+        const session = createSession()
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // A JSON-RPC rejection is not a dead transport: old behavior only.
+        expect(harness.backends).toHaveLength(1)
+        expect(harness.backends[0].disconnect).toHaveBeenCalledTimes(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Hermes prompt failed: unknown session'
+        })
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 })

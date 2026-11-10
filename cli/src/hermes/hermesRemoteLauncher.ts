@@ -11,6 +11,7 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase'
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay'
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler'
+import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
 import { createHermesBackend } from './utils/hermesBackend'
 import type { HermesSession } from './session'
 
@@ -22,6 +23,23 @@ const HERMES_EDIT_MODE_BY_PERMISSION: Record<string, string> = {
     yolo: 'dont_ask'
 }
 
+/**
+ * Readiness handshake for the ListHermesModels catalog RPC (registered once
+ * per launcher in runMainLoop). Replaced on every backend (re)establishment
+ * so a picker query that arrives mid-respawn parks until the replacement
+ * session exists and model discovery has settled — and one that arrives
+ * while a respawn fails gets the failure instead of hanging forever. The
+ * backend of the establishment the promise belongs to travels with it: the
+ * handler must query metadata on the backend that captured that session,
+ * which a respawn swap keeps visible to parked queries.
+ */
+type ModelsReadiness = {
+    backend: ReturnType<typeof createHermesBackend>
+    promise: Promise<string>
+    resolve: (acpSessionId: string) => void
+    reject: (error: unknown) => void
+}
+
 export class HermesRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createHermesBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
@@ -31,6 +49,12 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     private initialBackendModel: string | null = null
     private lastAppliedEditMode: string | null = null
     private displayPermissionMode: PermissionMode | undefined
+    /** ACP session id on the CURRENT backend — swapped by every respawn so
+     * the main loop, abort path, and catalog RPC never act on a stale one. */
+    private acpSessionId: string | null = null
+    private modelsReadiness: ModelsReadiness | null = null
+    /** Guards against concurrent backend rebuilds (prompt retry vs abort). */
+    private respawnInProgress = false
 
     constructor(
         private readonly session: HermesSession,
@@ -61,40 +85,26 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async runMainLoop(): Promise<void> {
-        const backend = createHermesBackend()
-        this.backend = backend
-        // Native session_info_update titles are deliberately NOT mirrored:
-        // Hermes seeds its gateway session title with the raw first user
-        // message, and mirroring it into metadata.summary suppresses the
-        // Hub's own title generation. The Hub owns Hermes session titles,
-        // matching the other ACP flavors without a native rename tool.
-        backend.onStderrError((error) => {
-            logger.debug('[hermes-acp] stderr error', error)
-            this.session.sendSessionEvent({ type: 'message', message: error.message })
-            this.messageBuffer.addMessage(error.message, 'status')
-        })
-
         // Register the catalog RPC before initialization: a client that opens
         // the model picker while initialize/session/new is still pending
         // would otherwise hit an unregistered-method rejection, and the
         // picker has no retry path — it would stay empty until remounted.
         // The handler parks on readiness and answers once the session exists
-        // and model discovery has settled.
-        let markReady!: (acpSessionId: string) => void
-        let markFailed!: (error: unknown) => void
-        const ready = new Promise<string>((resolve, reject) => {
-            markReady = resolve
-            markFailed = reject
-        })
+        // and model discovery has settled, using the backend of whichever
+        // establishment resolved it — a respawn swap is always visible.
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListHermesModels, async () => {
+            const readiness = this.modelsReadiness
+            if (!readiness) {
+                return { success: false, error: 'Hermes session is not available' }
+            }
             let acpSessionId: string
             try {
-                acpSessionId = await ready
+                acpSessionId = await readiness.promise
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error)
                 return { success: false, error: `Hermes session is not available: ${message}` }
             }
-            const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            const metadata = readiness.backend.getSessionModelsMetadata(acpSessionId)
             if (!metadata) {
                 return { success: false, error: 'Hermes model metadata is not available' }
             }
@@ -105,94 +115,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             }
         })
 
-        let acpSessionId: string
-        try {
-            await backend.initialize()
+        await this.establishBackend({ respawn: false })
 
-            const resumeSessionId = this.session.sessionId
-            if (resumeSessionId) {
-                try {
-                    // Hermes implements `session/resume` and — unlike DSH —
-                    // REPLAYS the restored session history as session/update
-                    // notifications. HAPI's hub remains the transcript source
-                    // for the UI, so the replay is suppressed; without this
-                    // every resume would duplicate the transcript.
-                    if (!backend.supportsSessionResume()) {
-                        throw new Error('Hermes ACP server does not advertise session/resume')
-                    }
-                    acpSessionId = await backend.suppressUpdatesDuring(() =>
-                        backend.resumeSession({
-                            sessionId: resumeSessionId,
-                            cwd: this.session.path,
-                            mcpServers: []
-                        })
-                    )
-                } catch (error) {
-                    logger.warn('[hermes-acp] resume failed, starting a new session', error)
-                    this.session.sendSessionEvent({
-                        type: 'message',
-                        message: 'Hermes resume failed; starting a new session.'
-                    })
-                    acpSessionId = await backend.newSession({
-                        cwd: this.session.path,
-                        // The Hermes ACP server configures its own tools; HAPI
-                        // does not bridge MCP servers for it in v1.
-                        mcpServers: []
-                    })
-                }
-            } else {
-                acpSessionId = await backend.newSession({
-                    cwd: this.session.path,
-                    // The Hermes ACP server configures its own tools; HAPI
-                    // does not bridge MCP servers for it in v1.
-                    mcpServers: []
-                })
-            }
-            this.session.onSessionFound(acpSessionId)
-            // Pin hermesSessionId before the main loop so a runner restart can
-            // resume (tiann/hapi#913, ported from dsh: gate until the metadata
-            // write reaches the hub — a SIGTERM before that strands the session
-            // with no resume key).
-            const flushed = await this.session.client.flushMetadata()
-            if (!flushed) {
-                logger.warn(`[hermes-acp] hermesSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
-            }
-        } catch (error) {
-            markFailed(error)
-            throw error
-        }
-
-        const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
-        // Capture the server default BEFORE applying any override: an explicit
-        // "Default" reset later in the session (queued as model: null) switches
-        // back to this value; without it the reset would silently keep the
-        // last explicitly-applied model.
-        this.initialBackendModel = modelOption?.currentValue
-            ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
-            ?? null
-        if (this.opts.model && modelOption) {
-            this.currentBackendModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
-        }
-        if (!this.currentBackendModel) {
-            this.currentBackendModel = this.initialBackendModel
-        }
-        this.opts.onConfigDiscovered?.(this.currentBackendModel)
-        if (this.currentBackendModel) {
-            this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
-        }
-        markReady(acpSessionId)
-
-        // Auto-approval consults the LIVE session mode: a mid-turn switch to
-        // yolo starts auto-approving request_permission immediately, while the
-        // Hermes-side edit mode (session/set_mode) catches up at the next turn
-        // boundary below.
-        this.permissionHandler = new AcpPermissionHandler(
-            this.session.client,
-            backend,
-            () => this.session.getPermissionMode() as PermissionMode | undefined
-        )
-        this.applyDisplayMode(this.session.getPermissionMode() as PermissionMode | undefined)
-        await this.applyHermesEditMode(backend, acpSessionId, this.session.getPermissionMode() as PermissionMode | undefined)
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleExitFromUi()
@@ -211,6 +135,34 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 if (signal.aborted && !this.shouldExit) continue
                 break
             }
+
+            // A respawn that failed on an earlier batch leaves no backend
+            // behind: rebuild before touching this batch. One fresh attempt
+            // per message — a permanently down gateway surfaces one error per
+            // message instead of wedging or exiting the loop.
+            if (!this.backend || !this.acpSessionId) {
+                let reconnected = false
+                try {
+                    await this.respawnBackend()
+                    reconnected = true
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[hermes-acp] reconnect failed', { message })
+                    this.session.sendSessionEvent({ type: 'message', message: `Hermes reconnect failed: ${message}` })
+                    this.messageBuffer.addMessage(`Hermes reconnect failed: ${message}`, 'status')
+                }
+                if (!reconnected) {
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
+                }
+            }
+
+            // Reference the CURRENT backend/session per iteration (not a
+            // const captured at loop start): a respawn swaps both.
+            const backend = this.backend!
+            const acpSessionId = this.acpSessionId!
 
             this.applyDisplayMode(batch.mode.permissionMode)
             if (batch.mode.permissionMode !== undefined) {
@@ -256,19 +208,64 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
             const prompt: PromptContent[] = [{ type: 'text', text: batch.message }]
+            let failureMessage: string | null = null
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error)
                 logger.warn('[hermes-acp] prompt failed', { message })
-                this.session.sendSessionEvent({ type: 'message', message: `Hermes prompt failed: ${message}` })
-                this.messageBuffer.addMessage(`Hermes prompt failed: ${message}`, 'status')
-            } finally {
-                this.session.onThinkingChange(false)
-                await this.permissionHandler?.cancelAll('Prompt finished')
-                if (this.session.queue.size() === 0 && !this.shouldExit) {
-                    this.session.sendSessionEvent({ type: 'ready' })
+                // isAcpIndeterminateError is the transport's own typed marker
+                // for failures whose request never reached a JSON-RPC outcome
+                // (child exited, transport closed, stdin write failed). For
+                // session/prompt — which carries an infinite timeout — that
+                // marker means exactly one thing: the ACP child process died
+                // (routinely a hermes gateway daemon restart) and the closed
+                // transport would fail every later request the same way.
+                // Regular JSON-RPC rejections (unknown session, etc.) do not
+                // carry it and keep the old surface-and-continue behavior.
+                if (isAcpIndeterminateError(error) && !this.shouldExit) {
+                    // Rebuild the backend, re-establish the ACP session, and
+                    // retry THIS batch exactly once; a failure here surfaces
+                    // and falls through — the loop stays alive and the next
+                    // message attempts a fresh respawn.
+                    let revived = false
+                    try {
+                        await this.respawnBackend()
+                        revived = true
+                    } catch (respawnError) {
+                        const reconnectMessage = respawnError instanceof Error ? respawnError.message : String(respawnError)
+                        logger.warn('[hermes-acp] reconnect failed', { message: reconnectMessage })
+                        failureMessage = `Hermes reconnect failed: ${reconnectMessage}`
+                    }
+                    if (revived) {
+                        // The fresh process lost the dead turn's session
+                        // state: re-apply the batch's edit mode before the
+                        // retry (establishBackend already restored the
+                        // session-stored mode; the dedupe makes this a no-op
+                        // when they map to the same edit mode).
+                        if (batch.mode.permissionMode !== undefined) {
+                            await this.applyHermesEditMode(this.backend!, this.acpSessionId!, batch.mode.permissionMode)
+                        }
+                        try {
+                            await this.backend!.prompt(this.acpSessionId!, prompt, (message) => this.handleAgentMessage(message))
+                        } catch (retryError) {
+                            const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+                            logger.warn('[hermes-acp] prompt failed after reconnect', { message: retryMessage })
+                            failureMessage = `Hermes prompt failed after reconnect: ${retryMessage}`
+                        }
+                    }
+                } else {
+                    failureMessage = `Hermes prompt failed: ${message}`
                 }
+            }
+            if (failureMessage !== null) {
+                this.session.sendSessionEvent({ type: 'message', message: failureMessage })
+                this.messageBuffer.addMessage(failureMessage, 'status')
+            }
+            this.session.onThinkingChange(false)
+            await this.permissionHandler?.cancelAll('Prompt finished')
+            if (this.session.queue.size() === 0 && !this.shouldExit) {
+                this.session.sendSessionEvent({ type: 'ready' })
             }
         }
     }
@@ -279,6 +276,207 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = null
         await this.backend?.disconnect()
         this.backend = null
+    }
+
+    /**
+     * Create a Hermes backend and drive it to a live, fully configured ACP
+     * session: initialize → resume-or-new session (replay-suppressed) → pin +
+     * flush hermesSessionId → model discovery/override → catalog readiness →
+     * permission handler → edit mode.
+     *
+     * Shared by the initial launch and by post-death respawns. The `respawn`
+     * flag only changes model handling: an initial establishment captures the
+     * server default and applies the spawn-time override, while a respawn
+     * keeps the captured default and re-applies the LIVE user preference.
+     */
+    private async establishBackend(opts: { respawn: boolean }): Promise<void> {
+        const backend = createHermesBackend()
+        this.backend = backend
+        this.acpSessionId = null
+        // Native session_info_update titles are deliberately NOT mirrored:
+        // Hermes seeds its gateway session title with the raw first user
+        // message, and mirroring it into metadata.summary suppresses the
+        // Hub's own title generation. The Hub owns Hermes session titles,
+        // matching the other ACP flavors without a native rename tool.
+        backend.onStderrError((error) => {
+            logger.debug('[hermes-acp] stderr error', error)
+            this.session.sendSessionEvent({ type: 'message', message: error.message })
+            this.messageBuffer.addMessage(error.message, 'status')
+        })
+
+        let markReady!: (acpSessionId: string) => void
+        let markFailed!: (error: unknown) => void
+        const ready = new Promise<string>((resolve, reject) => {
+            markReady = resolve
+            markFailed = reject
+        })
+        // A failing establishment rejects `ready` through markFailed below;
+        // with no catalog query parked on it yet, that rejection would
+        // otherwise surface as an unhandled promise rejection.
+        ready.catch(() => {})
+        this.modelsReadiness = { backend, promise: ready, resolve: markReady, reject: markFailed }
+
+        let acpSessionId: string
+        try {
+            await backend.initialize()
+
+            const resumeSessionId = this.session.sessionId
+            if (resumeSessionId) {
+                try {
+                    // Hermes implements `session/resume` and — unlike DSH —
+                    // REPLAYS the restored session history as session/update
+                    // notifications. HAPI's hub remains the transcript source
+                    // for the UI, so the replay is suppressed; without this
+                    // every resume would duplicate the transcript.
+                    if (!backend.supportsSessionResume()) {
+                        throw new Error('Hermes ACP server does not advertise session/resume')
+                    }
+                    acpSessionId = await backend.suppressUpdatesDuring(() =>
+                        backend.resumeSession({
+                            sessionId: resumeSessionId,
+                            cwd: this.session.path,
+                            mcpServers: []
+                        })
+                    )
+                } catch (error) {
+                    logger.warn('[hermes-acp] resume failed, starting a new session', error)
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Hermes resume failed; starting a new session.'
+                    })
+                    acpSessionId = await backend.newSession({
+                        cwd: this.session.path,
+                        // The Hermes ACP server configures its own tools; HAPI
+                        // does not bridge MCP servers for it in v1.
+                        mcpServers: []
+                    })
+                }
+            } else {
+                acpSessionId = await backend.newSession({
+                    cwd: this.session.path,
+                    // The Hermes ACP server configures its own tools; HAPI
+                    // does not bridge MCP servers for it in v1.
+                    mcpServers: []
+                })
+            }
+            this.acpSessionId = acpSessionId
+            this.session.onSessionFound(acpSessionId)
+            // Pin hermesSessionId before the main loop so a runner restart can
+            // resume (tiann/hapi#913, ported from dsh: gate until the metadata
+            // write reaches the hub — a SIGTERM before that strands the session
+            // with no resume key). Re-pinning after a respawn is an idempotent
+            // metadata merge.
+            const flushed = await this.session.client.flushMetadata()
+            if (!flushed) {
+                logger.warn(`[hermes-acp] hermesSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+            }
+        } catch (error) {
+            markFailed(error)
+            throw error
+        }
+
+        const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
+        if (!opts.respawn) {
+            // Capture the server default BEFORE applying any override: an explicit
+            // "Default" reset later in the session (queued as model: null) switches
+            // back to this value; without it the reset would silently keep the
+            // last explicitly-applied model.
+            this.initialBackendModel = modelOption?.currentValue
+                ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
+                ?? null
+            if (this.opts.model && modelOption) {
+                this.currentBackendModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
+            }
+            if (!this.currentBackendModel) {
+                this.currentBackendModel = this.initialBackendModel
+            }
+            this.opts.onConfigDiscovered?.(this.currentBackendModel)
+        } else if (this.currentBackendModel && modelOption && modelOption.currentValue !== this.currentBackendModel) {
+            // The respawned child starts from whatever the daemon persisted;
+            // re-apply the live user preference so the retried batch runs on
+            // the model the session is showing.
+            await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
+        }
+        if (this.currentBackendModel) {
+            this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
+        }
+        markReady(acpSessionId)
+
+        // Auto-approval consults the LIVE session mode: a mid-turn switch to
+        // yolo starts auto-approving request_permission immediately, while the
+        // Hermes-side edit mode (session/set_mode) catches up at the next turn
+        // boundary below.
+        this.permissionHandler = new AcpPermissionHandler(
+            this.session.client,
+            backend,
+            () => this.session.getPermissionMode() as PermissionMode | undefined
+        )
+        const sessionPermissionMode = this.session.getPermissionMode() as PermissionMode | undefined
+        this.applyDisplayMode(sessionPermissionMode)
+        await this.applyHermesEditMode(backend, acpSessionId, sessionPermissionMode)
+    }
+
+    /**
+     * Tear down a dead backend and re-establish the ACP session on a fresh
+     * `hermes acp` child process.
+     *
+     * Once the ACP child dies (gateway daemon restart, crash) its transport
+     * is closed permanently — every request on it rejects immediately — so
+     * recovery requires a brand-new backend: initialize, resume the persisted
+     * daemon session id (Hermes keeps gateway sessions alive across ACP
+     * child restarts, replay-suppressed exactly like the initial resume),
+     * re-apply the current model preference and edit mode, and re-arm the
+     * catalog readiness. Posts exactly one 'connection lost; reconnecting'
+     * status line per attempt.
+     *
+     * Throws when re-establishment fails; `this.backend` is then null so the
+     * next message starts a fresh attempt instead of reusing the corpse.
+     */
+    private async respawnBackend(): Promise<void> {
+        if (this.respawnInProgress) {
+            throw new Error('Hermes reconnect already in progress')
+        }
+        this.respawnInProgress = true
+        try {
+            this.session.sendSessionEvent({ type: 'message', message: 'Hermes connection lost; reconnecting…' })
+            this.messageBuffer.addMessage('Hermes connection lost; reconnecting…', 'status')
+            const deadBackend = this.backend
+            const deadPermissionHandler = this.permissionHandler
+            // Detach everything bound to the dead backend BEFORE rebuilding so
+            // concurrent aborts, catalog queries, and the retry below can only
+            // ever observe the replacement.
+            this.backend = null
+            this.acpSessionId = null
+            this.permissionHandler = null
+            // The fresh process starts at the server-default edit mode; clear
+            // the dedupe so establishBackend re-issues session/set_mode.
+            this.lastAppliedEditMode = null
+            try {
+                await deadPermissionHandler?.cancelAll('Hermes connection lost')
+            } catch (error) {
+                logger.debug('[hermes-acp] permission cancelAll during reconnect failed', error)
+            }
+            try {
+                await deadBackend?.disconnect()
+            } catch (error) {
+                logger.debug('[hermes-acp] disconnect of dead backend failed', error)
+            }
+            await this.establishBackend({ respawn: true })
+        } catch (error) {
+            // establishBackend may have parked a half-initialized backend in
+            // this.backend; drop it so the next message rebuilds cleanly.
+            const partial = this.backend
+            this.backend = null
+            this.acpSessionId = null
+            try {
+                await partial?.disconnect()
+            } catch (disconnectError) {
+                logger.debug('[hermes-acp] disconnect of partial backend failed', disconnectError)
+            }
+            throw error
+        } finally {
+            this.respawnInProgress = false
+        }
     }
 
     private handleAgentMessage(message: AgentMessage): void {
@@ -400,6 +598,9 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort()
         this.abortController = new AbortController()
         this.session.queue.reset()
+        // Reads the CURRENT backend: after a respawn this cancels on the
+        // replacement; mid-respawn it is null and the skip is correct (the
+        // dead transport cannot accept a cancel anyway).
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
