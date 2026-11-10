@@ -1,10 +1,11 @@
-import { getReasoningStreamId } from '@hapi/protocol/messages'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { getReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { buildVisibleChatBlocks, isEligibleForToolGrouping } from '@/chat/toolGroups'
 import type { NormalizedMessage } from '@/chat/types'
-import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
+import type { DecryptedMessage, MessageContextResponse, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 
 export type MessageViewMode = 'tail' | 'history'
@@ -71,6 +72,10 @@ const PAGE_SIZE = 200
 const CACHED_REENTRY_PAGE_SIZE = 20
 // ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
 const INITIAL_CONTEXT_WAIT_MS = 500
+// Gap recovery refreshes at most this many retained non-terminal tool-call
+// rows through the message-context endpoint (newest first). Live calls are a
+// handful; the bound keeps a pathological window from fanning out requests.
+const GAP_ROW_REFRESH_LIMIT = 20
 
 type MessagePosition = {
     at: number
@@ -828,6 +833,23 @@ function finishTailSync(sessionId: string, generation: number, warning: string |
     })
 }
 
+/** A cached tool-call row that can still be enriched in place: its payload is
+ *  a live `tool-call` whose merged status has not reached a terminal tier.
+ *  Terminal rows are done; unknown or missing status reads as pending. */
+function isNonTerminalToolCallRow(message: DecryptedMessage): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(message.content)
+    if (record?.role !== 'agent') return false
+    const content = record.content
+    if (!content || typeof content !== 'object') return false
+    const payload = content as { type?: unknown; data?: unknown }
+    if (payload.type !== AGENT_MESSAGE_PAYLOAD_TYPE || !payload.data || typeof payload.data !== 'object') {
+        return false
+    }
+    const data = payload.data as { type?: unknown; status?: unknown }
+    if (data.type !== 'tool-call') return false
+    return data.status !== 'completed' && data.status !== 'failed'
+}
+
 function isToolOnlyPage(messages: DecryptedMessage[]): boolean {
     const normalized: NormalizedMessage[] = []
     for (const message of messages) {
@@ -1061,6 +1083,45 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         preferLatestOnActivation: false
                     })
                 })
+
+                // A tool-call row the client cached before the gap can be
+                // enriched in place afterwards; when more than a latest page of
+                // newer rows followed, neither the catch-up (newer rows only)
+                // nor the page reaches it, and the cached card keeps its stale
+                // input/status. Refresh those retained non-terminal rows by id
+                // through the existing message-context endpoint: bounded,
+                // newest first, best-effort, and skipped for rows the catch-up
+                // already delivered fresh (at or after the recovery cursor).
+                const pageOldest = pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
+                if (pageOldest) {
+                    const refreshCandidates = getState(sessionId).messages
+                        .filter((message) => {
+                            const position = messagePosition(message)
+                            if (!position || comparePosition(position, pageOldest) >= 0) return false
+                            if (initialCursor && comparePosition(position, initialCursor) > 0) return false
+                            return isNonTerminalToolCallRow(message)
+                        })
+                        .sort((left, right) => comparePosition(
+                            messagePosition(right) as MessagePosition,
+                            messagePosition(left) as MessagePosition
+                        ))
+                        .slice(0, GAP_ROW_REFRESH_LIMIT)
+                    for (const candidate of refreshCandidates) {
+                        let context: MessageContextResponse | null = null
+                        try {
+                            context = await api.getMessageContext(sessionId, candidate.id)
+                        } catch {
+                            context = null
+                        }
+                        if (!isCurrentTailSync(sessionId, generation)) return
+                        const refreshed = context?.messages.find((message) => message.id === candidate.id)
+                        if (!refreshed || context!.page.epoch !== getState(sessionId).epoch) continue
+                        updateState(sessionId, (previous) => {
+                            if (previous.syncGeneration !== generation) return previous
+                            return buildState(previous, { messages: mergeMessages(previous.messages, [refreshed]) })
+                        })
+                    }
+                }
             }
         }
 

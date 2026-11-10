@@ -237,8 +237,11 @@ function beforeResponse(
     }
 }
 
-function createApi(getMessages: ApiClient['getMessages']): ApiClient {
-    return { getMessages, getMessageContext: async () => null } as unknown as ApiClient
+function createApi(
+    getMessages: ApiClient['getMessages'],
+    getMessageContext: ApiClient['getMessageContext'] = async () => null
+): ApiClient {
+    return { getMessages, getMessageContext } as unknown as ApiClient
 }
 
 function contextResponse(
@@ -3120,5 +3123,78 @@ describe('gap recovery', () => {
         expect(state.messages.some((message) => message.id === 'r1')).toBe(true)
         expect(state.oldestSeq).toBe(1)
         expect(state.hasMore).toBe(true)
+    })
+
+    it('refreshes a retained non-terminal tool-call row the latest page cannot reach', async () => {
+        const id = sessionId('gap-recovery-row-refresh')
+        const cachedTail = Array.from({ length: 9 }, (_, i) => (
+            makeUserMessage({ id: `n${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const missed = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `n${11 + i}`, seq: 11 + i, invokedAt: (11 + i) * 10, createdAt: (11 + i) * 10 })
+        ))
+        const latestPage = missed.filter((message) => (message.seq ?? 0) >= 111)
+        let catchUpCalls = 0
+        let latestCalls = 0
+        const contextQueries: string[] = []
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                catchUpCalls += 1
+                if (catchUpCalls === 1) {
+                    return afterResponse(missed.filter((message) => (message.seq ?? 0) <= 210), {
+                        epoch: 1,
+                        hasMore: true,
+                        nextAfterAt: 2_100,
+                        nextAfterSeq: 210,
+                        snapshotHeadAt: 3_100,
+                        snapshotHeadSeq: 310
+                    })
+                }
+                return afterResponse(missed.filter((message) => (message.seq ?? 0) >= 211), {
+                    epoch: 1,
+                    hasMore: false,
+                    nextAfterAt: 3_100,
+                    nextAfterSeq: 310,
+                    snapshotHeadAt: 3_100,
+                    snapshotHeadSeq: 310
+                })
+            }
+            latestCalls += 1
+            if (latestCalls === 1) {
+                return latestResponse([...cachedTail, stale], { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+            }
+            return latestResponse(latestPage, { epoch: 1, hasMore: true, nextBeforeAt: 1_110, nextBeforeSeq: 111 })
+        }, async (_sessionId, messageId) => {
+            contextQueries.push(messageId)
+            return contextResponse([toolCallRow('call-row', 10, 1_000, 'completed')], {
+                epoch: 1,
+                nextBeforeAt: 10,
+                nextBeforeSeq: 1,
+                snapshotHeadAt: 3_100,
+                snapshotHeadSeq: 310,
+                targetMessageId: 'call-row'
+            })
+        })
+
+        await syncTailMessages(api, id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(
+            [...cachedTail.map((message) => message.id), 'call-row']
+        )
+
+        // The call was enriched while disconnected and 300 newer rows pushed it
+        // beyond the latest page: the catch-up returns only newer rows and the
+        // page starts at row 111, so only a by-id context refresh can converge
+        // the cached card.
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(contextQueries).toEqual(['call-row'])
+        expect(mergedContentOf(state)).toEqual(toolCallRow('call-row', 10, 1_000, 'completed').content)
+        expect(state.messages).toHaveLength(310)
+        expect([...state.messages].sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0)).map((message) => message.id)).toEqual(
+            [...cachedTail.map((message) => message.id), 'call-row', ...missed.map((message) => message.id)]
+        )
+        expect(state.newestSeq).toBe(310)
     })
 })
