@@ -227,11 +227,10 @@ export function installCursorNotifyRuleOverlay(
         assertNotSymlinkPath(cursorDir, 'Cursor config directory');
         assertNotSymlinkPath(rulesDir, 'Cursor rules directory');
 
-        if (!existsSync(stateDir)) {
-            mkdirSync(stateDir, { recursive: true });
-        }
-
         withOwnershipLock(lockPath, () => {
+            // Create under the lock so a concurrent last-owner cleanup that
+            // emptied/removed stateDir cannot leave writeOwnershipState with ENOENT.
+            mkdirSync(stateDir, { recursive: true });
             let state = reapOwners(readOwnershipState(statePath, absCwd));
             const current = readRuleFile(rulePath);
             if (current.status === 'error') {
@@ -306,7 +305,6 @@ export function installCursorNotifyRuleOverlay(
             return;
         }
         try {
-            let clearStateFile = false;
             withOwnershipLock(lockPath, () => {
                 let state = reapOwners(readOwnershipState(statePath, absCwd));
                 state.owners = state.owners.filter((owner) => owner.id !== ownerId);
@@ -349,9 +347,9 @@ export function installCursorNotifyRuleOverlay(
                     }
                 }
 
-                // Clear ownership state while still holding the lock. Do not
-                // recursively delete stateDir after unlock — that races a new
-                // install that already registered under the same lock.
+                // Clear ownership state while still holding the lock. Keep
+                // stateDir itself persistent — removing it after unlock races a
+                // waiter that is about to mkdir/write under the same path.
                 try {
                     if (existsSync(statePath)) {
                         unlinkSync(statePath);
@@ -359,7 +357,6 @@ export function installCursorNotifyRuleOverlay(
                 } catch {
                     // ignore
                 }
-                clearStateFile = true;
             });
 
             try {
@@ -368,16 +365,6 @@ export function installCursorNotifyRuleOverlay(
                 logger.debug('[cursor-notify-rule] git exclude cleanup failed', error);
             }
             undoGitExclude = null;
-
-            if (clearStateFile) {
-                try {
-                    if (isEmptyDir(stateDir)) {
-                        rmdirSync(stateDir);
-                    }
-                } catch {
-                    // New install may have recreated state — leave it.
-                }
-            }
 
             for (const dir of [...createdDirs].reverse()) {
                 if (isEmptyDir(dir)) {
@@ -779,6 +766,7 @@ function readOwnershipState(path: string, absCwd: string): OverlayOwnershipState
 function writeOwnershipState(path: string, state: OverlayOwnershipState): void {
     // Private + atomic: restore may be the only backup of a user's rule body.
     // Truncating state.json in place would lose that backup on a partial write.
+    mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
         writeFileSync(tmp, JSON.stringify(state), { encoding: 'utf-8', mode: 0o600 });

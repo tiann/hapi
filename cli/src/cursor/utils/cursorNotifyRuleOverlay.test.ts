@@ -534,6 +534,26 @@ describe('installCursorNotifyRuleOverlay', () => {
         expect(readFileSync(rulePath, 'utf-8')).toBe(prior);
     });
 
+    it('recreates ownership stateDir when a prior cleanup removed it', () => {
+        const first = installCursorNotifyRuleOverlay({ cwd, project: 'prior' });
+        const overlayRoot = join(hapiHome, 'cursor-notify-overlays');
+        const stateDirName = readdirSync(overlayRoot).find((name) => !name.endsWith('.lock'));
+        expect(stateDirName).toBeTruthy();
+        const stateDir = join(overlayRoot, stateDirName!);
+        first.cleanup();
+
+        // Simulate last-owner cleanup having removed the empty stateDir while a
+        // waiter had already decided to install against that path.
+        rmSync(stateDir, { recursive: true, force: true });
+        expect(existsSync(stateDir)).toBe(false);
+
+        const second = installCursorNotifyRuleOverlay({ cwd, project: 'waiter' });
+        expect(readFileSync(rulePathOf(cwd), 'utf-8')).toContain('"project":"waiter"');
+        expect(existsSync(join(stateDir, 'state.json'))).toBe(true);
+        second.cleanup();
+        expect(existsSync(rulePathOf(cwd))).toBe(false);
+    });
+
     it('skips install when the ownership lock is abandoned (empty pre-token file)', () => {
         mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
         // Plant an abandoned ownership lock at the hashed path by letting a first
