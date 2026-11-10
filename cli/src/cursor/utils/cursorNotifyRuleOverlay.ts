@@ -24,11 +24,10 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-    closeSync,
     existsSync,
+    linkSync,
     lstatSync,
     mkdirSync,
-    openSync,
     readFileSync,
     readdirSync,
     realpathSync,
@@ -49,7 +48,8 @@ export const RULE_FILENAME_PRIMARY = 'hapi-session.mdc';
 /** Alternate when the primary path is git-tracked (still alwaysApply). */
 export const RULE_FILENAME_ALTERNATE = 'hapi-session-summary.mdc';
 const RULE_CANDIDATES = [RULE_FILENAME_PRIMARY, RULE_FILENAME_ALTERNATE] as const;
-const OWNERSHIP_LOCK_TIMEOUT_MS = 5_000;
+const OWNERSHIP_LOCK_RETRY_INTERVAL_MS = 50;
+const OWNERSHIP_LOCK_MAX_ATTEMPTS = 100;
 
 /** Prefix for `.git/info/exclude` lease markers (do not commit transient rule). */
 export const HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX = '# hapi-cursor-notify-rule';
@@ -81,6 +81,12 @@ type OverlayOwner = {
     /** Unique per install (same PID can own multiple overlays in tests / nested launches). */
     id: string;
     pid: number;
+};
+
+/** Published into ownership / exclude lock files so release can avoid unlinking a successor. */
+export type NotifyOverlayLockOwner = {
+    pid: number;
+    token: string;
 };
 
 type OverlayOwnershipState = {
@@ -274,7 +280,12 @@ export function installCursorNotifyRuleOverlay(
         installed = true;
         logger.debug(`[cursor-notify-rule] installed alwaysApply rule at ${rulePath}`);
     } catch (error) {
-        logger.debug('[cursor-notify-rule] install failed', error);
+        if (error instanceof Error && error.message.startsWith('Stale Cursor notify-rule overlay lock:')) {
+            // Fail-open for the session, but loud enough that operators can rm the lock.
+            logger.warn('[cursor-notify-rule] install blocked by abandoned lock', error.message);
+        } else {
+            logger.debug('[cursor-notify-rule] install failed', error);
+        }
         try {
             undoGitExclude?.();
         } catch {
@@ -556,6 +567,61 @@ function withExcludeLock(lockPath: string, fn: () => void): void {
     withOwnershipLock(lockPath, fn);
 }
 
+/**
+ * Read a notify-overlay lock owner record. Empty / corrupt locks (including the
+ * pre-token empty `wx` files) return null and are treated as abandoned.
+ */
+export function readNotifyOverlayLockOwner(lockPath: string): NotifyOverlayLockOwner | null {
+    try {
+        const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as unknown;
+        if (
+            parsed !== null
+            && typeof parsed === 'object'
+            && typeof (parsed as NotifyOverlayLockOwner).pid === 'number'
+            && typeof (parsed as NotifyOverlayLockOwner).token === 'string'
+        ) {
+            return parsed as NotifyOverlayLockOwner;
+        }
+    } catch {
+        // corrupt / empty lock
+    }
+    return null;
+}
+
+/** Fail closed for lock recovery: only ESRCH means the holder is confirmed gone. */
+function isLockHolderAlive(pid: number): boolean {
+    if (pid <= 0) {
+        return false;
+    }
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error
+            ? (error as { code?: string }).code
+            : undefined;
+        return code !== 'ESRCH';
+    }
+}
+
+function staleNotifyOverlayLockError(lockPath: string): Error {
+    return new Error(
+        `Stale Cursor notify-rule overlay lock: ${lockPath}; remove it and retry `
+        + `(e.g. rm -f ${JSON.stringify(lockPath)})`
+    );
+}
+
+/**
+ * Exclusive cross-process lock for ownership state and `.git/info/exclude` leases.
+ * Owner JSON is published atomically via link(2) from a fully-written staging file.
+ * Stale/dead locks fail closed — pathname check-then-unlink can steal a successor's
+ * live lock under concurrent recoverers. Release unlinks only when the path still
+ * holds this owner's token.
+ */
+export function withNotifyOverlayLock(lockPath: string, fn: () => void): void {
+    withOwnershipLock(lockPath, fn);
+}
+
 function canonicalizeExistingPath(path: string): string {
     try {
         return realpathSync(path);
@@ -682,31 +748,74 @@ function reapOwners(state: OverlayOwnershipState): OverlayOwnershipState {
 }
 
 function withOwnershipLock(lockPath: string, fn: () => void): void {
-    const started = Date.now();
-    while (true) {
-        let fd: number | null = null;
+    let attempts = 0;
+    let owner: NotifyOverlayLockOwner | undefined;
+
+    mkdirSync(dirname(lockPath), { recursive: true });
+
+    while (attempts < OWNERSHIP_LOCK_MAX_ATTEMPTS) {
+        owner = { pid: process.pid, token: randomUUID() };
+        const candidate = `${lockPath}.${owner.token}.tmp`;
         try {
-            mkdirSync(dirname(lockPath), { recursive: true });
-            fd = openSync(lockPath, 'wx');
-        } catch (error) {
-            // Only retry lock acquisition races — never retry callback failures.
-            if (Date.now() - started >= OWNERSHIP_LOCK_TIMEOUT_MS) {
-                throw error;
-            }
-            sleepSync(20);
-            continue;
-        }
-        try {
-            fn();
-        } finally {
-            closeSync(fd);
+            writeFileSync(candidate, JSON.stringify(owner), {
+                encoding: 'utf-8',
+                flag: 'wx',
+                mode: 0o600
+            });
             try {
-                unlinkSync(lockPath);
-            } catch {
-                // ignore
+                linkSync(candidate, lockPath);
+                break;
+            } catch (err: unknown) {
+                const code = err && typeof err === 'object' && 'code' in err
+                    ? (err as { code?: string }).code
+                    : undefined;
+                if (code !== 'EEXIST') {
+                    throw err;
+                }
+                attempts++;
+                const existing = readNotifyOverlayLockOwner(lockPath);
+                if (existing && isLockHolderAlive(existing.pid)) {
+                    sleepSync(OWNERSHIP_LOCK_RETRY_INTERVAL_MS);
+                } else {
+                    // Empty (pre-token), corrupt, or dead-PID lock — fail closed with
+                    // an actionable recovery path. Do not pathname-steal.
+                    throw staleNotifyOverlayLockError(lockPath);
+                }
+            } finally {
+                rmSync(candidate, { force: true });
             }
+            continue;
+        } catch (err: unknown) {
+            rmSync(candidate, { force: true });
+            if (err instanceof Error && err.message.startsWith('Stale Cursor notify-rule overlay lock:')) {
+                throw err;
+            }
+            const code = err && typeof err === 'object' && 'code' in err
+                ? (err as { code?: string }).code
+                : undefined;
+            if (code === 'EEXIST') {
+                attempts++;
+                sleepSync(OWNERSHIP_LOCK_RETRY_INTERVAL_MS);
+                continue;
+            }
+            throw err;
         }
-        return;
+    }
+
+    if (!owner || !existsSync(lockPath) || readNotifyOverlayLockOwner(lockPath)?.token !== owner.token) {
+        throw new Error(`Timed out waiting for Cursor notify-rule overlay lock: ${lockPath}`);
+    }
+
+    try {
+        fn();
+    } finally {
+        try {
+            if (readNotifyOverlayLockOwner(lockPath)?.token === owner.token) {
+                unlinkSync(lockPath);
+            }
+        } catch {
+            // ignore
+        }
     }
 }
 

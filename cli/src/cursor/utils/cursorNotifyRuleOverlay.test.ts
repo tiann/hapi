@@ -10,6 +10,7 @@ import {
     rmSync,
     statSync,
     symlinkSync,
+    unlinkSync,
     writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,9 +21,11 @@ import {
     HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX,
     HAPI_SESSION_RULE_SENTINEL,
     installCursorNotifyRuleOverlay,
+    readNotifyOverlayLockOwner,
     RULE_FILENAME_ALTERNATE,
     RULE_FILENAME_PRIMARY,
-    toLiteralGitExcludePattern
+    toLiteralGitExcludePattern,
+    withNotifyOverlayLock
 } from './cursorNotifyRuleOverlay';
 
 describe('buildNotifyRuleContent', () => {
@@ -528,5 +531,96 @@ describe('installCursorNotifyRuleOverlay', () => {
         const recovered = installCursorNotifyRuleOverlay({ cwd, project: 'later' });
         recovered.cleanup();
         expect(readFileSync(rulePath, 'utf-8')).toBe(prior);
+    });
+
+    it('skips install when the ownership lock is abandoned (empty pre-token file)', () => {
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        // Plant an abandoned ownership lock at the hashed path by letting a first
+        // install create the state dir, then leave a dead empty lock beside it.
+        const first = installCursorNotifyRuleOverlay({ cwd, project: 'seed' });
+        const overlayRoot = join(hapiHome, 'cursor-notify-overlays');
+        const stateDirName = readdirSync(overlayRoot)[0];
+        expect(stateDirName).toBeTruthy();
+        first.cleanup();
+
+        const lockPath = join(overlayRoot, `${stateDirName}.lock`);
+        writeFileSync(lockPath, '', 'utf-8'); // pre-token empty wx survivor
+
+        const blocked = installCursorNotifyRuleOverlay({ cwd, project: 'blocked' });
+        expect(existsSync(rulePathOf(cwd))).toBe(false);
+        blocked.cleanup();
+        expect(existsSync(lockPath)).toBe(true);
+        expect(readNotifyOverlayLockOwner(lockPath)).toBeNull();
+        unlinkSync(lockPath);
+    });
+
+    it('skips install when the exclude lock is abandoned by a dead PID', () => {
+        execFileSync('git', ['init'], { cwd });
+        const excludePath = join(cwd, '.git', 'info', 'exclude');
+        mkdirSync(dirname(excludePath), { recursive: true });
+        writeFileSync(excludePath, '', 'utf-8');
+        const excludeLock = `${excludePath}.hapi-notify.lock`;
+        writeFileSync(
+            excludeLock,
+            JSON.stringify({ pid: 2_147_483_646, token: 'dead-exclude-owner' }),
+            'utf-8'
+        );
+
+        const blocked = installCursorNotifyRuleOverlay({ cwd, project: 'exclude-lock' });
+        expect(existsSync(rulePathOf(cwd))).toBe(false);
+        blocked.cleanup();
+        expect(readNotifyOverlayLockOwner(excludeLock)?.token).toBe('dead-exclude-owner');
+        unlinkSync(excludeLock);
+    });
+});
+
+describe('withNotifyOverlayLock', () => {
+    let lockDir: string;
+
+    beforeEach(() => {
+        lockDir = mkdtempSync(join(tmpdir(), 'hapi-notify-lock-'));
+    });
+
+    afterEach(() => {
+        rmSync(lockDir, { recursive: true, force: true });
+    });
+
+    it('publishes pid+token and releases only its own lock', () => {
+        const lockPath = join(lockDir, 'state.lock');
+        withNotifyOverlayLock(lockPath, () => {
+            const owner = readNotifyOverlayLockOwner(lockPath);
+            expect(owner?.pid).toBe(process.pid);
+            expect(owner?.token).toMatch(/^[0-9a-f-]{36}$/i);
+        });
+        expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it('fails closed on an abandoned empty lock with an actionable message', () => {
+        const lockPath = join(lockDir, 'abandoned.lock');
+        writeFileSync(lockPath, '', 'utf-8');
+        expect(() => withNotifyOverlayLock(lockPath, () => {})).toThrow(
+            /Stale Cursor notify-rule overlay lock:.*rm -f/
+        );
+        expect(existsSync(lockPath)).toBe(true);
+        expect(readNotifyOverlayLockOwner(lockPath)).toBeNull();
+    });
+
+    it('fails closed on a dead-PID lock instead of pathname-stealing', () => {
+        const lockPath = join(lockDir, 'dead.lock');
+        writeFileSync(lockPath, JSON.stringify({ pid: 2_147_483_646, token: 'dead-owner' }), 'utf-8');
+        expect(() => withNotifyOverlayLock(lockPath, () => {})).toThrow(
+            /Stale Cursor notify-rule overlay lock:/
+        );
+        expect(readNotifyOverlayLockOwner(lockPath)?.token).toBe('dead-owner');
+    });
+
+    it('does not unlink a successor lock on release', () => {
+        const lockPath = join(lockDir, 'successor.lock');
+        withNotifyOverlayLock(lockPath, () => {
+            writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'successor-token' }), 'utf-8');
+        });
+        expect(existsSync(lockPath)).toBe(true);
+        expect(readNotifyOverlayLockOwner(lockPath)?.token).toBe('successor-token');
+        unlinkSync(lockPath);
     });
 });
