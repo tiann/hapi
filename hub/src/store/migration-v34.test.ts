@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from '.'
 
-it('adds an index used by the uninvoked-local-message lookup when upgrading from v31', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v31-'))
+it('adds an index used by the uninvoked-local-message lookup when upgrading from v34', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v34-'))
     try {
         const path = join(dir, 'hapi.db')
         new Store(path).close()
         const legacy = new Database(path)
-        legacy.exec('DROP INDEX idx_messages_uninvoked_local; PRAGMA user_version = 31;')
+        legacy.exec('DROP INDEX idx_messages_uninvoked_local; PRAGMA user_version = 34;')
         legacy.close()
 
         const migrated = new Store(path)
