@@ -267,6 +267,7 @@ object MessageWindowLogic {
         page: MessagesPage,
         replaceServerRows: Boolean,
         requestBaseline: Map<String, WindowMessage>,
+        trimLimit: Int = VISIBLE_WINDOW_SIZE,
     ): MessageWindowState {
         val retainedResponseMessages = responseMessages.filter { shouldRetainWindowMessage(it) }
         val concurrentServerRows = previous.messages.filter { message ->
@@ -281,7 +282,7 @@ object MessageWindowLogic {
         }
         val authoritative = MessageMerge.mergeMessages(preserved, retainedResponseMessages)
         val incoming = MessageMerge.mergeMessages(authoritative, concurrentServerRows)
-        val (kept, dropped) = trimPreservingQueued(incoming, VISIBLE_WINDOW_SIZE, TrimMode.Append)
+        val (kept, dropped) = trimPreservingQueued(incoming, trimLimit, TrimMode.Append)
             .let { it.kept to it.dropped }
         val snapshotHead = pagePosition(page.snapshotHeadAt, page.snapshotHeadSeq)
             ?: derivePosition(responseMessages, PositionEnd.Newest)

@@ -451,24 +451,126 @@ class MessageWindowStoreTest {
 
     // ------------------------------------------------------ mutex discipline --
 
+    // ------------------------------------------------- gap recovery upsert --
+
+    /** Hub-merged tool-call row: the hub folds the streamed tool-call and its
+     *  result into one row keyed by the call id, keeping the row's original
+     *  cursor position. */
+    private fun toolCallRow(id: String, seq: Long, at: Long, status: String): DecryptedMessage =
+        DecryptedMessage(
+            id = id,
+            seq = seq,
+            createdAt = at,
+            invokedAt = OptionalField.Present(at),
+            content = buildJsonObject {
+                put("role", "agent")
+                put("content", buildJsonObject {
+                    put("type", "codex")
+                    put("data", buildJsonObject {
+                        put("type", "tool-call")
+                        put("callId", "call-1")
+                        put("name", "Bash")
+                        put("input", buildJsonObject { put("command", "ls") })
+                        put("status", status)
+                    })
+                })
+            },
+        )
+
+    /** Warm tail window: rows r-1..r-9 plus a merged tool-call row at seq 10. */
+    private fun warmRecoveryWindow(id: String, callStatus: String): MessageWindowState =
+        MessageWindowState(
+            sessionId = id, epoch = 1, hasMore = true,
+            oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(10_000, 10),
+            messages = (1L..9L).map { agentRow("r-$it", it, it * 1000).asWindowMessage() } +
+                toolCallRow("call-row", 10, 10_000, callStatus).asWindowMessage(),
+        )
+
     @Test
-    fun `parallel mutations from real threads serialize through the state mutex`() = runBlocking {
+    fun `gap recovery catches up missed rows and reconciles merged rows from the latest page`() = runTest {
+        val stale = toolCallRow("call-row", 10, 10_000, "in_progress")
+        val merged = toolCallRow("call-row", 10, 10_000, "completed")
         val api = GatedMessagesApi()
-        val store = MessageWindowStore("s", api, this)
-        withContext(Dispatchers.Default) {
-            (0 until 64).map { index ->
-                launch {
-                    store.appendOptimistic(
-                        localId = "local-$index",
-                        text = "message $index",
-                        createdAt = 1000L + index,
-                    )
-                    store.updateStatus("local-$index", MessageStatus.Queued)
-                }
-            }.forEach { it.join() }
-        }
+        val store = MessageWindowStore("gap-upsert", api, backgroundScope,
+            initialState = warmRecoveryWindow("gap-upsert", "in_progress"))
+        api.release(afterPage(
+            listOf(agentRow("r-11", 11, 11_000), agentRow("r-12", 12, 12_000)),
+            epoch = 1, nextAfter = 12_000L to 12L, hasMore = false,
+        ))
+        val page = (1L..9L).map { agentRow("r-$it", it, it * 1000) } +
+            merged + listOf(agentRow("r-11", 11, 11_000), agentRow("r-12", 12, 12_000))
+        api.release(latestPage(page, epoch = 1))
+
+        store.recoverAfterGapResume()
+
+        // Catch-up first (newer rows only), then the authoritative latest page
+        // applied as an upsert: rows present in the page are replaced by id —
+        // the merged tool-call row's content converges — while rows the page
+        // cannot reach and the hasMore/oldest cursor survive.
+        assertEquals(listOf<MessagesQuery>(
+            MessagesQuery.After(afterAt = 10_000, afterSeq = 10, untilAt = null, untilSeq = null, epoch = 1, limit = 200),
+            MessagesQuery.Latest(limit = 200),
+        ), api.requests)
         val state = store.state.value
-        assertEquals(64, state.messages.size)
-        assertTrue(state.messages.all { it.status == MessageStatus.Queued && it.isQueuedForInvocation })
+        assertEquals(
+            (1L..9L).map { "r-$it" } + "call-row" + "r-11" + "r-12",
+            state.messages.map { it.id },
+        )
+        assertEquals(merged.content, state.messages.first { it.id == "call-row" }.wire.content)
+        assertEquals(12, state.messages.size)
+        assertEquals(12L, state.newestPosition!!.seq)
+        assertEquals(1L, state.oldestPosition!!.seq)
+        assertTrue(state.hasMore)
+        assertNull(state.warning)
+    }
+
+    @Test
+    fun `failed catch-up stops before the latest page and the next recovery retries`() = runTest {
+        val stale = toolCallRow("call-row", 10, 10_000, "in_progress")
+        val merged = toolCallRow("call-row", 10, 10_000, "completed")
+        val api = GatedMessagesApi()
+        val failing = object : MessagesApi by api {
+            var afterCalls = 0
+            override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse {
+                if (query is MessagesQuery.After) {
+                    afterCalls += 1
+                    if (afterCalls == 1) throw RuntimeException("catch-up sync failed")
+                }
+                return api.getMessages(sessionId, query)
+            }
+        }
+        val store = MessageWindowStore("gap-retry", failing, backgroundScope,
+            initialState = warmRecoveryWindow("gap-retry", "in_progress"))
+
+        store.recoverAfterGapResume()
+
+        // The failed catch-up leaves the failure warning, keeps the original
+        // cursor, and never advances to the latest page (the delegate saw no
+        // second request).
+        assertEquals(1, failing.afterCalls)
+        assertTrue(api.requests.isEmpty())
+        val failed = store.state.value
+        assertEquals("catch-up sync failed", failed.warning)
+        assertEquals(listOf("r-1", "r-2", "r-3", "r-4", "r-5", "r-6", "r-7", "r-8", "r-9", "call-row"),
+            failed.messages.map { it.id })
+
+        // The next recovery retries the whole recovery: catch-up, then the
+        // latest-page upsert that converges the merged row.
+        api.release(afterPage(
+            listOf(agentRow("r-11", 11, 11_000), agentRow("r-12", 12, 12_000)),
+            epoch = 1, nextAfter = 12_000L to 12L, hasMore = false,
+        ))
+        val page = (1L..9L).map { agentRow("r-$it", it, it * 1000) } +
+            merged + listOf(agentRow("r-11", 11, 11_000), agentRow("r-12", 12, 12_000))
+        api.release(latestPage(page, epoch = 1))
+        store.recoverAfterGapResume()
+
+        assertEquals(listOf<MessagesQuery>(
+            MessagesQuery.After(afterAt = 10_000, afterSeq = 10, untilAt = null, untilSeq = null, epoch = 1, limit = 200),
+            MessagesQuery.Latest(limit = 200),
+        ), api.requests)
+        val state = store.state.value
+        assertEquals(merged.content, state.messages.first { it.id == "call-row" }.wire.content)
+        assertNull(state.warning)
     }
 }
