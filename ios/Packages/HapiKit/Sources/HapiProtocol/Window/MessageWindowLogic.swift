@@ -290,7 +290,8 @@ public enum MessageWindowLogic {
         responseMessages: [WindowMessage],
         page: MessagesPage,
         replaceServerRows: Bool,
-        requestBaseline: [String: WindowMessage]
+        requestBaseline: [String: WindowMessage],
+        trimLimit: Int = MessageWindowConstants.visibleWindowSize
     ) -> MessageWindowState {
         let retainedResponseMessages = responseMessages.filter { shouldRetainWindowMessage($0) }
         let concurrentServerRows = previous.messages.filter { message in
@@ -305,7 +306,7 @@ public enum MessageWindowLogic {
         let incoming = MessageMerge.mergeMessages(authoritative, concurrentServerRows)
         let trim = trimPreservingQueued(
             incoming,
-            regularLimit: MessageWindowConstants.visibleWindowSize,
+            regularLimit: trimLimit,
             mode: .append
         )
         let snapshotHead = pagePosition(at: page.snapshotHeadAt, seq: page.snapshotHeadSeq)

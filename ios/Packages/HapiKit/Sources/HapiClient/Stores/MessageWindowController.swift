@@ -128,6 +128,7 @@ public actor MessageWindowController {
     private var runningTask: Task<Void, Never>?
     private var runningRunId: Int?
     private var runningPrefersLatest = false
+    private var runningPendingRecovery = false
     private var trailingRequested = false
     /// Bumped by ``clear()``/``seedFrom(_:)`` so a finished run stops
     /// chaining trailing runs (web: controller replacement).
@@ -149,8 +150,16 @@ public actor MessageWindowController {
             await startTailSync().value
             return
         }
-        if stateValue.preferLatestOnActivation {
-            if runningPrefersLatest {
+        if stateValue.preferLatestOnActivation || stateValue.pendingGapRecovery {
+            // A running sync snapshotted its mode at start; a newly requested
+            // latest reconciliation (cached re-entry or gap recovery) must not
+            // let that older run commit a plain cursor merge or a full
+            // replacement over it.
+            if runningPrefersLatest && !stateValue.pendingGapRecovery {
+                await running.value
+                return
+            }
+            if runningPendingRecovery && stateValue.pendingGapRecovery {
                 await running.value
                 return
             }
@@ -195,6 +204,7 @@ public actor MessageWindowController {
         runningTask = task
         runningRunId = runId
         runningPrefersLatest = prefersLatest
+        runningPendingRecovery = stateValue.pendingGapRecovery
         return task
     }
 
@@ -203,6 +213,7 @@ public actor MessageWindowController {
         runningTask = nil
         runningRunId = nil
         runningPrefersLatest = false
+        runningPendingRecovery = false
         guard trailingRequested else { return }
         trailingRequested = false
         _ = startTailSync()
@@ -235,14 +246,33 @@ public actor MessageWindowController {
             let initial = stateValue
             let initialCursor = initial.newestPosition
             let preferLatestOnActivation = initial.preferLatestOnActivation
+            let pendingGapRecovery = initial.pendingGapRecovery
             let canIncrement = initialCursor != nil
                 && initial.epoch != nil
                 && !initial.requiresLatestReset
-                && !preferLatestOnActivation
+                // A pending gap recovery must run its cursor catch-up even
+                // when a cached activation asked for a direct latest page: the
+                // activation shortcut fetches only the newest rows and leaves
+                // the interval between the cached tail and the page
+                // unreachable below the advanced newest cursor.
+                && (!preferLatestOnActivation || pendingGapRecovery)
+
+            if canIncrement && preferLatestOnActivation {
+                // The recovery's catch-up + latest-page reconciliation
+                // subsumes the cached-activation refresh. Defer the activation
+                // shortcut for this run: left set, it would force-break the
+                // catch-up loop after its first chunk.
+                update { previous in
+                    guard previous.syncGeneration == generation else { return previous }
+                    var next = previous
+                    next.preferLatestOnActivation = false
+                    return next
+                }
+            }
 
             if !canIncrement {
                 let requestBaseline = baseline()
-                let latestPageSize = initial.requiresLatestReset || initialCursor != nil
+                let latestPageSize = initial.requiresLatestReset || pendingGapRecovery || initialCursor != nil
                     ? MessageWindowConstants.pageSize
                     : MessageWindowConstants.initialPageSize
                 let response = try await provider.messages(
@@ -265,11 +295,12 @@ public actor MessageWindowController {
                         responseMessages: windowMessages(response),
                         page: response.page,
                         replaceServerRows: initial.requiresLatestReset
-                            || preferLatestOnActivation
+                            || (preferLatestOnActivation && !pendingGapRecovery)
                             || response.page.reset,
                         requestBaseline: requestBaseline
                     )
                     next.preferLatestOnActivation = false
+                    next.pendingGapRecovery = false
                     return next
                 }
                 finishTailSync(generation: generation, warning: nil)
@@ -278,6 +309,7 @@ public actor MessageWindowController {
 
             var after = initialCursor!
             var until: MessagePosition?
+            var catchUpReset = false
             while true {
                 let requestBaseline = baseline()
                 let response = try await provider.messages(
@@ -296,14 +328,18 @@ public actor MessageWindowController {
                 if response.page.reset || response.page.direction == .latest {
                     update { previous in
                         guard previous.syncGeneration == generation else { return previous }
-                        return MessageWindowLogic.applyLatestResponse(
+                        var next = MessageWindowLogic.applyLatestResponse(
                             previous,
                             responseMessages: windowMessages(response),
                             page: response.page,
                             replaceServerRows: true,
                             requestBaseline: requestBaseline
                         )
+                        next.pendingGapRecovery = false
+                        next.preferLatestOnActivation = false
+                        return next
                     }
+                    catchUpReset = true
                     break
                 }
 
@@ -340,6 +376,57 @@ public actor MessageWindowController {
                     throw MessageWindowSyncError.cursorDidNotAdvance
                 }
                 after = nextAfter!
+            }
+
+            if pendingGapRecovery {
+                if catchUpReset {
+                    // A reset verdict already replaced the window
+                    // authoritatively under the server's epoch; there is
+                    // nothing left to refresh.
+                    update { previous in
+                        guard previous.syncGeneration == generation else { return previous }
+                        var next = previous
+                        next.pendingGapRecovery = false
+                        next.preferLatestOnActivation = false
+                        return next
+                    }
+                } else {
+                    // The cursor phase caught the window up without error.
+                    // Only now may the recovery advance to the latest page:
+                    // reconciling after a failed catch-up would strand the rows
+                    // between the cached tail and the page below the advanced
+                    // newest cursor. On a catch-up failure the catch below
+                    // skips this block, the original cursor and the flag
+                    // survive, and the next sync retries the whole recovery.
+                    let requestBaseline = baseline()
+                    let response = try await provider.messages(
+                        sessionId: sessionId,
+                        query: .latest(limit: MessageWindowConstants.pageSize)
+                    )
+                    guard isCurrentTailSync(generation) else { return }
+                    update { previous in
+                        guard previous.syncGeneration == generation else { return previous }
+                        // The trim honors the window's loaded history budget
+                        // (web `4d1d9e2025`): a no-news reconnect never evicts
+                        // rows the reader already had.
+                        let trimLimit = min(
+                            MessageWindowConstants.olderLoadWindowSize,
+                            max(MessageWindowConstants.visibleWindowSize, previous.messages.count)
+                        )
+                        var next = MessageWindowLogic.applyLatestResponse(
+                            previous,
+                            responseMessages: windowMessages(response),
+                            page: response.page,
+                            replaceServerRows: response.page.reset
+                                || (previous.epoch != nil && response.page.epoch != previous.epoch),
+                            requestBaseline: requestBaseline,
+                            trimLimit: trimLimit
+                        )
+                        next.pendingGapRecovery = false
+                        next.preferLatestOnActivation = false
+                        return next
+                    }
+                }
             }
 
             finishTailSync(generation: generation, warning: nil)
@@ -590,10 +677,41 @@ public actor MessageWindowController {
         persist()
     }
 
+    /// One gap-recovery step for a session message window (web
+    /// `recoverWindowAfterGapResume`).
+    ///
+    /// A resumed-with-gap connection (`resume: 'gap'`) cannot prove
+    /// continuity, and in-place row updates (merged tool-call ticks) keep the
+    /// row's original cursor position, so a plain cursor sync re-delivers new
+    /// rows but never the merged content of rows the window already holds.
+    /// Flag the window and let the next tail sync run the full recovery: the
+    /// cursor catch-up pulls every row the window missed, then an
+    /// authoritative latest page is applied as an upsert — rows present in
+    /// the page are replaced by id while already-loaded rows older than the
+    /// latest page and the hasMore/oldest cursor survive. A failed catch-up
+    /// keeps the flag and the original cursor, so the next sync retries the
+    /// whole recovery. Cold or structurally invalidated windows have nothing
+    /// to preserve and keep the plain reset choreography.
+    public func recoverAfterGapResume() async {
+        let previous = stateValue
+        if previous.requiresLatestReset || previous.newestPosition == nil || previous.epoch == nil {
+            await syncTail()
+            return
+        }
+        update { state in
+            var next = state
+            next.pendingGapRecovery = true
+            return next
+        }
+        await syncTail()
+    }
+
     /// Queued-state recovery after a `resume: 'gap'` reconnect (port of
     /// `web/src/lib/queued-state-reconciliation.ts`): tail-sync to the drain,
     /// collect candidates, ask the hub for the verdict in ≤1000-id batches,
     /// stamp invoked rows like `messages-consumed`, drop deleted candidates.
+    /// The window's gap recovery (``recoverAfterGapResume()``) is a separate
+    /// step the session layer runs first (web wires the two the same way).
     public func reconcileQueuedState() async throws {
         await syncTail(ensureAfterCurrent: true)
         let candidateLocalIds = queuedReconcileCandidateLocalIds()

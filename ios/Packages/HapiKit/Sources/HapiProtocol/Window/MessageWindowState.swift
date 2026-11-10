@@ -104,6 +104,11 @@ public struct MessageWindowState: Equatable, Sendable {
     public var requiresLatestReset: Bool = false
     /// Re-activation with persisted state: fetch the current tail first.
     public var preferLatestOnActivation: Bool = false
+    /// Gap-recovery pending: the next tail sync must catch up the missed
+    /// interval with a cursor sync and then reconcile an authoritative latest
+    /// page as an upsert (web `pendingGapRecovery`). Run-scoped — never
+    /// persisted.
+    public var pendingGapRecovery: Bool = false
     /// Invalidates in-flight tail syncs (compare-and-ignore).
     public var syncGeneration: Int = 0
     /// Invalidates in-flight older-page loads.
