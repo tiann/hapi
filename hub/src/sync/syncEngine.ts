@@ -4244,6 +4244,11 @@ export class SyncEngine {
                         code: 'resume_unavailable'
                     }
                 }
+                // Thread dir without store.db: nothing was ever persisted, so
+                // there is nothing to resume; start a fresh Cursor thread.
+                if (chatStatus.store === 'empty') {
+                    resumeToken = undefined
+                }
             } catch (error) {
                 // Soft-fail on probe skew / missing handler (#1084): definitive
                 // onDisk:false still blocks above; probe errors must not be
