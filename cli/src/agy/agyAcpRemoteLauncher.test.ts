@@ -2536,6 +2536,102 @@ describe('AgyAcpRemoteLauncher Stop during the dequeue hold', () => {
     });
 });
 
+describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)', () => {
+    const BACKGROUNDING = (taskId: string, description: string): string =>
+        `Created At: 2026-11-10T14:00:07+09:00\nTool is running as a background task with task id: ${taskId}\nTask Description: ${description}`;
+    const COMPLETION = (taskId: string, output: string): string =>
+        `Task id "${taskId}" finished with result:\nCommand exited with code 0.\n\nCommand output:\n${output}`;
+
+    it('completes each card by its native task id when completions land out of launch order', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const args1 = { CommandLine: 'sleep 30 && echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+        const args2 = { CommandLine: 'sleep 10 && echo SECOND-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('run two checks');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run first sample', input: args1, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args1 });
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run second sample', input: args2, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args2 });
+            onUpdate({ type: 'text', text: 'Started both checks in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('run two checks', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // agy records each backgrounding itself, with the native task id and
+        // the command text as the task description.
+        source.push(
+            { ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', 'sleep 30 && echo FIRST-OUT')), status: 'running' },
+            { ...wakeStep(4, 'tool', BACKGROUNDING('sample/task-2', 'sleep 10 && echo SECOND-OUT')), status: 'running' }
+        );
+        source.latest = 4;
+        // Completions land out of launch order: the second command finishes first.
+        source.push(wakeStep(5, 'system', COMPLETION('sample/task-2', 'SECOND-OUT')));
+        source.latest = 5;
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(1));
+        console.log('DEBUG reads:', source.readNewCalls, 'queued:', source.queued.length);
+        await vi.waitFor(() => expect(agentRows(client).some((row) => row.type === 'tool-call-result' && row.callId === 'bg-2')).toBe(true));
+
+        const rowsMid = agentRows(client);
+        const second = rowsMid.find((row) => row.type === 'tool-call-result' && row.callId === 'bg-2') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(second)).toContain('SECOND-OUT');
+        // The first command is still pending: its card stays open.
+        expect(rowsMid.some((row) => row.type === 'tool-call-result' && row.callId === 'bg-1')).toBe(false);
+
+        source.push(wakeStep(6, 'system', COMPLETION('sample/task-1', 'FIRST-OUT')));
+        source.latest = 6;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        const first = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(first)).toContain('FIRST-OUT');
+    });
+
+    it('leaves an unrelated system message untouched instead of discarding a pending command', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const args1 = { CommandLine: 'sleep 30 && echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: args1, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args1 });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push({ ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', 'sleep 30 && echo FIRST-OUT')), status: 'running' });
+        source.latest = 3;
+        // An unrelated system message carries no completion marker.
+        source.push(wakeStep(4, 'system', 'Session note: the sample conversation was resumed.'));
+        source.latest = 4;
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(1));
+
+        source.push(wakeStep(5, 'system', COMPLETION('sample/task-1', 'UNRELATED-OK')));
+        source.latest = 5;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        // The card completed exactly once, from the real completion.
+        const results = agentRows(client).filter((row) => row.type === 'tool-call-result' && row.callId === 'bg-1');
+        expect(results).toHaveLength(1);
+        expect(JSON.stringify(results[0])).toContain('UNRELATED-OK');
+    });
+});
+
 describe('AgyAcpRemoteLauncher late continuation (surfacer did not run)', () => {
     it('labels the flushed block after a restart instead of mixing it into the new turn', async () => {
         const { session, queue, client } = makeSession();

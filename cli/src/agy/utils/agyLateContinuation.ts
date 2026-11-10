@@ -112,7 +112,7 @@ export type WakeWatcherClose = {
  *   Command output:
  *   BG-DONE-7731
  */
-export function parseAgyTaskCompletion(content: string): { exitCode: number; output: string } | null {
+export function parseAgyTaskCompletion(content: string): { exitCode: number; output: string; taskId: string | null } | null {
     const marker = 'finished with result:';
     const markerAt = content.indexOf(marker);
     if (markerAt < 0) return null;
@@ -127,7 +127,25 @@ export function parseAgyTaskCompletion(content: string): { exitCode: number; out
         // Trailing agy metadata ("Log: ..." line, closing tag) is not output.
         output = output.replace(/\n?Log: [^\n]*/, '').replace(/\n?<\/SYSTEM_MESSAGE>\s*$/, '').trim();
     }
-    return { exitCode: Number(exit[1]), output };
+    const taskId = /Task id "([^"]+)"/.exec(content)?.[1] ?? null;
+    return { exitCode: Number(exit[1]), output, taskId };
+}
+
+const BACKGROUND_TASK_ID = /\btask id:\s*([^\s"]+)/i;
+const BACKGROUND_TASK_DESCRIPTION = /^Task Description:\s*(.+)$/m;
+
+/**
+ * Parses agy's own backgrounding record out of a transcript step: GENERIC tool
+ * steps announce "task id: <native id>" with the command text as the task
+ * description, letting a later completion pair with the original ACP call by
+ * task id instead of launch order. The quoted `Task id "..."` of a completion
+ * message does not match (its id is quoted).
+ */
+export function parseAgyBackgroundStart(content: string): { taskId: string; description: string } | null {
+    const id = BACKGROUND_TASK_ID.exec(content)?.[1];
+    if (!id) return null;
+    const description = BACKGROUND_TASK_DESCRIPTION.exec(content)?.[1]?.trim() ?? '';
+    return { taskId: id, description };
 }
 
 export type WakeWatcherOptions = {

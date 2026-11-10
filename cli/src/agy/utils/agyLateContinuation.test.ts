@@ -284,7 +284,7 @@ describe('parseAgyTaskCompletion', () => {
             'Log: file:///sample/tasks/task-1.log',
             '</SYSTEM_MESSAGE>'
         ].join('\n'))
-        expect(parsed).toEqual({ exitCode: 0, output: 'SAMPLE-OUTPUT-1' })
+        expect(parsed).toEqual({ exitCode: 0, output: 'SAMPLE-OUTPUT-1', taskId: 'sample-session/task-1' })
     })
 
     it('parses a non-zero exit and multi-line output', () => {
@@ -298,7 +298,7 @@ describe('parseAgyTaskCompletion', () => {
             'second line',
             '</SYSTEM_MESSAGE>'
         ].join('\n'))
-        expect(parsed).toEqual({ exitCode: 3, output: 'first line\nsecond line' })
+        expect(parsed).toEqual({ exitCode: 3, output: 'first line\nsecond line', taskId: 'sample-session/task-2' })
     })
 
     it('returns null for system messages that are not task completions', () => {
