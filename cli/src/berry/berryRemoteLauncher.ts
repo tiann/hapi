@@ -25,6 +25,16 @@ const BERRY_ACP_MODE_BY_PERMISSION: Record<string, string> = {
     yolo: 'dont_ask'
 }
 
+/**
+ * Prompt failures that mean the ACP subprocess (or its stdio transport) is
+ * gone — "ACP process exited (code=…, signal=…)", "ACP transport closed".
+ * They never heal on the same backend: every later prompt on it fails too.
+ * One prompt-level respawn on such failures recovers sessions whose agent
+ * subprocess died mid-session (crash, upgrade, gateway restart) instead of
+ * wedging the chat until it is manually reopened.
+ */
+const ACP_TRANSPORT_DEATH_RE = /process exited|ACP process|transport closed/i
+
 export class BerryRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createBerryBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
@@ -34,6 +44,13 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     private initialBackendModel: string | null = null
     private lastAppliedAcpMode: string | null = null
     private displayPermissionMode: PermissionMode | undefined
+    /** Live ACP session id — mirrors the loop variable so the once-registered
+     * catalog RPC handler can follow a mid-session backend respawn. */
+    private acpSessionId: string | null = null
+    /** Backend the catalog RPC answers from. Separate from this.backend
+     * because cleanup() nulls that at teardown while the handler may still
+     * be mounted; updated at startup and on every respawn. */
+    private catalogBackend: ReturnType<typeof createBerryBackend> | null = null
 
     constructor(
         private readonly session: BerrySession,
@@ -78,7 +95,9 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async runMainLoop(): Promise<void> {
-        const backend = createBerryBackend()
+        // `let`: a mid-loop respawn replaces both the backend instance and the
+        // ACP session id it talks to.
+        let backend = createBerryBackend()
         this.backend = backend
         // Native session_info_update titles are deliberately NOT mirrored:
         // the Hub owns Berry session titles, matching the other ACP flavors
@@ -103,12 +122,19 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             markFailed = reject
         })
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListBerryModels, async () => {
-            let acpSessionId: string
             try {
-                acpSessionId = await ready
+                await ready
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error)
                 return { success: false, error: `Berry session is not available: ${message}` }
+            }
+            // Read live state, not the startup closure: a mid-session respawn
+            // swaps the backend and ACP session id while this handler (registered
+            // exactly once) stays mounted.
+            const backend = this.catalogBackend
+            const acpSessionId = this.acpSessionId
+            if (!backend || !acpSessionId) {
+                return { success: false, error: 'Berry session is not available' }
             }
             const metadata = backend.getSessionModelsMetadata(acpSessionId)
             if (!metadata) {
@@ -124,46 +150,10 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string
         try {
             await backend.initialize()
-
-            const resumeSessionId = this.session.sessionId
-            if (resumeSessionId) {
-                try {
-                    // Berry implements `session/resume`. The Hub remains the
-                    // transcript source for the UI, so any replayed history is
-                    // suppressed; without this every resume would duplicate
-                    // the transcript.
-                    if (!backend.supportsSessionResume()) {
-                        throw new Error('Berry ACP server does not advertise session/resume')
-                    }
-                    acpSessionId = await backend.suppressUpdatesDuring(() =>
-                        backend.resumeSession({
-                            sessionId: resumeSessionId,
-                            cwd: this.session.path,
-                            mcpServers: []
-                        })
-                    )
-                } catch (error) {
-                    logger.warn('[berry-acp] resume failed, starting a new session', error)
-                    this.session.sendSessionEvent({
-                        type: 'message',
-                        message: 'Berry resume failed; starting a new session.'
-                    })
-                    acpSessionId = await backend.newSession({
-                        cwd: this.session.path,
-                        // The Berry ACP server configures its own tools; HAPI
-                        // does not bridge MCP servers for it in v1.
-                        mcpServers: []
-                    })
-                }
-            } else {
-                acpSessionId = await backend.newSession({
-                    cwd: this.session.path,
-                    // The Berry ACP server configures its own tools; HAPI
-                    // does not bridge MCP servers for it in v1.
-                    mcpServers: []
-                })
-            }
+            acpSessionId = await this.establishAcpSession(backend)
             this.session.onSessionFound(acpSessionId)
+            this.acpSessionId = acpSessionId
+            this.catalogBackend = backend
         } catch (error) {
             markFailed(error)
             throw error
@@ -271,9 +261,23 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error)
-                logger.warn('[berry-acp] prompt failed', { message })
-                this.session.sendSessionEvent({ type: 'message', message: `Berry prompt failed: ${message}` })
-                this.messageBuffer.addMessage(`Berry prompt failed: ${message}`, 'status')
+                const respawned = this.shouldRespawnAfterPromptFailure(backend, message)
+                    ? await this.respawnBackend()
+                    : null
+                if (respawned) {
+                    backend = respawned.backend
+                    acpSessionId = respawned.acpSessionId
+                    // Exactly one retry on the fresh backend — a repeated
+                    // failure is reported like any other and the loop stays
+                    // alive for the next turn (no respawn cycles).
+                    try {
+                        await backend.prompt(acpSessionId, prompt, (msg) => this.handleAgentMessage(msg))
+                    } catch (retryError) {
+                        this.reportPromptFailure(retryError)
+                    }
+                } else {
+                    this.reportPromptFailure(error)
+                }
             } finally {
                 this.session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
@@ -290,6 +294,159 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = null
         await this.backend?.disconnect()
         this.backend = null
+    }
+
+    /**
+     * Establish an ACP session on `backend`: resume the persisted Berry
+     * session id when the backend advertises `session/resume`, otherwise
+     * (no persisted id, unsupported, or resume failure) start a fresh one.
+     * Shared by the initial launch and the post-crash respawn.
+     */
+    private async establishAcpSession(
+        backend: ReturnType<typeof createBerryBackend>
+    ): Promise<string> {
+        const resumeSessionId = this.session.sessionId
+        if (resumeSessionId) {
+            try {
+                // Berry implements `session/resume`. The Hub remains the
+                // transcript source for the UI, so any replayed history is
+                // suppressed; without this every resume would duplicate
+                // the transcript.
+                if (!backend.supportsSessionResume()) {
+                    throw new Error('Berry ACP server does not advertise session/resume')
+                }
+                return await backend.suppressUpdatesDuring(() =>
+                    backend.resumeSession({
+                        sessionId: resumeSessionId,
+                        cwd: this.session.path,
+                        mcpServers: []
+                    })
+                )
+            } catch (error) {
+                logger.warn('[berry-acp] resume failed, starting a new session', error)
+                this.session.sendSessionEvent({
+                    type: 'message',
+                    message: 'Berry resume failed; starting a new session.'
+                })
+            }
+        }
+        return backend.newSession({
+            cwd: this.session.path,
+            // The Berry ACP server configures its own tools; HAPI
+            // does not bridge MCP servers for it in v1.
+            mcpServers: []
+        })
+    }
+
+    /**
+     * Whether a failed prompt should trigger a backend respawn: the failure
+     * must look like the subprocess/transport dying AND the transport must
+     * really be gone (an ordinary JSON-RPC error on a live transport — e.g.
+     * an unknown model — must not respawn). Never respawn while tearing down.
+     */
+    private shouldRespawnAfterPromptFailure(
+        backend: ReturnType<typeof createBerryBackend>,
+        message: string
+    ): boolean {
+        if (this.shouldExit) return false
+        if (!ACP_TRANSPORT_DEATH_RE.test(message)) return false
+        return !backend.isTransportAlive()
+    }
+
+    /**
+     * Rebuild the ACP backend after its subprocess died mid-session. The
+     * transport never comes back on its own — every later prompt on the dead
+     * backend fails — so prompt-level recovery means: dispose the dead
+     * backend, spawn a fresh one, re-establish the ACP session (resuming the
+     * persisted Berry session id when possible), and rebind the per-backend
+     * state (permission bridge, sandbox mode, model). Returns the new backend
+     * + session id, or null when the respawn itself failed — the caller then
+     * reports the original prompt error and the loop stays alive for the
+     * next turn.
+     */
+    private async respawnBackend(): Promise<{
+        backend: ReturnType<typeof createBerryBackend>
+        acpSessionId: string
+    } | null> {
+        this.session.sendSessionEvent({
+            type: 'message',
+            message: 'Berry agent process exited; restarting it.'
+        })
+        this.messageBuffer.addMessage('Berry agent exited — restarting', 'status')
+
+        // The permission bridge is bound to the dead backend's transport;
+        // cancel whatever is still pending through it before dropping it.
+        const deadBackend = this.backend
+        this.backend = null
+        try {
+            await this.permissionHandler?.cancelAll('Backend respawned')
+        } catch (error) {
+            logger.debug('[berry-acp] cancelAll during respawn failed', error)
+        }
+        this.permissionHandler = null
+        try {
+            await deadBackend?.disconnect()
+        } catch (error) {
+            logger.debug('[berry-acp] disconnect of dead backend failed', error)
+        }
+
+        try {
+            const backend = createBerryBackend()
+            this.backend = backend
+            backend.onStderrError((error) => {
+                logger.debug('[berry-acp] stderr error', error)
+                this.session.sendSessionEvent({ type: 'message', message: error.message })
+                this.messageBuffer.addMessage(error.message, 'status')
+            })
+            await backend.initialize()
+            const acpSessionId = await this.establishAcpSession(backend)
+            this.acpSessionId = acpSessionId
+            this.catalogBackend = backend
+            this.session.onSessionFound(acpSessionId)
+
+            // Model state: a resumed session usually restores the model it
+            // died with, but re-capture the server default and re-assert the
+            // live override so the picker cannot drift from the backend.
+            const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
+            this.initialBackendModel = modelOption?.currentValue
+                ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
+                ?? this.initialBackendModel
+            if (modelOption && this.currentBackendModel && this.currentBackendModel !== modelOption.currentValue) {
+                await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
+            }
+
+            this.permissionHandler = new AcpPermissionHandler(
+                this.session.client,
+                backend,
+                () => this.session.getPermissionMode() as PermissionMode | undefined
+            )
+            // Force the sandbox mode onto the fresh session — the new backend
+            // has never seen this session's mode.
+            this.lastAppliedAcpMode = null
+            await this.applyBerryAcpMode(
+                backend,
+                acpSessionId,
+                this.session.getPermissionMode() as PermissionMode | undefined
+            )
+            this.messageBuffer.addMessage('Berry agent restarted', 'status')
+            return { backend, acpSessionId }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[berry-acp] respawn failed', { message })
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Berry agent restart failed: ${message}`
+            })
+            this.messageBuffer.addMessage(`Berry agent restart failed: ${message}`, 'status')
+            return null
+        }
+    }
+
+    private reportPromptFailure(error: unknown): void {
+        const message = error instanceof Error ? error.message : String(error)
+        logger.warn('[berry-acp] prompt failed', { message })
+        this.session.sendSessionEvent({ type: 'message', message: `Berry prompt failed: ${message}` })
+        this.messageBuffer.addMessage(`Berry prompt failed: ${message}`, 'status')
     }
 
     private handleAgentMessage(message: AgentMessage): void {

@@ -7,6 +7,9 @@ const GLM_FLASH = 'newapi/glm-5.3-flash'
 
 const harness = vi.hoisted(() => ({
     backend: null as Record<string, ReturnType<typeof vi.fn>> | null,
+    // Every backend the factory created, in order — respawn tests assert on
+    // the individual instances (first = startup, second = respawned).
+    backends: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
     newSessionConfig: null as unknown,
     prompts: [] as unknown[][],
     resumeError: null as Error | null,
@@ -28,11 +31,20 @@ const harness = vi.hoisted(() => ({
     configOptionError: null as Error | null,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
-    newSessionBlocker: null as null | Promise<void>
+    newSessionBlocker: null as null | Promise<void>,
+    // Backend-death simulation: when set, the (n+1)-th prompt on a backend
+    // marks THAT backend's transport dead and throws the transport-death
+    // error. The counter is per-backend, so a respawned backend starts
+    // healthy — the death does not follow the respawn.
+    dieAfterPrompts: null as number | null,
+    // One-shot prompt failure that does NOT kill the transport (an ordinary
+    // in-band error, e.g. an unknown model).
+    promptError: null as Error | null
 }))
 
 vi.mock('./utils/berryBackend', () => ({
     createBerryBackend: vi.fn(() => {
+        const state = { prompts: 0, dead: false }
         const backend = {
             initialize: vi.fn(async () => {}),
             supportsSessionResume: vi.fn(() => harness.resumeSupported),
@@ -57,7 +69,18 @@ vi.mock('./utils/berryBackend', () => ({
                 if (harness.resumeError) throw harness.resumeError
                 return config.sessionId
             }),
+            isTransportAlive: vi.fn(() => !state.dead),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
+                state.prompts += 1
+                if (harness.promptError) {
+                    const error = harness.promptError
+                    harness.promptError = null
+                    throw error
+                }
+                if (harness.dieAfterPrompts !== null && state.prompts > harness.dieAfterPrompts) {
+                    state.dead = true
+                    throw new Error('ACP process exited (code=1, signal=null)')
+                }
                 harness.prompts.push(content)
                 onUpdate({ type: 'text', text: 'answer' })
             }),
@@ -81,6 +104,7 @@ vi.mock('./utils/berryBackend', () => ({
             }),
             disconnect: vi.fn(async () => {})
         }
+        harness.backends.push(backend)
         harness.backend = backend
         return backend
     })
@@ -104,7 +128,7 @@ function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId
     }
     queue.close()
 
-    return {
+    const session = {
         path: '/tmp/berry-test',
         logPath: '/tmp/berry-test/hapi.log',
         client: {
@@ -117,10 +141,15 @@ function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId
         sessionId,
         getPermissionMode: () => 'default' as const,
         onThinkingChange: vi.fn(),
-        onSessionFound: vi.fn(),
+        // Mirror AgentSessionBase: the ACP session id becomes the session's
+        // persisted id, so a respawn resumes it instead of starting over.
+        onSessionFound: vi.fn((id: string) => {
+            session.sessionId = id
+        }),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
+    return session
 }
 
 function createSession(mode?: BerryMode, sessionId: string | null = null) {
@@ -130,6 +159,7 @@ function createSession(mode?: BerryMode, sessionId: string | null = null) {
 describe('BerryRemoteLauncher', () => {
     afterEach(() => {
         harness.backend = null
+        harness.backends = []
         harness.newSessionConfig = null
         harness.prompts = []
         harness.resumeError = null
@@ -145,6 +175,8 @@ describe('BerryRemoteLauncher', () => {
         harness.setModeError = null
         harness.configOptionError = null
         harness.newSessionBlocker = null
+        harness.dieAfterPrompts = null
+        harness.promptError = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -495,6 +527,133 @@ describe('BerryRemoteLauncher', () => {
                 { modelId: GLM_FLASH, name: 'GLM-5.3 Flash' }
             ],
             currentModelId: GLM
+        })
+    })
+
+    it('respawns the backend and retries the prompt when the ACP process dies mid-session', async () => {
+        // First backend survives exactly one prompt; the second prompt finds
+        // the subprocess dead ("ACP process exited"). The launcher must
+        // respawn the backend, resume the persisted session, and deliver the
+        // message on the fresh backend instead of wedging the session.
+        // (Distinct modes keep the two messages in separate queue batches.)
+        harness.dieAfterPrompts = 1
+        const session = createSessionWithBatches([
+            ['first', { permissionMode: 'yolo' }],
+            ['second', {}]
+        ])
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends).toHaveLength(2)
+        // The dead backend is disposed exactly once.
+        expect(harness.backends[0].disconnect).toHaveBeenCalledTimes(1)
+        // The respawn resumed the persisted ACP session id on the fresh backend.
+        expect(harness.backends[1].initialize).toHaveBeenCalled()
+        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'berry-session-1',
+            cwd: '/tmp/berry-test',
+            mcpServers: []
+        })
+        expect(session.onSessionFound).toHaveBeenCalledTimes(2)
+        // The retried prompt delivered the second message successfully.
+        expect(harness.backends[1].prompt).toHaveBeenCalledWith(
+            'berry-session-1',
+            [{ type: 'text', text: 'second' }],
+            expect.any(Function)
+        )
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('restarting')
+        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+        // Cleanup tears down the respawned backend.
+        expect(harness.backends[1].disconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('starts a fresh session when the respawned backend cannot resume', async () => {
+        // No persisted id at startup (fresh session), so the resume error only
+        // bites when the respawn tries to resume the now-persisted id.
+        harness.dieAfterPrompts = 1
+        harness.resumeError = new Error('session store unavailable')
+        const session = createSessionWithBatches([
+            ['first', { permissionMode: 'yolo' }],
+            ['second', {}]
+        ])
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.backends[1].resumeSession).toHaveBeenCalled()
+        expect(harness.backends[1].newSession).toHaveBeenCalledWith({
+            cwd: '/tmp/berry-test',
+            mcpServers: []
+        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Berry resume failed; starting a new session.'
+        })
+        // The retried prompt still ran on the fresh session.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }], [{ type: 'text', text: 'second' }]])
+    })
+
+    it('rebinds the sandbox mode and model override onto the respawned backend', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.dieAfterPrompts = 1
+        const session = createSessionWithBatches([
+            ['first', { model: GLM_FLASH }],
+            ['second', {}]
+        ])
+        const launcher = new BerryRemoteLauncher(session as never, { model: GLM_FLASH })
+
+        await launcher.launch()
+
+        // The fresh backend gets the sandbox mode re-applied (its
+        // lastAppliedAcpMode cache starts empty) ...
+        expect(harness.backends[1].setMode).toHaveBeenCalledWith(
+            'berry-session-1',
+            'default',
+            { syncThoughtLevel: false }
+        )
+        // ... and the live model override re-asserted: spawn-time switch on
+        // the first backend, respawn re-assert on the second.
+        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([GLM_FLASH, GLM_FLASH])
+    })
+
+    it('does not respawn when the prompt failure is not a transport death', async () => {
+        // An in-band JSON-RPC error on a live transport (e.g. unknown model)
+        // must not spawn a replacement process.
+        harness.promptError = new Error('unknown model option')
+        const session = createSession()
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends).toHaveLength(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Berry prompt failed: unknown model option'
+        })
+    })
+
+    it('reports the failure without a second respawn when the retried prompt fails again', async () => {
+        // Every prompt attempt dies (dieAfterPrompts = 0): the respawn runs
+        // once, its retry fails, and the error is reported — no respawn cycle.
+        harness.dieAfterPrompts = 0
+        const session = createSessionWithBatches([['first', {}]])
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends).toHaveLength(2)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Berry prompt failed: ACP process exited (code=1, signal=null)'
         })
     })
 })
