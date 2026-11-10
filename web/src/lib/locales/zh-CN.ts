@@ -112,6 +112,7 @@ export default {
   'sessions.group.collapse': '收起 {n} 个',
   'sessions.runningSection': '进行中',
   'sessions.group.new': '在此目录新建会话',
+  'sessions.group.archiveAll': '全部归档',
   'sessions.machineFilter.label': '按机器筛选会话',
   'sessions.machineFilter.all': '全部',
   'codexSync.tooltip': '从 Codex 导入会话到 Hapi',
@@ -356,6 +357,8 @@ export default {
   'dialog.archive.cleaning': '正在确认清理…',
   'dialog.archive.cleanupDescription': '会话已断开，正在确认归档和后台清理。关闭此窗口不会取消归档。',
   'dialog.archive.error': '归档尚未确认完成',
+  'dialog.archiveAll.description': '归档 "{name}" 中的 {n} 个会话？',
+  'dialog.archiveAll.failed': '{n}/{total} 个会话未归档。',
 
   'dialog.reopen.errorTitle': '无法重新打开会话',
   'dialog.sessionFork.title': '分叉会话',

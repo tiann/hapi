@@ -20,6 +20,7 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
+import { ProjectGroupRow } from '@/components/ProjectGroupRow'
 import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon } from '@/components/icons'
 
 function PinnedSectionIcon(props: { className?: string }) {
@@ -1794,6 +1795,11 @@ export function SessionList(props: {
         ),
         [machineFilteredSessions, listView]
     )
+    // Unfiltered project membership for group-wide actions (archive all).
+    const projectSessionsByKey = useMemo(
+        () => new Map(groupSessionsByDirectory(props.sessions).map((group) => [group.key, group.sessions])),
+        [props.sessions]
+    )
     const actionOnlyGroups = useMemo(() => {
         if (effectivePinInProgressMode === 'off') {
             return []
@@ -1992,6 +1998,30 @@ export function SessionList(props: {
         )
     }
 
+    const getNewSessionInGroup = (group: SessionGroup) => (
+        onNewSessionInDirectory && group.directory !== 'Other'
+            ? () => onNewSessionInDirectory({ machineId: group.machineId, directory: group.directory })
+            : undefined
+    )
+
+    const renderNewSessionInGroupButton = (group: SessionGroup) => {
+        const onNew = getNewSessionInGroup(group)
+        return onNew ? (
+            <button
+                type="button"
+                onClick={(event) => {
+                    event.stopPropagation()
+                    onNew()
+                }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                title={t('sessions.group.new')}
+                aria-label={t('sessions.group.new')}
+            >
+                <PlusIcon className="h-3.5 w-3.5" />
+            </button>
+        ) : null
+    }
+
     const renderActionOnlyGroupHeader = (group: SessionGroup) => {
         // With multiple machines in the unfiltered view, disambiguate
         // same-named directories by suffixing the machine label.
@@ -2000,32 +2030,20 @@ export function SessionList(props: {
             : group.displayName
         return (
             <div key={group.key} data-session-scroll-anchor>
-                <div
+                <ProjectGroupRow
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] min-w-0 w-full select-none"
-                    title={group.directory}
+                    directory={group.directory}
+                    displayName={groupTitle}
+                    sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
+                    api={api}
+                    onNewSession={getNewSessionInGroup(group)}
                 >
                     <span className="font-medium text-sm truncate flex-1">
                         {groupTitle}
                     </span>
                     <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                    {onNewSessionInDirectory && group.directory !== 'Other' ? (
-                        <button
-                            type="button"
-                            onClick={(event) => {
-                                event.stopPropagation()
-                                onNewSessionInDirectory({
-                                    machineId: group.machineId,
-                                    directory: group.directory
-                                })
-                            }}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
-                            title={t('sessions.group.new')}
-                            aria-label={t('sessions.group.new')}
-                        >
-                            <PlusIcon className="h-3.5 w-3.5" />
-                        </button>
-                    ) : null}
-                </div>
+                    {renderNewSessionInGroupButton(group)}
+                </ProjectGroupRow>
             </div>
         )
     }
@@ -2067,7 +2085,6 @@ export function SessionList(props: {
         const collapseCount = visibleGroupSessions.length - previousGroupSessions.length
         const canShowFewerSessions = previousLimit < currentLimit && collapseCount > 0
         const expandCount = Math.min(sessionPreviewLimit, hiddenSessionCount)
-        const canStartInGroupDirectory = group.directory !== 'Other'
         // With multiple machines in the unfiltered view, disambiguate
         // same-named directories by suffixing the machine label.
         const groupTitle = showMachineFilterBar && activeMachineFilter === null
@@ -2075,37 +2092,25 @@ export function SessionList(props: {
             : group.displayName
         return (
             <div key={group.key} data-session-scroll-anchor>
-                <div
+                <ProjectGroupRow
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
+                    directory={group.directory}
+                    displayName={groupTitle}
+                    sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
+                    api={api}
                     onClick={() => toggleGroup(group.key, isCollapsed)}
-                    title={group.directory}
+                    onNewSession={getNewSessionInGroup(group)}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
                     <span className="font-medium text-sm truncate flex-1">
                         {groupTitle}
                     </span>
                     <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
-                    {onNewSessionInDirectory && canStartInGroupDirectory ? (
-                        <button
-                            type="button"
-                            onClick={(event) => {
-                                event.stopPropagation()
-                                onNewSessionInDirectory({
-                                    machineId: group.machineId,
-                                    directory: group.directory
-                                })
-                            }}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
-                            title={t('sessions.group.new')}
-                            aria-label={t('sessions.group.new')}
-                        >
-                            <PlusIcon className="h-3.5 w-3.5" />
-                        </button>
-                    ) : null}
+                    {renderNewSessionInGroupButton(group)}
                     <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">
                         ({group.sessions.length})
                     </span>
-                </div>
+                </ProjectGroupRow>
 
                 {collapsedUnreadSessions.length > 0 ? (
                     <div data-testid="session-group-unread-peek" className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
