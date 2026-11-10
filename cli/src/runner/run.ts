@@ -2128,7 +2128,7 @@ export function buildCliArgs(
   if (options.model) {
     args.push('--model', options.model);
   }
-  if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi' || agent === 'agy' || agent === 'kimi')) {
+  if (options.effort && (agent === 'claude' || agent === 'grok' || agent === 'pi' || agent === 'agy' || agent === 'kimi' || agent === 'copilot')) {
     args.push('--effort', options.effort);
   }
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {

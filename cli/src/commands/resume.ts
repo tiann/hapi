@@ -188,6 +188,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             permissionMode: base.permissionMode as CopilotPermissionMode | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
+            effort: target.effort ?? undefined,
             copilotAgentMode: target.copilotAgentMode
         })
         return
