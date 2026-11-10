@@ -347,6 +347,7 @@ async function resumeSession(
     sessionId: string,
     http: AxiosInstance
 ): Promise<void> {
+    // Transport errors (e.g. the 30s timeout) carry no phase; name it and say nothing was sent.
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/resume`,
         {},
@@ -355,7 +356,10 @@ async function resumeSession(
             timeout: 30_000,
             validateStatus: () => true
         }
-    )
+    ).catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new PingPeerError('resume_failed', `resume request failed (${detail}); no message sent, safe to retry`)
+    })
     if (response.data?.type === 'success') {
         return
     }
@@ -366,7 +370,7 @@ async function resumeSession(
             : typeof response.data?.code === 'string'
                 ? response.data.code
                 : `HTTP ${response.status}`
-    throw new PingPeerError('resume_failed', `resume failed: ${detail}`)
+    throw new PingPeerError('resume_failed', `resume failed: ${detail}; no message sent`)
 }
 
 async function waitUntilActive(
@@ -390,7 +394,7 @@ async function waitUntilActive(
     }
     throw new PingPeerError(
         'timeout',
-        `session did not become active within ${waitActiveSecs}s; runner may have failed to spawn`
+        `session did not become active within ${waitActiveSecs}s; runner may have failed to spawn; no message sent`
     )
 }
 
@@ -453,7 +457,7 @@ async function sendMessage(
             validateStatus: () => true
         }
     ).catch((error: unknown) => {
-        if (deliveryMode !== 'steer') throw error
+        // A transport error (timeout, reset) cannot rule out hub acceptance, in any mode.
         const detail = error instanceof Error ? error.message : String(error)
         throw unconfirmedSendError(localId, detail)
     })

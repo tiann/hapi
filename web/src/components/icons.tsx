@@ -180,6 +180,21 @@ export function ScheduleIcon(props: IconProps) {
     )
 }
 
+/**
+ * Power/standby mark — a stopped or archived session's presence badge. Drawn
+ * heavier than the other icons (stroke 3.6 of 24) because it renders at 10px.
+ */
+export function StoppedBadgeIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M7.2 6.2a8.6 8.6 0 1 0 9.6 0" />
+            <path d="M12 2v8.4" />
+        </>,
+        props,
+        3.6
+    )
+}
+
 /** Raised hand — a session waiting for permission approval. */
 export function HandIcon(props: IconProps) {
     return createIcon(

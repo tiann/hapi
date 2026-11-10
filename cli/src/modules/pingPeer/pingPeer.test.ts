@@ -518,6 +518,34 @@ describe('pingPeer', () => {
     })
 
     it.each([
+        ['resume', '/resume', 'resume_failed', /resume request failed.*timeout of 30000ms exceeded.*no message sent/],
+        ['send', '/messages', 'send_failed', /Send not confirmed.*timeout of 30000ms exceeded.*may have been accepted/]
+    ] as const)('names the %s phase when the request times out', async (_phase, suffix, code, pattern) => {
+        const sessionId = 'deadbeef-1111-1111-1111-111111111111'
+        const session = { id: sessionId, active: _phase === 'send', metadata: { name: 'Dead' } }
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
+                if (url.endsWith(`/api/sessions/${sessionId}${suffix}`)) throw new Error('timeout of 30000ms exceeded')
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => url.endsWith('/api/sessions')
+                ? { status: 200, data: { sessions: [session] } }
+                : { status: 200, data: { session } }
+        })
+
+        await expect(pingPeer({
+            sessionIdPrefix: 'deadbeef',
+            message: 'nudge',
+            deliveryMode: 'queue',
+            wake: true,
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })).rejects.toMatchObject({ code, message: expect.stringMatching(pattern) })
+    })
+
+    it.each([
         ['list snapshot inactive', false],
         ['stale active list snapshot', true]
     ] as const)('refuses an inactive target without wake (%s) and never resumes or sends', async (_label, listedActive) => {

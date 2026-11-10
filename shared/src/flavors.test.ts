@@ -58,9 +58,9 @@ describe('hasCapability', () => {
         expect(hasCapability('kimi', Capabilities.Effort)).toBe(true)
     })
 
-    test('copilot supports model-change but not effort', () => {
+    test('copilot supports model-change and effort', () => {
         expect(hasCapability('copilot', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('copilot', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('copilot', Capabilities.Effort)).toBe(true)
     })
 
     test('grok supports runtime model and effort switching through ACP', () => {

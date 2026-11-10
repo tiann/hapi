@@ -164,6 +164,19 @@ See `src/hooks/useSSE.ts`.
 - Session/message/machine update events.
 - Automatic cache invalidation on events.
 
+## Syntax highlighting
+
+Code fences load their Shiki grammar on demand and reuse one highlighter. Plain
+text and unknown languages fetch no grammars; aliases, line wrapping and the
+150 ms streaming debounce are retained. A Markdown source fence loads the full
+supported set to preserve its embedded-language colors. Failed loads or rendering
+fall back to the current plain text instead of retaining an older code block.
+
+The PWA caches optional grammar/theme chunks after use, outside its install-time
+precache. Previously used grammars remain available offline; an unseen language
+falls back to plain text while offline. Only successful JavaScript responses are
+cached, so SSO HTML/redirects cannot replace a grammar module.
+
 ## Stack
 
 React 19 + Vite + TanStack Router/Query + Tailwind + @assistant-ui/react + xterm.js + @elevenlabs/react + socket.io-client + workbox + shiki.
