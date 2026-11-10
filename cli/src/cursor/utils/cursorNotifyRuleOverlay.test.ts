@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { SESSION_SUMMARY_CONTRACT_LINE } from '@/modules/common/sessionSummaryInstruction';
 import {
     buildNotifyRuleContent,
@@ -204,6 +204,55 @@ describe('installCursorNotifyRuleOverlay', () => {
         overlay.cleanup();
         expect(readFileSync(primary, 'utf-8')).toBe(tracked);
         expect(existsSync(alternate)).toBe(false);
+    });
+
+    it('preserves a mid-session user replacement across another live install', () => {
+        const rulePath = rulePathOf(cwd);
+        const first = installCursorNotifyRuleOverlay({ cwd, project: 'alive' });
+        const userReplacement = '# operator replaced while A still live\n';
+        writeFileSync(rulePath, userReplacement, 'utf-8');
+
+        const second = installCursorNotifyRuleOverlay({ cwd, project: 'peer' });
+        expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"peer"');
+
+        first.cleanup();
+        expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"peer"');
+        second.cleanup();
+        expect(readFileSync(rulePath, 'utf-8')).toBe(userReplacement);
+    });
+
+    it('scopes restore snapshots to the selected rule path', () => {
+        const primary = rulePathOf(cwd);
+        const alternate = join(cwd, '.cursor', 'rules', RULE_FILENAME_ALTERNATE);
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        const altUser = '# pre-existing alternate user rule\n';
+        writeFileSync(alternate, altUser, 'utf-8');
+        writeFileSync(primary, '# primary will be tracked\n', 'utf-8');
+        execFileSync('git', ['init'], { cwd });
+        execFileSync('git', ['add', `.cursor/rules/${RULE_FILENAME_PRIMARY}`], { cwd });
+
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'scoped' });
+        expect(overlay.rulePath).toBe(alternate);
+        expect(readFileSync(alternate, 'utf-8')).toContain('"project":"scoped"');
+        overlay.cleanup();
+        expect(readFileSync(alternate, 'utf-8')).toBe(altUser);
+    });
+
+    it('reaps git exclude leases left by crashed sessions', () => {
+        execFileSync('git', ['init'], { cwd });
+        const excludePath = join(cwd, '.git', 'info', 'exclude');
+        mkdirSync(dirname(excludePath), { recursive: true });
+        const deadLease = `${HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX} 2147483646:dead-lease\n.cursor/rules/${RULE_FILENAME_PRIMARY}\n`;
+        writeFileSync(excludePath, `# keep-me\n${deadLease}`, 'utf-8');
+
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'reap' });
+        const mid = readFileSync(excludePath, 'utf-8');
+        expect(mid).toContain('# keep-me');
+        expect(mid).not.toContain('2147483646:dead-lease');
+        expect(mid).toContain(HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX);
+
+        overlay.cleanup();
+        expect(readFileSync(excludePath, 'utf-8')).toBe('# keep-me\n');
     });
 
     it('restores a post-crash user replacement instead of a stale snapshot', () => {

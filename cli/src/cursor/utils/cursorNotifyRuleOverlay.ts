@@ -161,13 +161,17 @@ export function installCursorNotifyRuleOverlay(
     const rulesDir = join(cursorDir, 'rules');
     const target = resolveRuleTarget(absCwd);
     const rulePath = target?.rulePath ?? join(rulesDir, RULE_FILENAME_PRIMARY);
-    const stateDir = getOverlayStateDir(absCwd);
+    const ruleRelPosix = target?.ruleRelPosix ?? `.cursor/rules/${RULE_FILENAME_PRIMARY}`;
+    // Ownership / lock / restore snapshot are scoped to the selected rule path
+    // so primary vs alternate installs never share a restore target.
+    const stateDir = getOverlayStateDir(absCwd, ruleRelPosix);
     const statePath = join(stateDir, 'state.json');
     // Lock lives beside stateDir so last-owner cleanup can clear state.json
     // while holding the lock without recursively deleting the lock's parent.
     const lockPath = `${stateDir}.lock`;
     const ownerId = randomUUID();
     const pid = process.pid;
+    const excludeLeaseId = `${pid}:${ownerId}`;
 
     // Dirs we create so cleanup can prune exactly what we added (deepest first).
     const createdDirs: string[] = [];
@@ -205,31 +209,32 @@ export function installCursorNotifyRuleOverlay(
 
         withOwnershipLock(lockPath, () => {
             let state = reapOwners(readOwnershipState(statePath, absCwd));
-            if (state.owners.length === 0 && !state.snapshotTaken) {
+            const current = existsSync(rulePath) ? safeRead(rulePath) : null;
+            const stillOurs = current !== null && current.includes(HAPI_SESSION_RULE_SENTINEL);
+
+            // Always refresh when the on-disk file is non-HAPI user content —
+            // including while another session is still live — so a mid-session
+            // operator replacement is what last-owner cleanup restores.
+            if (current !== null && !stillOurs) {
+                state = {
+                    cwd: absCwd,
+                    owners: state.owners,
+                    snapshotTaken: true,
+                    restore: current
+                };
+            } else if (state.owners.length === 0 && !state.snapshotTaken) {
                 // First install (or recovered empty state): capture pre-HAPI bytes,
                 // including an explicit "file was absent" snapshot.
                 state = {
                     cwd: absCwd,
                     owners: [],
                     snapshotTaken: true,
-                    restore: existsSync(rulePath) ? safeRead(rulePath) : null
+                    restore: current
                 };
             } else if (state.owners.length === 0) {
-                // Crash recovery: if the operator replaced our generated rule with
-                // untracked personal content, refresh the snapshot so cleanup
-                // restores that replacement instead of a stale pre-crash original.
-                const current = existsSync(rulePath) ? safeRead(rulePath) : null;
-                const stillOurs = current !== null && current.includes(HAPI_SESSION_RULE_SENTINEL);
-                if (!stillOurs) {
-                    state = {
-                        cwd: absCwd,
-                        owners: [],
-                        snapshotTaken: true,
-                        restore: current
-                    };
-                } else {
-                    state = { ...state, owners: [] };
-                }
+                // Crash recovery with our generated rule still present: keep the
+                // prior snapshot (including restore:null).
+                state = { ...state, owners: [] };
             }
 
             state.owners.push({ id: ownerId, pid });
@@ -237,7 +242,7 @@ export function installCursorNotifyRuleOverlay(
             registered = true;
         });
 
-        undoGitExclude = installGitExcludeLease(absCwd, rulePath, ownerId);
+        undoGitExclude = installGitExcludeLease(absCwd, rulePath, excludeLeaseId);
         writeFileSync(rulePath, buildNotifyRuleContent(opts), 'utf-8');
         installed = true;
         logger.debug(`[cursor-notify-rule] installed alwaysApply rule at ${rulePath}`);
@@ -378,11 +383,13 @@ function installGitExcludeLease(absCwd: string, rulePath: string, leaseId: strin
     }
 
     withExcludeLock(`${excludePath}.hapi-notify.lock`, () => {
+        pruneDeadExcludeLeasesUnlocked(excludePath);
         appendExcludeLeaseUnlocked(excludePath, pattern, leaseId);
     });
 
     return () => {
         withExcludeLock(`${excludePath}.hapi-notify.lock`, () => {
+            pruneDeadExcludeLeasesUnlocked(excludePath);
             removeExcludeLeaseUnlocked(excludePath, pattern, leaseId);
         });
     };
@@ -405,6 +412,15 @@ function resolveGitExcludePath(root: string): string | null {
 
 function hapiNotifyGitExcludeMarker(leaseId: string): string {
     return `${HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX} ${leaseId}`;
+}
+
+function parseExcludeLeasePid(leaseId: string): number | null {
+    const match = /^(\d+):/.exec(leaseId);
+    if (!match) {
+        return null;
+    }
+    const parsed = Number(match[1]);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function appendExcludeLeaseUnlocked(excludePath: string, pattern: string, leaseId: string): void {
@@ -443,6 +459,39 @@ function removeExcludeLeaseUnlocked(excludePath: string, pattern: string, leaseI
     writeFileSync(excludePath, body, { encoding: 'utf-8', mode: 0o644 });
 }
 
+/** Drop lease blocks whose owner PID is confirmed dead (crash recovery). */
+function pruneDeadExcludeLeasesUnlocked(excludePath: string): void {
+    if (!existsSync(excludePath)) {
+        return;
+    }
+    const lines = readFileSync(excludePath, 'utf-8').split(/\r?\n/);
+    const out: string[] = [];
+    let removed = false;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (line.startsWith(`${HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX} `)) {
+            const leaseId = line.slice(HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX.length + 1).trim();
+            const leasePid = parseExcludeLeasePid(leaseId);
+            if (leasePid !== null && !isProcessAlive(leasePid)) {
+                removed = true;
+                if (lines[i + 1] !== undefined) {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    if (!removed) {
+        return;
+    }
+    while (out.length > 0 && out[out.length - 1] === '') {
+        out.pop();
+    }
+    const body = out.length === 0 ? '' : `${out.join('\n')}\n`;
+    writeFileSync(excludePath, body, { encoding: 'utf-8', mode: 0o644 });
+}
+
 function withExcludeLock(lockPath: string, fn: () => void): void {
     withOwnershipLock(lockPath, fn);
 }
@@ -456,8 +505,8 @@ function getHapiHomeDir(): string {
     return join(homedir(), '.hapi');
 }
 
-function getOverlayStateDir(absCwd: string): string {
-    const hash = createHash('sha256').update(absCwd).digest('hex').slice(0, 24);
+function getOverlayStateDir(absCwd: string, ruleRelPosix: string): string {
+    const hash = createHash('sha256').update(`${absCwd}\0${ruleRelPosix}`).digest('hex').slice(0, 24);
     return join(getHapiHomeDir(), 'cursor-notify-overlays', hash);
 }
 
