@@ -3197,4 +3197,90 @@ describe('gap recovery', () => {
         )
         expect(state.newestSeq).toBe(310)
     })
+
+    it('skips the refresh sweep when no non-terminal rows sit outside the latest page', async () => {
+        const id = sessionId('gap-recovery-sweep-skip')
+        const cachedTail = Array.from({ length: 9 }, (_, i) => (
+            makeUserMessage({ id: `n${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const done = toolCallRow('call-row', 10, 1_000, 'completed')
+        const missed = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `n${11 + i}`, seq: 11 + i, invokedAt: (11 + i) * 10, createdAt: (11 + i) * 10 })
+        ))
+        const latestPage = missed.filter((message) => (message.seq ?? 0) >= 111)
+        const contextQueries: string[] = []
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse(missed, {
+                    epoch: 1,
+                    hasMore: false,
+                    nextAfterAt: 3_100,
+                    nextAfterSeq: 310,
+                    snapshotHeadAt: 3_100,
+                    snapshotHeadSeq: 310
+                })
+            }
+            return latestResponse([...cachedTail, done], { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+        }, async (_sessionId, messageId) => {
+            contextQueries.push(messageId)
+            return contextResponse([done], {
+                epoch: 1,
+                nextBeforeAt: 10,
+                nextBeforeSeq: 1,
+                snapshotHeadAt: 3_100,
+                snapshotHeadSeq: 310,
+                targetMessageId: 'call-row'
+            })
+        })
+
+        await syncTailMessages(api, id)
+        await recoverWindowAfterGapResume(api, id)
+
+        // The only out-of-page tool-call row is terminal (merge status only
+        // advances), so the sweep must issue zero extra requests.
+        const state = getMessageWindowState(id)
+        expect(contextQueries).toEqual([])
+        expect(state.messages).toHaveLength(310)
+        expect(mergedContentOf(state)).toEqual(done.content)
+    })
+
+    it('leaves the row as is and surfaces the usual warning when its context refresh fails', async () => {
+        const id = sessionId('gap-recovery-refresh-fail')
+        const cachedTail = Array.from({ length: 9 }, (_, i) => (
+            makeUserMessage({ id: `n${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const missed = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `n${11 + i}`, seq: 11 + i, invokedAt: (11 + i) * 10, createdAt: (11 + i) * 10 })
+        ))
+        const latestPage = missed.filter((message) => (message.seq ?? 0) >= 111)
+        let latestCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse(missed, {
+                    epoch: 1,
+                    hasMore: false,
+                    nextAfterAt: 3_100,
+                    nextAfterSeq: 310,
+                    snapshotHeadAt: 3_100,
+                    snapshotHeadSeq: 310
+                })
+            }
+            latestCalls += 1
+            if (latestCalls === 1) {
+                return latestResponse([...cachedTail, stale], { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+            }
+            return latestResponse(latestPage, { epoch: 1, hasMore: true, nextBeforeAt: 1_110, nextBeforeSeq: 111 })
+        }, async () => {
+            throw new Error('context fetch failed')
+        })
+
+        await syncTailMessages(api, id)
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(mergedContentOf(state)).toEqual(stale.content)
+        expect(state.warning).toBeTruthy()
+        expect(state.messages).toHaveLength(310)
+    })
 })
