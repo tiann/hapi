@@ -355,4 +355,19 @@ describe('resumeSession ghost-active shortcut', () => {
             engine.stop()
         }
     })
+
+    it('keeps the success shortcut for a terminal-started session with an empty socket room', async () => {
+        const { engine, session, spawnCalls } = prepare(withRooms('', false))
+        try {
+            // An empty room also happens during a transport reconnect while
+            // the terminal-started CLI process is still running.
+            session.metadata = { ...session.metadata!, startedBy: 'terminal', startedFromRunner: false }
+
+            const result = await engine.resumeSession(session.id, NAMESPACE)
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(spawnCalls()).toBe(0)
+        } finally {
+            engine.stop()
+        }
+    })
 })

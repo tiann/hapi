@@ -3729,6 +3729,15 @@ export class SyncEngine {
         if (initialSession.active && this.hasLiveSessionOwner(access.sessionId)) {
             return { type: 'success', sessionId: access.sessionId }
         }
+        // An empty room also happens during a transport reconnect while the
+        // CLI process still runs. Respawning is only safe when the row was
+        // runner-spawned: the runner deduplicates spawns per existing session
+        // while its child is alive. A terminal-started CLI has no such dedupe,
+        // so keep the legacy no-op success instead of competing with a live
+        // process.
+        if (initialSession.active && initialSession.metadata?.startedBy !== 'runner') {
+            return { type: 'success', sessionId: access.sessionId }
+        }
 
         // tiann/hapi#824 — invisible, automatic, per-session ACP migration on
         // first open. If this is a legacy stream-json Cursor session and we
