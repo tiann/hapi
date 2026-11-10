@@ -423,6 +423,8 @@ describe('claudeRemote async message handling', () => {
             await runPromise;
             await new Promise((resolve) => setTimeout(resolve, 0));
             expect(received.map((m) => m.type)).toEqual(['assistant', 'result']);
+            // A normal round result carries no compaction marker.
+            expect(received[1]).not.toHaveProperty('hapi_compact_turn');
             expect(unhandled).toEqual([]);
         } finally {
             queryMock.mockReset();
@@ -587,6 +589,24 @@ describe('claudeRemote /compact result reporting', () => {
 
         expect(completionEvents).toEqual(['📦 Compaction started']);
         expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 34492, tokensAfter: 2082 });
+    }, 15_000);
+
+    it('marks the compact turn result so the converter skips its tok/s fields', async () => {
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        const forwardedResult = lastForwarded.find((message) => message.type === 'result');
+        expect(forwardedResult).toBeTruthy();
+        // The compaction call is not an assistant round: no tok/s from it.
+        expect(forwardedResult).toHaveProperty('hapi_compact_turn', true);
     }, 15_000);
 
     it('ignores an autonomous result until the compact stream signal arrives', async () => {
