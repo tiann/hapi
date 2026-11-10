@@ -481,15 +481,19 @@ describe('installCursorNotifyRuleOverlay', () => {
         writeFileSync(statePath, JSON.stringify(state));
 
         // Poison exclude so the recovery install registers ownership then fails
-        // before writing (exclude lease write throws).
+        // before writing (exclude lease write throws). chmod after write — mode
+        // on writeFileSync is ignored when git init already created the file.
         execFileSync('git', ['init'], { cwd });
         const excludePath = join(cwd, '.git', 'info', 'exclude');
         mkdirSync(dirname(excludePath), { recursive: true });
-        writeFileSync(excludePath, '# blocked\n', { mode: 0o444 });
+        writeFileSync(excludePath, '# blocked\n', 'utf-8');
+        chmodSync(excludePath, 0o444);
+        const beforeFail = readFileSync(rulePath, 'utf-8');
 
         const failed = installCursorNotifyRuleOverlay({ cwd, project: 'fail' });
-        // Generated crash content still present; failed handle never rewrote it.
-        expect(readFileSync(rulePath, 'utf-8')).toContain(HAPI_SESSION_RULE_SENTINEL);
+        // Failed handle must not have rewritten the crash-era generated rule.
+        expect(readFileSync(rulePath, 'utf-8')).toBe(beforeFail);
+        expect(beforeFail).toContain('"project":"crash"');
         failed.cleanup();
 
         chmodSync(excludePath, 0o644);

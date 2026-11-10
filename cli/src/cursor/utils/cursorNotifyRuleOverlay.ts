@@ -663,8 +663,15 @@ function readOwnershipState(path: string, absCwd: string): OverlayOwnershipState
 }
 
 function writeOwnershipState(path: string, state: OverlayOwnershipState): void {
-    // Private mode: restore may contain a user's previously 0600 rule body.
-    writeFileSync(path, JSON.stringify(state), { encoding: 'utf-8', mode: 0o600 });
+    // Private + atomic: restore may be the only backup of a user's rule body.
+    // Truncating state.json in place would lose that backup on a partial write.
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+        writeFileSync(tmp, JSON.stringify(state), { encoding: 'utf-8', mode: 0o600 });
+        renameSync(tmp, path);
+    } finally {
+        rmSync(tmp, { force: true });
+    }
 }
 
 function reapOwners(state: OverlayOwnershipState): OverlayOwnershipState {
