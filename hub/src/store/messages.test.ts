@@ -2,7 +2,18 @@ import { describe, expect, it } from 'bun:test'
 import type { Database } from 'bun:sqlite'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { getReasoningStreamId, getToolCallId } from '@hapi/protocol/messages'
+import { MessageService } from '../sync/messageService'
+import type { EventPublisher } from '../sync/eventPublisher'
+import type { Server } from 'socket.io'
 import { Store } from './index'
+
+const noopIo = {
+    of: (_ns: string) => ({
+        to: (_room: string) => ({ emit: () => {}, timeout: (_ms: number) => ({ emit: () => {} }) }),
+        adapter: { rooms: { get: () => undefined } }
+    })
+} as unknown as Server
+const noopPublisher = { emit: () => {} } as unknown as EventPublisher
 
 function makeStore(): Store {
     return new Store(':memory:')
@@ -655,6 +666,53 @@ describe('content codec integration', () => {
         const invokedAt = Date.now()
         expect(store.messages.markMessagesInvoked(session.id, ['lid-uncertain'], invokedAt)).toBe(1)
         expect(store.messages.getMessages(session.id)[0]).toMatchObject({ invokedAt })
+    })
+
+    it('scopes immediate-queued selection to user prompts — agent session events are not queueable prompts', () => {
+        // The compaction ":started" status events carry a stable localId but have no
+        // ack path (sendSessionEvent never acks), so without this scope they sit in
+        // every "queued prompts" selection forever and the session-end sweep
+        // force-invokes them at reopen time — which moves their thread position to
+        // the bottom and makes an old event read as if it just arrived.
+        const store = makeStore()
+        const session = makeSession(store, 'sweep-scope-events')
+        const eventContent = {
+            role: 'agent',
+            content: { id: 'e1', type: 'event', data: { type: 'message', message: '📦 Compaction started' } }
+        }
+        const localId = 'opencode:ses:compaction:msg_1:started'
+        const started = store.messages.addMessage(session.id, eventContent, localId)
+        expect(started.invokedAt).toBeNull()
+
+        // A re-send under the same stable localId (reopen/replay) dedupes and must
+        // not touch the stored row — including invoked_at.
+        const resent = store.messages.addMessage(session.id, eventContent, localId)
+        expect(resent.localId).toBe(localId)
+        expect(resent.id).toBe(started.id)
+        expect(resent.invokedAt).toBeNull()
+
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id)).toHaveLength(0)
+        expect(store.messages.getUninvokedLocalMessages(session.id).map(m => m.localId))
+            .toEqual(['opencode:ses:compaction:msg_1:started'])
+    })
+
+    it('sweeps a large compressed queued user prompt at session end', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sweep-scope-compressed')
+        const text = 'long prompt '.repeat(40) // > COMPRESS_MIN_CHARS, stored as BLOB
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text } },
+            'lid-compressed'
+        )
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id).map(m => m.localId))
+            .toEqual(['lid-compressed'])
+
+        const service = new MessageService(store, noopIo, noopPublisher)
+        const sweepAt = Date.now()
+        const swept = service.sweepImmediateQueuedOnSessionEnd(session.id, sweepAt)
+        expect(swept?.localIds).toEqual(['lid-compressed'])
+        expect(store.messages.getLocalMessageStates(session.id, ['lid-compressed'])[0]?.invokedAt).toBe(sweepAt)
     })
 })
 
