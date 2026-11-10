@@ -30,6 +30,19 @@ describe('formatUnexpectedStopBlockedFooter', () => {
         expect(notify?.summary?.endsWith('…')).toBe(true);
     });
 
+    it('clamps a non-BMP character at the cutoff without splitting its surrogate pair', () => {
+        // U+1F600 (😀) is a UTF-16 surrogate pair. Its high surrogate lands at
+        // UTF-16 unit 158 (after 158 ASCII chars), so a naive
+        // `trimmed.slice(0, 159)` keeps the high surrogate but drops the low
+        // one, leaving a lone surrogate at the cut.
+        const summary = `${'x'.repeat(158)}\u{1F600}xx`;
+        const notify = extractNotifySummary(formatUnexpectedStopBlockedFooter({ summary }));
+        expect(notify?.summary).toBe(`${'x'.repeat(158)}\u{1F600}…`);
+        // Any surrogate code unit must be paired, not lone (dangling half of
+        // the emoji at the truncation cut).
+        expect(notify?.summary).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    });
+
     it('allows a custom action when the caller has a sharper next step', () => {
         const notify = extractNotifySummary(formatUnexpectedStopBlockedFooter({
             summary: 'Cursor Agent failed after 3 retries.',

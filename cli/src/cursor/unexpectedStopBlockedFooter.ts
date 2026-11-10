@@ -18,8 +18,11 @@ const SUMMARY_MAX_CHARS = 160;
 function clampNote(value: string): string {
     const trimmed = value.trim();
     if (trimmed.length === 0) return 'Unexpected stop; turn did not finish.';
-    if (trimmed.length <= SUMMARY_MAX_CHARS) return trimmed;
-    return `${trimmed.slice(0, SUMMARY_MAX_CHARS - 1)}…`;
+    // Iterate by code point (not UTF-16 code unit) so a non-BMP character at
+    // the cutoff is never split into a lone surrogate.
+    const characters = Array.from(trimmed);
+    if (characters.length <= SUMMARY_MAX_CHARS) return trimmed;
+    return `${characters.slice(0, SUMMARY_MAX_CHARS - 1).join('')}…`;
 }
 
 export function formatUnexpectedStopBlockedFooter(input: {

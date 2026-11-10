@@ -1239,6 +1239,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             if (failure) this.recordModelError(failure);
                             break;
                         }
+                        if (postToolAutoContinueUsed) {
+                            // One-shot contract (#1724): a retryable failure on the
+                            // Continue attempt itself does not get the normal retry
+                            // budget — give up rather than resending Continue N times.
+                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            break;
+                        }
                         if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
                             this.surfaceRetry(retryAttempt + 1);
                             continue;
