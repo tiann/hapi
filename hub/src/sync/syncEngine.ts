@@ -15,7 +15,7 @@ import {
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
-import type { ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
+import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -922,6 +922,47 @@ export class SyncEngine {
             })
         }
         clearAgentTerminalBuffer(payload.sid)
+    }
+
+    /**
+     * A runner reported that one of its child processes exited without the
+     * CLI's normal session-end handshake (crash, SIGKILL, OOM). Accept the
+     * notice only while the reported OS generation still owns the session, so
+     * a late notice about a replaced process cannot flip a session that was
+     * already resumed elsewhere. Accepted notices reuse the existing crash
+     * path: active/thinking clear immediately, the row stays unarchived and
+     * resumable, and no second lifecycle event fires for an already-ended row.
+     */
+    handleSessionChildExited(payload: {
+        machineId: string
+        namespace: string
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time: number
+    }): boolean {
+        const session = this.sessionCache.getSessionByNamespace(payload.sid, payload.namespace)
+        if (!session) return false
+        if (session.metadata?.machineId !== payload.machineId) return false
+        if (session.metadata?.hostPid !== payload.pid) return false
+        // A marker on either side binds the notice to one process generation:
+        // only an exact match proves the dying process is the registered owner.
+        // When BOTH sides lack a marker (the CLI's start-marker probe can fail),
+        // a pid-only match must still reject a notice older than the current
+        // owner's registration — a reused pid's late notice would otherwise
+        // deactivate the new owner. lifecycleStateSince is written by the CLI
+        // together with hostPid on every (re)spawn of the row.
+        const ownerStartMarker = session.metadata?.hostStartMarker
+        if (ownerStartMarker !== undefined || payload.processStartMarker !== undefined) {
+            if (ownerStartMarker !== payload.processStartMarker) return false
+        } else {
+            const ownerRegisteredAt = session.metadata?.lifecycleStateSince
+            if (ownerRegisteredAt === undefined || payload.time < ownerRegisteredAt) return false
+        }
+        if (!session.active && !session.thinking) return false
+
+        this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })
+        return true
     }
 
     handleBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
@@ -4410,6 +4451,11 @@ export class SyncEngine {
                         code: 'resume_unavailable'
                     }
                 }
+                // Thread dir without store.db: nothing was ever persisted, so
+                // there is nothing to resume; start a fresh Cursor thread.
+                if (chatStatus.store === 'empty') {
+                    resumeToken = undefined
+                }
             } catch (error) {
                 // Soft-fail on probe skew / missing handler (#1084): definitive
                 // onDisk:false still blocks above; probe errors must not be
@@ -5688,6 +5734,10 @@ export class SyncEngine {
 
     async listCopilotModelsForCwd(machineId: string, cwd: string): Promise<RpcListCopilotModelsResponse> {
         return await this.rpcGateway.listCopilotModelsForCwd(machineId, cwd)
+    }
+
+    async listCopilotReasoningEffortOptionsForSession(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.rpcGateway.listCopilotReasoningEffortOptionsForSession(sessionId)
     }
 
     async listCopilotModelsForSession(sessionId: string): Promise<RpcListCopilotModelsResponse> {
