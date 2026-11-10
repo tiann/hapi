@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { SESSION_SUMMARY_CONTRACT_LINE } from '@/modules/common/sessionSummaryInstruction';
 import {
     buildNotifyRuleContent,
+    classifyContendedNotifyOverlayLock,
     HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX,
     HAPI_SESSION_RULE_SENTINEL,
     installCursorNotifyRuleOverlay,
@@ -623,4 +624,25 @@ describe('withNotifyOverlayLock', () => {
         expect(readNotifyOverlayLockOwner(lockPath)?.token).toBe('successor-token');
         unlinkSync(lockPath);
     });
+
+    it('classifies a lock that disappeared after EEXIST as retry, not stale', () => {
+        const lockPath = join(lockDir, 'gone-after-eexist.lock');
+        expect(existsSync(lockPath)).toBe(false);
+        expect(classifyContendedNotifyOverlayLock(lockPath)).toBe('retry');
+    });
+
+    it('classifies live vs abandoned contended locks', () => {
+        const livePath = join(lockDir, 'live.lock');
+        writeFileSync(livePath, JSON.stringify({ pid: process.pid, token: 'live' }), 'utf-8');
+        expect(classifyContendedNotifyOverlayLock(livePath)).toBe('wait');
+
+        const deadPath = join(lockDir, 'dead-held.lock');
+        writeFileSync(deadPath, JSON.stringify({ pid: 2_147_483_646, token: 'dead' }), 'utf-8');
+        expect(classifyContendedNotifyOverlayLock(deadPath)).toBe('stale');
+
+        const emptyPath = join(lockDir, 'empty-held.lock');
+        writeFileSync(emptyPath, '', 'utf-8');
+        expect(classifyContendedNotifyOverlayLock(emptyPath)).toBe('stale');
+    });
+
 });

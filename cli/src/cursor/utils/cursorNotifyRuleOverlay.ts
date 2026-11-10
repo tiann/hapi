@@ -612,6 +612,24 @@ function staleNotifyOverlayLockError(lockPath: string): Error {
 }
 
 /**
+ * After link(2) EEXIST: decide whether to wait on a live holder, retry because
+ * the lock disappeared, or fail closed on an abandoned / corrupt lock file.
+ * Exported for regression coverage of the release-between-EEXIST-and-read race.
+ */
+export function classifyContendedNotifyOverlayLock(
+    lockPath: string
+): 'wait' | 'retry' | 'stale' {
+    if (!existsSync(lockPath)) {
+        return 'retry';
+    }
+    const existing = readNotifyOverlayLockOwner(lockPath);
+    if (existing && isLockHolderAlive(existing.pid)) {
+        return 'wait';
+    }
+    return 'stale';
+}
+
+/**
  * Exclusive cross-process lock for ownership state and `.git/info/exclude` leases.
  * Owner JSON is published atomically via link(2) from a fully-written staging file.
  * Stale/dead locks fail closed — pathname check-then-unlink can steal a successor's
@@ -773,8 +791,10 @@ function withOwnershipLock(lockPath: string, fn: () => void): void {
                     throw err;
                 }
                 attempts++;
-                const existing = readNotifyOverlayLockOwner(lockPath);
-                if (existing && isLockHolderAlive(existing.pid)) {
+                // Holder may release between our EEXIST and the owner read —
+                // treat a missing lock as free and retry, not as abandoned.
+                const verdict = classifyContendedNotifyOverlayLock(lockPath);
+                if (verdict === 'retry' || verdict === 'wait') {
                     sleepSync(OWNERSHIP_LOCK_RETRY_INTERVAL_MS);
                 } else {
                     // Empty (pre-token), corrupt, or dead-PID lock — fail closed with
