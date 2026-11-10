@@ -93,7 +93,14 @@ type OverlayOwnershipState = {
     snapshotTaken: boolean;
     /** Pre-HAPI rule bytes when `snapshotTaken`; null means no file existed. */
     restore: string | null;
+    /** Pre-HAPI file mode bits (permission only) when restore content was captured. */
+    restoreMode: number | null;
 };
+
+type RuleFileRead =
+    | { status: 'absent' }
+    | { status: 'ok'; content: string; mode: number }
+    | { status: 'error'; error: unknown };
 
 type RuleTarget = {
     ruleFilename: string;
@@ -220,18 +227,26 @@ export function installCursorNotifyRuleOverlay(
 
         withOwnershipLock(lockPath, () => {
             let state = reapOwners(readOwnershipState(statePath, absCwd));
-            const current = existsSync(rulePath) ? safeRead(rulePath) : null;
-            const stillOurs = current !== null && current.includes(HAPI_SESSION_RULE_SENTINEL);
+            const current = readRuleFile(rulePath);
+            if (current.status === 'error') {
+                // Cannot back up an existing rule — refuse to clobber it.
+                throw new Error(
+                    `Refusing Cursor notify-rule install: cannot read existing rule at ${rulePath}`
+                );
+            }
+            const stillOurs = current.status === 'ok'
+                && current.content.includes(HAPI_SESSION_RULE_SENTINEL);
 
             // Always refresh when the on-disk file is non-HAPI user content —
             // including while another session is still live — so a mid-session
             // operator replacement is what last-owner cleanup restores.
-            if (current !== null && !stillOurs) {
+            if (current.status === 'ok' && !stillOurs) {
                 state = {
                     cwd: absCwd,
                     owners: state.owners,
                     snapshotTaken: true,
-                    restore: current
+                    restore: current.content,
+                    restoreMode: current.mode
                 };
             } else if (state.owners.length === 0 && !state.snapshotTaken) {
                 // First install (or recovered empty state): capture pre-HAPI bytes,
@@ -240,7 +255,8 @@ export function installCursorNotifyRuleOverlay(
                     cwd: absCwd,
                     owners: [],
                     snapshotTaken: true,
-                    restore: current
+                    restore: current.status === 'ok' ? current.content : null,
+                    restoreMode: current.status === 'ok' ? current.mode : null
                 };
             } else if (state.owners.length === 0) {
                 // Crash recovery with our generated rule still present: keep the
@@ -292,11 +308,28 @@ export function installCursorNotifyRuleOverlay(
                 // and it is still HAPI-owned (sentinel present). Mid-session user
                 // replacements without the sentinel are left alone.
                 if (installed) {
-                    const current = existsSync(rulePath) ? safeRead(rulePath) : null;
-                    const stillOurs = current === null || current.includes(HAPI_SESSION_RULE_SENTINEL);
+                    const current = readRuleFile(rulePath);
+                    if (current.status === 'error') {
+                        // Cannot verify ownership — leave the file alone.
+                        clearStateFile = true;
+                        try {
+                            if (existsSync(statePath)) {
+                                unlinkSync(statePath);
+                            }
+                        } catch {
+                            // ignore
+                        }
+                        return;
+                    }
+                    const stillOurs = current.status === 'absent'
+                        || current.content.includes(HAPI_SESSION_RULE_SENTINEL);
                     if (stillOurs) {
                         if (state.snapshotTaken && state.restore !== null) {
-                            writeRuleFileNoFollow(rulePath, state.restore);
+                            writeRuleFileNoFollow(
+                                rulePath,
+                                state.restore,
+                                state.restoreMode ?? undefined
+                            );
                         } else if (state.snapshotTaken && state.restore === null) {
                             if (lstatSync(rulePath, { throwIfNoEntry: false })) {
                                 unlinkSync(rulePath);
@@ -542,15 +575,34 @@ function assertNotSymlinkPath(path: string, label: string): void {
  * Write without following an existing symlink: refuse links, then replace via
  * temp+rename (rename replaces a symlink inode rather than writing through it).
  */
-function writeRuleFileNoFollow(path: string, contents: string): void {
+function writeRuleFileNoFollow(path: string, contents: string, mode: number = 0o644): void {
     assertNotSymlinkPath(path, 'Cursor session rule');
     const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
-        writeFileSync(tmp, contents, { encoding: 'utf-8', mode: 0o644 });
+        writeFileSync(tmp, contents, { encoding: 'utf-8', mode: mode & 0o777 });
         renameSync(tmp, path);
         assertNotSymlinkPath(path, 'Cursor session rule');
     } finally {
         rmSync(tmp, { force: true });
+    }
+}
+
+function readRuleFile(path: string): RuleFileRead {
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    if (!entry) {
+        return { status: 'absent' };
+    }
+    if (entry.isSymbolicLink()) {
+        return { status: 'error', error: new Error(`symlinked rule: ${path}`) };
+    }
+    try {
+        return {
+            status: 'ok',
+            content: readFileSync(path, 'utf-8'),
+            mode: entry.mode & 0o777
+        };
+    } catch (error) {
+        return { status: 'error', error };
     }
 }
 
@@ -569,7 +621,7 @@ function getOverlayStateDir(absCwd: string, ruleRelPosix: string): string {
 }
 
 function emptyOwnershipState(absCwd: string): OverlayOwnershipState {
-    return { cwd: absCwd, owners: [], snapshotTaken: false, restore: null };
+    return { cwd: absCwd, owners: [], snapshotTaken: false, restore: null, restoreMode: null };
 }
 
 function readOwnershipState(path: string, absCwd: string): OverlayOwnershipState {
@@ -600,7 +652,10 @@ function readOwnershipState(path: string, absCwd: string): OverlayOwnershipState
             cwd: absCwd,
             owners,
             snapshotTaken,
-            restore: typeof parsed.restore === 'string' ? parsed.restore : null
+            restore: typeof parsed.restore === 'string' ? parsed.restore : null,
+            restoreMode: typeof parsed.restoreMode === 'number' && Number.isFinite(parsed.restoreMode)
+                ? parsed.restoreMode & 0o777
+                : null
         };
     } catch {
         return emptyOwnershipState(absCwd);
@@ -621,26 +676,29 @@ function reapOwners(state: OverlayOwnershipState): OverlayOwnershipState {
 function withOwnershipLock(lockPath: string, fn: () => void): void {
     const started = Date.now();
     while (true) {
+        let fd: number | null = null;
         try {
             mkdirSync(dirname(lockPath), { recursive: true });
-            const fd = openSync(lockPath, 'wx');
-            try {
-                fn();
-            } finally {
-                closeSync(fd);
-                try {
-                    unlinkSync(lockPath);
-                } catch {
-                    // ignore
-                }
-            }
-            return;
+            fd = openSync(lockPath, 'wx');
         } catch (error) {
+            // Only retry lock acquisition races — never retry callback failures.
             if (Date.now() - started >= OWNERSHIP_LOCK_TIMEOUT_MS) {
                 throw error;
             }
             sleepSync(20);
+            continue;
         }
+        try {
+            fn();
+        } finally {
+            closeSync(fd);
+            try {
+                unlinkSync(lockPath);
+            } catch {
+                // ignore
+            }
+        }
+        return;
     }
 }
 

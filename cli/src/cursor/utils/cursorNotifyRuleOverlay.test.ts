@@ -1,10 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    statSync,
+    symlinkSync,
+    writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { SESSION_SUMMARY_CONTRACT_LINE } from '@/modules/common/sessionSummaryInstruction';
-import { symlinkSync } from 'node:fs';
 import {
     buildNotifyRuleContent,
     HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX,
@@ -413,5 +423,34 @@ describe('installCursorNotifyRuleOverlay', () => {
         overlay.cleanup();
         expect(() => overlay.cleanup()).not.toThrow();
         expect(existsSync(overlay.rulePath)).toBe(false);
+    });
+
+    it('skips install when an existing rule is unreadable', () => {
+        if (process.platform === 'win32') return;
+        const rulePath = rulePathOf(cwd);
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        const prior = '# secret user rule\n';
+        writeFileSync(rulePath, prior, { mode: 0o600 });
+        chmodSync(rulePath, 0o000);
+
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'denied' });
+        chmodSync(rulePath, 0o600);
+        expect(readFileSync(rulePath, 'utf-8')).toBe(prior);
+        overlay.cleanup();
+        expect(readFileSync(rulePath, 'utf-8')).toBe(prior);
+    });
+
+    it('preserves the original rule file mode across install and cleanup', () => {
+        if (process.platform === 'win32') return;
+        const rulePath = rulePathOf(cwd);
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        writeFileSync(rulePath, '# private\n', { mode: 0o600 });
+        expect(statSync(rulePath).mode & 0o777).toBe(0o600);
+
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'mode' });
+        expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"mode"');
+        overlay.cleanup();
+        expect(readFileSync(rulePath, 'utf-8')).toBe('# private\n');
+        expect(statSync(rulePath).mode & 0o777).toBe(0o600);
     });
 });
