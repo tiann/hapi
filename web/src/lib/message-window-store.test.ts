@@ -78,8 +78,8 @@ function makeAgentMessage(props: {
         content: {
             role: 'agent',
             content: {
-                type: 'codex',
-                data: { type: 'message', message: props.id }
+                type: 'text',
+                text: props.id
             }
         },
         createdAt: props.at,
@@ -3069,5 +3069,56 @@ describe('gap recovery', () => {
         ])
         expect(retried.newestSeq).toBe(15)
         expect(retried.warning).toBeNull()
+    })
+
+    it('keeps the loaded history window across a no-news recovery', async () => {
+        const id = sessionId('gap-recovery-budget-2')
+        const newestRows = Array.from({ length: 400 }, (_, i) => (
+            makeUserMessage({ id: `r${301 + i}`, seq: 301 + i, invokedAt: (301 + i) * 10, createdAt: (301 + i) * 10 })
+        ))
+        const olderRows = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `r${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const newestPage = newestRows.slice(-200)
+        let latestCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse([], {
+                    epoch: 1,
+                    nextAfterAt: 6_000,
+                    nextAfterSeq: 600,
+                    snapshotHeadAt: 6_000,
+                    snapshotHeadSeq: 600
+                })
+            }
+            if (query.beforeAt !== undefined) {
+                return beforeResponse(olderRows, { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+            }
+            latestCalls += 1
+            // Initial sync: newest 400. Recovery's latest page: newest 200.
+            return latestResponse(latestCalls === 1 ? newestRows : newestPage, {
+                epoch: 1,
+                hasMore: true,
+                nextBeforeAt: latestCalls === 1 ? 3_010 : 4_010,
+                nextBeforeSeq: latestCalls === 1 ? 301 : 401
+            })
+        })
+
+        await syncTailMessages(api, id)
+        await fetchOlderMessages(api, id)
+        const loaded = getMessageWindowState(id)
+        expect(loaded.messages).toHaveLength(700)
+        expect(loaded.oldestSeq).toBe(1)
+
+        // A same-epoch reconnect with no new messages must not shrink the
+        // loaded history below what the reader already had: the upsert's trim
+        // uses the window's own history budget, not the 400-row tail budget.
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(state.messages).toHaveLength(700)
+        expect(state.messages.some((message) => message.id === 'r1')).toBe(true)
+        expect(state.oldestSeq).toBe(1)
+        expect(state.hasMore).toBe(true)
     })
 })
