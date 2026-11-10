@@ -456,6 +456,46 @@ describe('installCursorNotifyRuleOverlay', () => {
         expect(statSync(rulePath).mode & 0o777).toBe(0o600);
     });
 
+    it('restores a crash-recovery snapshot when a later install fails before write', () => {
+        if (process.platform === 'win32') return;
+        const rulePath = rulePathOf(cwd);
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        const prior = '# user rule before crash\n';
+        writeFileSync(rulePath, prior, 'utf-8');
+
+        // First session installs, then "crashes" without cleanup.
+        installCursorNotifyRuleOverlay({ cwd, project: 'crash' });
+        expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"crash"');
+
+        const overlayRoot = join(hapiHome, 'cursor-notify-overlays');
+        const stateDirName = readdirSync(overlayRoot)[0];
+        expect(stateDirName).toBeTruthy();
+        const statePath = join(overlayRoot, stateDirName!, 'state.json');
+        const state = JSON.parse(readFileSync(statePath, 'utf-8')) as {
+            owners: Array<{ id: string; pid: number }>
+            snapshotTaken: boolean
+            restore: string | null
+        };
+        expect(state.restore).toBe(prior);
+        state.owners = [{ id: 'dead', pid: 2_147_483_646 }];
+        writeFileSync(statePath, JSON.stringify(state));
+
+        // Poison exclude so the recovery install registers ownership then fails
+        // before writing (exclude lease write throws).
+        execFileSync('git', ['init'], { cwd });
+        const excludePath = join(cwd, '.git', 'info', 'exclude');
+        mkdirSync(dirname(excludePath), { recursive: true });
+        writeFileSync(excludePath, '# blocked\n', { mode: 0o444 });
+
+        const failed = installCursorNotifyRuleOverlay({ cwd, project: 'fail' });
+        // Generated crash content still present; failed handle never rewrote it.
+        expect(readFileSync(rulePath, 'utf-8')).toContain(HAPI_SESSION_RULE_SENTINEL);
+        failed.cleanup();
+
+        chmodSync(excludePath, 0o644);
+        expect(readFileSync(rulePath, 'utf-8')).toBe(prior);
+    });
+
     it('retains the restore snapshot when cleanup cannot read the generated rule', () => {
         if (process.platform === 'win32') return;
         const rulePath = rulePathOf(cwd);

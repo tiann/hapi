@@ -304,36 +304,36 @@ export function installCursorNotifyRuleOverlay(
                     return;
                 }
 
-                // Last live owner. Only mutate the workspace rule if we wrote it
-                // and it is still HAPI-owned (sentinel present). Mid-session user
-                // replacements without the sentinel are left alone.
-                if (installed) {
-                    const current = readRuleFile(rulePath);
-                    if (current.status === 'error') {
-                        // Cannot verify ownership — leave the rule alone, but keep
-                        // the restore snapshot so a later session can recover it.
-                        writeOwnershipState(statePath, {
-                            cwd: absCwd,
-                            owners: [],
-                            snapshotTaken: state.snapshotTaken,
-                            restore: state.restore,
-                            restoreMode: state.restoreMode
-                        });
-                        return;
-                    }
-                    const stillOurs = current.status === 'absent'
-                        || current.content.includes(HAPI_SESSION_RULE_SENTINEL);
-                    if (stillOurs) {
-                        if (state.snapshotTaken && state.restore !== null) {
-                            writeRuleFileNoFollow(
-                                rulePath,
-                                state.restore,
-                                state.restoreMode ?? undefined
-                            );
-                        } else if (state.snapshotTaken && state.restore === null) {
-                            if (lstatSync(rulePath, { throwIfNoEntry: false })) {
-                                unlinkSync(rulePath);
-                            }
+                // Last live owner. Restore from the shared snapshot whenever the
+                // on-disk rule is still HAPI-owned (or absent) — including when
+                // *this* handle never finished install (crash-recovery peer that
+                // registered then failed). Mid-session user replacements without
+                // the sentinel are left alone.
+                const current = readRuleFile(rulePath);
+                if (current.status === 'error') {
+                    // Cannot verify ownership — leave the rule alone, but keep
+                    // the restore snapshot so a later session can recover it.
+                    writeOwnershipState(statePath, {
+                        cwd: absCwd,
+                        owners: [],
+                        snapshotTaken: state.snapshotTaken,
+                        restore: state.restore,
+                        restoreMode: state.restoreMode
+                    });
+                    return;
+                }
+                const stillOurs = current.status === 'absent'
+                    || current.content.includes(HAPI_SESSION_RULE_SENTINEL);
+                if (stillOurs) {
+                    if (state.snapshotTaken && state.restore !== null) {
+                        writeRuleFileNoFollow(
+                            rulePath,
+                            state.restore,
+                            state.restoreMode ?? undefined
+                        );
+                    } else if (state.snapshotTaken && state.restore === null) {
+                        if (lstatSync(rulePath, { throwIfNoEntry: false })) {
+                            unlinkSync(rulePath);
                         }
                     }
                 }
