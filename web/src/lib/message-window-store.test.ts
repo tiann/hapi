@@ -3015,4 +3015,59 @@ describe('gap recovery', () => {
             .toEqual(toolCallRow('tool-1', 10, 1_000, 'completed').content)
         expect(state.epoch).toBe(2)
     })
+
+    it('does not advance to the latest page when the catch-up fails, and retries on the next recovery', async () => {
+        const id = sessionId('gap-recovery-catchup-fail')
+        const cached = makeUserMessage({ id: 'row-10', seq: 10, invokedAt: 1_000, createdAt: 1_000 })
+        const caughtUp = [11, 12, 13, 14, 15].map((seq) => (
+            makeUserMessage({ id: `row-${seq}`, seq, invokedAt: seq * 100, createdAt: seq * 100 })
+        ))
+        let latestPayload: DecryptedMessage[] = [cached]
+        let catchUpCalls = 0
+        let latestCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                catchUpCalls += 1
+                if (catchUpCalls === 1) {
+                    throw new Error('catch-up request failed')
+                }
+                return afterResponse(caughtUp, {
+                    epoch: 1,
+                    nextAfterAt: 1_500,
+                    nextAfterSeq: 15,
+                    snapshotHeadAt: 1_500,
+                    snapshotHeadSeq: 15
+                })
+            }
+            latestCalls += 1
+            return latestResponse(latestPayload, { epoch: 1 })
+        })
+
+        await syncTailMessages(api, id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['row-10'])
+        expect(latestCalls).toBe(1)
+
+        // The catch-up request fails; the latest page would succeed. Advancing
+        // to it anyway would strand rows 11-15 below the advanced newest
+        // cursor, so recovery must stop at the failed catch-up.
+        latestPayload = caughtUp
+        await recoverWindowAfterGapResume(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(state.messages.map((message) => message.id)).toEqual(['row-10'])
+        expect(state.newestSeq).toBe(10)
+        expect(latestCalls).toBe(1)
+        expect(state.warning).toBeTruthy()
+
+        // The next recovery retries the catch-up with the original cursor and
+        // only then reconciles the latest page.
+        await recoverWindowAfterGapResume(api, id)
+
+        const retried = getMessageWindowState(id)
+        expect(retried.messages.map((message) => message.id)).toEqual([
+            'row-10', 'row-11', 'row-12', 'row-13', 'row-14', 'row-15'
+        ])
+        expect(retried.newestSeq).toBe(15)
+        expect(retried.warning).toBeNull()
+    })
 })

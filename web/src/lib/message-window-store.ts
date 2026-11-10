@@ -725,6 +725,7 @@ function applyLatestResponse(
     options: {
         replaceServerRows: boolean
         requestBaseline: Map<string, DecryptedMessage>
+        trimLimit?: number
     }
 ): InternalState {
     const dismissedIds = new Set(
@@ -753,7 +754,7 @@ function applyLatestResponse(
         : previous.messages
     const authoritative = mergeMessages(preserved, retainedResponseMessages)
     const incoming = mergeMessages(authoritative, concurrentServerRows)
-    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(incoming, VISIBLE_WINDOW_SIZE, 'append')
+    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(incoming, options.trimLimit ?? VISIBLE_WINDOW_SIZE, 'append')
     const snapshotHead = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
         ?? derivePosition(response.messages, 'newest')
     const newestKept = derivePosition(kept, 'newest')
@@ -883,7 +884,6 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             && initial.epoch !== null
             && !initial.requiresLatestReset
             && !preferLatestOnActivation
-            && !pendingGapRecovery
 
         if (!canIncrement) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
@@ -893,7 +893,6 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             // authoritative replacement remains unchanged.
             const isColdWindow = !initial.requiresLatestReset
                 && !preferLatestOnActivation
-                && !pendingGapRecovery
                 && initialCursor === null
             const latestPageSize = initial.requiresLatestReset || pendingGapRecovery
                 ? PAGE_SIZE
@@ -939,6 +938,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 
         let after = initialCursor
         let until: MessagePosition | null = null
+        let catchUpReset = false
         while (true) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
             const response = await api.getMessages(sessionId, {
@@ -959,6 +959,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         requestBaseline
                     })
                 })
+                catchUpReset = true
                 break
             }
 
@@ -1006,6 +1007,39 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                 throw new Error('Message tail cursor did not advance')
             }
             after = nextAfter
+        }
+
+        if (pendingGapRecovery) {
+            if (catchUpReset) {
+                // A reset verdict already replaced the window authoritatively
+                // under the server's epoch; there is nothing left to refresh.
+                updateState(sessionId, (previous) => {
+                    if (previous.syncGeneration !== generation) return previous
+                    return buildState(previous, { pendingGapRecovery: false })
+                })
+            } else {
+                // The cursor phase caught the window up without error. Only
+                // now may the recovery advance to the latest page: reconciling
+                // after a failed catch-up would strand the rows between the
+                // cached tail and the page below the advanced newest cursor.
+                // On a catch-up failure the catch above skips this block, the
+                // original cursor and the flag survive, and the next sync
+                // retries the whole recovery.
+                const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
+                const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+                if (!isCurrentTailSync(sessionId, generation)) return
+                updateState(sessionId, (previous) => {
+                    if (previous.syncGeneration !== generation) return previous
+                    const trimLimit = Math.min(OLDER_LOAD_WINDOW_SIZE, Math.max(VISIBLE_WINDOW_SIZE, previous.messages.length))
+                    const next = applyLatestResponse(previous, response, {
+                        replaceServerRows: response.page.reset
+                            || (previous.epoch !== null && response.page.epoch !== previous.epoch),
+                        requestBaseline,
+                        trimLimit
+                    })
+                    return buildState(next, { pendingGapRecovery: false })
+                })
+            }
         }
 
         finishTailSync(sessionId, generation, null)
@@ -1219,11 +1253,8 @@ export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): 
     ) {
         return syncTailMessages(api, sessionId)
     }
-    return syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
-        .then(() => {
-            updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
-            return syncTailMessages(api, sessionId)
-        })
+    updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
+    return syncTailMessages(api, sessionId)
 }
 
 /**
