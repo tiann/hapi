@@ -186,6 +186,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
             : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), updated: false }
         const msg = stored.message
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but derived todo/team versions must strictly advance
+        // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
+        // so stamp them at merge time instead.
+        const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
         // The durable row already exists; replay must not be mistaken for
         // fresh agent progress or trigger another round of UI updates.
         if (wasStored) return
@@ -213,7 +218,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         const todos = extractTodoWriteTodosFromMessageContent(content)
         if (todos) {
-            const updated = store.sessions.setSessionTodos(sid, todos, msg.createdAt, session.namespace)
+            const updated = store.sessions.setSessionTodos(sid, todos, derivedAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 onWebappEvent?.({
@@ -235,7 +240,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             const existingSession = store.sessions.getSession(sid)
             const existingTeamState = existingSession?.teamState as import('@hapi/protocol/types').TeamState | null | undefined
             const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
-            const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
+            const updated = store.sessions.setSessionTeamState(sid, newTeamState, derivedAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 // Versioned clear: value null = TeamDelete. Consumers gate on

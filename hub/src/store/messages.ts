@@ -365,8 +365,14 @@ export function upsertToolCallMessage(
         if (!existing) {
             return { message: addMessage(db, sessionId, content, localId, undefined, createdAt), updated: false }
         }
-        const mergedContent = mergeToolCallContent(decodeMessageContent(existing.content), content)
-        const encoded = encodeMessageContent(truncateOversizedMessageContent(mergedContent))
+        const storedContent = decodeMessageContent(existing.content)
+        const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
+        // A re-emitted tick that changes nothing must not rewrite the row:
+        // only observable content changes touch the database.
+        if (isDeepStrictEqual(mergedContent, storedContent)) {
+            return { message: toStoredMessage(existing), updated: true }
+        }
+        const encoded = encodeMessageContent(mergedContent)
         // Same in-place content swap as the queued-message edit path
         // (syncNativeQueuedMessage): no new seq, no content_revision bump.
         prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)

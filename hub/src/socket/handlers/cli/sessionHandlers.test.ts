@@ -575,6 +575,39 @@ describe('cli session handlers', () => {
         })
     })
 
+    it('applies a refined TodoWrite snapshot merged into the same callId row', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('acp-todowrite-merge', {}, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {}
+        })
+        const todoCall = (todos: Array<{ content: string; status: string }>) => ({
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'tool-call', callId: 'todo-1', name: 'TodoWrite', input: { todos }, status: 'in_progress' }
+            }
+        })
+        const send = (content: unknown) => socket.trigger('message', { sid: session.id, message: content })
+
+        send(todoCall([{ content: 'first', status: 'pending' }]))
+        // The refined snapshot re-emits the same callId with a different valid
+        // todos array; the merged row must feed the session's todo list too.
+        send(todoCall([
+            { content: 'first', status: 'completed' },
+            { content: 'second', status: 'pending' }
+        ]))
+
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(1)
+        expect(store.sessions.getSession(session.id)?.todos).toEqual([
+            { content: 'first', status: 'completed', priority: 'medium', id: '' },
+            { content: 'second', status: 'pending', priority: 'medium', id: '' }
+        ])
+        store.close()
+    })
+
     it('folds repeated ACP tool-call updates into one stored row and rebroadcasts the merged row', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('acp-toolcall-fold', {}, null, 'default')
