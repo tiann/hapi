@@ -4,13 +4,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { SESSION_SUMMARY_CONTRACT_LINE } from '@/modules/common/sessionSummaryInstruction';
+import { symlinkSync } from 'node:fs';
 import {
     buildNotifyRuleContent,
     HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX,
     HAPI_SESSION_RULE_SENTINEL,
     installCursorNotifyRuleOverlay,
     RULE_FILENAME_ALTERNATE,
-    RULE_FILENAME_PRIMARY
+    RULE_FILENAME_PRIMARY,
+    toLiteralGitExcludePattern
 } from './cursorNotifyRuleOverlay';
 
 describe('buildNotifyRuleContent', () => {
@@ -242,7 +244,7 @@ describe('installCursorNotifyRuleOverlay', () => {
         execFileSync('git', ['init'], { cwd });
         const excludePath = join(cwd, '.git', 'info', 'exclude');
         mkdirSync(dirname(excludePath), { recursive: true });
-        const deadLease = `${HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX} 2147483646:dead-lease\n.cursor/rules/${RULE_FILENAME_PRIMARY}\n`;
+        const deadLease = `${HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX} 2147483646:dead-lease\n/.cursor/rules/${RULE_FILENAME_PRIMARY}\n`;
         writeFileSync(excludePath, `# keep-me\n${deadLease}`, 'utf-8');
 
         const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'reap' });
@@ -253,6 +255,56 @@ describe('installCursorNotifyRuleOverlay', () => {
 
         overlay.cleanup();
         expect(readFileSync(excludePath, 'utf-8')).toBe('# keep-me\n');
+    });
+
+    it('refuses to write through a symlinked rule path', () => {
+        if (process.platform === 'win32') return;
+        const rulePath = rulePathOf(cwd);
+        const outside = join(hapiHome, 'outside-target.mdc');
+        writeFileSync(outside, '# outside\n', 'utf-8');
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        symlinkSync(outside, rulePath);
+
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'symlink' });
+        expect(readFileSync(outside, 'utf-8')).toBe('# outside\n');
+        expect(readFileSync(rulePath, 'utf-8')).toBe('# outside\n');
+        overlay.cleanup();
+        expect(readFileSync(outside, 'utf-8')).toBe('# outside\n');
+    });
+
+    it('shares ownership across realpath and symlink workspace aliases', () => {
+        if (process.platform === 'win32') return;
+        const alias = join(hapiHome, 'cwd-alias');
+        symlinkSync(cwd, alias);
+
+        const first = installCursorNotifyRuleOverlay({ cwd, project: 'real' });
+        const second = installCursorNotifyRuleOverlay({ cwd: alias, project: 'alias' });
+        expect(second.rulePath).toBe(first.rulePath);
+        expect(readFileSync(first.rulePath, 'utf-8')).toContain('"project":"alias"');
+
+        first.cleanup();
+        expect(existsSync(first.rulePath)).toBe(true);
+        second.cleanup();
+        expect(existsSync(first.rulePath)).toBe(false);
+    });
+
+    it('escapes bracketed path segments in git exclude patterns', () => {
+        expect(toLiteralGitExcludePattern('packages/[id]/.cursor/rules/hapi-session.mdc'))
+            .toBe('/packages/\\[id\\]/.cursor/rules/hapi-session.mdc');
+
+        const nested = join(cwd, 'packages', '[id]');
+        mkdirSync(nested, { recursive: true });
+        execFileSync('git', ['init'], { cwd });
+        const overlay = installCursorNotifyRuleOverlay({ cwd: nested, project: 'brackets' });
+        const exclude = readFileSync(join(cwd, '.git', 'info', 'exclude'), 'utf-8');
+        expect(exclude).toContain('/packages/\\[id\\]/.cursor/rules/');
+        const ignored = execFileSync(
+            'git',
+            ['-C', cwd, 'check-ignore', '-v', '--', `packages/[id]/.cursor/rules/${RULE_FILENAME_PRIMARY}`],
+            { encoding: 'utf-8' }
+        );
+        expect(ignored.length).toBeGreaterThan(0);
+        overlay.cleanup();
     });
 
     it('restores a post-crash user replacement instead of a stale snapshot', () => {
@@ -287,14 +339,14 @@ describe('installCursorNotifyRuleOverlay', () => {
         const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'stage' });
         const exclude = readFileSync(join(cwd, '.git', 'info', 'exclude'), 'utf-8');
         expect(exclude).toContain(HAPI_NOTIFY_GIT_EXCLUDE_MARKER_PREFIX);
-        expect(exclude).toContain(`.cursor/rules/${RULE_FILENAME_PRIMARY}`);
+        expect(exclude).toContain(`/.cursor/rules/${RULE_FILENAME_PRIMARY}`);
 
         const ignored = execFileSync(
             'git',
             ['-C', cwd, 'check-ignore', '-v', `--`, `.cursor/rules/${RULE_FILENAME_PRIMARY}`],
             { encoding: 'utf-8' }
         );
-        expect(ignored).toContain(`.cursor/rules/${RULE_FILENAME_PRIMARY}`);
+        expect(ignored).toContain(`/.cursor/rules/${RULE_FILENAME_PRIMARY}`);
 
         overlay.cleanup();
         const after = readFileSync(join(cwd, '.git', 'info', 'exclude'), 'utf-8');

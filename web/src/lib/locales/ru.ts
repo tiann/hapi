@@ -866,7 +866,7 @@ export default {
   'settings.general.sessionSummary.title': 'Сводки статуса сессий',
   'settings.general.sessionSummary.description': 'Выберите, будут ли поддерживаемые агенты формировать сводки статуса и отображаться ли они в чате.',
   'settings.general.sessionSummaryContract': 'Формировать сводки статуса',
-  'settings.general.sessionSummaryContract.desc': 'По умолчанию выключено. При включении поддерживаемых агентов просят добавлять после каждого хода завершающую строку AGENT_NOTIFY_SUMMARY для уведомлений и записей о фоновой работе. Применяется к новым/возобновлённым сессиям. (Поддерживаются: Claude, Codex, OpenCode, удалённый Grok, Cursor; пока не поддерживаются: локальный Grok)',
+  'settings.general.sessionSummaryContract.desc': 'По умолчанию выключено. При включении поддерживаемых агентов просят добавлять после каждого хода завершающую строку AGENT_NOTIFY_SUMMARY для уведомлений и записей о фоновой работе. Применяется к новым/возобновлённым сессиям. (Поддерживаются: Claude, Codex, OpenCode, удалённый Grok, Cursor ACP; пока не поддерживаются: локальный Grok)',
   'settings.general.sessionSummaryInChat': 'Показывать сводки статуса в чате',
   'settings.general.sessionSummaryInChat.desc': 'Влияет только на отображение в чате и скопированном содержимом; не влияет на формирование сводок, уведомления или записи о фоновой работе. При включении показывается строка статуса, при выключении она скрыта. Сохранённые сообщения не изменяются.',
   'settings.language.title': 'Язык',

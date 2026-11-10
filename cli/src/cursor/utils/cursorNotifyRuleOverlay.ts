@@ -26,11 +26,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
     closeSync,
     existsSync,
+    lstatSync,
     mkdirSync,
     openSync,
     readFileSync,
     readdirSync,
+    realpathSync,
+    renameSync,
     rmdirSync,
+    rmSync,
     unlinkSync,
     writeFileSync
 } from 'node:fs';
@@ -156,7 +160,7 @@ export function buildNotifyRuleContent(opts: { project?: string | null; agentId?
 export function installCursorNotifyRuleOverlay(
     opts: InstallCursorNotifyRuleOverlayOptions
 ): CursorNotifyRuleOverlay {
-    const absCwd = resolve(opts.cwd);
+    const absCwd = canonicalizeExistingPath(resolve(opts.cwd));
     const cursorDir = join(absCwd, '.cursor');
     const rulesDir = join(cursorDir, 'rules');
     const target = resolveRuleTarget(absCwd);
@@ -194,6 +198,10 @@ export function installCursorNotifyRuleOverlay(
     }
 
     try {
+        assertNotSymlinkPath(cursorDir, 'Cursor config directory');
+        assertNotSymlinkPath(rulesDir, 'Cursor rules directory');
+        assertNotSymlinkPath(rulePath, 'Cursor session rule');
+
         if (!existsSync(cursorDir)) {
             mkdirSync(cursorDir, { recursive: true });
             createdDirs.push(cursorDir);
@@ -202,6 +210,9 @@ export function installCursorNotifyRuleOverlay(
             mkdirSync(rulesDir, { recursive: true });
             createdDirs.push(rulesDir);
         }
+        // Re-check after mkdir: a race could replace a created dir with a symlink.
+        assertNotSymlinkPath(cursorDir, 'Cursor config directory');
+        assertNotSymlinkPath(rulesDir, 'Cursor rules directory');
 
         if (!existsSync(stateDir)) {
             mkdirSync(stateDir, { recursive: true });
@@ -243,7 +254,7 @@ export function installCursorNotifyRuleOverlay(
         });
 
         undoGitExclude = installGitExcludeLease(absCwd, rulePath, excludeLeaseId);
-        writeFileSync(rulePath, buildNotifyRuleContent(opts), 'utf-8');
+        writeRuleFileNoFollow(rulePath, buildNotifyRuleContent(opts));
         installed = true;
         logger.debug(`[cursor-notify-rule] installed alwaysApply rule at ${rulePath}`);
     } catch (error) {
@@ -285,9 +296,9 @@ export function installCursorNotifyRuleOverlay(
                     const stillOurs = current === null || current.includes(HAPI_SESSION_RULE_SENTINEL);
                     if (stillOurs) {
                         if (state.snapshotTaken && state.restore !== null) {
-                            writeFileSync(rulePath, state.restore, 'utf-8');
+                            writeRuleFileNoFollow(rulePath, state.restore);
                         } else if (state.snapshotTaken && state.restore === null) {
-                            if (existsSync(rulePath)) {
+                            if (lstatSync(rulePath, { throwIfNoEntry: false })) {
                                 unlinkSync(rulePath);
                             }
                         }
@@ -376,7 +387,7 @@ function installGitExcludeLease(absCwd: string, rulePath: string, leaseId: strin
     if (!relRaw || relRaw.startsWith('..') || isAbsolute(relRaw)) {
         return null;
     }
-    const pattern = relRaw.replaceAll('\\', '/');
+    const pattern = toLiteralGitExcludePattern(relRaw);
     const excludePath = resolveGitExcludePath(root);
     if (!excludePath) {
         return null;
@@ -393,6 +404,22 @@ function installGitExcludeLease(absCwd: string, rulePath: string, leaseId: strin
             removeExcludeLeaseUnlocked(excludePath, pattern, leaseId);
         });
     };
+}
+
+/**
+ * Encode a repo-relative path as an anchored literal Git exclude pattern
+ * (escape glob / character-class metacharacters; leading `/` anchors at root).
+ */
+export function toLiteralGitExcludePattern(relPath: string): string {
+    const posix = relPath.replaceAll('\\', '/').replace(/^\/+/, '');
+    const escaped = posix
+        .split('/')
+        .map((segment) => {
+            const escapedMeta = segment.replace(/([\\*?[\]])/g, '\\$1');
+            return escapedMeta.replace(/^([#!])/, '\\$1');
+        })
+        .join('/');
+    return `/${escaped}`;
 }
 
 function resolveGitExcludePath(root: string): string | null {
@@ -494,6 +521,37 @@ function pruneDeadExcludeLeasesUnlocked(excludePath: string): void {
 
 function withExcludeLock(lockPath: string, fn: () => void): void {
     withOwnershipLock(lockPath, fn);
+}
+
+function canonicalizeExistingPath(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return path;
+    }
+}
+
+function assertNotSymlinkPath(path: string, label: string): void {
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    if (entry?.isSymbolicLink()) {
+        throw new Error(`Refusing a symlinked ${label}: ${path}`);
+    }
+}
+
+/**
+ * Write without following an existing symlink: refuse links, then replace via
+ * temp+rename (rename replaces a symlink inode rather than writing through it).
+ */
+function writeRuleFileNoFollow(path: string, contents: string): void {
+    assertNotSymlinkPath(path, 'Cursor session rule');
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+        writeFileSync(tmp, contents, { encoding: 'utf-8', mode: 0o644 });
+        renameSync(tmp, path);
+        assertNotSymlinkPath(path, 'Cursor session rule');
+    } finally {
+        rmSync(tmp, { force: true });
+    }
 }
 
 function getHapiHomeDir(): string {
