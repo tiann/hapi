@@ -4,20 +4,26 @@ import type { BerryMode } from './types'
 
 const GLM = 'newapi/glm-5.3'
 const GLM_FLASH = 'newapi/glm-5.3-flash'
+const HAPI_ROW_ID = 'hapi-berry-row-1'
+// Pinned by the resolveBerryDataDir mock below — the launcher test only
+// asserts that every spawn carries the SAME isolated data dir lever.
+const EXPECTED_DATA_DIR = '/mock-home/.hapi/berry-data/hapi-berry-row-1'
 
 const harness = vi.hoisted(() => ({
     backend: null as Record<string, ReturnType<typeof vi.fn>> | null,
     // Every backend the factory created, in order — respawn tests assert on
     // the individual instances (first = startup, second = respawned).
     backends: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
+    // Every createBerryBackend(env, opts) call, in order.
+    createCalls: [] as Array<{ env?: unknown; opts?: { model?: string; dataDir?: string } }>,
     newSessionConfig: null as unknown,
     prompts: [] as unknown[][],
-    resumeError: null as Error | null,
-    resumeSupported: true,
-    // Set while suppressUpdatesDuring's callback runs; lets the resumeSession
+    loadError: null as Error | null,
+    loadSupported: true,
+    // Set while suppressUpdatesDuring's callback runs; lets the loadSession
     // mock record whether it executed inside the suppression window.
     insideSuppress: false,
-    resumeInsideSuppress: null as boolean | null,
+    loadInsideSuppress: null as boolean | null,
     suppressCalls: 0,
     titleListener: null as ((update: { title?: unknown }) => void) | null,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
@@ -26,9 +32,17 @@ const harness = vi.hoisted(() => ({
         currentModelId: string | null
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
-    setModeCalls: [] as Array<{ sessionId: string; modeId: string; syncThoughtLevel?: boolean }>,
-    setModeError: null as Error | null,
     configOptionError: null as Error | null,
+    // Mirrors the backend's advertised promptCapabilities.image gate.
+    supportsImages: false,
+    // Recorded by the buildBerryPromptContent mock.
+    promptContentInputs: [] as Array<{
+        text: string
+        images: unknown[] | undefined
+        sessionId: string | undefined
+    }>,
+    // Captured constructor args of AcpPermissionHandler.
+    permissionHandlerArgs: [] as unknown[][],
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
     newSessionBlocker: null as null | Promise<void>,
@@ -43,11 +57,12 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('./utils/berryBackend', () => ({
-    createBerryBackend: vi.fn(() => {
+    createBerryBackend: vi.fn((env?: unknown, opts?: { model?: string; dataDir?: string }) => {
+        harness.createCalls.push({ env, opts })
         const state = { prompts: 0, dead: false }
         const backend = {
             initialize: vi.fn(async () => {}),
-            supportsSessionResume: vi.fn(() => harness.resumeSupported),
+            supportsLoadSession: vi.fn(() => harness.loadSupported),
             suppressUpdatesDuring: vi.fn(async (fn: () => Promise<unknown>) => {
                 harness.suppressCalls += 1
                 harness.insideSuppress = true
@@ -64,12 +79,16 @@ vi.mock('./utils/berryBackend', () => ({
                 }
                 return 'berry-session-1'
             }),
-            resumeSession: vi.fn(async (config: { sessionId: string }) => {
-                harness.resumeInsideSuppress = harness.insideSuppress
-                if (harness.resumeError) throw harness.resumeError
+            loadSession: vi.fn(async (config: { sessionId: string }) => {
+                harness.loadInsideSuppress = harness.insideSuppress
+                if (harness.loadError) throw harness.loadError
+                // Mirrors the real AcpSdkBackend.loadSession: berry answers
+                // session/load with {} and the backend falls back to the
+                // REQUESTED id.
                 return config.sessionId
             }),
             isTransportAlive: vi.fn(() => !state.dead),
+            supportsImagePrompts: vi.fn(() => harness.supportsImages),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
                 state.prompts += 1
                 if (harness.promptError) {
@@ -79,7 +98,7 @@ vi.mock('./utils/berryBackend', () => ({
                 }
                 if (harness.dieAfterPrompts !== null && state.prompts > harness.dieAfterPrompts) {
                     state.dead = true
-                    throw new Error('ACP process exited (code=1, signal=null)')
+                    throw deadTransportError()
                 }
                 harness.prompts.push(content)
                 onUpdate({ type: 'text', text: 'answer' })
@@ -92,11 +111,6 @@ vi.mock('./utils/berryBackend', () => ({
                 if (harness.configOptionError) throw harness.configOptionError
                 return {}
             }),
-            setMode: vi.fn(async (sessionId: string, modeId: string, opts?: { syncThoughtLevel?: boolean }) => {
-                harness.setModeCalls.push({ sessionId, modeId, syncThoughtLevel: opts?.syncThoughtLevel })
-                if (harness.setModeError) throw harness.setModeError
-                return {}
-            }),
             onStderrError: vi.fn(),
             onPermissionRequest: vi.fn(),
             setSessionInfoUpdateListener: vi.fn((listener: (update: { title?: unknown }) => void) => {
@@ -107,11 +121,38 @@ vi.mock('./utils/berryBackend', () => ({
         harness.backends.push(backend)
         harness.backend = backend
         return backend
-    })
+    }),
+    resolveBerryDataDir: vi.fn(() => EXPECTED_DATA_DIR)
 }))
+
+vi.mock('./utils/berryPromptContent', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./utils/berryPromptContent')>()
+    return {
+        ...actual,
+        buildBerryPromptContent: vi.fn(async (
+            _backend: unknown,
+            text: string,
+            images: unknown[] | undefined,
+            opts: { sessionId?: string } | undefined
+        ) => {
+            harness.promptContentInputs.push({ text, images, sessionId: opts?.sessionId })
+            const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }]
+            if (images && images.length > 0 && harness.supportsImages) {
+                for (const image of images) {
+                    const attachment = image as { path: string; mimeType: string }
+                    prompt.push({ type: 'image', data: `b64:${attachment.path}`, mimeType: attachment.mimeType })
+                }
+            }
+            return prompt
+        })
+    }
+})
 
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     AcpPermissionHandler: class {
+        constructor(...args: unknown[]) {
+            harness.permissionHandlerArgs.push(args)
+        }
         async cancelAll(): Promise<void> {}
     }
 }))
@@ -119,7 +160,17 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
+import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport'
 import { BerryRemoteLauncher } from './berryRemoteLauncher'
+
+/** The transport's own typed marker for dead-transport failures (process
+ *  exit, closed transport, failed stdin write) — what a real dead-child
+ *  session/prompt rejection carries. */
+function deadTransportError(message = 'ACP process exited (code=1, signal=null)'): Error {
+    const error = new Error(message)
+    Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true })
+    return error
+}
 
 function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId: string | null = null) {
     const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
@@ -133,6 +184,7 @@ function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId
         logPath: '/tmp/berry-test/hapi.log',
         client: {
             rpcHandlerManager: { registerHandler: vi.fn() },
+            sessionId: HAPI_ROW_ID,
             getMetadata: vi.fn(() => ({})),
             updateMetadata: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
@@ -160,20 +212,22 @@ describe('BerryRemoteLauncher', () => {
     afterEach(() => {
         harness.backend = null
         harness.backends = []
+        harness.createCalls = []
         harness.newSessionConfig = null
         harness.prompts = []
-        harness.resumeError = null
-        harness.resumeSupported = true
+        harness.loadError = null
+        harness.loadSupported = true
         harness.insideSuppress = false
-        harness.resumeInsideSuppress = null
+        harness.loadInsideSuppress = null
         harness.suppressCalls = 0
         harness.titleListener = null
         harness.modelOption = null
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
-        harness.setModeCalls = []
-        harness.setModeError = null
         harness.configOptionError = null
+        harness.supportsImages = false
+        harness.promptContentInputs = []
+        harness.permissionHandlerArgs = []
         harness.newSessionBlocker = null
         harness.dieAfterPrompts = null
         harness.promptError = null
@@ -199,53 +253,79 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.backend?.disconnect).toHaveBeenCalled()
     })
 
-    it('resumes through session/resume inside suppressUpdatesDuring', async () => {
-        // Berry replays the restored transcript on session/resume; the call
-        // must run inside the backend's suppression window so the replayed
-        // session/update stream never reaches the hub transcript.
+    it('spawns the backend with the isolated data dir and the spawn-time model lever', async () => {
+        // Berry reads BERRY_AGENT_MODEL/BERRY_AGENT_DATA_DIR only at process
+        // spawn; every backend creation must carry both levers.
+        const session = createSession({ model: GLM_FLASH })
+        const launcher = new BerryRemoteLauncher(session as never, { model: GLM_FLASH })
+
+        await launcher.launch()
+
+        expect(harness.createCalls).toEqual([
+            { env: process.env, opts: { model: GLM_FLASH, dataDir: EXPECTED_DATA_DIR } }
+        ])
+    })
+
+    it('spawns without a model lever when the session has none', async () => {
+        const session = createSession()
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.createCalls).toEqual([
+            { env: process.env, opts: { model: undefined, dataDir: EXPECTED_DATA_DIR } }
+        ])
+    })
+
+    it('restores the persisted session through session/load inside suppressUpdatesDuring', async () => {
+        // Berry has no session/resume: its restore path is session/load
+        // (agentCapabilities.loadSession), which replays the stored history
+        // before live attach. The replay must run inside the backend's
+        // suppression window so it never reaches the hub transcript.
         const session = createSession(undefined, 'berry-existing-1')
         const launcher = new BerryRemoteLauncher(session as never)
 
         await launcher.launch()
 
-        expect(harness.backend?.resumeSession).toHaveBeenCalledWith({
+        expect(harness.backend?.loadSession).toHaveBeenCalledWith({
             sessionId: 'berry-existing-1',
             cwd: '/tmp/berry-test',
             mcpServers: []
         })
-        expect(harness.resumeInsideSuppress).toBe(true)
+        expect(harness.loadInsideSuppress).toBe(true)
         expect(harness.suppressCalls).toBe(1)
         expect(harness.backend?.newSession).not.toHaveBeenCalled()
+        // session/load returns {} — the requested id is what both sides keep.
         expect(session.onSessionFound).toHaveBeenCalledWith('berry-existing-1')
     })
 
-    it('falls back to a fresh Berry session when native resume fails', async () => {
+    it('falls back to a fresh Berry session when session/load fails', async () => {
         const session = createSession(undefined, 'berry-existing-1')
         const launcher = new BerryRemoteLauncher(session as never)
-        harness.resumeError = new Error('method not found')
+        harness.loadError = new Error('unknown session id')
 
         await launcher.launch()
 
-        expect(harness.backend?.resumeSession).toHaveBeenCalled()
+        expect(harness.backend?.loadSession).toHaveBeenCalled()
         expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/berry-test', mcpServers: [] })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'Berry resume failed; starting a new session.'
+            message: 'Berry session load failed; starting a new session.'
         })
     })
 
-    it('falls back without probing session/resume when the server does not advertise it', async () => {
+    it('falls back without probing session/load when the server does not advertise it', async () => {
         const session = createSession(undefined, 'berry-existing-1')
         const launcher = new BerryRemoteLauncher(session as never)
-        harness.resumeSupported = false
+        harness.loadSupported = false
 
         await launcher.launch()
 
-        expect(harness.backend?.resumeSession).not.toHaveBeenCalled()
+        expect(harness.backend?.loadSession).not.toHaveBeenCalled()
         expect(harness.backend?.newSession).toHaveBeenCalledWith({ cwd: '/tmp/berry-test', mcpServers: [] })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'Berry resume failed; starting a new session.'
+            message: 'Berry session load failed; starting a new session.'
         })
     })
 
@@ -261,71 +341,47 @@ describe('BerryRemoteLauncher', () => {
         expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled()
     })
 
-    it('applies the session permission mode onto the Berry sandbox axis at startup', async () => {
+    it('never pushes a permission mode onto the agent (no set_mode axis) and scopes grants to the session', async () => {
+        // Berry implements neither session/set_mode nor any other runtime
+        // mode RPC: the HAPI permission bridge is the only live enforcement.
+        // The launcher must not try to switch a sandbox axis, and the bridge
+        // must treat "allow for session" as allow_once (berry persists
+        // allow_always answers stickily in tool-policy.json).
         const session = createSession()
         const launcher = new BerryRemoteLauncher(session as never)
 
         await launcher.launch()
 
-        // The fake session reports 'default'; set_mode is issued once without
-        // thought-level syncing (berry sandbox modes are not effort values).
-        expect(harness.setModeCalls).toEqual([
-            { sessionId: 'berry-session-1', modeId: 'default', syncThoughtLevel: false }
-        ])
+        expect('setMode' in (harness.backend ?? {})).toBe(false)
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const modeFailures = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '')
+                .toLowerCase()
+                .includes('mode'))
+        expect(modeFailures).toEqual([])
+        expect(harness.permissionHandlerArgs).toHaveLength(1)
+        expect(harness.permissionHandlerArgs[0][3]).toEqual({ sessionScopedPermissionGrants: true })
+        // The bridge still receives the live permission-mode getter.
+        expect(typeof harness.permissionHandlerArgs[0][2]).toBe('function')
     })
 
-    it('switches the sandbox mode per-turn when the queued mode requests it', async () => {
+    it('still sends read-only turns — the HAPI permission bridge decides', async () => {
+        // The old read-only skip-turn branch bricked sessions whenever the
+        // (phantom) sandbox switch failed; with bridge-only enforcement,
+        // read-only turns are sent and the classifier denies writes.
         const session = createSessionWithBatches([
-            ['first', { permissionMode: 'yolo' }],
-            ['second', { permissionMode: 'yolo' }],
-            ['third', { permissionMode: 'read-only' }],
-            ['fourth', { permissionMode: 'safe-yolo' }]
+            ['first', { permissionMode: 'read-only' }],
+            ['second', { permissionMode: 'yolo' }]
         ])
         const launcher = new BerryRemoteLauncher(session as never)
 
         await launcher.launch()
 
-        // Startup default, then yolo (dont_ask) once — repeated yolo turns do
-        // not re-issue set_mode — then read-only (read_only) and finally
-        // safe-yolo (accept_edits).
-        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual([
-            'default',
-            'dont_ask',
-            'read_only',
-            'accept_edits'
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
         ])
-    })
-
-    it('degrades gracefully when session/set_mode fails', async () => {
-        const session = createSessionWithBatches([['first', { permissionMode: 'yolo' }]])
-        const launcher = new BerryRemoteLauncher(session as never)
-        harness.setModeError = new Error('method not found: session/set_mode')
-
-        await launcher.launch()
-
-        // The turn still runs: HAPI-side auto-approval honors the mode even
-        // when the Berry sandbox axis cannot be switched.
-        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
-        expect(session.sendSessionEvent).toHaveBeenCalledWith({
-            type: 'message',
-            message: expect.stringContaining('sandbox mode switch failed')
-        })
-    })
-
-    it('skips the turn when tightening to read-only fails', async () => {
-        const session = createSessionWithBatches([['first', { permissionMode: 'read-only' }]])
-        const launcher = new BerryRemoteLauncher(session as never)
-        harness.setModeError = new Error('method not found: session/set_mode')
-
-        await launcher.launch()
-
-        // The sandbox is the only enforcement layer for read-only; a failed
-        // tightening must not submit the prompt under the writable sandbox.
-        expect(harness.prompts).toEqual([])
-        expect(session.sendSessionEvent).toHaveBeenCalledWith({
-            type: 'message',
-            message: expect.stringContaining('read-only sandbox switch')
-        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
     })
 
     it('discovers the current model from the model config option', async () => {
@@ -468,6 +524,44 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 
+    it('routes image attachments into inline ACP image blocks', async () => {
+        // Berry advertises promptCapabilities.image: images ride the queued
+        // turn's mode and become {type:'image'} content blocks at prompt
+        // time, gated on the backend's advertised capability.
+        harness.supportsImages = true
+        const images = [{ path: '/uploads/shot.png', mimeType: 'image/png', filename: 'shot.png' }]
+        const session = createSessionWithBatches([
+            ['look at this', { imageAttachments: images }]
+        ])
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.promptContentInputs).toEqual([{
+            text: 'look at this',
+            images,
+            sessionId: HAPI_ROW_ID
+        }])
+        expect(harness.prompts).toEqual([[
+            { type: 'text', text: 'look at this' },
+            { type: 'image', data: 'b64:/uploads/shot.png', mimeType: 'image/png' }
+        ]])
+    })
+
+    it('keeps plain text prompts on turns without images', async () => {
+        const session = createSession()
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.promptContentInputs).toEqual([{
+            text: 'first',
+            images: undefined,
+            sessionId: HAPI_ROW_ID
+        }])
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
     it('answers ListBerryModels once a delayed session/new completes', async () => {
         harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
         harness.modelsMetadata = {
@@ -532,10 +626,11 @@ describe('BerryRemoteLauncher', () => {
 
     it('respawns the backend and retries the prompt when the ACP process dies mid-session', async () => {
         // First backend survives exactly one prompt; the second prompt finds
-        // the subprocess dead ("ACP process exited"). The launcher must
-        // respawn the backend, resume the persisted session, and deliver the
-        // message on the fresh backend instead of wedging the session.
-        // (Distinct modes keep the two messages in separate queue batches.)
+        // the subprocess dead (indeterminate transport failure). The launcher
+        // must respawn the backend, restore the persisted session through
+        // session/load, and deliver the message on the fresh backend instead
+        // of wedging the session. (Distinct modes keep the two messages in
+        // separate queue batches.)
         harness.dieAfterPrompts = 1
         const session = createSessionWithBatches([
             ['first', { permissionMode: 'yolo' }],
@@ -548,14 +643,20 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.backends).toHaveLength(2)
         // The dead backend is disposed exactly once.
         expect(harness.backends[0].disconnect).toHaveBeenCalledTimes(1)
-        // The respawn resumed the persisted ACP session id on the fresh backend.
+        // The respawn restored the persisted ACP session id on the fresh
+        // backend via session/load.
         expect(harness.backends[1].initialize).toHaveBeenCalled()
-        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+        expect(harness.backends[1].loadSession).toHaveBeenCalledWith({
             sessionId: 'berry-session-1',
             cwd: '/tmp/berry-test',
             mcpServers: []
         })
         expect(session.onSessionFound).toHaveBeenCalledTimes(2)
+        // Every spawn carries the isolated data dir lever.
+        expect(harness.createCalls).toHaveLength(2)
+        for (const call of harness.createCalls) {
+            expect(call.opts?.dataDir).toBe(EXPECTED_DATA_DIR)
+        }
         // The retried prompt delivered the second message successfully.
         expect(harness.backends[1].prompt).toHaveBeenCalledWith(
             'berry-session-1',
@@ -575,11 +676,11 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.backends[1].disconnect).toHaveBeenCalledTimes(1)
     })
 
-    it('starts a fresh session when the respawned backend cannot resume', async () => {
-        // No persisted id at startup (fresh session), so the resume error only
-        // bites when the respawn tries to resume the now-persisted id.
+    it('starts a fresh session when the respawned backend cannot load the persisted one', async () => {
+        // No persisted id at startup (fresh session), so the load error only
+        // bites when the respawn tries to load the now-persisted id.
         harness.dieAfterPrompts = 1
-        harness.resumeError = new Error('session store unavailable')
+        harness.loadError = new Error('session store unavailable')
         const session = createSessionWithBatches([
             ['first', { permissionMode: 'yolo' }],
             ['second', {}]
@@ -589,20 +690,20 @@ describe('BerryRemoteLauncher', () => {
         await launcher.launch()
 
         expect(harness.backends).toHaveLength(2)
-        expect(harness.backends[1].resumeSession).toHaveBeenCalled()
+        expect(harness.backends[1].loadSession).toHaveBeenCalled()
         expect(harness.backends[1].newSession).toHaveBeenCalledWith({
             cwd: '/tmp/berry-test',
             mcpServers: []
         })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'Berry resume failed; starting a new session.'
+            message: 'Berry session load failed; starting a new session.'
         })
         // The retried prompt still ran on the fresh session.
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }], [{ type: 'text', text: 'second' }]])
     })
 
-    it('rebinds the sandbox mode and model override onto the respawned backend', async () => {
+    it('rebinds the model override onto the respawned backend', async () => {
         harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
         harness.dieAfterPrompts = 1
         const session = createSessionWithBatches([
@@ -613,16 +714,15 @@ describe('BerryRemoteLauncher', () => {
 
         await launcher.launch()
 
-        // The fresh backend gets the sandbox mode re-applied (its
-        // lastAppliedAcpMode cache starts empty) ...
-        expect(harness.backends[1].setMode).toHaveBeenCalledWith(
-            'berry-session-1',
-            'default',
-            { syncThoughtLevel: false }
-        )
-        // ... and the live model override re-asserted: spawn-time switch on
-        // the first backend, respawn re-assert on the second.
+        // The live model override is re-asserted on the fresh backend: the
+        // spawn-time switch on the first backend (BERRY_AGENT_MODEL +
+        // set_config_option) and the respawn re-assert on the second. There
+        // is no sandbox-mode axis to rebind — the bridge reads the live mode.
         expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([GLM_FLASH, GLM_FLASH])
+        expect(harness.permissionHandlerArgs).toHaveLength(2)
+        for (const args of harness.permissionHandlerArgs) {
+            expect(args[3]).toEqual({ sessionScopedPermissionGrants: true })
+        }
     })
 
     it('does not respawn when the prompt failure is not a transport death', async () => {
@@ -639,6 +739,31 @@ describe('BerryRemoteLauncher', () => {
             type: 'message',
             message: 'Berry prompt failed: unknown model option'
         })
+    })
+
+    it('does not respawn on a plain JSON-RPC error whose text merely mentions "process exited"', async () => {
+        // Regression: the old raw-text gate matched this LIVE backend's
+        // agent-side error and needlessly respawned a healthy transport. Only
+        // the transport's typed indeterminate marker may trigger a respawn.
+        harness.promptError = new Error(
+            'session/prompt failed: the agent process exited unexpectedly while handling the turn (-32603)'
+        )
+        const session = createSession()
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends).toHaveLength(1)
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('Berry prompt failed')
+        })
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const restarts = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '')
+                .toLowerCase()
+                .includes('restart'))
+        expect(restarts).toEqual([])
     })
 
     it('reports the failure without a second respawn when the retried prompt fails again', async () => {

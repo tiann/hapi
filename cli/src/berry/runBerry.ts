@@ -5,7 +5,6 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { PermissionMode } from '@hapi/protocol/types'
@@ -13,6 +12,7 @@ import type { AgentState } from '@/api/types'
 import { BerryRemoteLauncher } from './berryRemoteLauncher'
 import { BerrySession } from './session'
 import { berryModeForPreference, type BerryMode } from './types'
+import { berryImageAttachmentsFor, formatBerryUserMessage } from './utils/berryPromptContent'
 
 export async function runBerry(opts: {
     startedBy?: 'runner' | 'terminal'
@@ -72,8 +72,14 @@ export async function runBerry(opts: {
 
     session.onUserMessage((message, localId) => {
         queue.push(
-            formatMessageWithAttachments(message.content.text, message.content.attachments),
-            berryModeForPreference(currentModel, currentPermissionMode),
+            // Non-image attachments keep the @path text form; inline-capable
+            // images ride the mode and become ACP image content blocks at
+            // prompt time (utils/berryPromptContent).
+            formatBerryUserMessage(message.content.text, message.content.attachments),
+            {
+                ...berryModeForPreference(currentModel, currentPermissionMode),
+                ...berryImageAttachmentsFor(message.content.attachments)
+            },
             localId
         )
     })
@@ -91,9 +97,10 @@ export async function runBerry(opts: {
         },
         onAfterApply: () => {
             syncSessionMode()
-            // Mid-session mode switches take effect on the agent immediately;
-            // waiting for the next queued turn would leave the published mode
-            // and the native sandbox disagreeing (read-only especially).
+            // Mid-session mode switches take effect on the very next
+            // request_permission (the bridge reads the live mode); applyModeNow
+            // only mirrors the new mode into the terminal log immediately
+            // instead of at the next turn boundary.
             void launcherRef.current?.applyModeNow?.()
         }
     })

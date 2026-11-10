@@ -1419,6 +1419,65 @@ describe('AcpSdkBackend', () => {
         }]);
     });
 
+    it('loadSession falls back to the requested id when session/load answers without one', async () => {
+        // Berry (agentCapabilities.loadSession): session/load replays the
+        // stored history then live-attaches, answering {} — no sessionId.
+        // The caller must still end up with the requested id.
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return {};
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.loadSession({
+            sessionId: 'berry-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        });
+
+        expect(calls).toEqual([{
+            method: 'session/load',
+            params: {
+                sessionId: 'berry-stored-1',
+                cwd: '/tmp',
+                mcpServers: []
+            }
+        }]);
+        expect(sessionId).toBe('berry-stored-1');
+    });
+
+    it('loadSession prefers the sessionId returned by session/load when present', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async () => ({ sessionId: 'remapped-9' }),
+            close: async () => {}
+        };
+
+        const sessionId = await backend.loadSession({
+            sessionId: 'berry-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        });
+
+        expect(sessionId).toBe('remapped-9');
+    });
+
     it('setMode falls back to session/set_config_option when session/set_mode is missing', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const calls: Array<{ method: string; params: unknown }> = [];

@@ -1,5 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { RPC_METHODS } from '@hapi/protocol'
+import { MessageQueue2 } from '@/utils/MessageQueue2'
+
+const berryPromptMocks = vi.hoisted(() => ({
+    imageAttachmentsSentinel: [{ path: '/uploads/shot.png', mimeType: 'image/png' }]
+}))
+
+vi.mock('./utils/berryPromptContent', () => ({
+    formatBerryUserMessage: vi.fn((text: string) => `fmt:${text}`),
+    berryImageAttachmentsFor: vi.fn((attachments?: unknown[]) =>
+        attachments && attachments.length > 0
+            ? { imageAttachments: berryPromptMocks.imageAttachmentsSentinel }
+            : {})
+}))
 
 const harness = vi.hoisted(() => {
     const session = {
@@ -75,6 +88,7 @@ vi.mock('./berryRemoteLauncher', () => ({
 }))
 
 import { runBerry } from './runBerry'
+import { berryImageAttachmentsFor, formatBerryUserMessage } from './utils/berryPromptContent'
 
 describe('runBerry', () => {
     beforeEach(() => {
@@ -89,6 +103,8 @@ describe('runBerry', () => {
         harness.registerSessionConfigRpc.mockClear()
         harness.launcherLaunch.mockClear()
         harness.launcherConstructor.mockClear()
+        vi.mocked(formatBerryUserMessage).mockClear()
+        vi.mocked(berryImageAttachmentsFor).mockClear()
         harness.bootstrapExistingSession.mockResolvedValue({
             api: {},
             session: harness.session,
@@ -155,5 +171,64 @@ describe('runBerry', () => {
             getPermissionMode?: () => string | undefined
         }
         expect(sessionArg.getPermissionMode?.()).toBe('yolo')
+    })
+
+    it('routes image attachments into the queued turn mode instead of @path text', async () => {
+        // Inline-capable images must ride the mode (they become ACP image
+        // blocks at prompt time) and must NOT be appended to the message
+        // text — formatting goes through formatBerryUserMessage, which
+        // excludes them.
+        const pushSpy = vi.spyOn(MessageQueue2.prototype, 'push').mockImplementation(() => {})
+        try {
+            await runBerry({
+                existingSessionId: 'hapi-session-berry',
+                startedBy: 'terminal',
+                workingDirectory: '/tmp/project'
+            })
+            const onUserMessage = (harness.session.onUserMessage as ReturnType<typeof vi.fn>)
+                .mock.calls[0][0] as (message: unknown, localId?: string) => void
+            const attachments = [
+                { id: 'a1', path: '/uploads/shot.png', mimeType: 'image/png', filename: 'shot.png', size: 4 }
+            ]
+            onUserMessage(
+                { content: { text: 'look at this', attachments } },
+                'local-1'
+            )
+
+            expect(formatBerryUserMessage).toHaveBeenCalledWith('look at this', attachments)
+            expect(berryImageAttachmentsFor).toHaveBeenCalledWith(attachments)
+            expect(pushSpy).toHaveBeenCalledWith(
+                'fmt:look at this',
+                {
+                    permissionMode: 'default',
+                    imageAttachments: berryPromptMocks.imageAttachmentsSentinel
+                },
+                'local-1'
+            )
+        } finally {
+            pushSpy.mockRestore()
+        }
+    })
+
+    it('keeps ordinary turns free of image attachment metadata', async () => {
+        const pushSpy = vi.spyOn(MessageQueue2.prototype, 'push').mockImplementation(() => {})
+        try {
+            await runBerry({
+                existingSessionId: 'hapi-session-berry',
+                startedBy: 'terminal',
+                workingDirectory: '/tmp/project'
+            })
+            const onUserMessage = (harness.session.onUserMessage as ReturnType<typeof vi.fn>)
+                .mock.calls[0][0] as (message: unknown, localId?: string) => void
+            onUserMessage({ content: { text: 'hello', attachments: undefined } }, 'local-2')
+
+            expect(pushSpy).toHaveBeenCalledWith(
+                'fmt:hello',
+                { permissionMode: 'default' },
+                'local-2'
+            )
+        } finally {
+            pushSpy.mockRestore()
+        }
     })
 })

@@ -35,9 +35,10 @@ export class BerrySession extends AgentSessionBase<BerryMode> {
             mode: 'remote',
             sessionLabel: 'BerrySession',
             sessionIdLabel: 'Berry ACP',
-            // Berry persists sessions in its own SQLite sessions.db and
-            // restores them through `session/resume`. Keep the native id
-            // separate from the HAPI row id.
+            // Berry persists sessions in its own SQLite sessions.db (inside
+            // its dataDir) and restores them through `session/load`
+            // (agentCapabilities.loadSession — it has no session/resume).
+            // Keep the native id separate from the HAPI row id.
             applySessionIdToMetadata: (metadata, sessionId) => ({
                 ...metadata,
                 berrySessionId: sessionId

@@ -32,13 +32,32 @@ function pickOptionId(request: PermissionRequest, preferredKinds: string[]): str
     return request.options[0]?.optionId ?? null
 }
 
+/** Per-backend options for the ACP permission bridge. */
+export interface AcpPermissionHandlerOptions {
+    /**
+     * Map session-scoped grant decisions (`approved_for_session`) to
+     * `allow_once` instead of `allow_always`.
+     *
+     * Berry persists allow_always answers STICKILY in tool-policy.json
+     * inside its dataDir — they survive the session and even process
+     * restarts, so a HAPI "allow for session" pick must not become one.
+     * Flavors without sticky grant storage (or that treat allow_always as
+     * session-scoped) keep the default preference.
+     */
+    sessionScopedPermissionGrants?: boolean
+}
+
 function mapDecisionToOutcome(
     request: PermissionRequest,
-    decision: PermissionResponseMessage['decision']
+    decision: PermissionResponseMessage['decision'],
+    opts?: AcpPermissionHandlerOptions
 ): PermissionResponse {
     if (decision === 'abort') return { outcome: 'cancelled' }
     if (decision === 'approved_for_session') {
-        const optionId = pickOptionId(request, ['allow_always', 'allow_once'])
+        const preference = opts?.sessionScopedPermissionGrants
+            ? ['allow_once', 'allow_always']
+            : ['allow_always', 'allow_once']
+        const optionId = pickOptionId(request, preference)
         return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' }
     }
     if (decision === 'approved') {
@@ -61,7 +80,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
         private readonly getPermissionMode: () => PermissionMode | undefined,
-        private readonly options: {
+        private readonly options: AcpPermissionHandlerOptions & {
             // Agents that title requests with free text (agy: the command
             // line) turn off the HAPI tool-name hints, which could match it.
             autoApprovalRules?: AutoApprovalRuleSet
@@ -118,7 +137,11 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         toolInput: unknown,
         decision: AutoApprovalDecision
     ): Promise<void> {
-        await this.backend.respondToPermission(request.sessionId, request, mapDecisionToOutcome(request, decision))
+        await this.backend.respondToPermission(
+            request.sessionId,
+            request,
+            mapDecisionToOutcome(request, decision, this.options)
+        )
         const timestamp = Date.now()
         this.client.updateAgentState((currentState) => ({
             ...currentState,
@@ -175,7 +198,11 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             await this.backend.cancelPrompt(request.sessionId)
         }
         if (request) {
-            await this.backend.respondToPermission(request.sessionId, request, mapDecisionToOutcome(request, decision))
+            await this.backend.respondToPermission(
+                request.sessionId,
+                request,
+                mapDecisionToOutcome(request, decision, this.options)
+            )
         }
         this.endUserWait(response.id)
         pending.resolve()

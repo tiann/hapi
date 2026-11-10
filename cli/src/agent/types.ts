@@ -18,10 +18,21 @@ export type AgentSessionConfig = {
     mcpServers: McpServerStdio[];
 };
 
-export type PromptContent = {
-    type: 'text';
-    text: string;
-};
+/**
+ * Prompt blocks sent over `session/prompt`. Agents may accept inline images
+ * when they advertise `agentCapabilities.promptCapabilities.image` in their
+ * initialize result; callers must gate image blocks on that capability.
+ */
+export type PromptContent =
+    | {
+        type: 'text';
+        text: string;
+    }
+    | {
+        type: 'image';
+        data: string;
+        mimeType: string;
+    };
 
 export type PlanItem = {
     content: string;
