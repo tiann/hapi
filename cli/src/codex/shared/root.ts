@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { Metadata } from '@/api/types';
 import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
@@ -18,7 +19,7 @@ import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
 import { SharedCodexAsyncQuestions } from './asyncQuestions';
 import { SharedCodexQueue } from './queue';
-import { SharedCodexProjection, inputText } from './projection';
+import { SharedCodexProjection, inputText, type HistoryBaseline } from './projection';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
@@ -41,6 +42,15 @@ const SettingsSchema = z.object({
 });
 
 /** One immutable HAPI identity + independent subscription for one root. */
+/**
+ * The pre-shared launcher stored history without local ids (#2086). Mark the
+ * one-time capture in bootstrap's own write, before it claims concurrentClients.
+ */
+export function legacyHistoryCapture(current: Metadata | null | undefined): Partial<Metadata> {
+    if (current?.codexHistoryBaseline || !current?.codexSessionId || current.capabilities?.concurrentClients) return {};
+    return { codexHistoryBaseline: { turns: [], before: Math.floor(Date.now() / 1000), pending: [], capture: true } };
+}
+
 export class SharedCodexRoot {
     readonly client: CodexAppServerClient;
     readonly session: ApiSessionClient;
@@ -51,6 +61,9 @@ export class SharedCodexRoot {
     private queue!: SharedCodexQueue;
     private projection!: SharedCodexProjection;
     private readonly children = new Map<string, SharedCodexProjection>();
+    private readonly historyBaseline: HistoryBaseline = { turns: new Set(), capture: false, before: 0 };
+    // Legacy children whose history could not be read yet; captured on a later read.
+    private readonly uncapturedChildren = new Set<string>();
     private readonly ancestry = new Map<string, string | null>();
     private heartbeat?: ReturnType<typeof setInterval>;
     private work: Promise<unknown> = Promise.resolve();
@@ -179,9 +192,9 @@ export class SharedCodexRoot {
         this.controls.add(operation);
         try { await operation; } finally { this.controls.delete(operation); }
     }
-    private async projectHistory(projection: SharedCodexProjection, thread: unknown): Promise<void> {
+    private async projectHistory(projection: SharedCodexProjection, thread: unknown, baseline: HistoryBaseline = this.historyBaseline): Promise<void> {
         this.asyncQuestions.history(projection.threadId, thread);
-        await projection.history(thread);
+        await projection.history(thread, baseline);
     }
     private async receiveRequest(request: { id: string | number; method: string; params: unknown }): Promise<void> {
         await this.bound;
@@ -229,7 +242,18 @@ export class SharedCodexRoot {
         this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id), undefined,
             async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
             (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
-        this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
+        const bootstrapped = this.bootstrap.metadata;
+        const capturing = bootstrapped?.codexHistoryBaseline?.capture === true && bootstrapped.codexSessionId === threadId;
+        const prior = capturing || !bootstrapped?.codexHistoryBaseline?.capture ? bootstrapped?.codexHistoryBaseline : undefined;
+        for (const turn of prior?.turns ?? []) this.historyBaseline.turns.add(turn);
+        for (const id of prior?.pending ?? []) this.uncapturedChildren.add(id);
+        this.historyBaseline.capture = capturing;
+        // Durable cutoff: a delayed capture never absorbs a turn HAPI has not stored.
+        this.historyBaseline.before = prior?.before ?? Math.floor(Date.now() / 1000);
+        // A fresh binding records its empty baseline atomically with the
+        // thread id, so an interrupted import is never mistaken for legacy.
+        this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId,
+            ...(!prior && !capturing ? { codexHistoryBaseline: { turns: [], before: this.historyBaseline.before, pending: [] } } : {}), capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
             // advertise a destructive operation we cannot make atomic yet.
@@ -243,6 +267,12 @@ export class SharedCodexRoot {
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projectHistory(this.projection, response.thread); await this.refresh(); await this.refreshChildren(true);
+        this.historyBaseline.capture = false;
+        if (capturing) this.persistBaseline();
+    }
+    private persistBaseline(): void {
+        const baseline = { turns: [...this.historyBaseline.turns], before: this.historyBaseline.before, pending: [...this.uncapturedChildren], capture: false };
+        this.session.updateMetadata(metadata => ({ ...metadata, codexHistoryBaseline: baseline }));
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
@@ -346,7 +376,7 @@ export class SharedCodexRoot {
         await this.projection.notification(method, params, modelAtReceipt, receivedAt); this.publishCompaction(); this.alive();
     }
     private lazyHistory(): boolean {
-        return !!this.threadId && (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '')
+        return !this.historyBaseline.capture && !!this.threadId && (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '')
             .split(',').map(id => id.trim()).includes(this.threadId);
     }
     async readThread(threadId = this.threadId, fullHistory = false): Promise<Record<string, unknown>> {
@@ -411,15 +441,22 @@ export class SharedCodexRoot {
             for (const id of Array.isArray(page.data) ? page.data : []) if (typeof id === 'string') loaded.add(id);
             cursor = string(page.nextCursor);
         } while (cursor);
+        const pending = this.uncapturedChildren.size;
         for (const [id, projection] of this.children) {
+            const capture = this.historyBaseline.capture || this.uncapturedChildren.has(id);
             // Replaying a completed/unloaded child must not start its engine.
             try {
                 if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
-                if (replayHistory) {
-                    projection.reset(); await this.projectHistory(projection, await this.readThread(id));
+                if (replayHistory || capture) {
+                    projection.reset(); await this.projectHistory(projection, await this.readThread(id), { ...this.historyBaseline, capture });
+                    this.uncapturedChildren.delete(id);
                 }
-            } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
+            } catch (error) {
+                if (capture) this.uncapturedChildren.add(id);
+                logger.debug('[Codex shared] child history unavailable', { id, error });
+            }
         }
+        if (pending && pending !== this.uncapturedChildren.size) this.persistBaseline();
     }
     nativeQueueDeleted(nativeId: string): Promise<void> { return this.queue.deleted(nativeId); }
     replaySettings(): Array<{ method: string; params: unknown }> {
