@@ -998,6 +998,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // from there on belongs to the wakeup.
             const backlog = (await source.readStepsSince(Math.max(opts.accountedIdx, opts.turnBaseIdx)).catch(() => [] as AgyTranscriptStep[]))
                 .filter((step) => step.idx <= baseline);
+            let racedThroughIdx: number | null = null;
             const racedAt = backlog.find((step) => step.kind === 'system' && parseAgyTaskCompletion(step.content) !== null);
             if (racedAt) {
                 // agy's own backgrounding records precede the completion; pair
@@ -1013,15 +1014,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     if (step.idx < racedAt.idx) continue;
                     surface(step);
                 }
-                const close: WakeWatcherClose = {
-                    reason: 'quiet',
-                    surfacedThroughIdx: baseline,
-                    latestSeenIdx: Math.max(baseline, ...backlog.map((step) => step.idx)),
-                    surfacedFully: true,
-                    steps: backlog.length
-                };
-                this.accountedIdx = Math.max(this.accountedIdx ?? -1, close.latestSeenIdx ?? -1);
-                return close;
+                // The raced surfacing is not the end of the wakeup — further
+                // planner steps may still land. Account for the backlog here and
+                // keep watching below; the normal quiet/open-command conditions
+                // settle the window.
+                racedThroughIdx = backlog.reduce((max, step) => Math.max(max, step.idx), -1);
+                this.accountedIdx = Math.max(this.accountedIdx ?? -1, racedThroughIdx);
             }
 
             const watcher = new AgyWakeWatcher({
@@ -1040,6 +1038,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             watcher.start();
             const close = await watcher.waitForSettle(opts.signal);
             this.wakeWatcher = null;
+            // The watcher only surfaces post-baseline steps; a raced backlog
+            // surfaced above counts toward the close record, so a fully
+            // surfaced window (backlog + watch) still reads as drop-mode.
+            if (racedThroughIdx !== null) {
+                const through = Math.max(close.surfacedThroughIdx ?? -1, racedThroughIdx);
+                close.surfacedThroughIdx = through;
+                close.surfacedFully = close.latestSeenIdx !== null && through >= close.latestSeenIdx;
+            }
             this.noteWakeAccounted(close);
             return close;
         } finally {

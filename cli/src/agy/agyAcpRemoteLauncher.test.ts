@@ -2632,6 +2632,62 @@ describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)',
     });
 });
 
+describe('AgyAcpRemoteLauncher late continuation (raced completion keeps watching)', () => {
+    it('surfaces the raced backlog and keeps watching for steps that land after it', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            // The wakeup raced the drain window: its completion and answer are
+            // already in the transcript before the window opens.
+            source.push(
+                wakeStep(3, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nRACED-OK'),
+                wakeStep(4, 'planner', 'The sample check finished: RACED-OK.')
+            );
+            source.latest = 4;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // The next prompt's flush: agy re-sends what the watcher surfaced.
+            onUpdate({ type: 'text', text: 'one more thought from the wakeup' });
+            backend.echo?.('and the next thing');
+            onUpdate({ type: 'text', text: 'Working on the next thing.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        // The raced backlog surfaces: the card completes and the answer renders.
+        await vi.waitFor(() => expect(agentRows(client).some((row) => row.type === 'tool-call-result' && row.callId === 'bg-1')).toBe(true));
+        await vi.waitFor(() => expect(textRows(client)).toContainEqual('The sample check finished: RACED-OK.'));
+
+        // A further planner step lands while the window is still open: it must
+        // surface live, not wait for the next prompt's flush.
+        source.push(wakeStep(5, 'planner', 'one more thought from the wakeup'));
+        source.latest = 5;
+        await vi.waitFor(() => expect(textRows(client)).toContainEqual('one more thought from the wakeup'));
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        // The late step was surfaced fully, so the next flush drops cleanly.
+        const labelsBefore = eventTexts(client).length;
+        queue.push('and the next thing', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+        expect(eventTexts(client).slice(labelsBefore).some((text) => text.includes('finished work from the previous turn'))).toBe(false);
+        const turn2Texts = textRows(client).slice(textRows(client).length - 1);
+        expect(turn2Texts).toEqual(['Working on the next thing.']);
+    });
+});
+
 describe('AgyAcpRemoteLauncher late continuation (surfacer did not run)', () => {
     it('labels the flushed block after a restart instead of mixing it into the new turn', async () => {
         const { session, queue, client } = makeSession();
