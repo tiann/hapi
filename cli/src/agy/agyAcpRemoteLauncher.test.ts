@@ -90,8 +90,12 @@ class FakeAgyBackend {
         _sessionId: string,
         content: PromptContent[],
         onUpdate: (message: AgentMessage) => void,
-        timing?: { onSent?: () => void; onAnswered?: () => void }
+        options?: {
+            shouldSend?: () => boolean
+            timing?: { onSent?: () => void; onAnswered?: () => void }
+        }
     ): Promise<void> {
+        const timing = options?.timing;
         if (this.preSendDelayMs) await new Promise((resolve) => setTimeout(resolve, this.preSendDelayMs));
         if (this.disconnected) {
             const error = new Error('ACP transport closed');
