@@ -449,8 +449,40 @@ describe('installCursorNotifyRuleOverlay', () => {
 
         const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'mode' });
         expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"mode"');
+        const stateDir = join(hapiHome, 'cursor-notify-overlays', readdirSync(join(hapiHome, 'cursor-notify-overlays'))[0]!);
+        expect(statSync(join(stateDir, 'state.json')).mode & 0o777).toBe(0o600);
         overlay.cleanup();
         expect(readFileSync(rulePath, 'utf-8')).toBe('# private\n');
         expect(statSync(rulePath).mode & 0o777).toBe(0o600);
+    });
+
+    it('retains the restore snapshot when cleanup cannot read the generated rule', () => {
+        if (process.platform === 'win32') return;
+        const rulePath = rulePathOf(cwd);
+        mkdirSync(join(cwd, '.cursor', 'rules'), { recursive: true });
+        const prior = '# keep-me-across-unreadable-cleanup\n';
+        writeFileSync(rulePath, prior, { mode: 0o600 });
+
+        const overlay = installCursorNotifyRuleOverlay({ cwd, project: 'held' });
+        expect(readFileSync(rulePath, 'utf-8')).toContain('"project":"held"');
+        chmodSync(rulePath, 0o000);
+        overlay.cleanup();
+
+        const overlayRoot = join(hapiHome, 'cursor-notify-overlays');
+        const stateDirName = readdirSync(overlayRoot)[0];
+        expect(stateDirName).toBeTruthy();
+        const state = JSON.parse(readFileSync(join(overlayRoot, stateDirName!, 'state.json'), 'utf-8')) as {
+            owners: unknown[]
+            snapshotTaken: boolean
+            restore: string | null
+        };
+        expect(state.owners).toEqual([]);
+        expect(state.snapshotTaken).toBe(true);
+        expect(state.restore).toBe(prior);
+
+        chmodSync(rulePath, 0o600);
+        const recovered = installCursorNotifyRuleOverlay({ cwd, project: 'later' });
+        recovered.cleanup();
+        expect(readFileSync(rulePath, 'utf-8')).toBe(prior);
     });
 });

@@ -310,15 +310,15 @@ export function installCursorNotifyRuleOverlay(
                 if (installed) {
                     const current = readRuleFile(rulePath);
                     if (current.status === 'error') {
-                        // Cannot verify ownership — leave the file alone.
-                        clearStateFile = true;
-                        try {
-                            if (existsSync(statePath)) {
-                                unlinkSync(statePath);
-                            }
-                        } catch {
-                            // ignore
-                        }
+                        // Cannot verify ownership — leave the rule alone, but keep
+                        // the restore snapshot so a later session can recover it.
+                        writeOwnershipState(statePath, {
+                            cwd: absCwd,
+                            owners: [],
+                            snapshotTaken: state.snapshotTaken,
+                            restore: state.restore,
+                            restoreMode: state.restoreMode
+                        });
                         return;
                     }
                     const stillOurs = current.status === 'absent'
@@ -663,7 +663,8 @@ function readOwnershipState(path: string, absCwd: string): OverlayOwnershipState
 }
 
 function writeOwnershipState(path: string, state: OverlayOwnershipState): void {
-    writeFileSync(path, JSON.stringify(state), 'utf-8');
+    // Private mode: restore may contain a user's previously 0600 rule body.
+    writeFileSync(path, JSON.stringify(state), { encoding: 'utf-8', mode: 0o600 });
 }
 
 function reapOwners(state: OverlayOwnershipState): OverlayOwnershipState {
