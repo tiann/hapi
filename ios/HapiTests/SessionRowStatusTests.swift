@@ -57,6 +57,41 @@ final class SessionRowStatusTests: XCTestCase {
                        [true, true, false, false])
     }
 
+    /// Work that outlives the agent keeps the row live (web #1404 / #2296).
+    func testRunningAttachedJobIsWorkEvenWhenTheAgentIsGone() {
+        var summary = HomeFilterTestData.summary("a", machine: nil)
+        summary.active = false
+        summary.attachedJob = AttachedJob(key: "k", label: "Import", heartbeatAt: 0, startedAt: 0, updatedAt: 0)
+        XCTAssertEqual(SessionPresence(summary: summary), .working)
+        summary.active = true
+        XCTAssertEqual(SessionPresence(summary: summary), .working)
+        summary.backgroundTaskCount = 1
+        XCTAssertEqual(SessionPresence(summary: summary), .background, "Same precedence as web")
+        summary.backgroundTaskCount = 0
+        summary.active = false
+        summary.attachedJob?.status = .completed
+        XCTAssertEqual(SessionPresence(summary: summary), .stopped, "A finished job is not work")
+    }
+
+    func testAttachedJobLineSaysProgressAndElapsedAndAdmitsStaleness() {
+        let minute = 60_000
+        var job = AttachedJob(key: "k", label: "Import", done: 12, total: 30, unit: "files",
+                              heartbeatAt: 0, startedAt: 0, updatedAt: 0)
+        job.heartbeatAt = 184 * minute
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 185 * minute),
+                       "Import · 40% · 12/30 files · 3h 5m")
+        job.remaining = 18
+        job.heartbeatAt = 5 * minute
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 5 * minute), "Import · 18 files left · 5m",
+                       "Remaining wins, as on web")
+        job.remaining = nil
+        job.total = nil
+        job.heartbeatAt = 0
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 0), "Import · <1m")
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 20 * minute), "Import · no heartbeat 20m",
+                       "A frozen job is not passed off as live")
+    }
+
     func testReadingDoesNotResolveAttentionAndResolutionKeepsTheProject() async throws {
         var summary = HomeFilterTestData.summary("a", machine: "mac")
         summary.metadata?.summary = .init(text: "Keep the session context visible")

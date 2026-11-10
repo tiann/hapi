@@ -726,7 +726,12 @@ Each row's agent icon carries the web presence badge (one mark per state):
 solid green pulsing while working, solid blue pulsing when only background
 tasks run, a green ring when connected and waiting, and a power mark when
 stopped or archived. Pending requests stay a separate attention symbol on the
-second line.
+second line. A running [attached job](../docs/guide/session-jobs.md) counts as
+working even when the agent is idle or disconnected, keeps the session under
+**Active Only**, and replaces the project on the second line with
+`label · remaining or percent · elapsed` (amber `no heartbeat` after 15
+minutes; no progress bar). Job patches are versioned like web's: a lagged
+heartbeat cannot resurrect a cleared job.
 
 App-hosted filter tests use observable in-memory stores (no network or pairing).
 Optional layout captures are test specimens, not live or App Store screenshots:

@@ -157,6 +157,23 @@
         }
       }
     },
+    "%@ left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "осталось %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %@"
+          }
+        }
+      }
+    },
     "%@ log" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -6672,6 +6689,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "该地址没有 HAPI Hub 应答。请确认 Hub 正在运行，且本设备能够访问它（处于同一网络，或中继隧道已开启）。"
+          }
+        }
+      }
+    },
+    "no heartbeat %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "нет heartbeat %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无心跳 %@"
           }
         }
       }

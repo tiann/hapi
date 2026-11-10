@@ -21,12 +21,22 @@ struct SessionRowUI: Identifiable, Equatable {
     var id: String { summary.id }
     var status: SessionRowStatus? { SessionRowStatus(summary: summary) }
     var presence: SessionPresence { SessionPresence(summary: summary) }
+    /// Only a running job is shown; finished ones leave no trace on the row.
+    var runningJob: AttachedJob? { summary.runningAttachedJob }
+}
+
+extension SessionSummary {
+    /// Work that outlives the agent (tiann/hapi#1404); web `hasRunningAttachedJob`.
+    var runningAttachedJob: AttachedJob? {
+        attachedJob?.isRunning == true ? attachedJob : nil
+    }
 }
 
 /// The agent icon's presence badge (web `SessionRowSummary`, #2296). Every
 /// state has its own mark, so none is shown by the absence of one: solid and
 /// pulsing while working (blue when only background tasks run), a ring when
-/// connected and waiting, a power mark when stopped or archived.
+/// connected and waiting, a power mark when stopped or archived. A running
+/// attached job counts as working even when the agent is idle or gone.
 enum SessionPresence: Equatable {
     case working
     case background
@@ -34,14 +44,15 @@ enum SessionPresence: Equatable {
     case stopped
 
     init(summary: SessionSummary) {
-        if !summary.active {
-            self = .stopped
-        } else if summary.thinking {
-            self = .working
-        } else if summary.backgroundTaskCount > 0 {
+        // Same precedence as web: background-only before an attached job.
+        if summary.active && !summary.thinking && summary.backgroundTaskCount > 0 {
             self = .background
-        } else {
+        } else if (summary.active && summary.thinking) || summary.runningAttachedJob != nil {
+            self = .working
+        } else if summary.active {
             self = .waiting
+        } else {
+            self = .stopped
         }
     }
 
@@ -115,17 +126,19 @@ struct MachineFilterUI: Identifiable, Equatable {
 }
 
 /// Web "Show" filter. Archived means not connected: closed sessions and ones
-/// whose CLI went away.
+/// whose CLI went away. A running attached job keeps an idle session under
+/// Active and out of Archived (web #1404 exception).
 enum SessionListStatus: Hashable {
     case all
     case active
     case archived
 
     func includes(_ summary: SessionSummary) -> Bool {
+        let live = summary.active || summary.runningAttachedJob != nil
         switch self {
         case .all: return true
-        case .active: return summary.active
-        case .archived: return !summary.active
+        case .active: return live
+        case .archived: return !live
         }
     }
 }

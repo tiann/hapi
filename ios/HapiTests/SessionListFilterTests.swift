@@ -211,6 +211,15 @@ final class SessionListFilterTests: XCTestCase {
         model.selectedSessionId = "live"
         XCTAssertEqual(model.rows.map(\.id), ["live", "stopped"], "The open session never disappears")
 
+        // An idle session with a running job is still live work (web #1404).
+        model.selectedSessionId = nil
+        sessions.sessions[1].attachedJob = AttachedJob(key: "k", label: "Import", heartbeatAt: 0, startedAt: 0, updatedAt: 0)
+        XCTAssertEqual(model.rows.map(\.id), [])
+        model.setStatus(.active)
+        XCTAssertEqual(model.rows.map(\.id), ["live", "stopped"])
+        sessions.sessions[1].attachedJob?.status = .failed
+        XCTAssertEqual(model.rows.map(\.id), ["live"])
+
         sessions.sessions = []
         XCTAssertTrue(model.showsFilterMenu, "An applied filter stays reachable over an empty list")
         model.clearFilters()

@@ -16,7 +16,8 @@ import SwiftUI
 /// - per row: a two-line-tall flavor icon whose presence badge gives every
 ///   state its own mark (working / background / waiting / stopped); title with trailing
 ///   relative `updatedAt` (unread: semibold title + accent time, no dot so
-///   the badge stays the only dot); a quiet second line has project left and an attention symbol right. No preview, task progress,
+///   the badge stays the only dot); a quiet second line has project left and an attention symbol right
+///   (a running attached job takes the project's place). No preview, todo progress,
 ///   machine/path details or spinners. Disconnected rows are not dimmed;
 /// - swipe actions: leading pin/mark-read, trailing archive or delete/reopen;
 /// - long-press context menu → rename, pin (none/project/global), then
@@ -487,11 +488,15 @@ struct SessionRowView: View {
     /// trailing symbol. Routine activity lives on the icon badge.
     private var detailLine: some View {
         HStack(alignment: .center, spacing: 0) {
-            // Keep the same text line height when metadata is missing,
-            // so the row height does not jump.
-            Text(verbatim: row.project ?? " ")
-                .lineLimit(1)
-                .accessibilityHidden(row.project == nil)
+            if let job = row.runningJob {
+                AttachedJobLine(job: job)
+            } else {
+                // Keep the same text line height when metadata is missing,
+                // so the row height does not jump.
+                Text(verbatim: row.project ?? " ")
+                    .lineLimit(1)
+                    .accessibilityHidden(row.project == nil)
+            }
             Spacer(minLength: 12)
             if let status = row.status {
                 Image(systemName: status.symbolName)
@@ -523,6 +528,48 @@ struct SessionRowView: View {
             return Text("\(title) · \(status.count) requests")
         }
         return title
+    }
+}
+
+/// A running attached job on the row's second line (web `SessionRowSummary`
+/// job line, without the bar): label, then remaining or percent, then
+/// elapsed wall time — never an ETA. After 15 minutes without a heartbeat it
+/// turns amber and says so instead of passing frozen progress off as live.
+struct AttachedJobLine: View {
+    @Environment(\.hapiTheme) private var theme
+    let job: AttachedJob
+
+    var body: some View {
+        // Minute ticks: elapsed and stale age are minute-granular.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let nowMs = Int(context.date.timeIntervalSince1970 * 1000)
+            let stale = job.isStale(nowMs: nowMs)
+            Text(verbatim: Self.text(job, nowMs: nowMs))
+                .lineLimit(1)
+                .foregroundStyle(stale ? staleColor : theme.success)
+        }
+    }
+
+    private var staleColor: Color {
+        theme.isDark ? theme.warning : Color(hex: 0x9A6700)
+    }
+
+    static func text(_ job: AttachedJob, nowMs: Int) -> String {
+        var parts = [job.label]
+        let unit = job.unit.map { " \($0)" } ?? ""
+        if let remaining = job.remaining {
+            parts.append(String(format: String(localized: "%@ left"), formatJobQuantity(remaining) + unit))
+        } else if let percent = job.percent, let done = job.done, let total = job.total {
+            parts.append("\(percent)%")
+            parts.append("\(formatJobQuantity(done))/\(formatJobQuantity(total))\(unit)")
+        }
+        if job.isStale(nowMs: nowMs) {
+            parts.append(String(format: String(localized: "no heartbeat %@"),
+                                formatCompactElapsed(ms: max(0, nowMs - job.heartbeatAt))))
+        } else {
+            parts.append(formatCompactElapsed(ms: max(0, nowMs - job.startedAt)))
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
