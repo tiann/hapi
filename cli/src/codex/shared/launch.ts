@@ -5,7 +5,6 @@ import { resolveCodexCommand, type CodexCommand } from '../utils/codexExecutable
 import { parseCodexCliOverrides, stripCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 import { resolveModelCatalogArgs } from '../utils/modelCatalog';
-import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 export const SharedLaunchSchema = z.object({
@@ -148,8 +147,8 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
             ...(overrides.sandbox ? { sandbox: overrides.sandbox } : {}),
             ...(autoReview ? { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' } : {}),
             ...(permission ? { approvalPolicy: permission.approvalPolicy, approvalsReviewer: reviewer, sandbox: permission.sandbox } : {}),
-            config: { ...config, ...(options.modelReasoningEffort ? { model_reasoning_effort: options.modelReasoningEffort } : {}) },
-            developerInstructions: getCodexSystemPrompt()
+            config: { ...config, ...(options.modelReasoningEffort ? { model_reasoning_effort: options.modelReasoningEffort } : {}) }
+            // developerInstructions are resolved by root.config() after session bootstrap loads the Hub summary preference.
         }
     };
 }
