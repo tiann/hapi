@@ -171,6 +171,36 @@ export async function resolveAgyTurnModels(
     }
 }
 
+/** Long-lived readonly probe over one conversations DB. */
+export type AgyStepActivityReader = {
+    /** Same cells as readAgyStepActivity, over the persistent connection. */
+    read(sinceIdxExclusive: number): Promise<AgyStepActivity>
+    close(): void
+}
+
+/**
+ * Opens one readonly connection for a caller's lifetime (the wake watcher's
+ * window): the DB is journal_mode=wal, so a readonly reader never blocks
+ * agy's writer. Opening failures (missing file, bun:sqlite unavailable)
+ * reject — callers fall back to the one-shot probe.
+ */
+export async function openAgyStepActivityReader(dbPath: string): Promise<AgyStepActivityReader> {
+    const { Database } = await import('bun:sqlite')
+    const db = new Database(dbPath, { readonly: true })
+    return {
+        async read(sinceIdxExclusive: number): Promise<AgyStepActivity> {
+            const latest = db.query('SELECT MAX(idx) AS latest FROM steps').get() as { latest?: unknown } | undefined
+            const counted = db.query(
+                'SELECT COUNT(*) AS count FROM steps WHERE idx > ? AND step_type = 15'
+            ).get(sinceIdxExclusive) as { count?: unknown } | undefined
+            return agyStepActivityFromCells(latest?.latest, counted?.count)
+        },
+        close(): void {
+            db.close()
+        }
+    }
+}
+
 export type AgyStepActivity = {
     /** Highest step idx in the conversation, or null when unreadable. */
     latestIdx: number | null

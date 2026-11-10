@@ -1,11 +1,13 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
     AgyWakeWatcher,
     createAgyTranscriptSource,
+    createAgyWakeWatch,
     parseAgyTaskCompletion,
+    type AgyFsWatchFn,
     type AgyTranscriptSource,
     type AgyTranscriptStep,
     type WakeWatcherClose
@@ -24,6 +26,7 @@ function step(overrides: Partial<AgyTranscriptStep> & { idx: number }): AgyTrans
 
 class FakeSource implements AgyTranscriptSource {
     queued: AgyTranscriptStep[] = []
+    all: AgyTranscriptStep[] = []
     latest: number | null = null
     plannerCount: number | null = null
     readNewCalls = 0
@@ -31,6 +34,10 @@ class FakeSource implements AgyTranscriptSource {
     async readNewSteps(): Promise<AgyTranscriptStep[]> {
         this.readNewCalls += 1
         return this.queued.splice(0)
+    }
+
+    async readStepsSince(sinceIdxExclusive: number): Promise<AgyTranscriptStep[]> {
+        return this.all.filter((entry) => entry.idx > sinceIdxExclusive)
     }
 
     async latestStepIdx(): Promise<number | null> {
@@ -42,7 +49,7 @@ class FakeSource implements AgyTranscriptSource {
     }
 }
 
-const TIMING = { pollMs: 10, quietMs: 60, capMs: 5_000, advanceMs: 40 } as const
+const TIMING = { pollMs: 10, maxPollMs: 20, quietMs: 60, capMs: 5_000 } as const
 
 function collect(): { steps: AgyTranscriptStep[]; activity: number[] } {
     const steps: AgyTranscriptStep[] = []
@@ -100,9 +107,9 @@ describe('AgyWakeWatcher', () => {
             source,
             baselineIdx: 0,
             pollMs: 10,
+            maxPollMs: 20,
             quietMs: 5_000,
             capMs: 80,
-            advanceMs: 40,
             onStep: (surfaced) => sink.steps.push(surfaced)
         })
         watcher.start()
@@ -162,7 +169,7 @@ describe('AgyWakeWatcher', () => {
 
     it('aborts waitForSettle via the signal as a next-prompt close', async () => {
         const source = new FakeSource()
-        const watcher = new AgyWakeWatcher({ source, baselineIdx: 0, pollMs: 10, quietMs: 60_000, capMs: 60_000, advanceMs: 40 })
+        const watcher = new AgyWakeWatcher({ source, baselineIdx: 0, pollMs: 10, maxPollMs: 20, quietMs: 60_000, capMs: 60_000 })
         watcher.start()
         const controller = new AbortController()
         const settled = watcher.waitForSettle(controller.signal)
@@ -171,15 +178,93 @@ describe('AgyWakeWatcher', () => {
         expect(close.reason).toBe('next-prompt')
     })
 
-    it('isAdvancing is true only shortly after the latest surfaced step', async () => {
+    it('stays armed with zero surfaced steps while background completions are unseen, closing by the cap', async () => {
         const source = new FakeSource()
-        const watcher = new AgyWakeWatcher({ source, baselineIdx: 0, pollMs: 10, quietMs: 5_000, capMs: 60_000, advanceMs: 60 })
+        const watcher = new AgyWakeWatcher({
+            source,
+            baselineIdx: 9,
+            pollMs: 10,
+            maxPollMs: 20,
+            quietMs: 80,
+            capMs: 220,
+            hasOpenBackgroundCommands: () => true
+        })
         watcher.start()
-        expect(watcher.isAdvancing()).toBe(false)
-        source.queued.push(step({ idx: 1, content: 'one' }))
-        await until(() => watcher.isAdvancing())
-        await new Promise((resolve) => setTimeout(resolve, 90))
-        expect(watcher.isAdvancing()).toBe(false)
+        // The quiet window elapses twice over while the background task runs:
+        // the watcher must still be polling (readNewCalls keeps growing), not
+        // closed.
+        await until(() => source.readNewCalls >= 8)
+        const close = await watcher.waitForSettle()
+        expect(close).toMatchObject({ reason: 'cap', surfacedThroughIdx: null, latestSeenIdx: null, surfacedFully: false, steps: 0 })
+    })
+
+    it('closes quiet with zero surfaced steps once the start quiet window passes without background work', async () => {
+        const source = new FakeSource()
+        const watcher = new AgyWakeWatcher({ source, baselineIdx: 9, pollMs: 10, maxPollMs: 20, quietMs: 80, capMs: 60_000 })
+        watcher.start()
+        const close = await watcher.waitForSettle()
+        expect(close).toMatchObject({ reason: 'quiet', surfacedThroughIdx: null, latestSeenIdx: null, surfacedFully: false, steps: 0 })
+    })
+
+    it('ends quiet once the background completions are seen, even mid-wakeup', async () => {
+        const source = new FakeSource()
+        const sink = collect()
+        let bgOpen = true
+        const watcher = new AgyWakeWatcher({
+            source,
+            baselineIdx: 0,
+            pollMs: 10,
+            maxPollMs: 20,
+            quietMs: 120,
+            capMs: 10_000,
+            hasOpenBackgroundCommands: () => bgOpen,
+            onStep: (surfaced) => sink.steps.push(surfaced)
+        })
+        watcher.start()
+        source.queued.push(step({ idx: 1, content: 'completion' }))
+        await until(() => sink.steps.length === 1)
+        // Past the quiet window with the completion still unseen: still armed.
+        await new Promise((resolve) => setTimeout(resolve, 140))
+        source.queued.push(step({ idx: 2, content: 'after the completion' }))
+        await until(() => sink.steps.length === 2)
+        bgOpen = false
+        const close = await watcher.waitForSettle()
+        expect(close.reason).toBe('quiet')
+        expect(close.surfacedFully).toBe(true)
+    })
+
+    it('backs the fallback poll off over quiet stretches and restarts it on an event wake', async () => {
+        const source = new FakeSource()
+        const waits: number[] = []
+        let manual = false
+        const resolvers: Array<() => void> = []
+        const waitForChange = (ms: number): Promise<boolean> => new Promise((resolve) => {
+            waits.push(ms)
+            if (manual) resolvers.push(() => resolve(true))
+            else setTimeout(() => resolve(false), ms)
+        })
+        const watcher = new AgyWakeWatcher({
+            source,
+            baselineIdx: 0,
+            pollMs: 10,
+            maxPollMs: 40,
+            quietMs: 60_000,
+            capMs: 60_000,
+            waitForChange,
+            hasOpenBackgroundCommands: () => true
+        })
+        watcher.start()
+        // Auto mode: each wait runs to its timeout, so the interval doubles up
+        // to the cap.
+        await until(() => waits.length >= 3)
+        expect(waits.slice(0, 3)).toEqual([10, 20, 40])
+        // Event mode: an early wake restarts the short interval.
+        manual = true
+        await until(() => resolvers.length > 0)
+        expect(waits[3]).toBe(40)
+        resolvers.splice(0).forEach((resolve) => resolve())
+        await until(() => waits.length >= 5)
+        expect(waits[4]).toBe(10)
         await watcher.stop('next-prompt')
     })
 })
@@ -240,5 +325,112 @@ describe('createAgyTranscriptSource', () => {
         // bun:sqlite is unavailable under the node test runner; the transcript max wins.
         expect(await source!.latestStepIdx()).toBe(3)
         expect(await source!.countPlannerSteps(2)).toBeNull()
+    })
+})
+
+function fakeWatchFn(): {
+    fn: AgyFsWatchFn
+    emit: (filename: string | Buffer | null) => void
+    fail: () => void
+    closed: () => boolean
+} {
+    const listeners: Array<(event: string, filename: string | Buffer | null) => void> = []
+    const errorListeners: Array<() => void> = []
+    let closed = false
+    const fn: AgyFsWatchFn = (_dir, listener) => {
+        listeners.push(listener)
+        return {
+            on: (_event, cb) => {
+                errorListeners.push(cb)
+                return undefined
+            },
+            close: () => {
+                closed = true
+            }
+        }
+    }
+    return {
+        fn,
+        emit: (filename) => {
+            for (const listener of [...listeners]) listener('change', filename)
+        },
+        fail: () => {
+            for (const cb of [...errorListeners]) cb()
+        },
+        closed: () => closed
+    }
+}
+
+describe('createAgyWakeWatch', () => {
+    it('wakes the pending wait early when the DB files report a change, filtered by session', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-wake-lease-'))
+        const fake = fakeWatchFn()
+        const lease = createAgyWakeWatch('sess-1', { conversationsDir: dir }, { watchFn: fake.fn })
+
+        const first = lease.waitForChange(5_000)
+        fake.emit('sess-1.db-wal')
+        await first
+
+        const second = lease.waitForChange(5_000)
+        fake.emit('other-session.db')
+        let settled = false
+        void second.then(() => {
+            settled = true
+        })
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        expect(settled).toBe(false)
+        lease.close()
+        await second
+    })
+
+    it('resolves a pending waitForChange when the lease closes, instead of hanging', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-wake-lease-'))
+        const fake = fakeWatchFn()
+        const lease = createAgyWakeWatch('sess-1', { conversationsDir: dir }, { watchFn: fake.fn })
+
+        const pending = lease.waitForChange(60_000)
+        lease.close()
+        const start = Date.now()
+        const woke = await pending
+        expect(Date.now() - start).toBeLessThan(1_000)
+        expect(woke).toBe(true)
+    })
+
+    it('falls back to the timeout wait when fs.watch throws (EMFILE-style machine-wide limit)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-wake-lease-'))
+        const throwing: AgyFsWatchFn = () => {
+            throw new Error('EMFILE: too many open inotify instances')
+        }
+        const lease = createAgyWakeWatch('sess-1', { conversationsDir: dir }, { watchFn: throwing })
+        const start = Date.now()
+        await lease.waitForChange(80)
+        expect(Date.now() - start).toBeGreaterThanOrEqual(60)
+        lease.close()
+    })
+
+    it('marks the hub failed on a late watcher error and keeps serving the timeout wait', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-wake-lease-'))
+        const fake = fakeWatchFn()
+        const lease = createAgyWakeWatch('sess-1', { conversationsDir: dir }, { watchFn: fake.fn })
+        lease.waitForChange(5_000)
+        fake.fail()
+        const start = Date.now()
+        await lease.waitForChange(80)
+        expect(Date.now() - start).toBeGreaterThanOrEqual(60)
+        lease.close()
+    })
+
+    it('closes the directory watcher when the last listener cancels, and probes the DB through the lease', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-wake-lease-'))
+        const fake = fakeWatchFn()
+        const lease = createAgyWakeWatch('sample-session', { conversationsDir: join(dir, 'conversations') }, { watchFn: fake.fn })
+
+        // No conversations DB in this scratch dir (and bun:sqlite is
+        // unavailable under the node test runner anyway): the probe reports
+        // no steps instead of throwing.
+        expect(await lease.latestStepIdx()).toBeNull()
+
+        lease.close()
+        expect(fake.closed()).toBe(true)
     })
 })

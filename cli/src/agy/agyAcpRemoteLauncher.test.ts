@@ -9,6 +9,8 @@ import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport
 import agySteeredTurn from '@/agent/backends/acp/__fixtures__/agy-steered-turn.json';
 import { AgySession } from './session';
 import type { AgyMode } from './types';
+import type { AgyTranscriptSource, AgyTranscriptStep } from './utils/agyLateContinuation';
+import { AGY_BACKGROUND_COMMAND_RESULT } from './agyToolCards';
 import {
     AgyAcpRemoteLauncher,
     addAgyUsage,
@@ -99,6 +101,7 @@ class FakeAgyBackend {
         }
         this.prompts.push(content);
         this.promptInFlight = true;
+        this.lastOnUpdate = onUpdate;
         timing?.onSent?.();
         try {
             const script = this.promptScripts.shift();
@@ -123,6 +126,12 @@ class FakeAgyBackend {
         this.onCancel?.();
     }
     onCancel: (() => void) | null = null;
+    // Frames the backend still routes to the last turn's handler after the
+    // prompt resolved — only possible once agy ships idle-period updates.
+    lastOnUpdate: ((message: AgentMessage) => void) | null = null;
+    emitIdleFrame(message: AgentMessage): void {
+        this.lastOnUpdate?.(message);
+    }
     readonly steerPrompts: PromptContent[][] = [];
     steerDispatchError: Error | null = null;
     steerStartError: Error | null = null;
@@ -234,12 +243,21 @@ function makeSession(sessionId: string | null = null) {
     return { session, queue, client };
 }
 
-function launch(session: AgySession, backends: FakeAgyBackend[], opts: { cancelHardStopMs?: number; killSettleMs?: number } = {}) {
+function launch(session: AgySession, backends: FakeAgyBackend[], opts: {
+    cancelHardStopMs?: number;
+    killSettleMs?: number;
+    createWakeSource?: (sessionId: string) => unknown;
+    wakeTiming?: { pollMs?: number; maxPollMs?: number; quietMs?: number; capMs?: number; preEchoWindowMs?: number };
+} = {}) {
     const created: FakeAgyBackend[] = [];
     const launcher = new AgyAcpRemoteLauncher(session, {
         steerCancelGraceMs: 50,
         cancelHardStopMs: opts.cancelHardStopMs ?? 2_000,
         killSettleMs: opts.killSettleMs,
+        ...(opts.createWakeSource
+            ? { createWakeSource: opts.createWakeSource as (sessionId: string) => AgyTranscriptSource | null }
+            : {}),
+        ...(opts.wakeTiming ? { wakeTiming: opts.wakeTiming } : {}),
         createBackend: () => {
             const backend = backends.shift() ?? new FakeAgyBackend();
             created.push(backend);
@@ -2211,6 +2229,605 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
             sessionId: 'agy-conv-new', message: 'Sign in', requestedSchema: { type: 'object', properties: { name: { type: 'string' } } }
         })).resolves.toEqual({ action: 'cancel' });
         finish();
+        queue.close();
+        await run;
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Late continuation (workaround for google-antigravity/antigravity-cli#1461)
+// ---------------------------------------------------------------------------
+
+class FakeWakeSource implements AgyTranscriptSource {
+    queued: AgyTranscriptStep[] = [];
+    all: AgyTranscriptStep[] = [];
+    latest: number | null = null;
+    plannerCount: number | null = null;
+    readNewCalls = 0;
+
+    async readNewSteps(): Promise<AgyTranscriptStep[]> {
+        this.readNewCalls += 1;
+        return this.queued.splice(0);
+    }
+
+    async readStepsSince(sinceIdxExclusive: number): Promise<AgyTranscriptStep[]> {
+        return this.all.filter((entry) => entry.idx > sinceIdxExclusive);
+    }
+
+    push(...steps: AgyTranscriptStep[]): void {
+        this.queued.push(...steps);
+        this.all.push(...steps);
+    }
+
+    async latestStepIdx(): Promise<number | null> {
+        return this.latest;
+    }
+
+    async countPlannerSteps(): Promise<number | null> {
+        return this.plannerCount;
+    }
+}
+
+function wakeStep(idx: number, kind: AgyTranscriptStep['kind'], content = '', toolCalls: AgyTranscriptStep['toolCalls'] = []): AgyTranscriptStep {
+    return { idx, kind, status: 'done', createdAt: '2026-11-10T05:00:00Z', content, toolCalls };
+}
+
+
+const WAKE_TIMING = { pollMs: 10, maxPollMs: 20, quietMs: 120, capMs: 5_000, preEchoWindowMs: 5_000 } as const;
+
+function agentRows(client: ReturnType<typeof makeClient>): Array<Record<string, unknown>> {
+    return client.sendAgentMessage.mock.calls.map(([message]) => message as Record<string, unknown>);
+}
+
+function textRows(client: ReturnType<typeof makeClient>): string[] {
+    return agentRows(client)
+        .filter((row) => row.type === 'message')
+        .map((row) => row.message as string);
+}
+
+function thinkingValues(client: ReturnType<typeof makeClient>): boolean[] {
+    return client.keepAlive.mock.calls.map(([thinking]) => thinking as boolean);
+}
+
+function eventTexts(client: ReturnType<typeof makeClient>): string[] {
+    return sessionEvents(client)
+        .map((event) => (event as { type?: string; message?: string }))
+        .filter((event) => event.type === 'message')
+        .map((event) => event.message ?? '');
+}
+
+const BG_ARGS = { CommandLine: 'run-sample-check', WaitMsBeforeAsync: 5000 };
+const USAGE = { type: 'usage' as const, inputTokens: 100, outputTokens: 20 };
+
+describe('AgyAcpRemoteLauncher late continuation (quiet watcher)', () => {
+    it('surfaces the wakeup live with thinking on, completes the card, holds the footer, and drops the flushed block', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            onUpdate(USAGE);
+            // The brain records the turn's own steps while the response drains.
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // The next prompt's flush: agy re-sends what the watcher surfaced.
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'tool_result', id: 'bg-1', status: 'completed', output: { output: 'Command exited with code 0.\n\nCommand output:\nSAMPLE-OUTPUT-1', exit_code: 0 } });
+            onUpdate({ type: 'text', text: 'The sample check finished: SAMPLE-OUTPUT-1.' });
+            backend.echo?.('and the next thing');
+            onUpdate({ type: 'text', text: 'Working on the next thing.' });
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        // The watcher wakes when the background completion lands in agy's records.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push(
+            wakeStep(3, 'system', '<SYSTEM_MESSAGE> [Message] sender=sample/task-1 content=Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSAMPLE-OUTPUT-1\n</SYSTEM_MESSAGE>'),
+            wakeStep(4, 'planner', 'The sample check finished: SAMPLE-OUTPUT-1.')
+        );
+        source.latest = 4;
+        source.plannerCount = 3;
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        // Live rows: the real bg result replaces the card, then the wakeup answer.
+        const rows = agentRows(client);
+        const resultRow = rows.find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(resultRow).toMatchObject({ callId: 'bg-1', output: { stdout: expect.stringContaining('SAMPLE-OUTPUT-1') } });
+        expect(textRows(client).some((text) => text.includes('The sample check finished'))).toBe(true);
+        // The placeholder never ran: the watcher completed the card instead.
+        expect(rows.some((row) => JSON.stringify(row).includes(AGY_BACKGROUND_COMMAND_RESULT.stdout))).toBe(false);
+
+        // Thinking followed the wakeup activity and cleared again.
+        const thinking = thinkingValues(client);
+        expect(thinking).toContain(true);
+        expect(thinking[thinking.length - 1]).toBe(false);
+
+        // The round footer counts this prompt's model calls plus the wakeup's.
+        const summary = roundSummaries(client)[0] as Record<string, unknown>;
+        expect(summary.num_turns).toBe(3);
+
+        // The footer lands before ready (finally order): both exist.
+        expect(sessionEvents(client)).toContainEqual({ type: 'ready' });
+        expect(roundSummaries(client).length).toBeGreaterThan(0);
+
+        // Turn 2: the flushed block is dropped entirely, the real answer renders.
+        const rowsBeforeTurn2 = agentRows(client).length;
+        queue.push('and the next thing', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        const turn2Texts = textRows(client).slice(textRows(client).length - 1);
+        expect(turn2Texts).toEqual(['Working on the next thing.']);
+        const turn2Rows = agentRows(client).slice(rowsBeforeTurn2);
+        expect(turn2Rows.some((row) => row.type === 'tool-call-result')).toBe(false);
+        // No continuation label ran: the block was dropped, not labeled.
+        expect(eventTexts(client).some((text) => text.includes('finished work from the previous turn'))).toBe(false);
+    });
+});
+
+describe('AgyAcpRemoteLauncher late continuation (cap fallback labels the flush)', () => {
+    it('labels the flushed block as previous-turn work when the watcher capped before surfacing everything', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // The flush arrives with steps the capped watcher never surfaced.
+            onUpdate({ type: 'text', text: 'A late step the watcher missed.' });
+            backend.echo?.('next message');
+            onUpdate({ type: 'text', text: 'The actual answer.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: { ...WAKE_TIMING, quietMs: 5_000, capMs: 150 },
+            createWakeSource: () => source
+        });
+
+        // Steps keep arriving past the cap.
+        const producer = setInterval(() => {
+            source.push(wakeStep(10 + source.queued.length, 'planner', `still working ${source.queued.length}`));
+            source.latest = 10 + source.queued.length;
+        }, 25);
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        clearInterval(producer);
+
+        // The un-completed card keeps today's placeholder.
+        expect(agentRows(client).some((row) => JSON.stringify(row).includes(AGY_BACKGROUND_COMMAND_RESULT.stdout))).toBe(true);
+
+        const rowsBeforeTurn2 = agentRows(client).length;
+        const labelsBeforeTurn2 = eventTexts(client).length;
+        queue.push('next message', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        // The pre-echo block was labeled and forwarded, not dropped.
+        const labels = eventTexts(client).slice(labelsBeforeTurn2);
+        expect(labels.some((text) => text.includes('finished work from the previous turn'))).toBe(true);
+        const turn2Texts = textRows(client).filter((text) => text === 'A late step the watcher missed.' || text === 'The actual answer.');
+        expect(turn2Texts).toEqual(['A late step the watcher missed.', 'The actual answer.']);
+    });
+});
+
+describe('AgyAcpRemoteLauncher late continuation (watcher error releases the hold)', () => {
+    it('releases the held prompt when the watcher closes with an error and labels the flushed block instead of dropping it', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // The flush arrives with steps the error-closed watcher never surfaced.
+            onUpdate({ type: 'text', text: 'A late step the watcher missed.' });
+            backend.echo?.('next message');
+            onUpdate({ type: 'text', text: 'The actual answer.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        // The background completion closes the card and the window quiets.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push(wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nQUIET-OK'));
+        source.latest = 3;
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        // Steps keep arriving after the window closed: the next prompt is held.
+        source.push(wakeStep(4, 'planner', 'still working after the window'));
+        source.latest = 4;
+
+        // The hold's watcher cannot read agy's records: five consecutive read
+        // errors close it with reason 'error', which releases the held prompt.
+        source.readNewSteps = async () => {
+            throw new Error('database is locked');
+        };
+
+        const labelsBeforeTurn2 = eventTexts(client).length;
+        queue.push('next message', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        // The hold notice ran and the held prompt reached agy (prompts length 2).
+        const holdEvents = eventTexts(client).slice(labelsBeforeTurn2);
+        expect(holdEvents.some((text) => text.includes('continued working on its own'))).toBe(true);
+        // The pre-echo block was labeled and forwarded, not dropped.
+        expect(holdEvents.some((text) => text.includes('finished work from the previous turn'))).toBe(true);
+        const turn2Texts = textRows(client).filter((text) => text === 'A late step the watcher missed.' || text === 'The actual answer.');
+        expect(turn2Texts).toEqual(['A late step the watcher missed.', 'The actual answer.']);
+    });
+});
+
+describe('AgyAcpRemoteLauncher late continuation (surfacer did not run)', () => {
+    it('labels the flushed block after a restart instead of mixing it into the new turn', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            // A pre-restart continuation reaches this turn as the flush block.
+            onUpdate({ type: 'tool_result', id: 'call-old', status: 'completed', output: { output: 'Command exited with code 0.', exit_code: 0 } });
+            onUpdate({ type: 'text', text: 'Late answer from the previous run.' });
+            backend.echo?.('fresh message');
+            onUpdate({ type: 'text', text: 'Fresh answer.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('fresh message', REVIEW, 'a');
+        const { run } = launch(session, [backend], { wakeTiming: WAKE_TIMING });
+        queue.close();
+        await run;
+
+        expect(eventTexts(client).some((text) => text.includes('finished work from the previous turn'))).toBe(true);
+        expect(textRows(client)).toEqual(['Late answer from the previous run.', 'Fresh answer.']);
+    });
+});
+
+describe('AgyAcpRemoteLauncher round turn count (google-antigravity/antigravity-cli#1045)', () => {
+    it('counts parallel tool calls in one planner step once and adds the wakeup calls', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call', id: 'p1', name: 'one', input: {}, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: { CommandLine: 'one' }
+            });
+            onUpdate({
+                type: 'tool_call', id: 'p2', name: 'two', input: {}, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: { CommandLine: 'two' }
+            });
+            backend.echo?.('run both');
+            onUpdate(USAGE);
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('run both', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        // One planner step with two parallel calls, then the wakeup's own
+        // round: both backgrounded commands report back, a follow-up call and
+        // its result, and the answer — 3 model calls, not 4.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push(
+            wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nONE-DONE'),
+            wakeStep(4, 'system', 'Task id "sample/task-2" finished with result:\nCommand exited with code 0.\n\nCommand output:\nTWO-DONE'),
+            wakeStep(5, 'planner', '', [{ name: 'run_command', args: { CommandLine: 'three' } }]),
+            wakeStep(6, 'tool', 'did three'),
+            wakeStep(7, 'planner', 'All done.')
+        );
+        source.latest = 7;
+        source.plannerCount = 3;
+
+        queue.close();
+        await run;
+
+        const summary = roundSummaries(client)[0] as Record<string, unknown>;
+        expect(summary.num_turns).toBe(3);
+    });
+
+    it('prefers the authoritative num_turns from the prompt result over the transcript count', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('hello');
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn', numTurns: 7 });
+        });
+        queue.push('hello', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+        source.plannerCount = 3;
+        queue.close();
+        await run;
+
+        expect(roundSummaries(client)[0]!.num_turns).toBe(7);
+    });
+
+    it('omits num_turns when agy reports none and its records are unreadable', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('hello');
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('hello', REVIEW, 'a');
+        const { run } = launch(session, [backend], { wakeTiming: WAKE_TIMING });
+        queue.close();
+        await run;
+
+        expect(roundSummaries(client)[0]!.num_turns).toBeUndefined();
+    });
+});
+
+describe('AgyAcpRemoteLauncher idle-period ACP updates (google-antigravity/antigravity-cli#1461 fixed upstream)', () => {
+    it('stands the watcher down for the session once agy emits frames after the prompt result', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run sample again', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            backend.echo?.('check again');
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+        // The watcher runs for turn 1: wait for the window's backlog scan (the
+        // baseline is sampled there), then land the wakeup's completion and
+        // answer so the window can close quiet.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push(
+            wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE-77'),
+            wakeStep(4, 'planner', 'wakeup answer')
+        );
+        source.latest = 4;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        const readNewCallsAfterTurn1 = source.readNewCalls;
+
+        // ...then agy delivers an idle-period frame: the watcher must retire.
+        backend.emitIdleFrame({ type: 'text', text: 'live idle update' });
+
+        queue.push('check again', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        // Turn 2 opened a background command but ran no watcher window.
+        const readCallsDuringTurn2 = source.readNewCalls - readNewCallsAfterTurn1;
+        expect(readCallsDuringTurn2).toBeLessThanOrEqual(2);
+        // The card got the placeholder and the idle frame reached the thread.
+        expect(agentRows(client).some((row) => JSON.stringify(row).includes(AGY_BACKGROUND_COMMAND_RESULT.stdout))).toBe(true);
+        expect(textRows(client)).toContain('live idle update');
+    });
+});
+
+describe('AgyAcpRemoteLauncher dequeue hold', () => {
+    it('surfaces steps that appeared after the last watcher before running the held message', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // The flush arrives before the echo (quiet-case wire reality).
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'tool_result', id: 'bg-1', status: 'completed', output: { output: 'done now', exit_code: 0 } });
+            onUpdate({ type: 'text', text: 'The sample check finished.' });
+            backend.echo?.('next message');
+            onUpdate({ type: 'text', text: 'Second answer.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+        // Turn 1's watcher catches the first wakeup: wait for the backlog scan,
+        // then land the wakeup steps.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push(wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDONE-1'), wakeStep(4, 'planner', 'First wakeup done.'));
+        source.latest = 4;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        // A SECOND wakeup starts after the watcher closed; the user sends a
+        // message while it runs: the hold must surface it first.
+        source.push(wakeStep(5, 'planner', 'Second wakeup progress.'));
+        source.latest = 5;
+        queue.push('next message', REVIEW, 'b');
+
+        await vi.waitFor(() => expect(eventTexts(client).some((text) => text.includes('continued working on its own'))));
+        await vi.waitFor(() => expect(agentRows(client).some((row) => row.type === 'text' && (row as { text: string }).text === 'Second wakeup progress.')));
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+    });
+});
+describe('AgyAcpRemoteLauncher long background commands (armed window)', () => {
+    it('stays armed past the quiet window while the background command runs, then completes on the watcher report', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            source.latest = 2;
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('and more');
+            onUpdate({ type: 'text', text: 'Next answer.' });
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: { pollMs: 10, maxPollMs: 20, quietMs: 150, capMs: 60_000, preEchoWindowMs: 5_000 },
+            createWakeSource: () => source
+        });
+
+        // The window arms (the background command is unseen) and keeps polling
+        // past the quiet window: no ready yet.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        await new Promise((resolve) => setTimeout(resolve, 320));
+        expect(sessionEvents(client)).not.toContainEqual({ type: 'ready' });
+        const callsWhileArmed = source.readNewCalls;
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(source.readNewCalls).toBeGreaterThan(callsWhileArmed);
+
+        // The completion lands: the card closes with the real result, the
+        // wakeup answer surfaces, and ready comes after the quiet window.
+        source.push(
+            wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSLOW-OK'),
+            wakeStep(4, 'planner', 'The slow check finished: SLOW-OK.')
+        );
+        source.latest = 4;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(agentRows(client).some((row) => JSON.stringify(row).includes('SLOW-OK'))).toBe(true);
+
+        queue.push('and more', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+    });
+});
+
+describe('AgyAcpRemoteLauncher background task indicator', () => {
+    const bgSnapshots = (client: ReturnType<typeof makeClient>) => client.sendClaudeSessionMessage.mock.calls
+        .map(([message]) => message as Record<string, unknown>)
+        .filter((message) => message.subtype === 'background_tasks_changed')
+        .map((message) => message.tasks as Array<Record<string, unknown>>);
+
+    it('adds on backgrounding, empties on the watcher completion, and dedupes the flush re-delivery', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // The flush re-delivers the completed card before the echo.
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'tool_result', id: 'bg-1', status: 'completed', output: { output: 'Command exited with code 0.', exit_code: 0 } });
+            backend.echo?.('and more');
+            onUpdate({ type: 'text', text: 'Next answer.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        // At end_turn the backgrounded command is announced as a full snapshot.
+        await vi.waitFor(() => expect(bgSnapshots(client)).toHaveLength(1));
+        expect(bgSnapshots(client)[0]).toEqual([
+            { task_id: 'bg-1', task_type: 'local_bash', description: 'run-sample-check' }
+        ]);
+
+        // The watcher's completion retires it with an empty snapshot.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        source.push(
+            wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nOK-1'),
+            wakeStep(4, 'planner', 'Done.')
+        );
+        source.latest = 4;
+        await vi.waitFor(() => expect(bgSnapshots(client)).toHaveLength(2));
+        expect(bgSnapshots(client)[1]).toEqual([]);
+
+        queue.push('and more', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        // The flush re-delivered the same completion: no third snapshot.
+        expect(bgSnapshots(client)).toHaveLength(2);
+        // The block was dropped (quiet close, fully surfaced): only the two
+        // real answers render as text.
+        expect(textRows(client).filter((text) => text === 'Done.' || text === 'Next answer.'))
+            .toEqual(['Done.', 'Next answer.']);
+    });
+
+    it('clears the indicator with an empty snapshot on abort', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(bgSnapshots(client)).toHaveLength(1));
+        const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!;
+        await abort();
+        await vi.waitFor(() => expect(bgSnapshots(client)).toHaveLength(2));
+        expect(bgSnapshots(client)[1]).toEqual([]);
         queue.close();
         await run;
     });

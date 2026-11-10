@@ -167,11 +167,12 @@ describe('AgyTranscriptChunkReader', () => {
 
 describe('transcript reader fixture', () => {
     it('shapes the synthetic wakeup fixture used by the launcher tests', async () => {
-        const fixture = await import('@/agent/backends/acp/__fixtures__/agy-bg-wakeup-transcript.json')
-        const steps = (fixture.default as Record<string, unknown>[]).map((raw) => ({
+        type FixtureEntry = { step_index: number; type: string; status: string; content?: string; tool_calls?: Array<{ name: string; args: Record<string, unknown> }> };
+        const fixture = await import('@/agent/backends/acp/__fixtures__/agy-bg-wakeup-transcript.json') as { default: FixtureEntry[] };
+        const steps = fixture.default.map((raw) => ({
             idx: raw.step_index,
-            kind: stepKindFromType(raw.type as string),
-            status: stepStatusFromType(raw.status as string),
+            kind: stepKindFromType(raw.type),
+            status: stepStatusFromType(raw.status),
             content: raw.content ?? '',
             toolCalls: raw.tool_calls ?? []
         }))

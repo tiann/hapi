@@ -15,10 +15,22 @@ import {
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
 import type { SessionEffort, SessionModel } from '@/api/types';
+import type { RawJSONLines } from '@/claude/types';
 import type { AgySession } from './session';
 import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import {
+    AgyWakeWatcher,
+    WAKE_WATCHER_DEFAULTS,
+    createAgyTranscriptSource,
+    createAgyWakeWatch,
+    parseAgyTaskCompletion,
+    type AgyTranscriptSource,
+    type AgyWakeLease,
+    type WakeWatcherClose
+} from './utils/agyLateContinuation';
+import type { AgyTranscriptStep } from './legacyStreamJson/agyTranscript';
 import {
     QUESTION_TOOL_NAME,
     agyQuestionContent,
@@ -117,7 +129,11 @@ export function agyRoundSummary(
     usage: UsageMessage,
     durationMs: number | null,
     model: string | null,
-    generationMs: number | null = null
+    generationMs: number | null = null,
+    // google-antigravity/antigravity-cli#1045: agy ACP reports no per-prompt turn count; HAPI counts model-call
+    // steps (PLANNER_RESPONSE, parallel calls in one step count once) from
+    // agy's transcript when the result carries no authoritative num_turns.
+    numTurns?: number
 ) {
     // Thinking is generated too, as in OpenCode's tok/s.
     const generatedTokens = usage.outputTokens + (usage.thoughtTokens ?? 0);
@@ -137,6 +153,7 @@ export function agyRoundSummary(
                 ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {})
             },
             ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+            ...(numTurns !== undefined && numTurns > 0 ? { num_turns: numTurns } : {}),
             ...generation
         }
     } as const;
@@ -178,6 +195,8 @@ type AgyTurn = {
     // Commands agy has not reported an end for; one still open at end_turn was
     // moved to the background.
     openCommands: Set<string>;
+    // The command text (or title) by ACP call id, for the hub's background-task indicator.
+    bgTaskDescriptions: Map<string, string>;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -197,6 +216,20 @@ type AgyTurn = {
     abandonSteers: Array<() => void>;
     releaseSteerWait: () => void;
     steerWaitReleased: Promise<void>;
+    // The conversation step idx just below this prompt's own steps: the base
+    // for the google-antigravity/antigravity-cli#1045 transcript model-call count (null-counted from zero when
+    // agy's records are unreadable).
+    countBaseIdx: number;
+    // The prompt result's own turn count when agy reported one (google-antigravity/antigravity-cli#1045).
+    numTurns?: number;
+    // ACP tool-call ids of commands agy moved to the background; the watcher
+    // completes their cards with the real result, leftovers get the
+    // placeholder at close.
+    bgCompletionIds: string[];
+    // Surfaced wake tool calls still awaiting their transcript result (FIFO).
+    pendingWakeCalls: string[];
+    // Set once a continuation label was emitted for this turn's pre-echo block.
+    labeledPreEcho: boolean;
 };
 
 /**
@@ -224,12 +257,45 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turnPermissionMode: PermissionMode | undefined = undefined;
     private turn: AgyTurn | null = null;
     private backendLost = false;
+    // Transcript source for the late-continuation watcher; null when agy's
+    // records cannot be read (workaround for google-antigravity/antigravity-cli#1461, deleted with it).
+    private wakeSource: AgyTranscriptSource | null = null;
+    private readonly createWakeSource: (sessionId: string) => AgyTranscriptSource | null;
+    private readonly createWakeLease: (sessionId: string) => AgyWakeLease | null;
+    private readonly wakeTiming: Required<{
+        pollMs: number;
+        maxPollMs: number;
+        quietMs: number;
+        capMs: number;
+        preEchoWindowMs: number;
+    }>;
+    private wakeWatcher: AgyWakeWatcher | null = null;
+    private wakeIdCounter = 0;
+    // Conversation idx through which every step is accounted for: either it
+    // went over ACP during a turn, or the watcher surfaced it. The dequeue
+    // hold and the drop-mode validity check both read this watermark.
+    private accountedIdx: number | null = null;
+    // How to treat the next prompt's pre-echo block: 'drop' after a fully
+    // surfaced quiet close (agy re-sends what we already showed), 'label' to
+    // attribute it to the previous turn instead (cap, restart, disabled).
+    private continuationMode: 'drop' | 'label' = 'label';
+    // Set once agy delivers session/update frames while no prompt is active:
+    // the google-antigravity/antigravity-cli#1461 behavior is fixed upstream, so the transcript paths stand down.
+    private acpEmitsIdleUpdates = false;
+    // Commands agy moved to the background and has not reported back yet, by
+    // ACP call id, with the description the hub's background-task indicator
+    // shows. Full snapshots go out on every membership change.
+    private readonly activeBgTasks = new Map<string, string>();
+    private lastBgSnapshotIds: string[] = [];
 
     constructor(session: AgySession, opts: {
         createBackend?: () => AcpSdkBackend;
         steerCancelGraceMs?: number;
         cancelHardStopMs?: number;
         killSettleMs?: number;
+        createWakeSource?: (sessionId: string) => AgyTranscriptSource | null;
+        createWakeLease?: (sessionId: string) => AgyWakeLease | null;
+        wakeTiming?: { pollMs?: number; maxPollMs?: number; quietMs?: number; capMs?: number; preEchoWindowMs?: number };
     } = {}) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
@@ -237,6 +303,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.steerCancelGraceMs = opts.steerCancelGraceMs ?? STEER_CANCEL_GRACE_MS;
         this.cancelHardStopMs = opts.cancelHardStopMs ?? CANCEL_HARD_STOP_MS;
         this.killSettleMs = opts.killSettleMs ?? KILL_SETTLE_MS;
+        this.createWakeSource = opts.createWakeSource ?? ((sessionId) => createAgyTranscriptSource(sessionId));
+        this.createWakeLease = opts.createWakeLease ?? ((sessionId) => createAgyWakeWatch(sessionId));
+        this.wakeTiming = {
+            pollMs: opts.wakeTiming?.pollMs ?? WAKE_WATCHER_DEFAULTS.pollMs,
+            maxPollMs: opts.wakeTiming?.maxPollMs ?? WAKE_WATCHER_DEFAULTS.maxPollMs,
+            quietMs: opts.wakeTiming?.quietMs ?? WAKE_WATCHER_DEFAULTS.quietMs,
+            capMs: opts.wakeTiming?.capMs ?? WAKE_WATCHER_DEFAULTS.capMs,
+            preEchoWindowMs: opts.wakeTiming?.preEchoWindowMs ?? 10_000
+        };
         this.session.setKillHandler(() => this.handleKill());
     }
 
@@ -292,6 +367,27 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (signal.aborted && !this.shouldExit) continue;
                 break;
             }
+            // Hold (bounded by the watcher cap) while unseen continuation steps
+            // are still arriving: with the prompt held back, agy cannot fold it
+            // into the running wakeup turn, and the watcher surfaces those
+            // steps before the user's message lands in the thread.
+            if (!this.acpEmitsIdleUpdates && this.wakeSource && this.accountedIdx !== null && !this.wakeWatcher) {
+                const latest = await this.wakeSource.latestStepIdx().catch(() => null);
+                if (latest !== null && latest > this.accountedIdx) {
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Antigravity continued working on its own; showing that before running the new message.'
+                    });
+                    const close = await this.runWakeWindow({
+                        bgIds: [],
+                        signal,
+                        accountedIdx: this.accountedIdx,
+                        turnBaseIdx: this.accountedIdx,
+                        baselineIdx: this.accountedIdx
+                    });
+                    this.continuationMode = close.reason === 'quiet' && close.surfacedFully ? 'drop' : 'label';
+                }
+            }
             const localIds = batch.items
                 .map((item) => item.localId)
                 .filter((localId): localId is string => Boolean(localId));
@@ -343,6 +439,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.acpSessionId = acpSessionId;
             session.onSessionFound(acpSessionId);
             session.client.emitSessionReady();
+            this.wakeSource = this.createWakeSource(acpSessionId);
 
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             this.currentModelId = reported;
@@ -450,6 +547,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             idleWindows: [],
             toolWindows: new Map(),
             openCommands: new Set(),
+            bgTaskDescriptions: new Map(),
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -470,7 +568,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answeredSteers: [],
             abandonSteers: [],
             releaseSteerWait,
-            steerWaitReleased
+            steerWaitReleased,
+            countBaseIdx: -1,
+            bgCompletionIds: [],
+            pendingWakeCalls: [],
+            labeledPreEcho: false
         };
         // Registered before any await so Stop can reach the turn while agy
         // restarts or switches settings.
@@ -494,6 +596,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!await this.applyTurnConfig(backend, acpSessionId, mode) || turn.aborted) {
                 this.restorePrompt(turn, message);
                 return;
+            }
+            // Snapshot the conversation watermark before agy sees the prompt:
+            // every PLANNER_RESPONSE step above it belongs to this round, and
+            // the google-antigravity/antigravity-cli#1045 count adds the late-continuation calls on top.
+            turn.countBaseIdx = (await this.wakeSource?.latestStepIdx().catch(() => null)) ?? -1;
+            // The drop mode is only safe while everything up to now is
+            // accounted for; steps that appeared after the last watcher close
+            // are unaccounted and must be labeled instead.
+            if (this.continuationMode === 'drop' && this.wakeSource && this.accountedIdx !== null) {
+                const latest = await this.wakeSource.latestStepIdx().catch(() => null);
+                if (latest !== null && latest > this.accountedIdx) this.continuationMode = 'label';
             }
             this.messageBuffer.addMessage(message, 'user');
             const prompt: PromptContent[] = [{ type: 'text', text: message }];
@@ -527,7 +640,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
-            this.closeBackgroundCommands(turn);
+            // agy sends nothing more for a command it moved to the background:
+            // its completion arrives as the wakeup's SYSTEM_MESSAGE step (read
+            // by the late-continuation watcher) or, when the watcher cannot
+            // run, inside a later prompt's stream. Hand the open ACP call ids
+            // to the watcher; whatever it never completes gets the placeholder
+            // at close.
+            if (turn.stopReason === 'end_turn' && !turn.aborted && !this.backendLost) {
+                turn.bgCompletionIds = [...turn.openCommands];
+                // The background-task indicator mirrors the watcher's card
+                // completions: register every command agy left open at
+                // end_turn so the hub shows it running until its result lands.
+                for (const id of turn.bgCompletionIds) {
+                    const description = turn.bgTaskDescriptions.get(id);
+                    if (description !== undefined) this.activeBgTasks.set(id, description);
+                }
+                if (turn.bgCompletionIds.length > 0) this.emitBackgroundTasksSnapshot();
+            }
+            turn.openCommands.clear();
         } finally {
             this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer
@@ -541,6 +671,54 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.turn === turn) this.turn = null;
             session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
             this.turnPermissionMode = undefined;
+
+            // Late continuation (workaround for google-antigravity/antigravity-cli#1461): while agy's brain loop
+            // keeps working after the end_turn (background task finished),
+            // surface its steps live and hold the round footer until it
+            // settles, so the summary can include the wakeup's model calls.
+            const watcherEligible = endedCleanly
+                && turn.stopReason === 'end_turn'
+                && turn.bgCompletionIds.length > 0
+                && !this.acpEmitsIdleUpdates;
+            let watcherClose: WakeWatcherClose | null = null;
+            if (watcherEligible && this.wakeSource) {
+                watcherClose = await this.runWakeWindow({
+                    bgIds: turn.bgCompletionIds,
+                    signal: this.abortController.signal,
+                    accountedIdx: this.accountedIdx ?? -1,
+                    turnBaseIdx: turn.countBaseIdx
+                });
+            }
+            if (watcherClose) {
+                this.continuationMode = watcherClose.reason === 'quiet' && watcherClose.surfacedFully
+                    ? 'drop'
+                    : 'label';
+                // The flushed block may carry the background command's real
+                // completion: those frames pass the drop gate so the card ends
+                // with the actual result, whatever the placeholder showed.
+                for (const id of turn.bgCompletionIds) this.continuationCardIds.add(id);
+            } else {
+                // No watcher ran: the turn's own steps all went over ACP, so
+                // they are accounted for up to the newest known step.
+                const latest = this.wakeSource
+                    ? await this.wakeSource.latestStepIdx().catch(() => null)
+                    : null;
+                if (latest !== null && latest !== undefined) {
+                    this.accountedIdx = Math.max(this.accountedIdx ?? -1, latest);
+                }
+            }
+            // Commands the watcher never completed keep today's placeholder, so
+            // the card does not spin until agy flushes the real result.
+            if (turn.stopReason === 'end_turn' && !turn.aborted && !this.backendLost) {
+                for (const id of turn.bgCompletionIds) {
+                    const placeholder = convertAgentMessage(
+                        { type: 'tool_result', id, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
+                        this.currentModelId
+                    );
+                    if (placeholder) this.session.sendAgentMessage(placeholder);
+                }
+                turn.bgCompletionIds = [];
+            }
             // agy's usage adds up every model call of a request, so it is not a
             // context size: it goes to the response footer, not the context
             // indicator (no token_count).
@@ -553,7 +731,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const generationMs = turn.sawActivity
                     ? agyGenerationMs(turn.sentAt, turn.answeredAt, turn.idleWindows)
                     : null;
-                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs));
+                // google-antigravity/antigravity-cli#1045: agy reports no num_turns; the authoritative value wins
+                // when present, otherwise count model-call steps from agy's
+                // transcript (this prompt's plus the late continuation's).
+                const numTurns = turn.numTurns
+                    ?? (this.wakeSource
+                        ? await this.wakeSource.countPlannerSteps(turn.countBaseIdx).catch(() => null)
+                        : null)
+                    ?? undefined;
+                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, numTurns));
             }
             session.onThinkingChange(false);
             await this.permissionHandler?.cancelAll('Prompt finished');
@@ -561,24 +747,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 session.sendSessionEvent({ type: 'ready' });
             }
         }
-    }
-
-    /**
-     * agy sends nothing more for a command it moved to the background: its
-     * completion arrives inside a later prompt's stream. Until then the card
-     * would spin, so it shows the command as running in the background; the
-     * real result replaces this one when it comes.
-     */
-    private closeBackgroundCommands(turn: AgyTurn): void {
-        if (turn.aborted || this.backendLost || turn.stopReason !== 'end_turn') return;
-        for (const id of turn.openCommands) {
-            const placeholder = convertAgentMessage(
-                { type: 'tool_result', id, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
-                this.currentModelId
-            );
-            if (placeholder) this.session.sendAgentMessage(placeholder);
-        }
-        turn.openCommands.clear();
     }
 
     private async waitForSteers(turn: AgyTurn): Promise<void> {
@@ -760,6 +928,164 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         return { steered: true };
     }
 
+    /**
+     * Runs one late-continuation window: watches agy's records via the
+     * watcher — event-driven (fs.watch on the conversations DB) with a
+     * backoff poll fallback — and surfaces new steps as a continuation of the
+     * turn that just ended. Thinking follows the wakeup's activity; the close
+     * record tells the caller whether its own surfacing covers agy's
+     * next-prompt flush. While background completions are unseen the window
+     * stays armed (the safety cap bounds a task that never reports); the
+     * quiet window ends an active wakeup after they are seen.
+     */
+    private async runWakeWindow(opts: {
+        bgIds: string[];
+        signal?: AbortSignal;
+        /** Watermark below which everything is already accounted for. */
+        accountedIdx: number;
+        /** The prompt turn's own steps end at this idx; wakeup steps start after the turn's last one. */
+        turnBaseIdx: number;
+        /** Overrides the baseline sample (the dequeue hold re-watches from its watermark). */
+        baselineIdx?: number;
+    }): Promise<WakeWatcherClose> {
+        const source = this.wakeSource;
+        if (!source) throw new Error('wake source unavailable');
+        const baseline = opts.baselineIdx ?? await source.latestStepIdx().catch(() => null);
+        if (baseline === null || baseline < 0) {
+            return { reason: 'error', surfacedThroughIdx: null, latestSeenIdx: null, surfacedFully: false, steps: 0 };
+        }
+        const pendingWakeCalls: string[] = [];
+        const surface = (step: AgyTranscriptStep): void =>
+            this.surfaceWakeStep(step, { bgIds: opts.bgIds, pendingWakeCalls });
+        // Window-scoped lease: one persistent readonly DB connection for fast
+        // progress probes plus the fs.watch event wait; closed with the window.
+        const lease = this.acpSessionId ? this.createWakeLease(this.acpSessionId) : null;
+        const windowSource: AgyTranscriptSource = lease
+            ? {
+                readNewSteps: () => source.readNewSteps(),
+                readStepsSince: (since) => source.readStepsSince(since),
+                latestStepIdx: () => lease.latestStepIdx(),
+                countPlannerSteps: (since) => source.countPlannerSteps(since)
+            }
+            : source;
+
+        try {
+            // A wakeup that raced the prompt's drain window already wrote its steps
+            // to the transcript before this window started (the ACP fence closed
+            // mid-wakeup, so its frames are still pending). Surface them right away
+            // instead of polling a transcript that will never grow: scan the turn's
+            // own range for the first background-completion SYSTEM step — everything
+            // from there on belongs to the wakeup.
+            const backlog = (await source.readStepsSince(Math.max(opts.accountedIdx, opts.turnBaseIdx)).catch(() => [] as AgyTranscriptStep[]))
+                .filter((step) => step.idx <= baseline);
+            const racedAt = backlog.find((step) => step.kind === 'system' && parseAgyTaskCompletion(step.content) !== null);
+            if (racedAt) {
+                for (const step of backlog) {
+                    if (step.idx < racedAt.idx) continue;
+                    surface(step);
+                }
+                const close: WakeWatcherClose = {
+                    reason: 'quiet',
+                    surfacedThroughIdx: baseline,
+                    latestSeenIdx: Math.max(baseline, ...backlog.map((step) => step.idx)),
+                    surfacedFully: true,
+                    steps: backlog.length
+                };
+                this.accountedIdx = Math.max(this.accountedIdx ?? -1, close.latestSeenIdx ?? -1);
+                return close;
+            }
+
+            const watcher = new AgyWakeWatcher({
+                source: windowSource,
+                baselineIdx: baseline,
+                pollMs: this.wakeTiming.pollMs,
+                maxPollMs: this.wakeTiming.maxPollMs,
+                quietMs: this.wakeTiming.quietMs,
+                capMs: this.wakeTiming.capMs,
+                waitForChange: lease?.waitForChange,
+                hasOpenBackgroundCommands: () => opts.bgIds.length > 0,
+                onStep: surface,
+                onActivity: () => this.session.onThinkingChange(true)
+            });
+            this.wakeWatcher = watcher;
+            watcher.start();
+            const close = await watcher.waitForSettle(opts.signal);
+            this.wakeWatcher = null;
+            this.noteWakeAccounted(close);
+            return close;
+        } finally {
+            lease?.close();
+        }
+    }
+
+    /**
+     * Folds a watcher close into the accounting watermark: a fully surfaced
+     * close accounts for everything the sources know; otherwise only what was
+     * actually surfaced, so the dequeue hold re-watches the rest.
+     */
+    private noteWakeAccounted(close: WakeWatcherClose): void {
+        const idx = close.surfacedFully ? close.latestSeenIdx : close.surfacedThroughIdx;
+        if (idx === null) return;
+        this.accountedIdx = Math.max(this.accountedIdx ?? -1, idx);
+    }
+
+    /**
+     * Maps one brain-transcript step onto the canonical rows the rest of the
+     * ACP thread speaks. Background-task completions (SYSTEM_MESSAGE) close
+     * the original ACP tool card; wakeup tool calls and their results pair FIFO.
+     */
+    private surfaceWakeStep(
+        step: AgyTranscriptStep,
+        state: { bgIds: string[]; pendingWakeCalls: string[] }
+    ): void {
+        if (step.kind === 'system') {
+            const completion = parseAgyTaskCompletion(step.content);
+            const bgId = state.bgIds.shift();
+            if (completion && bgId) {
+                this.forwardAgentMessage({
+                    type: 'tool_result',
+                    id: bgId,
+                    output: {
+                        output: `Command exited with code ${completion.exitCode}.\n\nCommand output:\n${completion.output}`.trim(),
+                        exit_code: completion.exitCode
+                    },
+                    status: completion.exitCode === 0 ? 'completed' : 'failed'
+                });
+                this.noteBackgroundTaskSettled(bgId);
+            }
+            return;
+        }
+        if (step.kind === 'planner') {
+            if (step.content.trim().length > 0) {
+                this.forwardAgentMessage({ type: 'text', text: step.content, live: false });
+            }
+            for (const call of step.toolCalls) {
+                const id = `agy-wake-${step.idx}-${this.wakeIdCounter++}`;
+                this.forwardAgentMessage({
+                    type: 'tool_call',
+                    id,
+                    name: call.name,
+                    input: call.args,
+                    status: 'in_progress',
+                    nativeName: call.name
+                });
+                state.pendingWakeCalls.push(id);
+            }
+            return;
+        }
+        if (step.kind === 'tool') {
+            if (step.status === 'running') return; // the ACP card already shows the backgrounded command
+            const wakeId = state.pendingWakeCalls.shift();
+            if (!wakeId) return; // result without a surfaced call: nothing to attach it to
+            this.forwardAgentMessage({
+                type: 'tool_result',
+                id: wakeId,
+                output: step.content,
+                status: step.status === 'error' ? 'failed' : 'completed'
+            });
+        }
+    }
+
     private handleUserEcho(text: string): void {
         const turn = this.turn;
         if (!turn) return;
@@ -773,6 +1099,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (echoed && prompt.text.startsWith(echoed)) {
                 prompt.echo = echoed;
                 prompt.done = echoed === prompt.text;
+                if (prompt.done && this.continuationMode === 'drop') {
+                    // The drop was consumed by this turn's pre-echo block; any
+                    // later straggler must be labeled, not silently dropped.
+                    this.continuationMode = 'label';
+                }
                 return;
             }
         }
@@ -797,19 +1128,61 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleTurnUpdate(turn: AgyTurn, message: AgentMessage): void {
-        switch (message.type) {
-            case 'usage':
-                turn.usage = addAgyUsage(turn.usage, message);
-                return;
-            case 'turn_complete':
-                turn.stopReason = message.stopReason;
-                return;
-            default:
-                turn.sawActivity = true;
-                turn.acknowledge();
-                this.trackToolWindow(turn, message);
-                this.forwardAgentMessage(this.showQuestionCard(message));
+        if (this.turn !== turn) {
+            // Frames arriving after the turn closed. agy sends none today (the
+            // continuation flush is deferred to the next prompt), so this only
+            // fires once agy delivers idle-period updates — the google-antigravity/antigravity-cli#1461 behavior
+            // fixed upstream. Trust ACP from then on and retire the watcher.
+            this.noteAcpIdleUpdate();
         }
+        if (message.type === 'usage') {
+            turn.usage = addAgyUsage(turn.usage, message);
+            return;
+        }
+        if (message.type === 'turn_complete') {
+            turn.stopReason = message.stopReason;
+            if (typeof message.numTurns === 'number') turn.numTurns = message.numTurns;
+            return;
+        }
+        // The pre-echo window: frames agy sends between the session/prompt
+        // request and its echo of the prompt. Per google-antigravity/antigravity-cli#1461 that block is the
+        // previous turn's continuation. Fully surfaced by the watcher (drop
+        // mode) it is suppressed; otherwise it is labeled as a continuation of
+        // the previous turn so it cannot read as the new prompt's answer.
+        if (this.isPreEchoFrame(turn) && isContinuationContent(message)) {
+            const cardCompletion = (message.type === 'tool_call' || message.type === 'tool_result')
+                && this.continuationCardIds.has(message.id);
+            if (this.continuationMode === 'drop' && !cardCompletion) return;
+            if (!turn.labeledPreEcho && !(this.continuationMode === 'drop' && cardCompletion)) {
+                turn.labeledPreEcho = true;
+                this.session.sendSessionEvent({
+                    type: 'message',
+                    message: 'Antigravity finished work from the previous turn:'
+                });
+            }
+        }
+        turn.sawActivity = true;
+        turn.acknowledge();
+        this.trackToolWindow(turn, message);
+        this.forwardAgentMessage(this.showQuestionCard(message));
+    }
+
+    /** True while the turn's echo has not completed within the bounded window. */
+    private isPreEchoFrame(turn: AgyTurn): boolean {
+        if (turn.promptEcho.done || turn.sentAt === null) return false;
+        return Date.now() - turn.sentAt < this.wakeTiming.preEchoWindowMs;
+    }
+
+    /** Continuation frames the block-dedupe must not swallow: agy's flush of a
+     * background command's completion closes the card with the real result. */
+    private readonly continuationCardIds = new Set<string>();
+
+    /** agy emitted frames with no prompt active: the upstream bug is fixed. */
+    private noteAcpIdleUpdate(): void {
+        if (this.acpEmitsIdleUpdates) return;
+        this.acpEmitsIdleUpdates = true;
+        this.continuationMode = 'label';
+        void this.wakeWatcher?.stop('disabled');
     }
 
     /**
@@ -850,8 +1223,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // for approval (pending) did not start, whatever happens to the turn.
         if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
             turn.openCommands.add(message.id);
+            turn.bgTaskDescriptions.set(message.id, backgroundTaskDescription(message));
         } else if (message.status !== 'in_progress') {
             turn.openCommands.delete(message.id);
+            // A completion delivered in-turn (or via the next prompt's flush)
+            // retires the background-task indicator entry.
+            this.noteBackgroundTaskSettled(message.id);
         }
         const now = Date.now();
         let window = turn.toolWindows.get(message.id);
@@ -861,6 +1238,44 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turn.idleWindows.push(window);
         }
         if (message.status === 'completed' || message.status === 'failed') window.end ??= now;
+    }
+
+    /**
+     * The hub's background-task indicator reads Claude's
+     * `system/background_tasks_changed` snapshot off the agent output stream
+     * (hub/src/sync/backgroundTasks.ts); agy reuses the shape so hub and web
+     * need no changes. Full snapshot on every membership change, empty once
+     * nothing runs — the launcher skips redundant snapshots itself, and the
+     * hub drops identical ones.
+     */
+    private emitBackgroundTasksSnapshot(): void {
+        const ids = [...this.activeBgTasks.keys()];
+        if (ids.length === this.lastBgSnapshotIds.length
+            && ids.every((id, index) => id === this.lastBgSnapshotIds[index])) return;
+        this.lastBgSnapshotIds = ids;
+        this.session.client.sendClaudeSessionMessage({
+            type: 'system',
+            uuid: randomUUID(),
+            subtype: 'background_tasks_changed',
+            tasks: ids.map((id) => ({
+                task_id: id,
+                task_type: 'local_bash',
+                description: this.activeBgTasks.get(id) ?? ''
+            }))
+        } as RawJSONLines);
+    }
+
+    /** One background command reported its end; empty list once none remain. */
+    private noteBackgroundTaskSettled(callId: string): void {
+        if (!this.activeBgTasks.delete(callId)) return;
+        this.emitBackgroundTasksSnapshot();
+    }
+
+    /** Abort and session end clear the indicator with an empty snapshot. */
+    private clearBackgroundTasksSnapshot(): void {
+        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) return;
+        this.activeBgTasks.clear();
+        this.emitBackgroundTasksSnapshot();
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
@@ -998,8 +1413,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         const hadTurn = this.turn !== null;
         await this.cancelActiveTurn();
+        void this.wakeWatcher?.stop('next-prompt');
         this.abortController.abort();
         this.abortController = new AbortController();
+        this.clearBackgroundTasksSnapshot();
         if (hadTurn) {
             this.session.sendSessionEvent({ type: 'message', message: 'Turn aborted' });
             this.messageBuffer.addMessage('Turn aborted', 'status');
@@ -1029,6 +1446,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.clearBackgroundTasksSnapshot();
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
             steered: false,
             error: 'Session ending'
@@ -1036,6 +1454,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
         await this.permissionHandler?.cancelAll('Session ended');
         this.permissionHandler = null;
+        void this.wakeWatcher?.stop('next-prompt');
         const backend = this.backend;
         this.backend = null;
         await backend?.disconnect();
@@ -1045,6 +1464,27 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+/** Content frames the pre-echo gate applies to (bookkeeping frames pass freely). */
+function isContinuationContent(message: AgentMessage): boolean {
+    return message.type === 'text'
+        || message.type === 'reasoning'
+        || message.type === 'tool_call'
+        || message.type === 'tool_result'
+        || message.type === 'plan'
+        || message.type === 'generated_image';
+}
+
+/** The command text for the background-task indicator; the card title as fallback. */
+function backgroundTaskDescription(message: AgentMessage & { type: 'tool_call' }): string {
+    const command = message.nativeArgs && typeof message.nativeArgs === 'object'
+        && !Array.isArray(message.nativeArgs)
+        ? (message.nativeArgs as { CommandLine?: unknown }).CommandLine
+        : undefined;
+    if (typeof command === 'string' && command.trim().length > 0) return command;
+    if (typeof message.title === 'string' && message.title.trim().length > 0) return message.title;
+    return message.name;
 }
 
 /** agy releases before 1.5.0 have no `acp` subcommand, so name the floor. */
