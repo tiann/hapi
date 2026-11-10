@@ -98,7 +98,12 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
-    usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
+    usePinInProgressSessions: () => ({
+        pinInProgressMode: 'off' as const,
+        setPinInProgressMode: vi.fn(),
+        pinInProgressSessions: false,
+        setPinInProgressSessions: vi.fn(),
+    }),
 }))
 
 vi.mock('@/hooks/useKeepUnreadSessionsVisible', () => ({
@@ -318,7 +323,9 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+        // Fixed session order removed — SessionListView owns list order (#2263).
         expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Long-running jobs' })).toBeInTheDocument()
     })
 
     it('keeps the session status description visible with its choice group', () => {

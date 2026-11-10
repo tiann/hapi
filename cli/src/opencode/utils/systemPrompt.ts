@@ -10,6 +10,7 @@ import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER }
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { HAPI_MCP_BRIDGE_PROMPT } from '@/modules/common/hapiMcpBridgePrompt';
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
+import { withSessionJobInstruction } from '@/modules/common/sessionJobInstruction';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
@@ -27,7 +28,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(TITLE_INSTRUCTION, env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(TITLE_INSTRUCTION), env)
 }
 
 /**
@@ -46,7 +47,7 @@ export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
 `);
 
 export function getOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(OPENCODE_NATIVE_TOOL_INSTRUCTION, env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(OPENCODE_NATIVE_TOOL_INSTRUCTION), env)
 }
 
 /**
