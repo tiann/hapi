@@ -110,6 +110,13 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     }
 }))
 
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async () => ({
+        server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+        mcpServers: {}
+    }))
+}))
+
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
@@ -125,13 +132,7 @@ function deadTransportError(message = 'ACP process exited (code=1, signal=null)'
     return error
 }
 
-function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionId: string | null = null) {
-    const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
-    for (const [message, mode] of batches) {
-        queue.push(message, mode)
-    }
-    queue.close()
-
+function createSessionFromQueue(queue: MessageQueue2<HermesMode>, sessionId: string | null = null) {
     return {
         path: '/tmp/hermes-test',
         logPath: '/tmp/hermes-test/hapi.log',
@@ -150,6 +151,15 @@ function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionI
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
+}
+
+function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionId: string | null = null) {
+    const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+    for (const [message, mode] of batches) {
+        queue.push(message, mode)
+    }
+    queue.close()
+    return createSessionFromQueue(queue, sessionId)
 }
 
 function createSession(mode?: HermesMode, sessionId: string | null = null) {
@@ -179,7 +189,7 @@ describe('HermesRemoteLauncher', () => {
         harness.newSessionBlocker = null
     })
 
-    it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
+    it('creates a fresh ACP session and forwards text prompts', async () => {
         const session = createSession()
         const launcher = new HermesRemoteLauncher(session as never)
 
@@ -630,5 +640,77 @@ describe('HermesRemoteLauncher', () => {
             message: 'Hermes prompt failed: unknown session'
         })
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+    })
+
+    it('mounts the hapi MCP bridge servers on a fresh ACP session and stops the server with the launcher', async () => {
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        const stop = vi.fn()
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce({
+            server: { url: 'http://127.0.0.1:9/mcp', stop },
+            mcpServers: {
+                hapi: { command: '/usr/local/bin/hapi', args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'], tools: {} }
+            }
+        } as never)
+        const session = createSession()
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(buildHapiMcpBridge).toHaveBeenCalledWith(session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: '/tmp/hermes-test', flavor: 'hermes' }
+        })
+        expect(harness.backend?.newSession).toHaveBeenCalledWith({
+            cwd: '/tmp/hermes-test',
+            mcpServers: [{
+                name: 'hapi',
+                command: '/usr/local/bin/hapi',
+                args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'],
+                env: []
+            }]
+        })
+        // The bridge HTTP server is torn down with the launcher.
+        expect(stop).toHaveBeenCalled()
+    })
+
+    it('remounts the same hapi MCP bridge servers on resume and on the respawned backend', async () => {
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        vi.mocked(buildHapiMcpBridge).mockResolvedValueOnce({
+            server: { url: 'http://127.0.0.1:9/mcp', stop: vi.fn() },
+            mcpServers: {
+                hapi: { command: '/usr/local/bin/hapi', args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'], tools: {} }
+            }
+        } as never)
+        // Gateway daemon restart mid-conversation: the first prompt dies with
+        // the transport's typed dead-marker and the launcher respawns.
+        harness.promptErrorQueue = [deadTransportError()]
+        const session = createSessionWithBatches([['hello', {}]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const expectedServers = [{
+            name: 'hapi',
+            command: '/usr/local/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:9/mcp'],
+            env: []
+        }]
+        // Hermes mounts client MCP servers on resume too: the initial resume
+        // and the respawn's resume both carry the SAME bridge list — built
+        // once per launcher, remounted by every establishment.
+        expect(harness.backends[0].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: expectedServers
+        })
+        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: expectedServers
+        })
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'hello' }]
+        ])
     })
 })
