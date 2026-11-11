@@ -348,9 +348,31 @@ describe('applyNofileBump', () => {
     });
 
     expect(result.command).toBe('/bin/sh');
-    expect(result.args[0]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
-    expect(result.args[1]).toBe('/usr/local/bin/hapi');
-    expect(result.args.slice(2)).toEqual(['claude', '--started-by', 'runner']);
+    expect(result.args[0]).toBe('-c');
+    expect(result.args[1]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
+    // $0 placeholder so `exec "$@"` starts at the real command.
+    expect(result.args[2]).toBe('sh');
+    expect(result.args[3]).toBe('/usr/local/bin/hapi');
+    expect(result.args.slice(4)).toEqual(['claude', '--started-by', 'runner']);
+  });
+
+  it('actually launches the wrapped command through /bin/sh (real exec, not mocked)', async () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+    const { execFileSync } = await vi.importActual<typeof import('child_process')>('child_process');
+
+    const result = applyNofileBump('/bin/echo', ['launched-ok'], {
+      platform: process.platform,
+      softLimit: 10240
+    });
+
+    // Guards the shell-invocation shape: without `-c` sh treats the script
+    // string as a file name (exit 127), and without the $0 placeholder
+    // `exec "$@"` would drop the real command.
+    const stdout = execFileSync(result.command, result.args, { encoding: 'utf8' });
+    expect(stdout.trim()).toBe('launched-ok');
   });
 
   it('leaves the command unchanged when the soft limit is already comfortable', async () => {
@@ -429,7 +451,11 @@ describe('applyNofileBump', () => {
 
     const [command, args, options] = spawnMock.mock.calls[0] as unknown[];
     expect(command).toBe('/bin/sh');
-    expect((args as string[])[0]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
+    expect((args as string[]).slice(0, 3)).toEqual([
+      '-c',
+      'ulimit -n 1048576 2>/dev/null; exec "$@"',
+      'sh'
+    ]);
     const env = (options as SpawnOptions).env as Record<string, string | undefined>;
     expect(env?.HAPI_CLI_EXECUTABLE).not.toBe('/bin/sh');
     expect(typeof env?.HAPI_CLI_EXECUTABLE).toBe('string');

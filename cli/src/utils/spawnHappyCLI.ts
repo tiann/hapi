@@ -92,9 +92,13 @@ export function applyNofileBump(
   if (!Number.isFinite(softLimit) || softLimit >= NOFILE_BUMP_THRESHOLD) {
     return { command, args };
   }
+  // `sh -c <script> <argv0> <cmd> <args...>`: the first arg after the script
+  // string becomes $0, so `"$@"` starts at the real command. Without `-c` sh
+  // would treat the script string as a file name and fail with exit 127;
+  // without the $0 placeholder `exec "$@"` would drop the real command.
   return {
     command: '/bin/sh',
-    args: [`ulimit -n ${NOFILE_BUMP_TARGET} 2>/dev/null; exec "$@"`, command, ...args]
+    args: ['-c', `ulimit -n ${NOFILE_BUMP_TARGET} 2>/dev/null; exec "$@"`, 'sh', command, ...args]
   };
 }
 
