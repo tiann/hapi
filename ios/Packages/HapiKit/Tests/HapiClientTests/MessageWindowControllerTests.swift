@@ -428,6 +428,31 @@ struct MessageWindowControllerTests {
         #expect(replaced.oldestPosition?.seq == 901)
         #expect(replaced.warning == nil)
     }
+    @Test func noNewsRecoveryKeepsTheLoadedOlderCursor() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "gap-cursor")
+        initial.epoch = 1
+        initial.hasMore = true
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        initial.newestPosition = MessagePosition(at: 800_000, seq: 800)
+        initial.messages = (1...800).map { WindowMessage(wire: agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000)) }
+        let controller = MessageWindowController(sessionId: "gap-cursor", provider: provider, initialState: initial)
+        await provider.release(afterPage([], epoch: 1, nextAfter: (800_000, 800), hasMore: false))
+        await provider.release(latestPage(
+            (601...800).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, hasMore: true
+        ))
+
+        await controller.recoverAfterGapResume()
+
+        // The latest page excludes the held rows 1-600: the older-paging
+        // cursor must stay at the window edge (row 1) instead of jumping to
+        // the page's own bound (row 600), like the web keeps it.
+        let state = await controller.state
+        #expect(state.messages.count == 800)
+        #expect(state.oldestPosition?.seq == 1)
+        #expect(state.hasMore)
+    }
 
     @Test func stalledOlderCursorDoesNotApplyOrPretendHistoryIsExhausted() async {
         let provider = GatedMessagesProvider()

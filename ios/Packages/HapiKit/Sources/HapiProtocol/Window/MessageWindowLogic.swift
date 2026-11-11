@@ -319,8 +319,15 @@ public enum MessageWindowLogic {
             oldest = derivePosition(trim.kept, .oldest)
         } else if replaceServerRows {
             oldest = responseOldest
+        } else if responseOldest == nil {
+            oldest = previous.oldestPosition
+        } else if previous.oldestPosition == nil {
+            oldest = responseOldest
         } else {
-            oldest = responseOldest ?? previous.oldestPosition
+            // An upsert keeps rows older than the response page, so the
+            // older-paging cursor must stay on whichever side is older
+            // instead of jumping to the response page's own bound.
+            oldest = responseOldest! <= previous.oldestPosition! ? responseOldest : previous.oldestPosition
         }
         var next = settingMessages(previous, trim.kept)
         next.readThroughRevision = max(previous.readThroughRevision ?? 0, page.readThroughRevision ?? 0, trim.kept.compactMap(\.contentRevision).max() ?? 0)
