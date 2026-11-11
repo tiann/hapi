@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { configuration } from '@/configuration';
 import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
 import packageJson from '../../package.json';
+import { IMAGE_DELIVERY_GUIDANCE } from '@/modules/common/displayImagePrompt';
 
 const SESSION_CITATION_INSTRUCTION = buildSessionCitationSteerInstruction({
     inspectTool: 'mcp__hapi__inspect_peer',
@@ -131,7 +132,7 @@ export default function hapiPiExtension(pi) {
         name: 'hapi_display_image',
         label: 'Display Image',
         promptSnippet: 'Show a local image to the user in the HAPI chat.',
-        description: "Display a local image file to the human user inline in the current HAPI chat session. Call it when the user asks to view a local image, screenshot, or diagram. The image is shown in the chat; note it also enters the model context, so prefer reading the file for analysis and this tool for presentation.",
+        description: ${JSON.stringify(IMAGE_DELIVERY_GUIDANCE + "\nUse hapi_display_image for tool delivery with an absolute filesystem path (PNG, JPEG, GIF, or WebP, up to 25 MiB). The image is shown in the chat and also enters the model context; prefer reading the file for analysis and this tool for presentation.")},
         parameters: Type.Object({
             path: Type.String({ description: 'Absolute filesystem path of the local image to display (png, jpeg, gif or webp, up to 25 MiB).' })
         }),
