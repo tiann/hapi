@@ -573,4 +573,46 @@ class MessageWindowStoreTest {
         assertEquals(merged.content, state.messages.first { it.id == "call-row" }.wire.content)
         assertNull(state.warning)
     }
+
+    @Test
+    fun `recovery catch-up overflowing the history budget stays reset-marked`() = runTest {
+        val cached = (1L..600L).map { agentRow("r-$it", it, it * 1000) }
+        val caughtUp = (601L..800L).map { agentRow("r-$it", it, it * 1000) }
+        val recoveryPage = (901L..1100L).map { agentRow("r-$it", it, it * 1000) }
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("gap-overflow", api, backgroundScope, initialState = MessageWindowState(
+            sessionId = "gap-overflow", viewMode = MessageViewMode.History, epoch = 1, hasMore = true,
+            oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(600_000, 600),
+            messages = cached.map { it.asWindowMessage() },
+        ))
+        api.release(afterPage(caughtUp, epoch = 1, nextAfter = 800_000L to 800L, hasMore = true))
+        api.release(latestPage(recoveryPage, epoch = 1))
+
+        store.recoverAfterGapResume()
+
+        // The catch-up page overflowed the 600-row history budget: the
+        // prepend trim kept rows 1-600, dropped the caught-up 601-800, and
+        // marked the window for a reset. The recovery must not reconcile the
+        // latest page on top — rows 601-900 would sit between the two
+        // cursors, unreachable from either — and must not consume the
+        // recovery flags.
+        val overflowed = store.state.value
+        assertEquals((1L..600L).map { "r-$it" }, overflowed.messages.map { it.id })
+        assertTrue(overflowed.requiresLatestReset)
+        assertTrue(overflowed.pendingGapRecovery)
+        assertNull(overflowed.warning)
+
+        // Returning to the tail view applies the authoritative replacement
+        // and closes the hole.
+        store.setViewMode(MessageViewMode.Tail)
+        store.syncTail()
+
+        val replaced = store.state.value
+        assertEquals((901L..1100L).map { "r-$it" }, replaced.messages.map { it.id })
+        assertEquals(false, replaced.requiresLatestReset)
+        assertEquals(false, replaced.pendingGapRecovery)
+        assertEquals(901L, replaced.oldestPosition!!.seq)
+        assertNull(replaced.warning)
+    }
+
 }
