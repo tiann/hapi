@@ -2688,6 +2688,42 @@ describe('AgyAcpRemoteLauncher late continuation (raced completion keeps watchin
     });
 });
 
+describe('AgyAcpRemoteLauncher Stop during a live continuation', () => {
+    it('cancels agy when stopping a live continuation instead of only stopping observation', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: { ...WAKE_TIMING, quietMs: 5_000 },
+            createWakeSource: () => source
+        });
+
+        // The wake window is live and agy is still generating the wakeup.
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        await vi.waitFor(() => expect(client.rpcHandlerManager.handlers.has(RPC_METHODS.Abort)).toBe(true));
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+
+        // Stop reaches agy (session/cancel), not just the observer.
+        expect(backend.cancelCalls).toContainEqual('agy-conv-new');
+        expect(sessionEvents(client)).toContainEqual({ type: 'message', message: 'Turn aborted' });
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        queue.close();
+        await run;
+    });
+});
+
 describe('AgyAcpRemoteLauncher late continuation (surfacer did not run)', () => {
     it('labels the flushed block after a restart instead of mixing it into the new turn', async () => {
         const { session, queue, client } = makeSession();

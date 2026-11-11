@@ -257,6 +257,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private currentModelId: string | null = null;
     private turnPermissionMode: PermissionMode | undefined = undefined;
     private turn: AgyTurn | null = null;
+    // The turn whose wake window is still running after answerMain: agy keeps
+    // generating the wakeup, so Stop must still reach it (session/cancel).
+    private continuationTurn: AgyTurn | null = null;
     private backendLost = false;
     // Transcript source for the late-continuation watcher; null when agy's
     // records cannot be read (workaround for google-antigravity/antigravity-cli#1461, deleted with it).
@@ -698,13 +701,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 && !this.acpEmitsIdleUpdates;
             let watcherClose: WakeWatcherClose | null = null;
             if (watcherEligible && this.wakeSource) {
-                watcherClose = await this.runWakeWindow({
-                    bgIds: turn.bgCompletionIds,
-                    signal: this.abortController.signal,
-                    accountedIdx: this.accountedIdx ?? -1,
-                    turnBaseIdx: turn.countBaseIdx,
-                    taskDescriptions: turn.bgTaskDescriptions
-                });
+                // agy is still generating the wakeup; keep it cancellable while
+                // the window observes, so Stop reaches it via session/cancel.
+                this.continuationTurn = turn;
+                try {
+                    watcherClose = await this.runWakeWindow({
+                        bgIds: turn.bgCompletionIds,
+                        signal: this.abortController.signal,
+                        accountedIdx: this.accountedIdx ?? -1,
+                        turnBaseIdx: turn.countBaseIdx,
+                        taskDescriptions: turn.bgTaskDescriptions
+                    });
+                } finally {
+                    this.continuationTurn = null;
+                }
             }
             if (watcherClose) {
                 this.continuationMode = watcherClose.reason === 'quiet' && watcherClose.surfacedFully
@@ -1397,7 +1407,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async cancelActiveTurn(): Promise<void> {
-        const turn = this.turn;
+        // A live continuation owns no this.turn anymore (answerMain already
+        // ran), but agy is still generating: Stop must cancel it too.
+        const turn = this.turn ?? this.continuationTurn;
         if (turn) {
             turn.aborted = true;
             this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
@@ -1473,7 +1485,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
-        const hadTurn = this.turn !== null;
+        const hadTurn = this.turn !== null || this.continuationTurn !== null;
         await this.cancelActiveTurn();
         void this.wakeWatcher?.stop('next-prompt');
         this.abortController.abort();
