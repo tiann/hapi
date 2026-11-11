@@ -69,6 +69,10 @@ describe('getPendingRequestKinds', () => {
 })
 
 describe('toSessionSummary', () => {
+    it('carries createdAt for the fixed-order list sort', () => {
+        expect(toSessionSummary(makeSession({ createdAt: 1_234 })).createdAt).toBe(1_234)
+    })
+
     it('includes the pinned state', () => {
         expect(toSessionSummary(makeSession({ pinned: true })).pinned).toBe(true)
         expect(toSessionSummary(makeSession({ globalPinned: true })).globalPinned).toBe(true)
@@ -102,17 +106,18 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.agentSessionId).toBe('cursor-session-1')
     })
 
-    it('does not claim a native resume token for fresh-only DSH ACP', () => {
+    it('uses the DSH native session id as the resume token', () => {
         const summary = toSessionSummary(makeSession({
             metadata: {
                 path: '/proj',
                 host: 'local',
                 flavor: 'dsh',
-                codexSessionId: 'stale-codex-id'
+                codexSessionId: 'stale-codex-id',
+                dshSessionId: 'dsh-session-1'
             }
         }))
 
-        expect(summary.metadata?.agentSessionId).toBeUndefined()
+        expect(summary.metadata?.agentSessionId).toBe('dsh-session-1')
     })
 
     it('does not fall back to a stale cross-agent id for a known flavor', () => {
@@ -330,6 +335,27 @@ describe('summary derivation helpers', () => {
         expect(computePendingRequestsCount(undefined)).toBe(0)
     })
 
+    it('includes attachedJob when provided via extras', () => {
+        const job = {
+            key: 'beets',
+            label: 'beets import',
+            status: 'running' as const,
+            remaining: 120,
+            unit: 'tracks',
+            heartbeatAt: 9_000,
+            startedAt: 1_000,
+            updatedAt: 9_000
+        }
+        const summary = toSessionSummary(makeSession(), { attachedJob: job })
+        expect(summary.attachedJob).toEqual(job)
+        expect(summary.attachedJobUpdatedAt).toBe(job.updatedAt)
+    })
+
+    it('defaults attachedJob to null', () => {
+        expect(toSessionSummary(makeSession()).attachedJob).toBeNull()
+        expect(toSessionSummary(makeSession()).attachedJobUpdatedAt).toBe(0)
+    })
+
     it('toSessionSummaryMetadata returns null for null metadata', () => {
         expect(toSessionSummaryMetadata(null)).toBeNull()
         expect(toSessionSummaryMetadata(undefined)).toBeNull()
@@ -342,5 +368,15 @@ describe('summary derivation helpers', () => {
             cursorSessionId: 'cursor-xyz'
         })
         expect(summary?.agentSessionId).toBe('cursor-xyz')
+    })
+
+    it('carries current-fork capability into list summaries', () => {
+        const summary = toSessionSummaryMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'codex',
+            capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } }
+        })
+        expect(summary?.conversationHistory).toEqual({ forkCurrent: true, forkAtMessage: true })
     })
 })

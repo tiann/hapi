@@ -10,7 +10,6 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
-import { extractUserRequest } from '@/agy/utils/agyMessageText'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, TerminalOutputPayload, Update } from '@hapi/protocol'
@@ -234,6 +233,15 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 export class ApiSessionClient extends EventEmitter {
     private reconnectHandler: (() => void) | null = null
     onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
+    /** When false, socket.io must not keep the CLI immortal after hub archive (#1910). */
+    private allowReconnect = true
+    /**
+     * Latch for hub-archived EXIT (#1911 criterion 6). Bootstrap may apply
+     * hub-archived via updateMetadata CAS before flavor runners call
+     * registerKillSessionHandler; EventEmitter does not replay past emits, so
+     * the handler must read this synchronously at registration.
+     */
+    hubArchived = false
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -250,6 +258,8 @@ export class ApiSessionClient extends EventEmitter {
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
+    // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
+    private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
     private agentTerminalResize: ((cols: number, rows: number) => void) | null = null
@@ -332,16 +342,26 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('Socket connected successfully')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
-            if (this.hasConnectedOnce) {
+            const isReconnect = this.hasConnectedOnce
+            if (isReconnect) {
                 this.needsBackfill = true
             }
-            void this.backfillIfNeeded()
+            // Hub may have archived while we were offline (KillSession miss +
+            // no live update-session). On reconnect, reconcile metadata before
+            // message backfill so hub-archived can stop reconnect immortality (#1910).
+            const afterMeta = isReconnect
+                ? this.refreshMetadata()
+                : Promise.resolve()
+            void afterMeta.finally(() => {
+                void this.backfillIfNeeded()
+            })
             this.hasConnectedOnce = true
             this.reconnectHandler?.()
             this.socket.emit('session-alive', {
                 sid: this.sessionId,
                 time: Date.now(),
-                thinking: false
+                thinking: false,
+                ...this.latestKeepAlive
             })
         })
 
@@ -353,6 +373,13 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
             this.terminalManager.closeAll()
+            if (!this.allowReconnect) {
+                try {
+                    this.socket.io.opts.reconnection = false
+                    this.socket.disconnect()
+                } catch { /* already tearing down */ }
+                return
+            }
             if (this.hasConnectedOnce) {
                 this.needsBackfill = true
             }
@@ -439,8 +466,8 @@ export class ApiSessionClient extends EventEmitter {
                     // Explicit user retry: release any held in-memory
                     // reservation and bypass the normal message-id dedup.
                     let accepted = true
-                    if (data.body.localId && this.cancelQueuedMessageCallback) {
-                        const cancellation = this.cancelQueuedMessageCallback(data.body.localId)
+                    if (data.body.localId) {
+                        const cancellation = this.cancelQueuedMessage(data.body.localId)
                         const cancelled = cancellation instanceof Promise ? await cancellation : cancellation
                         accepted = cancelled !== 'in-flight' && cancelled !== 'consumed'
                         if (cancelled === 'indeterminate') {
@@ -459,8 +486,8 @@ export class ApiSessionClient extends EventEmitter {
                 }
 
                 if (data.body.t === 'cancel-queued-message') {
-                    const cancellation = (data.body.localId && this.cancelQueuedMessageCallback)
-                        ? this.cancelQueuedMessageCallback(data.body.localId)
+                    const cancellation = data.body.localId
+                        ? this.cancelQueuedMessage(data.body.localId)
                         : false
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
@@ -477,13 +504,7 @@ export class ApiSessionClient extends EventEmitter {
 
                 if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
-                        const parsed = MetadataSchema.safeParse(data.body.metadata.value)
-                        if (parsed.success) {
-                            this.metadata = parsed.data
-                        } else {
-                            logger.debug('[API] Ignoring invalid metadata update', { version: data.body.metadata.version })
-                        }
-                        this.metadataVersion = data.body.metadata.version
+                        this.applyRemoteMetadata(data.body.metadata.version, data.body.metadata.value)
                     }
                     if (data.body.agentState && data.body.agentState.version > this.agentStateVersion) {
                         const next = data.body.agentState.value
@@ -715,6 +736,15 @@ export class ApiSessionClient extends EventEmitter {
         this.retryQueuedMessageCallback = callback
     }
 
+    private cancelQueuedMessage(localId: string): QueueCancelResult | Promise<QueueCancelResult> {
+        const remaining = this.pendingMessages.filter((pending) => pending.localId !== localId)
+        if (remaining.length !== this.pendingMessages.length) {
+            this.pendingMessages = remaining
+            return true
+        }
+        return this.cancelQueuedMessageCallback?.(localId) ?? false
+    }
+
     private enqueueUserMessage(message: UserMessage, localId?: string): void {
         if (this.pendingMessageCallback) {
             this.pendingMessageCallback(message, localId)
@@ -819,6 +849,68 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    /**
+     * Apply a remote metadata snapshot (Socket.IO update-session or reconnect
+     * REST reconcile). Advances metadataVersion and emits hub-archived when
+     * the hub flipped lifecycle while this CLI was unreachable.
+     */
+    private applyRemoteMetadata(version: number, value: unknown): void {
+        if (version <= this.metadataVersion) return
+        const parsed = MetadataSchema.safeParse(value)
+        if (!parsed.success) {
+            logger.debug('[API] Ignoring invalid metadata update', { version })
+            this.metadataVersion = version
+            return
+        }
+        const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+            && this.metadata?.archivedBy === 'hub'
+        this.metadata = parsed.data
+        this.metadataVersion = version
+        // #1910: hub may archive via metadata when KillSession cannot reach
+        // this CLI. Stop reconnect immortality and let runners exit instead
+        // of sitting as PPID=1 orphans.
+        if (!wasHubArchived
+            && parsed.data.lifecycleState === 'archived'
+            && parsed.data.archivedBy === 'hub') {
+            this.noteHubArchived()
+        }
+    }
+
+    private noteHubArchived(): void {
+        this.hubArchived = true
+        this.allowReconnect = false
+        try {
+            this.socket.io.opts.reconnection = false
+        } catch { /* socket may be mid-teardown */ }
+        this.emit('hub-archived')
+    }
+
+    /** Refresh Hub-owned metadata before an explicit tool action or after reconnect. */
+    async refreshMetadata(): Promise<boolean> {
+        try {
+            const response = await axios.get(
+                `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}`,
+                {
+                    headers: buildHubRequestHeaders({
+                        Authorization: `Bearer ${this.token}`,
+                        'Content-Type': 'application/json'
+                    }),
+                    timeout: 15_000
+                }
+            )
+            const session = response.data?.session
+            if (!session || typeof session.metadataVersion !== 'number') return false
+            if (session.metadata !== null && !MetadataSchema.safeParse(session.metadata).success) return false
+            if (session.metadataVersion >= this.metadataVersion) {
+                this.applyRemoteMetadata(session.metadataVersion, session.metadata)
+            }
+            return true
+        } catch (error) {
+            logger.debug('[API] Session metadata reconcile failed', error)
+            return false
+        }
+    }
+
     private async backfillMessages(): Promise<void> {
         if (this.backfillInFlight) {
             await this.backfillInFlight
@@ -894,18 +986,18 @@ export class ApiSessionClient extends EventEmitter {
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
         let content: MessageContent
-        // Origin timestamp (epoch ms) from the transcript entry's own `timestamp`,
-        // forwarded only for agent messages so the hub can stamp created_at/invoked_at
-        // with the jsonl entry's own time instead of hub-receive time (fixes chat
-        // order drifting from the PTY transcript during bursts/resume — see
-        // transcript ordering contract). The external-user-echo path is left
-        // unchanged: it has no localId either, but its existing arrival-time
-        // stamping already reflects when it was actually forwarded/consumed.
+        // Preserve transcript time for agent output and genuine local input.
+        // Replaying a historical user row must not promote the session as if
+        // the user just sent a new prompt. Hub prompt echoes are not input.
         let createdAt: number | undefined
 
         if (isExternalUserMessage(body)) {
             const text = extractRawUserTextContent(body.message.content) ?? ''
             const isTranscriptEcho = this.consumePendingHubPromptEcho(text)
+            if (!isTranscriptEcho && body.timestamp) {
+                const parsed = Date.parse(body.timestamp)
+                if (Number.isFinite(parsed)) createdAt = parsed
+            }
             content = {
                 role: 'user',
                 content: {
@@ -953,78 +1045,6 @@ export class ApiSessionClient extends EventEmitter {
                 }
             }))
         }
-    }
-
-    sendAgySessionMessage(
-        entry: { type: string; content?: string; tool_calls?: { name: string; args: Record<string, unknown> }[]; step_index?: number; model?: string },
-        conversationId?: string,
-        // The tool CALL (name + args) that produced this action entry, paired by
-        // the launcher from the preceding PLANNER_RESPONSE. agy splits the
-        // invocation (name/args live on the planner step) from its result (the
-        // action entry's `content`), so without this the tool card has no input
-        // to show — just the raw result. Carrying it here lets the web render a
-        // command/path/args like the other flavors.
-        toolCall?: { name: string; args: Record<string, unknown> }
-    ): void {
-        const isUser = entry.type === 'USER_INPUT'
-        // agy appends its own sections (<ADDITIONAL_METADATA>, <USER_SETTINGS_CHANGE>)
-        // after the request block, so only the extracted request may be rendered.
-        const text = isUser ? (extractUserRequest(entry.content ?? '') ?? entry.content ?? '').trim() : undefined
-
-        if (isUser && text) {
-            this.socket.emit('message', {
-                sid: this.sessionId,
-                message: {
-                    role: 'user',
-                    content: { type: 'text', text },
-                    meta: { sentFrom: 'cli' }
-                }
-            })
-            return
-        }
-
-        // agy's structured entry types map to distinct chat renderings:
-        //  - PLANNER_RESPONSE → the agent's prose (agy_message). Its `tool_calls`
-        //    are only the model's INTENT and are immediately followed by the real
-        //    action entry below, so we intentionally don't render them separately
-        //    (that produced a duplicate "view_file" + "View file" card).
-        //  - every other type (VIEW_FILE, RUN_COMMAND, LIST_DIRECTORY, CODE_ACTION,
-        //    …) is a tool ACTION whose `content` is its result. Render it as a
-        //    collapsible tool card (agy_tool_action) instead of dumping the raw
-        //    (often huge) result text as a chat bubble.
-        let data: Record<string, unknown>
-        if (entry.type !== 'PLANNER_RESPONSE') {
-            // Key the tool card by conversationId:stepIdx — the SAME id the
-            // PreToolUse permission request uses — so a gated tool's approval card
-            // and its result merge into one card (no stuck "running" duplicate)
-            // while still showing the pending approval in real time.
-            const toolUseId = conversationId != null && entry.step_index != null
-                ? `${conversationId}:${entry.step_index}`
-                : undefined
-            data = {
-                type: 'agy_tool_action',
-                name: entry.type,
-                content: entry.content ?? '',
-                toolUseId,
-                // The invocation the web renders as the tool INPUT. `toolName` is
-                // agy's own tool id (run_command, view_file, …) which the web maps
-                // to a canonical presentation; `input` is the raw args.
-                toolName: toolCall?.name,
-                input: toolCall?.args
-            }
-        } else {
-            // Tag the agent response with the model that produced it (per-turn),
-            // enriched by the scanner from the conversation DB.
-            data = { type: 'agy_message', content: entry.content ?? '', model: entry.model }
-        }
-        this.socket.emit('message', {
-            sid: this.sessionId,
-            message: {
-                role: 'agent',
-                content: { type: 'output', data },
-                meta: { sentFrom: 'cli' }
-            }
-        })
     }
 
     sendUserMessage(text: string, meta?: MessageMeta, localId?: string): void {
@@ -1109,8 +1129,9 @@ export class ApiSessionClient extends EventEmitter {
         type: 'compact-summary'
         summary: string
         tokensBefore?: number
+        tokensAfter?: number
         estimatedTokensAfter?: number
-    }, id?: string): void {
+    }, id?: string, options?: { localId: string }): void {
         const content = {
             role: 'agent',
             content: {
@@ -1123,7 +1144,8 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                ...(options?.localId ? { localId: options.localId } : {})
             })
         }, event.type === 'message' || event.type === 'error' || event.type === 'compact-summary' ? 'lossless' : 'droppable')
     }
@@ -1213,15 +1235,14 @@ export class ApiSessionClient extends EventEmitter {
             copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
         }
     ): void {
-        if (this.state !== 'active') {
+        this.latestKeepAlive = { thinking, mode, ...(runtime ?? {}) }
+        if (this.state !== 'active' || !this.socket.connected) {
             return
         }
         this.socket.volatile.emit('session-alive', {
             sid: this.sessionId,
             time: Date.now(),
-            thinking,
-            mode,
-            ...(runtime ?? {})
+            ...this.latestKeepAlive
         })
     }
 
@@ -1308,6 +1329,13 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
+                // #1911 M1 criterion 6: hub-archived → EXIT (same as applyRemoteMetadata).
+                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    this.noteHubArchived()
+                    logger.debug('[API] Skipping metadata update; session hub-archived')
+                    return
+                }
+
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
 
@@ -1317,26 +1345,55 @@ export class ApiSessionClient extends EventEmitter {
                     metadata: updated
                 }) as unknown
 
-                applyVersionedAck(answer, {
-                    valueKey: 'metadata',
-                    parseValue: (value) => {
-                        const parsed = MetadataSchema.safeParse(value)
-                        return parsed.success ? parsed.data : null
-                    },
-                    applyValue: (value) => {
-                        this.metadata = value
-                    },
-                    applyVersion: (version) => {
-                        this.metadataVersion = version
-                    },
-                    logInvalidValue: (context, version) => {
-                        const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
-                        logger.debug(`[API] Ignoring invalid metadata value from ${suffix}`, { version })
-                    },
-                    invalidResponseMessage: 'Invalid update-metadata response',
-                    errorMessage: 'Metadata update failed',
-                    versionMismatchMessage: 'Metadata version mismatch'
-                })
+                try {
+                    applyVersionedAck(answer, {
+                        valueKey: 'metadata',
+                        parseValue: (value) => {
+                            const parsed = MetadataSchema.safeParse(value)
+                            return parsed.success ? parsed.data : null
+                        },
+                        applyValue: (value) => {
+                            // Route success+preserve (and mismatch) through the same
+                            // hub-archived detector as applyRemoteMetadata so the CLI
+                            // exits rather than booting against an archived row.
+                            const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+                                && this.metadata?.archivedBy === 'hub'
+                            this.metadata = value
+                            if (
+                                !wasHubArchived
+                                && value?.lifecycleState === 'archived'
+                                && value?.archivedBy === 'hub'
+                            ) {
+                                this.noteHubArchived()
+                            }
+                        },
+                        applyVersion: (version) => {
+                            this.metadataVersion = version
+                        },
+                        logInvalidValue: (context, version) => {
+                            const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
+                            logger.debug(`[API] Ignoring invalid metadata value from ${suffix}`, { version })
+                        },
+                        invalidResponseMessage: 'Invalid update-metadata response',
+                        errorMessage: 'Metadata update failed',
+                        versionMismatchMessage: 'Metadata version mismatch'
+                    })
+                } catch (error) {
+                    // True version races still throw; if hub archived mid-flight,
+                    // applied metadata is archived — exit, do not spin.
+                    if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                        this.noteHubArchived()
+                        return
+                    }
+                    throw error
+                }
+
+                // Success+preserve terminates backoff without throw; ensure EXIT
+                // if ack applied hub-archived (detector above already fired).
+                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    this.noteHubArchived()
+                    return
+                }
             })
         })
     }

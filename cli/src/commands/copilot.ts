@@ -17,8 +17,11 @@ export const copilotCommand: CommandDefinition = {
                 startingMode?: 'local' | 'remote'
                 permissionMode?: CopilotPermissionMode
                 model?: string
+                effort?: string
                 copilotAgentMode?: CopilotAgentMode
                 resumeSessionId?: string
+                existingSessionId?: string
+                reservedSessionId?: string
             } = {}
 
             let hasExplicitPermissionMode = false
@@ -34,6 +37,19 @@ export const copilotCommand: CommandDefinition = {
                     } else {
                         throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
                     }
+                } else if (arg === '--hapi-session-id') {
+                    // Adopt-stub: create bootstrap with reserved id (not reopen).
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --hapi-session-id value')
+                    }
+                    options.reservedSessionId = sessionId
+                } else if (arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --existing-session-id value')
+                    }
+                    options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !(COPILOT_PERMISSION_MODES as readonly string[]).includes(mode)) {
@@ -55,6 +71,12 @@ export const copilotCommand: CommandDefinition = {
                         throw new Error('Missing --model value')
                     }
                     options.model = model
+                } else if (arg === '--effort') {
+                    const effort = commandArgs[++i]
+                    if (!effort) {
+                        throw new Error('Missing --effort value')
+                    }
+                    options.effort = effort
                 } else if (arg === '--copilot-agent-mode' || arg === '--mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !isCopilotAgentMode(mode)) {

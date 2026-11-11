@@ -28,6 +28,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides,
@@ -205,16 +207,33 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toEqual(['fff-machine'])
     })
 
-    it('empty query returns active/recent shortlist without archived', () => {
+    it('requires every multi-word token (AND) via shared sessionMatchesQuery', () => {
+        const pool = [
+            makeSession({
+                id: 'full-and',
+                updatedAt: 50,
+                metadata: { path: '/work/home-lab', name: 'Assistant notes' },
+            }),
+            makeSession({
+                id: 'home-only',
+                updatedAt: 40,
+                metadata: { path: '/work/home-lab', name: 'other' },
+            }),
+        ]
+        const hits = matchSessionsForMention(pool, 'home assistant')
+        expect(hits.map((s) => s.id)).toEqual(['full-and'])
+    })
+
+    it('empty query returns active sessions first and includes archived sessions', () => {
         const hits = matchSessionsForMention(sessions, '', { limit: 10 })
-        // Active first (by updatedAt), then inactive recent — archived omitted.
+        // Active first (by updatedAt), followed by inactive sessions.
         expect(hits.map((s) => s.id)).toEqual([
             'eee-parity',
             'ddd-meta',
             'aaa-active',
             'bbb-recent',
+            'ccc-old',
         ])
-        expect(hits.map((s) => s.id)).not.toContain('ccc-old')
     })
 
     // #1506 — mention pool is stricter than sidebar visibility.

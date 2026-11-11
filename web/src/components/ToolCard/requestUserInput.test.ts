@@ -5,7 +5,10 @@ import {
     formatRequestUserInputAnswers,
     openRequestUserInputUrl,
     parseRequestUserInputAnswers,
-    parseRequestUserInputInput
+    parseRequestUserInputInput,
+    requestUserInputOptions,
+    selectRequestUserInputOption,
+    REQUEST_USER_INPUT_OTHER
 } from './requestUserInput'
 
 describe('MCP URL request user input', () => {
@@ -48,6 +51,7 @@ describe('MCP URL request user input', () => {
             question: 'Comment',
             required: false,
             multiple: false,
+            isOther: false,
             options: []
         })
         expect(isRequestUserInputQuestionAnswered(parsed.questions[0]!, {
@@ -179,6 +183,53 @@ describe('MCP URL request user input', () => {
             tags: { selected: ['bug', 'feature'], userNote: '' }
         })).toEqual({
             answers: { tags: { answers: ['bug', 'feature'] } }
+        })
+    })
+})
+
+describe('Codex other option', () => {
+    it.each([true, false, undefined, 'true'])('requires explicit isOther=true (%s)', (isOther) => {
+        const input = { questions: [{ id: 'choice', isOther, options: [{ label: 'A' }] }] }
+        const question = parseRequestUserInputInput(input).questions[0]!
+        expect(question.isOther).toBe(isOther === true)
+        expect(requestUserInputOptions(question)).toEqual(isOther === true
+            ? [{ label: 'A', description: null }, { label: REQUEST_USER_INPUT_OTHER, description: null, isOther: true }]
+            : [{ label: 'A', description: null }])
+        expect(question.options).toHaveLength(1)
+        expect(input.questions[0].options).toEqual([{ label: 'A' }])
+    })
+
+    it('does not turn a free-text question into a choice question', () => {
+        const question = parseRequestUserInputInput({ questions: [{ id: 'text', isOther: true }] }).questions[0]!
+        expect(requestUserInputOptions(question)).toEqual([])
+        expect(isRequestUserInputQuestionAnswered(question, { selected: [], userNote: '' })).toBe(false)
+    })
+
+    it('keeps the synthetic choice exclusive, including in a multi-select form', () => {
+        const question = parseRequestUserInputInput({ questions: [{
+            id: 'choice', isOther: true, multiple: true, options: [{ label: 'A' }, { label: 'B' }]
+        }] }).questions[0]!
+        const [a, b, other] = requestUserInputOptions(question)
+        let selected = selectRequestUserInputOption(question, ['A', 'B'], other!)
+        expect(selected).toEqual([REQUEST_USER_INPUT_OTHER])
+        expect(isRequestUserInputQuestionAnswered(question, { selected, userNote: '' })).toBe(true)
+        selected = selectRequestUserInputOption(question, selected, a!)
+        expect(selected).toEqual(['A'])
+        selected = selectRequestUserInputOption(question, selected, b!)
+        expect(selected).toEqual(['A', 'B'])
+        expect(selectRequestUserInputOption(question, selected, a!)).toEqual(['B'])
+    })
+
+    it.each(['', ' \n ', '  custom\nnote  '])('serializes and parses optional notes (%j)', (userNote) => {
+        const question = parseRequestUserInputInput({ questions: [{
+            id: 'choice', isOther: true, options: [{ label: 'A' }]
+        }] }).questions[0]!
+        const result = formatRequestUserInputAnswers({ choice: { selected: [REQUEST_USER_INPUT_OTHER], userNote } }, [question])
+        expect(result).toEqual({ answers: { choice: { answers: [
+            REQUEST_USER_INPUT_OTHER, ...(userNote.trim() ? [`user_note: ${userNote.trim()}`] : [])
+        ] } } })
+        expect(parseRequestUserInputAnswers(result, [question])).toEqual({
+            choice: { selected: [REQUEST_USER_INPUT_OTHER], userNote: userNote.trim() || null }
         })
     })
 })

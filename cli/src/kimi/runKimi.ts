@@ -14,14 +14,18 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { resolveKimiRuntimeConfig } from './utils/config';
+import { registerKimiSessionModelHandlers } from '@/modules/common/handlers/kimiModels';
 
 export async function runKimi(opts: {
     startedBy?: 'runner' | 'terminal';
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    effort?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh-spawn reserved hub id from `--hapi-session-id` (create/getOrCreate). */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -56,7 +60,8 @@ export async function runKimi(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            model: persistedModel
+            model: persistedModel,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 
@@ -67,13 +72,15 @@ export async function runKimi(opts: {
 
     const messageQueue = new MessageQueue2<KimiMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
-        model: mode.model
+        model: mode.model,
+        effort: mode.effort
     }));
 
     const sessionWrapperRef: { current: KimiSession | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = persistedModel ?? null;
     let resolvedModel = sessionModel ?? machineDefault;
+    let sessionEffort: string | null = opts.effort ?? null;
 
     const lifecycle = createRunnerLifecycle({
         session,
@@ -82,8 +89,12 @@ export async function runKimi(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+    // Registered here, not in the remote launcher: the catalog is backend
+    // independent, and a session running in local mode must answer the web
+    // picker's request before remote control is taken over.
+    registerKimiSessionModelHandlers(session.rpcHandlerManager, () => workingDirectory);
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
@@ -92,6 +103,7 @@ export async function runKimi(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+        sessionInstance.setEffort(sessionEffort);
         sessionInstance.pushKeepAlive();
 
         logger.debug(`[kimi] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${resolvedModel}`);
@@ -101,7 +113,8 @@ export async function runKimi(opts: {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         const mode: KimiMode = {
             permissionMode: currentPermissionMode,
-            model: resolvedModel
+            model: resolvedModel,
+            effort: sessionEffort
         };
         messageQueue.push(formattedText, mode, localId);
     });
@@ -120,12 +133,12 @@ export async function runKimi(opts: {
         return parsed.data as PermissionMode;
     };
 
-    const resolveModel = (value: unknown): string | null => {
+    const resolveModel = (value: unknown, label = 'model'): string | null => {
         if (value === null) {
             return null;
         }
         if (typeof value !== 'string' || value.trim().length === 0) {
-            throw new Error('Invalid model');
+            throw new Error(`Invalid ${label}`);
         }
         return value.trim();
     };
@@ -134,7 +147,7 @@ export async function runKimi(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
         const applied: Record<string, unknown> = {};
 
         if (config.permissionMode !== undefined) {
@@ -146,6 +159,11 @@ export async function runKimi(opts: {
             sessionModel = resolveModel(config.model);
             resolvedModel = sessionModel ?? machineDefault;
             applied.model = sessionModel;
+        }
+
+        if (config.effort !== undefined) {
+            sessionEffort = resolveModel(config.effort, 'effort');
+            applied.effort = sessionEffort;
         }
 
         syncSessionMode();
@@ -169,7 +187,11 @@ export async function runKimi(opts: {
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
-            }
+            },
+            onEffortRollback: (effort) => {
+                sessionEffort = effort;
+            },
+            getQueuedModel: () => resolvedModel ?? null
         });
     } catch (error) {
         crashed = true;

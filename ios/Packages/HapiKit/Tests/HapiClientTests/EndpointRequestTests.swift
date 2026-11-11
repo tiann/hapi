@@ -88,6 +88,16 @@ struct EndpointRequestTests {
         #expect(bodyString(request) == "{\"answers\":{\"q1\":{\"answers\":[\"a\",\"b\"]}}}")
     }
 
+    @Test func implementCodexPlanUsesDedicatedEndpointAndExactPlanId() async throws {
+        let harness = try makeHarness(jwt: freshJWT())
+        await harness.performer.enqueue(json: "{\"ok\":true}")
+        try await harness.client.implementCodexPlan(sessionId: "session/1", planId: "plan:thread:turn:item")
+        let request = await harness.performer.requests.first
+        #expect(request?.url?.absoluteString == "\(testHubURLString)/api/sessions/session%2F1/codex/plan/implement")
+        #expect(request?.httpMethod == "POST")
+        #expect(bodyString(request) == #"{"planId":"plan:thread:turn:item"}"#)
+    }
+
     @Test func approveWithFlatAnswersAndModeSwitch() async throws {
         let harness = try makeHarness(jwt: freshJWT())
         await harness.performer.enqueue(json: "{\"ok\":true}")

@@ -16,6 +16,8 @@ const val HISTORY_WINDOW_SIZE: Int = 600
 const val OLDER_LOAD_WINDOW_SIZE: Int = 800
 const val AGENT_RUN_WINDOW_SIZE: Int = 800
 const val PAGE_SIZE: Int = 200
+/** Request size for a genuinely cold latest page, prioritizing first paint. */
+const val INITIAL_PAGE_SIZE: Int = 20
 
 enum class MessageViewMode(val wire: String) {
     /** Following the live bottom; trims from the top. */
@@ -64,6 +66,7 @@ sealed interface OlderLoadOutcome {
  */
 data class MessageWindowState(
     val sessionId: String,
+    val readThroughRevision: Long? = null,
     /** Window rows in position order (queued rows re-merged after each trim). */
     val messages: List<WindowMessage> = emptyList(),
     /** Older history exists (server flag, or rows were trimmed away). */

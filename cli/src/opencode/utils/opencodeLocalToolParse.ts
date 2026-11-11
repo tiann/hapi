@@ -1,4 +1,5 @@
 import { isObject } from '@hapi/protocol';
+import { canonicalizeDiffToolInput } from '@/agent/utils';
 
 export type ParsedToolCall = {
     callId: string;
@@ -69,6 +70,19 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
     if (!name || !callId) {
         return null;
     }
+    // OpenCode native edit/write args ({filePath, oldString, newString} /
+    // {filePath, content}) are canonicalized to the Claude-shaped inputs the
+    // web Edit/Write views render — same contract as the ACP path.
+    const toParsed = (input: unknown, title: string | null): ParsedToolCall => {
+        const canonical = canonicalizeDiffToolInput(input, name);
+        return {
+            callId,
+            name: canonical ? canonical.name : name,
+            input: canonical ? canonical.input : input,
+            ...(title ? { title } : {})
+        };
+    };
+
     if (isObject(record.state)) {
         const state = record.state as Record<string, unknown>;
         const status = getString(state.status);
@@ -78,12 +92,10 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
             return null;
         }
         const input = parseMaybeJson(state.input ?? state.raw ?? record.input ?? record.args ?? record.arguments);
-        const title = getString(state.title);
-        return { callId, name, input, ...(title ? { title } : {}) };
+        return toParsed(input, getString(state.title));
     }
     const input = parseMaybeJson(record.input ?? record.args ?? record.arguments ?? record.raw);
-    const title = getString(record.title);
-    return { callId, name, input, ...(title ? { title } : {}) };
+    return toParsed(input, getString(record.title));
 }
 
 export function parseToolResult(part: unknown): ParsedToolResult | null {

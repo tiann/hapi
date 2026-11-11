@@ -12,6 +12,54 @@ final class QuestionAnswerDraftTests: XCTestCase {
 
     private let choices = #"{"questions":[{"id":"first","header":"First","question":"Choose **one**","options":[{"label":"A (Recommended)"},{"label":"B"}]},{"id":"last","header":"Last","question":"Choose again","options":[{"label":"C"},{"label":"D"}]}]}"#
 
+    func testOtherOpensNotesWithoutAdvancingAndAllowsEmptyNotes() throws {
+        let input = choices.replacingOccurrences(of: "\"options\"", with: "\"isOther\":true,\"options\"")
+        let form = try QuestionAnswerForm(tool: tool(input))
+        for note in ["", " \n ", "  自定义\n说明  "] {
+            var draft = QuestionAnswerDraft()
+            draft.select(0, at: 0, in: form)
+            XCTAssertEqual(draft.page, 1, "Ordinary choices still advance")
+            draft.previous(in: form)
+            draft.select(2, at: 0, in: form)
+            XCTAssertEqual(draft.page, 0, "Other must leave time to add a note")
+            XCTAssertEqual(draft.selections[0], [2])
+            XCTAssertTrue(draft.showsText(at: 0, in: form))
+            XCTAssertTrue(draft.isAnswered(at: 0, in: form), "Notes are optional")
+            draft.setText(note, at: 0, in: form)
+            let refreshed = try QuestionAnswerForm(tool: tool(input))
+            XCTAssertEqual(draft.text(at: 0, in: refreshed), note)
+            draft.next(in: form)
+            XCTAssertEqual(draft.text(at: 1, in: form), "")
+            draft.select(0, at: 1, in: form)
+            let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            XCTAssertEqual(draft.submission(in: form), .nestedAnswers([
+                "first": ["None of the above"] + (trimmed.isEmpty ? [] : ["user_note: \(trimmed)"]), "last": ["C"],
+            ]))
+            draft.previous(in: form)
+            XCTAssertEqual(draft.selections[0], [2])
+            draft.select(1, at: 0, in: form)
+            XCTAssertEqual(draft.selections[0], [1])
+            XCTAssertEqual(draft.text(at: 0, in: form), note, "Switching choices preserves notes")
+        }
+    }
+
+    func testOtherIsExclusiveWithMultipleChoicesAndReopensCollapsedNotes() throws {
+        let form = try QuestionAnswerForm(tool: tool(#"{"questions":[{"id":"choice","isOther":true,"multiple":true,"options":[{"label":"A"},{"label":"B"}]}]}"#))
+        var draft = QuestionAnswerDraft()
+        draft.select(0, at: 0, in: form)
+        draft.select(1, at: 0, in: form)
+        draft.select(2, at: 0, in: form)
+        XCTAssertEqual(draft.selections[0], [2])
+        draft.setText("Keep", at: 0, in: form)
+        draft.toggleText(at: 0, in: form)
+        draft.select(2, at: 0, in: form)
+        XCTAssertTrue(draft.showsText(at: 0, in: form))
+        draft.select(1, at: 0, in: form)
+        draft.select(0, at: 0, in: form)
+        XCTAssertEqual(draft.selections[0], [0, 1])
+        XCTAssertEqual(draft.submission(in: form), .nestedAnswers(["choice": ["A", "B", "user_note: Keep"]]))
+    }
+
     func testSingleSelectAdvancesOnlyOnExplicitSelectionAndLastRequiresSubmission() throws {
         let call = try tool(choices)
         let form = QuestionAnswerForm(tool: call)

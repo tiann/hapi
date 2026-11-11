@@ -33,8 +33,13 @@ struct QuestionAnswerForm: Equatable {
         var options: [AskOption] {
             switch self {
             case .ask(let question, _, _): question.options
-            case .request(let question): question.options
+            case .request(let question): question.answerOptions
             }
+        }
+
+        func isOtherOption(_ index: Int) -> Bool {
+            if case .request(let question) = self { return question.isOtherOption(at: index) }
+            return false
         }
 
         var multiple: Bool {
@@ -158,8 +163,12 @@ struct QuestionAnswerDraft: Equatable {
         guard index == currentPage(in: form), form.fields.indices.contains(index),
               form.fields[index].options.indices.contains(option) else { return }
         let field = form.fields[index]
-        if field.multiple {
-            var selected = selections[index] ?? []
+        if field.isOtherOption(option) {
+            selections[index] = [option]
+            expanded[index] = true
+            // Unlike an ordinary single selection, leave time to add optional notes.
+        } else if field.multiple {
+            var selected = Set((selections[index] ?? []).filter { !field.isOtherOption($0) })
             if selected.contains(option) { selected.remove(option) }
             else { selected.insert(option) }
             selections[index] = selected
@@ -239,7 +248,9 @@ enum QuestionCardState: Equatable {
 }
 
 func questionAnswerSummary(_ question: QuestionDetail) -> String? {
-    let choices = question.options.filter(\.selected).map { QuestionOptionTitle($0.label).text }
+    let choices = question.options.filter(\.selected).map {
+        $0.isOther ? String(localized: "None of the above") : QuestionOptionTitle($0.label).text
+    }
     let values = choices + question.otherAnswers + (question.note.map { [$0.isEmpty ? String(localized: "(empty)") : $0] } ?? [])
     guard !values.isEmpty else { return nil }
     return chatTruncate(values.joined(separator: " · ").split(whereSeparator: \.isWhitespace).joined(separator: " "), 240)

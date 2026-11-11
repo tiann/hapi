@@ -5,6 +5,7 @@ import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SlashCommandsResponse
@@ -44,6 +45,9 @@ interface AttachmentUploadApi {
 interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
     /** Shared root creation; only the initiating client navigates. */
     suspend fun clearConversation(sessionId: String): ResumeSessionResponse
+
+    /** Shared Codex client action, separate from permissions. Never auto-retry an unconfirmed result. */
+    suspend fun implementCodexPlan(sessionId: String, planId: String)
 
     /** `POST /api/sessions/:id/messages` — `{ok:true}`; the row arrives via SSE. */
     suspend fun sendMessage(sessionId: String, message: SendMessageRequest)
@@ -94,4 +98,15 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
      * session's `metadata.slashCommands` names.
      */
     suspend fun getSlashCommands(sessionId: String): SlashCommandsResponse
+
+    /**
+     * `GET /api/sessions/:id/files?query=&limit=` — ripgrep-backed file search,
+     * the composer `@`-mention file source (codex/copilot flavors only; the
+     * web passes `limit=50`). RPC-wrapped: check `success`.
+     */
+    suspend fun searchSessionFiles(
+        sessionId: String,
+        query: String,
+        limit: Int? = null,
+    ): FileSearchResponse
 }

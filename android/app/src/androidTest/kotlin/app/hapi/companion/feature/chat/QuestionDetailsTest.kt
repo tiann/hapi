@@ -10,14 +10,17 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import app.hapi.companion.feature.chat.blocks.PendingPermissionFooter
 import app.hapi.companion.feature.chat.blocks.ToolCallBody
 import app.hapi.companion.ui.theme.HapiTheme
@@ -35,6 +38,62 @@ class QuestionDetailsTest {
     private fun pending() = ChatToolCall(id = "question", name = "request_user_input", state = "running", input = input,
         createdAt = 0, description = null, permission = ToolPermission(id = "reply", status = "pending", presence = emptySet()))
 
+    private fun otherTool(multiple: Boolean = false) = pending().copy(input = HapiJson.parseToJsonElement(
+        """{"questions":[{"id":"target","question":"Choose","isOther":true,"multiple":$multiple,"options":[{"label":"Alpha"},{"label":"Beta"}]}]}""",
+    ))
+
+    @Test fun otherChoiceFocusesOptionalNotesAndSubmitsWithoutAnyNote() {
+        val submitted = mutableListOf<Pair<String, PermissionAction>>()
+        compose.setContent {
+            HapiTheme { PendingPermissionFooter(tool = otherTool(), requestId = "reply", flavor = "codex", override = null,
+                onAction = { id, action -> submitted += id to action }) }
+        }
+        compose.onNodeWithTag("question-0-choice-0").performClick()
+        compose.onNodeWithTag("question-0-choice-2").performClick().assertIsSelected()
+        compose.onNodeWithTag("question-0-choice-0").assertIsNotSelected()
+        compose.onNodeWithTag("question-0-text").assertIsFocused()
+        compose.runOnIdle { assertEquals(emptyList<Pair<String, PermissionAction>>(), submitted) }
+        compose.onNodeWithTag("question-submit").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("reply" to PermissionAction.NestedAnswers(mapOf("target" to listOf("None of the above")))), submitted)
+        }
+    }
+
+    @Test fun otherChoiceIsExclusiveAndRestoresNotesWithoutChangingWireValues() {
+        val restoration = StateRestorationTester(compose)
+        var submitted: PermissionAction? = null
+        restoration.setContent {
+            HapiTheme { PendingPermissionFooter(tool = otherTool(multiple = true), requestId = "reply", flavor = "codex", override = null,
+                onAction = { _, action -> submitted = action }) }
+        }
+        compose.onNodeWithTag("question-0-choice-0").performClick()
+        compose.onNodeWithTag("question-0-choice-1").performClick()
+        compose.onNodeWithTag("question-0-choice-2").performClick()
+        compose.onNodeWithTag("question-0-text").performTextInput("  自定义\n说明  ")
+        compose.onNodeWithTag("question-0-choice-1").performClick().assertIsSelected()
+        compose.onNodeWithTag("question-0-choice-2").assertIsNotSelected().performClick()
+        compose.onNodeWithTag("question-0-choice-0").assertIsNotSelected()
+        compose.onNodeWithTag("question-0-choice-1").assertIsNotSelected()
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("question-0-choice-2").assertIsSelected()
+        compose.onNodeWithTag("question-submit").performClick()
+        compose.runOnIdle {
+            assertEquals(PermissionAction.NestedAnswers(mapOf("target" to listOf("None of the above", "user_note: 自定义\n说明"))), submitted)
+        }
+    }
+
+    @Test fun recordedOtherAnswerIsSelectedReadOnlyAndKeepsItsNote() {
+        val tool = otherTool().copy(state = "completed", result = HapiJson.parseToJsonElement(
+            """{"answers":{"target":{"answers":["None of the above","user_note: recorded note"]}}}""",
+        ))
+        compose.setContent {
+            HapiTheme { Column(Modifier.verticalScroll(rememberScrollState())) { ToolCallBody(tool, basePath = null) } }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("None of the above").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("question-0-option-2").assertIsSelected().assertHasNoClickAction()
+        compose.onNodeWithText("recorded note").performScrollTo().assertIsDisplayed()
+    }
+
     @Test fun detailsFollowLiveAnswersWithoutActionsAndKeepSourceAndErrorsAccessible() {
         val tool = mutableStateOf(pending())
         compose.setContent {
@@ -42,7 +101,7 @@ class QuestionDetailsTest {
         }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("staging").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("question-0-option-1").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
-        compose.onNodeWithText("Submit").assertDoesNotExist()
+        compose.onNodeWithTag("question-submit").assertDoesNotExist()
         compose.runOnIdle {
             tool.value = tool.value.copy(state = "completed", result = JsonPrimitive("duplicate result"),
                 permission = ToolPermission(id = "reply", status = "approved", presence = emptySet(),
@@ -62,7 +121,7 @@ class QuestionDetailsTest {
         compose.runOnIdle { tool.value = tool.value.copy(state = "error", result = JsonPrimitive("answer delivery failed")) }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("answer delivery failed", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("answer delivery failed", substring = true).performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Submit").assertDoesNotExist()
+        compose.onNodeWithTag("question-submit").assertDoesNotExist()
     }
 
     @Test fun existingPendingAnswerFormStillSubmitsNestedAnswers() {
@@ -74,7 +133,8 @@ class QuestionDetailsTest {
             }
         }
         compose.onNodeWithText("staging").performClick()
-        compose.onNodeWithText("Submit").performClick()
+        compose.onNodeWithTag("question-0-choice-2").assertDoesNotExist()
+        compose.onNodeWithTag("question-submit").performClick()
         compose.runOnIdle {
             assertEquals("reply" to PermissionAction.NestedAnswers(mapOf("target" to listOf("staging", "user_note: production"))), resolved)
         }

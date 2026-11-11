@@ -41,11 +41,34 @@ enum CodexModelsState: Equatable {
     case failed(String)
 }
 
+/// Discovered model catalog of the selected non-Claude/Codex agent.
+enum AgentModelsState: Equatable {
+    case hidden
+    case loading
+    case loaded(AgentModelsResponse)
+    /// Runner has no catalog RPC (`rpc_target_missing`) — hide the picker.
+    case unsupported
+    case failed(String)
+}
+
+/// What the discovered-model picker fetches: per machine, plus the target
+/// directory for directory-scoped flavors (`AgentModelCatalog.Scope`).
+struct AgentModelsRequest: Hashable {
+    let flavor: AgentFlavor
+    let machineId: String
+    let cwd: String?
+}
+
 /// Installed/static-configured Agent catalog for the selected machine.
 enum AgentAvailabilityState: Equatable {
     case loading
     case loaded([AgentAvailabilityEntry])
     case failed(message: String, upgradeRequired: Bool)
+}
+
+private struct CachedAgentModels {
+    let response: AgentModelsResponse
+    let variants: [String: [String]]?
 }
 
 // MARK: - Persistence
@@ -110,17 +133,16 @@ struct NewSessionPrefsStore {
 /// this model orchestrates debounce, caching, fetches, and persistence.
 /// Web reference: `web/src/components/NewSession/index.tsx`.
 ///
-/// v1 notes (deliberate cuts, mirrored from the Android/web option matrix):
-/// - model pickers: claude (static presets) + codex (machine catalog; hidden
-///   when the runner lacks the RPC). agy/opencode/grok/copilot/cursor/pi
-///   model discovery is TODO — spawn omits `model` so the agent default
-///   applies.
-/// - effort: claude static levels; codex reasoning effort from the catalog.
+/// Option matrix (web create form):
+/// - model pickers: claude (static presets), codex (machine catalog; hidden
+///   when the runner lacks the RPC) and the `AgentModelCatalog` flavors —
+///   agy/cursor/dsh/pi per machine, copilot/grok/kimi/opencode once the
+///   directory exists. Cursor is a flat list of ACP ids (no variant drill-down).
+/// - effort: claude static levels, grok per-model efforts, pi thinking
+///   levels; reasoning effort: codex catalog, opencode variants.
 /// - `startingMode` stays unset → the runner spawns `'remote'` (pty deferred).
 @MainActor @Observable
 final class NewSessionModel {
-    static let debounce: Duration = .milliseconds(250)
-
     static let msgWorktreeMissing =
         String(localized: "Worktree sessions require an existing repository directory.")
     static let msgDirectoryMissing =
@@ -130,6 +152,8 @@ final class NewSessionModel {
     static let msgDirectoryOutsideWorkspaceRoots =
         String(localized: "Directory must be inside one of this machine's workspace roots.")
     static let msgDirectoryLookupFailed = String(localized: "Failed to browse directories")
+    static let msgDirectoryCheckFailed = String(localized: "Failed to check directory")
+    static let msgMachineOffline = String(localized: "Selected machine is offline. Choose an online machine.")
     static let msgAgentAvailabilityFailed = String(localized: "Failed to check installed Agents")
     static let msgRunnerUpgradeRequired =
         String(localized: "Upgrade and restart this machine's HAPI runner before creating sessions.")
@@ -141,17 +165,17 @@ final class NewSessionModel {
     // MARK: Observable state
 
     private(set) var form = NewSessionForm()
-    private(set) var suggestions: [String] = []
+    let directoryInput: NewSessionDirectoryModel
+    var suggestions: [String] { directoryInput.suggestions }
     private(set) var codexModels: CodexModelsState = .hidden
+    private(set) var agentModels: AgentModelsState = .hidden
+    /// OpenCode variants keyed `provider/model`; nil until loaded.
+    private(set) var opencodeVariants: [String: [String]]?
     private(set) var agentAvailability: AgentAvailabilityState = .loading
     private(set) var isSpawning = false
     private(set) var spawnError: String?
     private(set) var confirmCreateDirectoryArmed = false
     private(set) var machinesSettled = false
-    /// Probed existence per trimmed path (feeds the directory status hint).
-    private(set) var pathExistence: [String: Bool] = [:]
-    private(set) var outsideWorkspaceRoots: Set<String> = []
-    private(set) var directoryLookupError: String?
     private(set) var prefsData = NewSessionPrefsData()
     let directoryBrowser: RemoteDirectoryBrowserModel
 
@@ -162,24 +186,33 @@ final class NewSessionModel {
     /// Fired once with the new session id — navigate-replace to the chat.
     private let onCreated: @MainActor (String) -> Void
 
-    @ObservationIgnored private var directoryTask: Task<Void, Never>?
     @ObservationIgnored private var codexTask: Task<Void, Never>?
     @ObservationIgnored private var availabilityTask: Task<Void, Never>?
     @ObservationIgnored private var defaultDirectoryTask: Task<Void, Never>?
     @ObservationIgnored private var codexFetchedForMachine: String?
+    @ObservationIgnored private var agentModelsTask: Task<Void, Never>?
+    @ObservationIgnored private var agentModelsFetched: AgentModelsRequest??
+    @ObservationIgnored private var agentModelsCache: [AgentModelsRequest: CachedAgentModels] = [:]
     @ObservationIgnored private var availabilityFetchedForMachine: String?
     @ObservationIgnored private var suppressSuggestions = false
     @ObservationIgnored private var spawnInFlight = false
-    @ObservationIgnored private var directoryRequestVersion = 0
-    /// Parent-listing cache: retyping within the same parent re-filters
-    /// locally instead of re-requesting.
-    @ObservationIgnored private var cachedListing:
-        (machineId: String, parent: String, entries: [MachineDirectoryEntry])?
+    @ObservationIgnored private var hasStarted = false
+    @ObservationIgnored private var directoryEdited = false
+    @ObservationIgnored private var directoryEditVersion = 0
 
-    init(session: HubSession, onCreated: @escaping @MainActor (String) -> Void) {
+    init(
+        session: HubSession,
+        defaults: UserDefaults = .standard,
+        onCreated: @escaping @MainActor (String) -> Void
+    ) {
         self.session = session
-        self.prefsStore = NewSessionPrefsStore(hubUrl: session.hubUrl)
+        self.prefsStore = NewSessionPrefsStore(hubUrl: session.hubUrl, defaults: defaults)
         self.onCreated = onCreated
+        self.directoryInput = NewSessionDirectoryModel(
+            requester: session.api,
+            lookupError: Self.msgDirectoryLookupFailed,
+            checkError: Self.msgDirectoryCheckFailed
+        )
         self.directoryBrowser = RemoteDirectoryBrowserModel(
             requester: session.api,
             fallbackError: Self.msgDirectoryLookupFailed
@@ -191,15 +224,19 @@ final class NewSessionModel {
     /// Restore prefs + sanitized draft, preselect a machine, refresh the
     /// roster. Call once per presentation.
     func start() async {
-        prefsData = prefsStore.readPrefs()
-        let initial = prefsStore.readDraft().map(NewSessionLogic.sanitizeDraft) ?? NewSessionForm()
-        form = initial
+        if !hasStarted {
+            hasStarted = true
+            prefsData = prefsStore.readPrefs()
+            let draft = prefsStore.readDraft().map(NewSessionLogic.sanitizeDraft)
+            form = draft ?? NewSessionForm()
+            // A saved empty path can be intentional; never replace it on refresh.
+            directoryEdited = draft != nil
+            suppressSuggestions = true
+        }
         reconcileMachineSelection()
         refreshAgentAvailability()
         refreshCodexModelsIfNeeded()
-        // A restored directory should probe existence but not pop the
-        // autocomplete dropdown — suggestions belong to typing.
-        suppressSuggestions = true
+        refreshAgentModelsIfNeeded()
         scheduleDirectoryWork()
 
         do {
@@ -207,14 +244,44 @@ final class NewSessionModel {
         } catch {
             // Snapshot (if any) keeps serving; the picker shows what it has.
         }
+        guard !Task.isCancelled else { return }
         machinesSettled = true
-        reconcileMachineSelection()
+        machinesChanged()
     }
 
-    /// Machine roster changed (SSE / refresh) — re-run the preselection:
-    /// keep a still-online selection; otherwise last-used, else first.
+    /// Only an unselected form is auto-selected. Losing a machine must not
+    /// move the user's path or pending Create action onto a different host.
     func machinesChanged() {
+        guard hasStarted else { return }
         reconcileMachineSelection()
+        if selectedMachine == nil {
+            cancelDefaultDirectoryResolution()
+            directoryBrowser.close()
+            availabilityTask?.cancel()
+            codexTask?.cancel()
+            availabilityFetchedForMachine = nil
+            codexFetchedForMachine = nil
+        } else {
+            if directoryBrowser.isPresented,
+               directoryBrowser.roots != selectedMachine.map(RemoteDirectoryPath.browseRoots) {
+                directoryBrowser.close()
+            }
+            refreshAgentAvailability()
+            refreshCodexModelsIfNeeded()
+        }
+        refreshAgentModelsIfNeeded()
+        scheduleDirectoryWork()
+    }
+
+    func stopDirectoryWork() {
+        cancelDefaultDirectoryResolution()
+        directoryInput.stop()
+    }
+
+    private func cancelDefaultDirectoryResolution() {
+        directoryEditVersion += 1
+        defaultDirectoryTask?.cancel()
+        defaultDirectoryTask = nil
     }
 
     // MARK: - Derived state
@@ -225,6 +292,14 @@ final class NewSessionModel {
 
     var machinesLoading: Bool {
         session.machineStore.machines.isEmpty && !machinesSettled
+    }
+
+    var machineUnavailable: Bool {
+        machinesSettled && form.machineId != nil && selectedMachine == nil
+    }
+
+    var normalizedDirectory: String {
+        RemoteDirectoryPath.expandHome(form.directory, homeDirectory: selectedMachine?.metadata?.homeDir)
     }
 
     /// `runnerState.lastSpawnError` of the selected machine, formatted
@@ -252,8 +327,8 @@ final class NewSessionModel {
                 isError: false
             )
         }
-        if let directoryLookupError {
-            return DirectoryStatusUI(message: directoryLookupError, isError: true)
+        if let error = directoryInput.existenceError {
+            return DirectoryStatusUI(message: error, isError: true)
         }
         return nil
     }
@@ -280,7 +355,7 @@ final class NewSessionModel {
         }
     }
 
-    /// Nil hides the model picker (v1: only claude + supported codex).
+    /// Nil hides the model picker.
     var modelOptions: [NewSessionOption]? {
         switch (form.agent, codexModels) {
         case (.claude, _):
@@ -290,30 +365,62 @@ final class NewSessionModel {
                 + models.map { NewSessionOption(value: $0.id, label: $0.displayName) }
         case (.codex, .loading), (.codex, .failed):
             return [NewSessionOption(value: "auto", label: "Default")]
+        case (.codex, _):
+            return nil // `.unsupported` (old runner)
         default:
-            // codex `.unsupported` (old runner) and every other flavor: hidden.
+            break
+        }
+        switch agentModels {
+        case .loaded(let response):
+            return AgentModelCatalog.newSessionModelOptions(flavor: form.agent, response: response)
+        case .loading, .failed:
+            return AgentModelCatalog.newSessionModelOptions(
+                flavor: form.agent,
+                response: AgentModelsResponse(success: true)
+            )
+        case .hidden, .unsupported:
             return nil
         }
     }
 
     var modelsLoading: Bool {
-        form.agent == .codex && codexModels == .loading
+        (form.agent == .codex && codexModels == .loading) || agentModels == .loading
     }
 
     var modelsError: String? {
         if case .failed(let message) = codexModels {
             return String(format: String(localized: "Failed to load models: %@"), message)
         }
+        if case .failed(let message) = agentModels {
+            return String(format: String(localized: "Failed to load models: %@"), message)
+        }
         return nil
     }
 
-    /// Claude launch-effort options; nil hides the field.
-    var effortOptions: [NewSessionOption]? {
-        form.agent == .claude ? NewSessionCatalogs.claudeEfforts : nil
+    private var loadedAgentModels: AgentModelsResponse? {
+        if case .loaded(let response) = agentModels { return response }
+        return nil
     }
 
-    /// Codex reasoning-effort options; nil hides the field.
+    /// Claude effort, grok effort or pi thinking level; nil hides the field.
+    var effortOptions: [NewSessionOption]? {
+        switch form.agent {
+        case .claude: return NewSessionCatalogs.claudeEfforts
+        case .grok: return AgentModelCatalog.grokEffortOptions(response: loadedAgentModels, model: form.model)
+        case .pi: return AgentModelCatalog.piEffortOptions(response: loadedAgentModels, model: form.model)
+        default: return nil
+        }
+    }
+
+    /// Codex reasoning effort or opencode variant; nil hides the field.
     var reasoningEffortOptions: [NewSessionOption]? {
+        if form.agent == .opencode {
+            return AgentModelCatalog.opencodeReasoningEffortOptions(
+                variants: opencodeVariants,
+                response: loadedAgentModels,
+                model: form.model
+            )
+        }
         guard form.agent == .codex, codexModels != .unsupported else { return nil }
         if case .loaded(let models) = codexModels,
            let advertised = NewSessionLogic.codexReasoningEfforts(models: models, model: form.model) {
@@ -331,9 +438,32 @@ final class NewSessionModel {
             return .managed
         }
         if NewSessionLogic.usesNativePermissionSelect(agent) {
-            return .nativeSelect(agent.launchPermissionModes.map { PermissionModeOption(mode: $0) })
+            return .nativeSelect(permissionModes.map { PermissionModeOption(mode: $0) })
         }
         return .yoloToggle(nativeModeLabel: NewSessionLogic.hapiYoloNativeMode(for: agent)?.label)
+    }
+
+    /// Grok probes report whether its `auto` mode works in this directory.
+    private var permissionModes: [PermissionMode] {
+        let modes = form.agent.permissionModes
+        guard form.agent == .grok, loadedAgentModels?.autoPermissionModeSupported == false else { return modes }
+        return modes.filter { $0 != .auto }
+    }
+
+    /// The discovered-model fetch the form needs now; nil when the flavor
+    /// has no catalog, no machine is selected, or a directory-scoped catalog
+    /// has no existing directory to probe yet.
+    var agentModelsRequest: AgentModelsRequest? {
+        guard let scope = AgentModelCatalog.scope(for: form.agent),
+              let machineId = selectedMachine?.id else { return nil }
+        switch scope {
+        case .machine:
+            return AgentModelsRequest(flavor: form.agent, machineId: machineId, cwd: nil)
+        case .directory:
+            let cwd = normalizedDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cwd.isEmpty, directoryExists == true, !directoryOutsideWorkspaceRoots else { return nil }
+            return AgentModelsRequest(flavor: form.agent, machineId: machineId, cwd: cwd)
+        }
     }
 
     var showCollaborationMode: Bool {
@@ -361,29 +491,27 @@ final class NewSessionModel {
     }
 
     var canCreate: Bool {
-        form.machineId != nil
-            && !form.trimmedDirectory.isEmpty
+        selectedMachine != nil
+            && !normalizedDirectory.isEmpty
             && !isSpawning
             && !missingWorktreeDirectory
             && !directoryOutsideWorkspaceRoots
             && selectedAgentAvailable
             && worktreeNameError == nil
             && !codexValidationPending
+            && !agentModelsValidationPending
     }
 
     private var selectedMachine: Machine? {
-        session.machineStore.machines.first { $0.id == form.machineId }
+        session.machineStore.machines.first { $0.id == form.machineId && $0.active }
     }
 
     private var directoryExists: Bool? {
-        let trimmed = form.trimmedDirectory
-        guard !trimmed.isEmpty else { return nil }
-        return pathExistence[trimmed]
+        directoryInput.exists
     }
 
     private var directoryOutsideWorkspaceRoots: Bool {
-        let trimmed = form.trimmedDirectory
-        return !trimmed.isEmpty && outsideWorkspaceRoots.contains(trimmed)
+        directoryInput.outsideWorkspaceRoots
     }
 
     private var missingWorktreeDirectory: Bool {
@@ -415,14 +543,25 @@ final class NewSessionModel {
                 || form.serviceTier == .fast)
     }
 
+    /// A restored non-default model/effort must not spawn before the
+    /// discovered catalog validated it (web `isLaunchPreferenceValidationPending`).
+    private var agentModelsValidationPending: Bool {
+        agentModels == .loading
+            && (form.model != "auto" || form.effort != "auto" || form.modelReasoningEffort != "default")
+    }
+
     // MARK: - Actions
 
     func setMachine(_ machineId: String) {
-        guard machineId != form.machineId else { return }
+        guard !isSpawning, machineId != form.machineId,
+              session.machineStore.machines.contains(where: { $0.id == machineId && $0.active })
+        else { return }
         applyMachineSelection(machineId, resetDirectory: true)
     }
 
     func setDirectory(_ value: String) {
+        cancelDefaultDirectoryResolution()
+        directoryEdited = true
         suppressSuggestions = false
         confirmCreateDirectoryArmed = false
         form.directory = value
@@ -443,7 +582,8 @@ final class NewSessionModel {
         directoryBrowser.open(
             machineId: machine.id,
             roots: RemoteDirectoryPath.browseRoots(for: machine),
-            initialPath: form.trimmedDirectory
+            initialPath: normalizedDirectory,
+            defaultPath: RemoteDirectoryPath.defaultDirectory(for: machine)
         )
     }
 
@@ -467,6 +607,7 @@ final class NewSessionModel {
         form.copilotAgentMode = .interactive
         persistDraft()
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded()
     }
 
     func setModel(_ model: String) {
@@ -474,6 +615,7 @@ final class NewSessionModel {
         if form.agent == .codex {
             form = reconcileCodexSelections(form)
         }
+        form = reconcileAgentModelSelections(form)
         persistDraft()
     }
 
@@ -523,9 +665,10 @@ final class NewSessionModel {
         persistDraft()
     }
 
-    func retryCodexModels() {
+    func retryModels() {
         codexFetchedForMachine = nil
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded(force: true)
     }
 
     func retryAgentAvailability() {
@@ -538,7 +681,10 @@ final class NewSessionModel {
     /// creates it. Success persists prefs, clears the draft, and hands the
     /// new session id to `onCreated`; failure lands in the inline error.
     func create() {
-        let current = form
+        guard canCreate, !spawnInFlight else { return }
+        cancelDefaultDirectoryResolution()
+        var current = form
+        current.directory = normalizedDirectory
         guard let machineId = current.machineId else { return }
         let directory = current.trimmedDirectory
         guard !directory.isEmpty, !spawnInFlight else { return }
@@ -553,7 +699,7 @@ final class NewSessionModel {
         spawnInFlight = true
         isSpawning = true
         spawnError = nil
-        Task { [weak self] in
+        Task { [weak self, current] in
             defer {
                 self?.spawnInFlight = false
                 self?.isSpawning = false
@@ -566,11 +712,11 @@ final class NewSessionModel {
                     paths: [directory]
                 )
                 let exists = pathResult.exists[directory]
-                if let exists {
-                    self.pathExistence[directory] = exists
+                guard self.selectedMachine?.id == machineId else {
+                    self.spawnError = Self.msgMachineOffline
+                    return
                 }
-                self.outsideWorkspaceRoots.remove(directory)
-                self.outsideWorkspaceRoots.formUnion(pathResult.outsideWorkspaceRoots ?? [])
+                self.directoryInput.acceptExistence(pathResult, machineId: machineId, path: directory)
                 if pathResult.outsideWorkspaceRoots?.contains(directory) == true {
                     self.spawnError = Self.msgDirectoryOutsideWorkspaceRoots
                     return
@@ -612,9 +758,10 @@ final class NewSessionModel {
     // MARK: - Internals
 
     private func pickPath(_ path: String) {
+        cancelDefaultDirectoryResolution()
+        directoryEdited = true
         suppressSuggestions = true
         confirmCreateDirectoryArmed = false
-        suggestions = []
         form.directory = path
         persistDraft()
         scheduleDirectoryWork()
@@ -625,26 +772,17 @@ final class NewSessionModel {
     }
 
     private func reconcileMachineSelection() {
-        let machines = session.machineStore.machines
+        guard form.machineId == nil else { return }
+        let machines = session.machineStore.machines.filter(\.active)
         guard !machines.isEmpty else { return }
-        if let current = form.machineId, machines.contains(where: { $0.id == current }) {
-            if form.trimmedDirectory.isEmpty {
-                applyMachineSelection(current, resetDirectory: true)
-            }
-            return
-        }
         let target = machines.first { $0.id == prefsData.lastMachineId } ?? machines[0]
-        applyMachineSelection(target.id, resetDirectory: form.trimmedDirectory.isEmpty)
+        applyMachineSelection(target.id, resetDirectory: !directoryEdited && form.trimmedDirectory.isEmpty)
     }
 
     private func applyMachineSelection(_ machineId: String, resetDirectory: Bool) {
         directoryBrowser.close()
-        defaultDirectoryTask?.cancel()
-        pathExistence = [:]
-        outsideWorkspaceRoots = []
-        directoryLookupError = nil
-        suggestions = []
-        cachedListing = nil
+        cancelDefaultDirectoryResolution()
+        directoryInput.stop()
         confirmCreateDirectoryArmed = false
         // The seeded recent path is a pick, not typing — no dropdown.
         suppressSuggestions = true
@@ -652,7 +790,8 @@ final class NewSessionModel {
         form.model = "auto"
         if resetDirectory {
             let machine = session.machineStore.machines.first { $0.id == machineId }
-            form.directory = machine.flatMap { RemoteDirectoryPath.browseRoots(for: $0).first } ?? ""
+            directoryEdited = false
+            form.directory = machine.map(RemoteDirectoryPath.defaultDirectory) ?? ""
         }
         persistDraft()
         if resetDirectory {
@@ -660,11 +799,14 @@ final class NewSessionModel {
         }
         refreshAgentAvailability(force: true)
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded()
         scheduleDirectoryWork()
     }
 
     private func resolveDefaultDirectory(machineId: String, fallback: String) {
-        defaultDirectoryTask?.cancel()
+        cancelDefaultDirectoryResolution()
+        let editVersion = directoryEditVersion
+        let roots = selectedMachine.map(RemoteDirectoryPath.browseRoots)
         let recent = recentPaths(for: machineId)
         guard !recent.isEmpty else { return }
         defaultDirectoryTask = Task { [weak self] in
@@ -687,7 +829,10 @@ final class NewSessionModel {
             }) else {
                 return
             }
-            guard self.form.machineId == machineId, self.form.directory == fallback else { return }
+            guard self.selectedMachine?.id == machineId,
+                  self.selectedMachine.map(RemoteDirectoryPath.browseRoots) == roots,
+                  self.directoryEditVersion == editVersion,
+                  self.form.directory == fallback else { return }
             self.suppressSuggestions = true
             self.form.directory = valid
             self.persistDraft()
@@ -695,106 +840,22 @@ final class NewSessionModel {
         }
     }
 
-    /// Debounced directory work: parent listing for autocomplete + exists
-    /// probe, both riding one 250 ms debounce like the Android reference.
     private func scheduleDirectoryWork() {
-        directoryTask?.cancel()
-        directoryRequestVersion += 1
-        let requestVersion = directoryRequestVersion
-        guard let machineId = form.machineId else {
-            suggestions = []
-            return
-        }
-        directoryTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.debounce)
-            guard !Task.isCancelled, let self else { return }
-            guard self.directoryRequestVersion == requestVersion,
-                  self.form.machineId == machineId
-            else {
-                return
-            }
-            await self.performDirectoryWork(machineId: machineId, requestVersion: requestVersion)
-        }
-    }
-
-    private func performDirectoryWork(machineId: String, requestVersion: Int) async {
-        let text = form.directory
-        let trimmed = form.trimmedDirectory
-        let api = session.api
-
-        let query = suppressSuggestions ? nil : NewSessionLogic.parentQuery(for: text)
-        if let query {
-            let cacheKey = (machineId, query.parent)
-            let entries: [MachineDirectoryEntry]
-            if let cached = cachedListing, (cached.machineId, cached.parent) == cacheKey {
-                entries = cached.entries
-                directoryLookupError = nil
-            } else {
-                do {
-                    let response = try await api.listMachineDirectory(
-                        machineId: machineId,
-                        path: query.parent
-                    )
-                    guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
-                    if response.success {
-                        entries = response.entries ?? []
-                        cachedListing = (machineId, query.parent, entries)
-                        directoryLookupError = nil
-                    } else {
-                        entries = []
-                        directoryLookupError = response.error ?? Self.msgDirectoryLookupFailed
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
-                    directoryLookupError = (error as? LocalizedError)?.errorDescription
-                        ?? Self.msgDirectoryLookupFailed
-                    entries = []
-                }
-            }
-            guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
-            // Never suggest the path already typed verbatim.
-            suggestions = NewSessionLogic.buildSuggestions(query: query, entries: entries)
-                .filter { $0 != trimmed }
-        } else {
-            suggestions = []
-            directoryLookupError = nil
-        }
-
-        if !trimmed.isEmpty {
-            // Unknown existence (request failed): no status hint, the spawn
-            // re-checks anyway.
-            do {
-                let result = try await api.machinePathsExist(machineId: machineId, paths: [trimmed])
-                guard isCurrentDirectoryRequest(requestVersion, machineId: machineId) else { return }
-                pathExistence.merge(result.exists) { _, new in new }
-                outsideWorkspaceRoots.remove(trimmed)
-                outsideWorkspaceRoots.formUnion(result.outsideWorkspaceRoots ?? [])
-            } catch is CancellationError {
-                return
-            } catch {
-                // Unknown existence: no status hint, spawn re-checks anyway.
-            }
-        }
-    }
-
-    private func isCurrentDirectoryRequest(_ requestVersion: Int, machineId: String) -> Bool {
-        !Task.isCancelled
-            && directoryRequestVersion == requestVersion
-            && form.machineId == machineId
+        directoryInput.update(
+            machine: selectedMachine,
+            path: form.directory,
+            showSuggestions: !suppressSuggestions
+        )
     }
 
     private func refreshAgentAvailability(force: Bool = false) {
-        guard let machineId = form.machineId else {
+        guard let machineId = selectedMachine?.id else {
             availabilityTask?.cancel()
             availabilityFetchedForMachine = nil
             agentAvailability = .loading
             return
         }
-        if !force,
-           availabilityFetchedForMachine == machineId,
-           agentAvailability != .loading {
+        if !force, availabilityFetchedForMachine == machineId {
             return
         }
         availabilityTask?.cancel()
@@ -838,7 +899,7 @@ final class NewSessionModel {
             codexModels = .hidden
             return
         }
-        guard let machineId = form.machineId else {
+        guard let machineId = selectedMachine?.id else {
             codexModels = .hidden
             return
         }
@@ -881,6 +942,77 @@ final class NewSessionModel {
                 self.persistDraft()
             }
         }
+    }
+
+    /// Fetches (or reuses) the catalog for ``agentModelsRequest``. The view
+    /// calls this whenever the request changes — including when a typed
+    /// directory turns out to exist.
+    func refreshAgentModelsIfNeeded(force: Bool = false) {
+        let request = agentModelsRequest
+        guard force || agentModelsFetched != .some(request) else { return }
+        agentModelsTask?.cancel()
+        agentModelsFetched = .some(request)
+        guard let request else {
+            agentModels = .hidden
+            opencodeVariants = nil
+            return
+        }
+        if !force, let cached = agentModelsCache[request] {
+            agentModels = .loaded(cached.response)
+            opencodeVariants = cached.variants
+            form = reconcileAgentModelSelections(form)
+            persistDraft()
+            return
+        }
+        agentModels = .loading
+        opencodeVariants = nil
+        agentModelsTask = Task { [weak self] in
+            guard let self else { return }
+            let api = self.session.api
+            let state: AgentModelsState
+            var variants: [String: [String]]?
+            do {
+                let response = try await api.machineAgentModels(
+                    machineId: request.machineId,
+                    flavor: request.flavor,
+                    cwd: request.cwd
+                )
+                // agy pairs `success` with an error for a stale catalog.
+                state = response.success
+                    ? .loaded(response)
+                    : .failed(response.error ?? String(localized: "Failed to load models"))
+                if request.flavor == .opencode, response.success, let cwd = request.cwd,
+                   let answer = try? await api.machineOpencodeModelVariants(machineId: request.machineId, cwd: cwd),
+                   answer.success {
+                    variants = answer.variants
+                }
+            } catch let error as APIError where error.code == "rpc_target_missing" {
+                state = .unsupported
+            } catch is CancellationError {
+                return
+            } catch {
+                state = .failed(
+                    (error as? LocalizedError)?.errorDescription ?? String(localized: "Failed to load models")
+                )
+            }
+            guard !Task.isCancelled, self.agentModelsFetched == .some(.some(request)) else { return }
+            self.agentModels = state
+            self.opencodeVariants = variants
+            if case .loaded(let response) = state {
+                self.agentModelsCache[request] = CachedAgentModels(response: response, variants: variants)
+                self.form = self.reconcileAgentModelSelections(self.form)
+                self.persistDraft()
+            }
+        }
+    }
+
+    private func reconcileAgentModelSelections(_ current: NewSessionForm) -> NewSessionForm {
+        guard let response = loadedAgentModels else { return current }
+        var next = NewSessionLogic.reconcileAgentModelSelections(current, response: response, variants: opencodeVariants)
+        if next.agent == .grok, next.permissionMode == .auto, !permissionModes.contains(.auto) {
+            next.permissionMode = .default
+        }
+        return next
     }
 
     private func reconcileCodexSelections(_ current: NewSessionForm) -> NewSessionForm {

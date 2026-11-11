@@ -97,7 +97,7 @@ describe('WxPusherChannel', () => {
         }
     })
 
-    it('does not send ready, permission, or task notifications', async () => {
+    it('does not send ready or permission notifications', async () => {
         const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000 }), { status: 200 }))
         const originalFetch = globalThis.fetch
         globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -108,7 +108,6 @@ describe('WxPusherChannel', () => {
 
             await channel.sendReady(session)
             await channel.sendPermissionRequest(session)
-            await channel.sendTaskNotification(session, { status: 'failed', summary: 'failed' })
 
             expect(fetchMock).not.toHaveBeenCalled()
         } finally {

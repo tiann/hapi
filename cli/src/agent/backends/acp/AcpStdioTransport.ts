@@ -65,9 +65,10 @@ export type AcpStderrError = {
 };
 
 /** @internal Exported for regression tests. */
-export function buildAcpStdioSpawnOptions(env?: Record<string, string>): SpawnOptions {
+export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: string): SpawnOptions {
     return {
         env,
+        cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: process.platform === 'win32',
         windowsHide: process.platform === 'win32'
@@ -112,6 +113,7 @@ export class AcpStdioTransport {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        cwd?: string;
     }): Promise<AcpStdioTransport> {
         const shouldGuardAgentCli = options.command === 'agent';
         if (shouldGuardAgentCli) {
@@ -122,7 +124,7 @@ export class AcpStdioTransport {
                     const process = spawn(
                         options.command,
                         options.args ?? [],
-                        buildAcpStdioSpawnOptions(options.env)
+                        buildAcpStdioSpawnOptions(options.env, options.cwd)
                     ) as ChildProcessWithoutNullStreams;
                     return new AcpStdioTransport(process, true, options.command);
                 } catch (error) {
@@ -137,7 +139,7 @@ export class AcpStdioTransport {
         const process = spawn(
             options.command,
             options.args ?? [],
-            buildAcpStdioSpawnOptions(options.env)
+            buildAcpStdioSpawnOptions(options.env, options.cwd)
         ) as ChildProcessWithoutNullStreams;
         return new AcpStdioTransport(process, false, options.command);
     }
@@ -245,6 +247,15 @@ export class AcpStdioTransport {
 
     onNotification(handler: ((method: string, params: unknown) => void) | null): void {
         this.notificationHandler = handler;
+    }
+
+    isAlive(): boolean {
+        return !this.closed && !this.exited;
+    }
+
+    /** PID of the spawned ACP agent process, when known. */
+    getProcessPid(): number | null {
+        return typeof this.process.pid === 'number' ? this.process.pid : this.childPid;
     }
 
     onStderrError(handler: ((error: AcpStderrError) => void) | null): void {
@@ -542,7 +553,10 @@ export class AcpStdioTransport {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            pending.reject(Object.assign(new Error(response.error.message), {
+                code: response.error.code,
+                ...(response.error.data !== undefined ? { data: response.error.data } : {})
+            }));
             return;
         }
 

@@ -1,5 +1,6 @@
 package app.hapi.protocol.patch
 
+import app.hapi.protocol.wire.SessionReadState
 import app.hapi.protocol.wire.OptionalField
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionPatch
@@ -48,7 +49,10 @@ fun isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch): Boole
         return false
     }
     patch.activeAt?.let { if (abs(it - session.activeAt) >= 60_000) return false }
+    patch.contentRevision?.let { if (session.contentRevision != it) return false }
+    patch.readState?.let { if (session.readState != it) return false }
     patch.updatedAt?.let { if (session.updatedAt != it) return false }
+    patch.lastUserMessageAt?.let { if (session.lastUserMessageAt != it) return false }
     if (patch.metadata != null) return false
     if (patch.agentState != null) return false
     if (patch.todos != null) return false
@@ -107,6 +111,12 @@ fun applySessionDetailPatch(session: Session, patch: SessionPatch): Session? {
     patch.activeAt?.let { if (next.activeAt != it) set(next.copy(activeAt = it)) }
     // Monotonic with hub applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.
+    patch.lastUserMessageAt?.let {
+        val at = max(next.lastUserMessageAt ?: 0, it)
+        if (next.lastUserMessageAt != at) set(next.copy(lastUserMessageAt = at))
+    }
+    patch.contentRevision?.let { set(next.copy(contentRevision = max(next.contentRevision ?: 0, it))) }
+    patch.readState?.let { set(next.copy(readState = SessionReadState.merge(next.readState, it))) }
     patch.updatedAt?.let {
         val nextUpdatedAt = max(next.updatedAt, it)
         if (next.updatedAt != nextUpdatedAt) set(next.copy(updatedAt = nextUpdatedAt))

@@ -24,7 +24,7 @@ Query parameters (`MessagesQuerySchema`; all numbers coerced from strings):
 
 | Param | Type | Constraint |
 |---|---|---|
-| `limit` | int | 1–200. **Default 50** when omitted (the web reference always sends 200). |
+| `limit` | int | 1–200. **Default 50** when omitted; the web reference uses 200 for full latest/reset, after, and before pages, and 20 for the first latest-tail refresh on cached re-entry. |
 | `beforeSeq` + `beforeAt` | int + int | Page strictly older than this position. Pairwise required. |
 | `afterSeq` + `afterAt` | int + int | Page strictly newer than this position. Pairwise required. |
 | `untilSeq` + `untilAt` | int + int | Inclusive snapshot head for a catch-up loop. Pairwise required; **requires an `after` cursor**. |
@@ -98,8 +98,12 @@ Client contract:
 
 Run after connect, after an SSE `resume: 'gap'` handshake, on session open, and when told to (`messages-invalidated`). Reference: `runTailSync` in `web/src/lib/message-window-store.ts`.
 
-1. **No usable state** (no newest cursor, no cached epoch, or a reset is pending): `GET …/messages?limit=200` (latest), replace/merge into the window, store `page.epoch`, `nextBefore*` (older-page cursor) and `snapshotHead*` (newest cursor). Done.
-2. **Have cursor + epoch**: loop
+1. **No usable state** (no newest cursor, no cached epoch, or a reset is pending):
+   - For a genuinely cold window with no cursor and no pending structural reset, request `GET …/messages?limit=20` (latest) so the newest usable conversation content can paint quickly.
+   - For a pending structural reset, request the normal full latest page with `limit=200`.
+   - Replace/merge into the window, store `page.epoch`, `nextBefore*` (older-page cursor) and `snapshotHead*` (newest cursor). Done.
+2. **Cached re-entry with a usable cursor**: `GET …/messages?limit=20` (latest), replace the stale server window while preserving queued/concurrent rows, then expose `nextBefore*` for older-history loading. Done.
+3. **Have cursor + epoch outside activation**: loop
    - `GET …/messages?afterSeq&afterAt&epoch[&untilSeq&untilAt]&limit=200`, where `after` starts at your newest cursor and `until` is the `snapshotHead*` captured from the **first** response of the loop (fixes the target so the loop terminates).
    - `page.reset` or `direction: 'latest'` ⇒ replace the window with this page; stop.
    - Otherwise merge the rows, advance `after = nextAfter*`, update the newest cursor to `max(current, nextAfter)`; stop when `hasMore` is false.
@@ -115,7 +119,9 @@ Constants from the web reference (`web/src/lib/message-window-store.ts`):
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `PAGE_SIZE` | 200 | Request size for every page fetch. |
+| `INITIAL_PAGE_SIZE` | 20 | Request size for the cold latest page used to prioritize first paint. |
+| `PAGE_SIZE` | 200 | Request size for ordinary latest/reset, forward, and older-page fetches. |
+| `CACHED_REENTRY_PAGE_SIZE` | 20 | First latest-tail page for a cached session re-entry. |
 | `VISIBLE_WINDOW_SIZE` | 400 | Max regular rows kept in **tail** mode (following live bottom). |
 | `HISTORY_WINDOW_SIZE` | 600 | Max regular rows kept in **history** mode (user scrolled back). |
 | `OLDER_LOAD_WINDOW_SIZE` | 800 | Temporary cap while an older page is being merged (prepend). |
@@ -126,7 +132,7 @@ Rules:
 - **Tail mode** trims from the top (oldest dropped). Dropping rows ⇒ set `hasMore: true` and recompute the older-page cursor from the oldest kept row.
 - **History mode** trims from the bottom (newest dropped). Dropping newest rows means your window no longer reaches the tail ⇒ flag "latest reset required": on returning to tail mode, discard cursors and fetch a fresh latest page rather than trusting stale ones.
 - **Queued rows are never trimmed** (user messages with `invokedAt === null`, see below) — they are re-merged after every trim.
-- Persist the window (messages + cursors + epoch) per session for instant cold-start rendering; on re-activation with a persisted cursor, still fetch a fresh latest page first (another client may have advanced the session by many pages) and reconcile.
+- Persist the window (messages + cursors + epoch) per session for instant cold-start rendering; a genuinely cold window and cached re-activation request a small latest page for first paint, while structural resets request the ordinary full latest page and reconcile. Another client may have advanced the session by many pages; cached re-activation keeps the returned older cursor available for on-demand history loading.
 
 ---
 
@@ -139,12 +145,13 @@ Lifecycle:
 1. Generate a client-side `localId` and append an **optimistic row**: `{id: localId, seq: null, localId, invokedAt: null, scheduledAt, createdAt: now, status:'sending', content: {role:'user', content:{type:'text', text, attachments?}, meta:{deliveryMode}}}`. A row is *optimistic* iff `id === localId`.
 2. On POST success: status → `queued` if the session is currently thinking, else `sent`. On failure: drop the row and restore the composer (or keep it as `failed` with a retry affordance when attachments are involved).
 3. **Echo**: the hub emits `message-received` carrying the stored row (server `id`, real `seq`, same `localId`). Merging a stored row whose `localId` matches an optimistic row **replaces** the optimistic one, preserving the client-side `status` and any already-known `invokedAt` the server row lacks. Fallback when no `localId` echo matches: drop an optimistic `sent` row when a server user message lands within **10 s** of the same position.
-4. **`messages-consumed {localIds, invokedAt}`** (SSE): stamp `invokedAt` and flip status to `sent` on matching rows (skip `failed` ones). This is what moves a message out of the queued bar and into the thread at its invocation position.
+4. **`messages-consumed {localIds, invokedAt}`** (SSE): stamp `invokedAt`, clear `deliveryState`/`deliveryPending`, and flip status to `sent` on matching rows (skip `failed` ones). This is what moves a message out of the queued bar and into the thread at its invocation position.
 5. **`messages-indeterminate {localIds}`** (SSE): a native dispatch or queue mutation has an unknown outcome. Keep `invokedAt: null`, mark `deliveryState:'indeterminate'`, and exclude the row from automatic replay. Retry/Cancel are explicit resolution actions and may remain unavailable until the native outcome can be reconciled.
-6. **`messages-requeued {localIds}`** (SSE): an explicit Retry restored normal queue delivery; clear `deliveryState`.
+   An optional `dispatching:true` identifies a live dispatch still awaiting confirmation. Preserve `deliveryState:'indeterminate'` and set `deliveryPending:true`; while the session is active and thinking, show confirmation pending without offering another Steer/Retry. This pending state can outlive Steer admission while the current request drains. Without the flag, clear `deliveryPending` and retain explicit unknown-outcome resolution. Neither state proves invocation.
+6. **`messages-requeued {localIds}`** (SSE): an explicit Retry restored normal queue delivery; clear `deliveryState` and `deliveryPending`.
 7. **`message-cancelled {messageId, localId?}`** (SSE): remove the row (match either id).
 
-**Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly**, `deliveryState !== 'indeterminate'`, and `status !== 'failed'`. An indeterminate row remains visible in the unresolved-delivery bar but is not eligible for automatic delivery. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, rows sent without a `localId` are stamped invoked at insert and can never be queued.
+**Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly**, `deliveryState !== 'indeterminate'`, and `status !== 'failed'`. An indeterminate row remains visible in the unresolved-delivery bar but is not eligible for automatic delivery. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, a send without a `localId` gets a hub-minted one, so every REST send follows the queue/ack path; only agent-originated rows without a `localId` are stamped invoked at insert.
 
 ### Queued-state recovery
 
@@ -152,8 +159,8 @@ After a reconnect whose handshake said `resume: 'gap'` (an `ok` resume replayed 
 
 1. Finish a tail sync.
 2. Collect candidate `localId`s: user rows with `invokedAt === null`, excluding optimistic rows still `sending`/`failed`.
-3. `POST /api/sessions/:id/messages/queued-state` with `{"localIds": […]}` (max 1000 per call; batch above that) → `{queuedLocalIds: string[], indeterminateLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}`.
-4. Apply `invokedLocalMessages` exactly like `messages-consumed`; mark `indeterminateLocalIds` as unresolved delivery. Retain both queued and indeterminate rows; drop only candidates absent from **all three** result groups. An in-flight native dispatch is reported as indeterminate, not as a deleted message.
+3. `POST /api/sessions/:id/messages/queued-state` with `{"localIds": […]}` (max 1000 per call; batch above that) → `{queuedLocalIds: string[], indeterminateLocalIds: string[], dispatchingLocalIds?: string[], invokedLocalMessages: [{localId, invokedAt}]}`.
+4. Apply `invokedLocalMessages` exactly like `messages-consumed`; mark `indeterminateLocalIds` as unresolved delivery. Retain both queued and indeterminate rows; drop only candidates absent from **all three** result groups. The optional `dispatchingLocalIds` is a subset of `indeterminateLocalIds`: these rows are awaiting confirmation, not deleted or already invoked. Treat the remaining indeterminate rows as genuinely unknown. Nonterminal snapshots must not overwrite a newer SSE or local transition that occurred during the request.
 
 ---
 
@@ -164,7 +171,7 @@ After a reconnect whose handshake said `resume: 'gap'` (an `ok` resume replayed 
 | Field | Type | Rules |
 |---|---|---|
 | `text` | string | Required (route also accepts empty text when `attachments` is non-empty). |
-| `localId` | string | Optional but **required for `scheduledAt`**, and required in practice: without it the row is stamped invoked at insert (no queue/ack/cancel path). |
+| `localId` | string | Optional but **required for `scheduledAt`**. When omitted the hub mints one; send your own to reconcile an optimistic row with its stored copy. |
 | `attachments` | `AttachmentMetadata[]` | Optional. Not allowed with `scheduledAt`. |
 | `scheduledAt` | epoch ms | Optional. Must be ≤ now + **7 days**; requires `localId`; no attachments; never `steer`. |
 | `deliveryMode` | `'queue'` \| `'steer'` | Optional, default `queue`. `steer` is honored only for **Pi-flavor** sessions and never for scheduled sends — the hub silently normalizes everything else to `queue`, and deferred/replayed delivery (reconnect backfill, retries, scheduled release) always degrades `steer` to `queue`. |
@@ -185,11 +192,11 @@ Response `{"ok": true}`. Sending to an inactive session returns `409 {"error":"S
 
 Other subscribers learn the same outcome via `message-cancelled` / `messages-consumed` SSE events.
 
-**Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Pi, Codex, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`). It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
+**Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Claude (remote mode), Pi, Codex, OpenCode v1/v2, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`, together with the agent's `steeringActive` state). OpenCode v2 requires access to its experimental native REST inbox. Durable admission keeps the row pending; an exact native inbox-delivered event or projected-input readback confirms consumption. If admission or cancellation cannot be verified, the row remains indeterminate without automatic resubmission. It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
 
 | Response | Client action |
 |---|---|
-| `{"status":"steered","localId"}` | Keep the row queued-side; it is being injected into the live turn. |
+| `{"status":"steered","localId"}` | Keep the uninvoked row until confirmed by `messages-consumed` or readback; show confirmation pending when `deliveryPending:true`. If REST beats the pending SSE, retain a provisional confirmation hold and reconcile queued state before allowing another action. This does not stamp `invokedAt`; a newer unknown/consumed state wins over a stale readback. |
 | `{"status":"invoked","message"}` | Already consumed — ingest the message. |
 | `{"status":"failed","error","localId":string\|null}` | Surface the error. Do not infer delivery state from this alone; reconcile before retrying when the native outcome is unknown. |
 
@@ -198,3 +205,6 @@ is user-initiated only. `retried` or `already-queued` means normal queue deliver
 `invoked` carries the authoritative message; `not-found` means the row is gone.
 `retry-unavailable` leaves the row unresolved: the hub could not prove that
 retrying would avoid duplicate work. Reconcile instead of automatically retrying.
+
+
+OpenCode confirmation ownership ends when its worker exits, expires, or is replaced (machine/PID/process-start marker). The hub moves only that session's uninvoked dispatching rows to unknown delivery; queued and consumed rows remain unchanged. Closing Steer admission alone does not end an existing delivery. After a hub restart, stale persisted `steeringActive` is not sufficient to show a live confirmation wait. Unknown rows are never automatically replayed or stamped invoked; later positive consumption may still reconcile them.

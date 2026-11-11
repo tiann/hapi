@@ -22,11 +22,15 @@ type HookSettings = {
     };
     hooks: {
         SessionStart: HookCommandConfig[];
+        PreCompact: HookCommandConfig[];
         UserPromptSubmit?: HookCommandConfig[];
         PreToolUse?: HookCommandConfig[];
         PermissionRequest?: HookCommandConfig[];
+        PostModelSwitch?: HookCommandConfig[];
         PostToolUse?: HookCommandConfig[];
         PostToolUseFailure?: HookCommandConfig[];
+        Stop?: HookCommandConfig[];
+        StopFailure?: HookCommandConfig[];
         SessionEnd?: HookCommandConfig[];
     };
 };
@@ -38,8 +42,9 @@ export type HookSettingsOptions = {
     /**
      * Also forward UserPromptSubmit and PreToolUse hooks. Unlike SessionStart,
      * their payloads carry `permission_mode`, letting HAPI track the mode the
-     * user picks inside the interactive TUI (shift+tab). Keep this off for the
-     * remote SDK process: these hooks block Claude while the forwarder runs,
+     * user picks inside the interactive TUI (shift+tab). PostModelSwitch
+     * tracks /model switches for the local context window. Keep this off for
+     * the remote SDK process: these hooks block Claude while the forwarder runs,
      * and remote permission state is owned by the hub/RPC path anyway.
      */
     trackPermissionMode?: boolean;
@@ -62,11 +67,15 @@ export function buildHookSettings(
         ]
     };
     const hooks: HookSettings['hooks'] = {
-        SessionStart: [{ matcher: '*', ...commandHook }]
+        SessionStart: [{ matcher: '*', ...commandHook }],
+        // One source for automatic starts in both SDK and interactive modes.
+        // Manual /compact already announces its start in claudeRemote.
+        PreCompact: [{ matcher: 'auto', ...commandHook }]
     };
     if (trackPermissionMode || includeLocalPermissions) {
         hooks.UserPromptSubmit = [commandHook];
         hooks.PreToolUse = [{ matcher: '*', ...commandHook }];
+        hooks.PostModelSwitch = [commandHook];
     }
 
     if (includeLocalPermissions) {
@@ -76,6 +85,8 @@ export function buildHookSettings(
         }];
         hooks.PostToolUse = [{ matcher: '*', ...commandHook }];
         hooks.PostToolUseFailure = [{ matcher: '*', ...commandHook }];
+        hooks.Stop = [commandHook];
+        hooks.StopFailure = [commandHook];
         hooks.SessionEnd = [{ matcher: '*', ...commandHook }];
     }
 

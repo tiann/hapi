@@ -1,6 +1,6 @@
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationChannel } from '../notifications/notificationTypes'
 import { shouldSuppressBackgroundNotification } from '../notifications/backgroundOnly'
 import { buildSessionUrl, getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -42,8 +42,6 @@ export class WxPusherChannel implements NotificationChannel {
     async sendReady(_session: Session): Promise<void> {}
 
     async sendPermissionRequest(_session: Session): Promise<void> {}
-
-    async sendTaskNotification(_session: Session, _notification: TaskNotification): Promise<void> {}
 
     async sendSessionCompletion(session: Session, _reason: SessionEndReason): Promise<void> {
         if (shouldSuppressBackgroundNotification(session, this.visibilityTracker, this.backgroundOnly)) {

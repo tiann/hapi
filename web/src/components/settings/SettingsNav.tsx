@@ -30,7 +30,7 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
     const { composerEnterBehavior } = useComposerEnterBehavior()
 
     const summaries: Record<string, string> = {
-        general: locale === 'zh-CN' ? '简体中文' : 'English',
+        general: locale === 'zh-CN' ? '简体中文' : locale === 'ru' ? 'Русский' : 'English',
         display: `${t(`settings.display.appearance.${appearance}`)} · ${Math.round(fontScale * 100)}%`,
         chat: t(`settings.chat.enterBehavior.${composerEnterBehavior}`),
         voice: t('settings.hub.voice.summary'),

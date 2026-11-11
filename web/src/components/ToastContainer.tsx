@@ -21,6 +21,13 @@ export function ToastContainer() {
                     key={toast.id}
                     title={toast.title}
                     body={toast.body}
+                    action={toast.action ? {
+                        label: toast.action.label,
+                        onClick: () => {
+                            removeToast(toast.id)
+                            toast.action?.onClick()
+                        }
+                    } : undefined}
                     className="cursor-pointer"
                     onClick={() => {
                         removeToast(toast.id)

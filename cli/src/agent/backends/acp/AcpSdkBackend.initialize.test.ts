@@ -43,4 +43,29 @@ describe('AcpSdkBackend.initialize', () => {
             })
         });
     });
+
+    it('advertises OpenCode child session updates only when enabled', async () => {
+        transportState.calls.length = 0;
+        await new AcpSdkBackend({ command: 'opencode', args: ['acp'] }).initialize();
+        await new AcpSdkBackend({ command: 'opencode', args: ['acp'], childSessionUpdates: true }).initialize();
+
+        const metas = transportState.calls
+            .filter((call) => call.method === 'initialize')
+            .map((call) => (call.params as { clientCapabilities: { _meta: Record<string, unknown> } }).clientCapabilities._meta);
+        expect(metas).toHaveLength(2);
+        expect(metas[0]).not.toHaveProperty(['opencode/child-session-updates']);
+        expect(metas[1]).toMatchObject({ 'opencode/child-session-updates': true, parameterizedModelPicker: true });
+    });
+    it('advertises form elicitation only when enabled', async () => {
+        transportState.calls.length = 0;
+        await new AcpSdkBackend({ command: 'opencode', args: ['acp'] }).initialize();
+        await new AcpSdkBackend({ command: 'opencode', args: ['acp'], elicitationForm: true }).initialize();
+
+        const capabilities = transportState.calls
+            .filter((call) => call.method === 'initialize')
+            .map((call) => (call.params as { clientCapabilities: Record<string, unknown> }).clientCapabilities);
+        expect(capabilities).toHaveLength(2);
+        expect(capabilities[0]).not.toHaveProperty('elicitation');
+        expect(capabilities[1]).toMatchObject({ elicitation: { form: {} } });
+    });
 });

@@ -23,6 +23,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides,
@@ -46,7 +48,7 @@ describe('filterSharePickerSessions', () => {
         const previewLimit = DEFAULT_SESSION_PREVIEW_LIMIT
         const sessions = Array.from({ length: previewLimit + 3 }, (_, index) =>
             makeSession({ id: `s-${index}`, active: true, updatedAt: index }))
-        const result = filterSharePickerSessions(sessions, '', machineLabel, null, previewLimit)
+        const result = filterSharePickerSessions(sessions, '', machineLabel, previewLimit)
         expect(result).toHaveLength(previewLimit)
         expect(result[0].id).toBe(`s-${previewLimit + 2}`)
     })
@@ -81,8 +83,26 @@ describe('filterSharePickerSessions', () => {
         )
         expect(result.map((s) => s.id)).toEqual(['remote'])
     })
-})
 
+    it('requires every multi-word token (AND) via shared sessionMatchesQuery', () => {
+        const sessions = [
+            makeSession({
+                id: 'full-and',
+                active: false,
+                updatedAt: 50,
+                metadata: { path: '/proj/home', name: 'Assistant draft' },
+            }),
+            makeSession({
+                id: 'home-only',
+                active: true,
+                updatedAt: 200,
+                metadata: { path: '/proj/home', name: 'other' },
+            }),
+        ]
+        const result = filterSharePickerSessions(sessions, 'home assistant', machineLabel)
+        expect(result.map((s) => s.id)).toEqual(['full-and'])
+    })
+})
 describe('countHiddenActiveSharePickerSessions', () => {
     it('returns zero when active count is within cap', () => {
         const sessions = [
@@ -102,7 +122,7 @@ describe('countHiddenActiveSharePickerSessions', () => {
     it('honors a custom preview limit', () => {
         const sessions = Array.from({ length: 5 }, (_, index) =>
             makeSession({ id: `s-${index}`, active: true, updatedAt: index }))
-        expect(filterSharePickerSessions(sessions, '', machineLabel, null, 3)).toHaveLength(3)
+        expect(filterSharePickerSessions(sessions, '', machineLabel, 3)).toHaveLength(3)
         expect(countHiddenActiveSharePickerSessions(sessions, 3)).toBe(2)
     })
 })

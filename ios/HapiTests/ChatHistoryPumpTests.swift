@@ -63,7 +63,7 @@ final class ChatHistoryPumpTests: XCTestCase {
         await controller.syncTail(ensureAfterCurrent: true)
         let initialRevision = await controller.state.tailRevision
         model.beginContentInspection()
-        XCTAssertTrue(model.showsJumpToLatest, "Inspection keeps an explicit resume action even at bottom")
+        XCTAssertFalse(model.showsJumpToLatest, "Pausing inspection at bottom must not reveal the action")
         model.retainSurface("inspector:chat")
         model.retainSurface("inspector:chat") // Idempotent appearance.
         model.releaseSurface("chat")
@@ -86,25 +86,27 @@ final class ChatHistoryPumpTests: XCTestCase {
         XCTAssertTrue(model.isInspectingContent)
         model.readingViewportChanged(followsTail: true, needsOlder: true, isAwayFromBottom: false)
         XCTAssertFalse(model.followsTail)
-        XCTAssertTrue(model.showsJumpToLatest)
+        XCTAssertFalse(model.showsJumpToLatest)
         try await Task.sleep(for: .milliseconds(30))
         let olderRequests = await performer.beforeRequests
         XCTAssertEqual(olderRequests, 0)
         model.releaseSurface("message:chat")
         XCTAssertFalse(model.isInspectingContent)
         XCTAssertFalse(model.followsTail, "Closing the reader must not silently return to latest")
-        XCTAssertTrue(model.showsJumpToLatest, "Closing must not hide the only resume action")
+        XCTAssertFalse(model.showsJumpToLatest, "Closing at bottom must not create a resume action")
+        model.readingViewportChanged(followsTail: false, needsOlder: false, isAwayFromBottom: true)
+        XCTAssertTrue(model.showsJumpToLatest, "Real distance from bottom still provides a resume action")
         let jump = model.jumpToLatestToken
         model.jumpToLatest()
         try await eventually { model.jumpToLatestToken > jump && !model.isJumpingToLatest }
         XCTAssertTrue(model.followsTail)
         XCTAssertFalse(model.showsJumpToLatest)
         model.readingViewportChanged(followsTail: false, needsOlder: false, isAwayFromBottom: false)
-        XCTAssertFalse(model.showsJumpToLatest, "A completed jump must clear the inspection exception")
+        XCTAssertFalse(model.showsJumpToLatest)
         model.beginContentInspection()
-        XCTAssertTrue(model.showsJumpToLatest)
+        XCTAssertFalse(model.showsJumpToLatest, "Repeated inspection must not latch the action on")
         model.readingViewportChanged(followsTail: true, needsOlder: false, isAwayFromBottom: false)
-        XCTAssertFalse(model.showsJumpToLatest, "Manually reaching bottom also clears the inspection exception")
+        XCTAssertFalse(model.showsJumpToLatest)
         model.readingViewportChanged(followsTail: false, needsOlder: false, isAwayFromBottom: false)
         XCTAssertFalse(model.showsJumpToLatest)
         model.releaseSurface("chat")
@@ -120,7 +122,7 @@ final class ChatHistoryPumpTests: XCTestCase {
                                          credentialStore: credentials, performer: performer))
         let model = ChatModel(session: hub, sessionId: "latest-visibility")
         defer { model.stop(); hub.shutdown() }
-        model.start()
+        model.retainSurface("chat")
         try await eventually { !model.blocks.isEmpty && !model.isSyncingTail }
         let controller = await hub.windows.open(sessionId: model.sessionId)
         await controller.syncTail(ensureAfterCurrent: true)
@@ -159,6 +161,11 @@ final class ChatHistoryPumpTests: XCTestCase {
         await controller.ingestSSEMessages(messages)
         try await eventually { model.hasTrimmedTail }
         XCTAssertTrue(model.showsJumpToLatest)
+        model.beginContentInspection()
+        model.retainSurface("inspector:chat")
+        model.readingViewportChanged(followsTail: true, needsOlder: false, isAwayFromBottom: false)
+        model.releaseSurface("inspector:chat")
+        XCTAssertTrue(model.showsJumpToLatest, "Inspection at a trimmed bottom must keep the recovery action")
         let retained = await controller.state.messages.map(\.id)
         let jump = model.jumpToLatestToken
         var requests = await performer.latestRequests

@@ -25,6 +25,8 @@ export async function runGrok(opts: {
     effort?: string
     resumeSessionId?: string
     existingSessionId?: string
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -48,7 +50,8 @@ export async function runGrok(opts: {
             workingDirectory,
             agentState: initialState,
             model: opts.model,
-            effort: opts.effort
+            effort: opts.effort,
+            reservedSessionId: opts.reservedSessionId
         })
     const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
@@ -65,7 +68,7 @@ export async function runGrok(opts: {
         stopKeepAlive: () => sessionRef.current?.stopKeepAlive()
     })
     lifecycle.registerProcessHandlers()
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle)
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const syncSessionMode = () => {

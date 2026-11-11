@@ -246,7 +246,7 @@ private struct ToolInspectorDetail: View {
     }
 }
 
-private struct ToolDetailHeader: View {
+struct ToolDetailHeader: View {
     let block: ToolCallBlock
     let basePath: String?
     var openFile: ((String) -> Void)?
@@ -263,12 +263,15 @@ private struct ToolDetailHeader: View {
                     .font(.footnote)
                     .foregroundStyle(state == .failed ? Color.red : .secondary)
             } else {
-                HStack(spacing: 8) {
-                    ToolStatusIndicator(state: block.tool.state)
-                    Text(statusLabel).font(.footnote).foregroundStyle(.secondary)
+                if block.tool.state != .pending || block.tool.permission?.status != .pending {
+                    HStack(spacing: 8) {
+                        ToolStatusIndicator(state: block.tool.state)
+                        Text(statusLabel).font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
-                if let permission = block.tool.permission {
-                    PermissionStateRow(permission: permission)
+                if let permission = block.tool.permission,
+                   !permissionActionsInline || permission.status != .pending {
+                    PermissionStateRow(permission: permission, horizontalInset: 0)
                 }
             }
             if block.tool.permission?.status == .pending && !permissionActionsInline {
@@ -359,9 +362,14 @@ private struct ToolProcessView: View {
                 ToolDetailHeader(block: block, basePath: model.basePath, openFile: { path in
                     fileRoute = FileViewerRoute(sessionId: model.sessionId, path: path, mode: .file)
                 }, permissionActionsInline: true)
-                if model.toolInspection.tools[snapshot.id] != nil,
-                   let permission = block.tool.permission, permission.status == .pending {
-                    PendingPermissionFooter(tool: block.tool, requestId: permission.id, interactions: model.interactor)
+                if let permission = block.tool.permission, permission.status == .pending {
+                    if model.toolInspection.tools[snapshot.id] != nil {
+                        PendingPermissionFooter(tool: block.tool, requestId: permission.id, interactions: model.interactor)
+                    } else if !isQuestionDetailsTool(block.tool.name) {
+                        // The header delegates pending status to this section.
+                        // A stale process keeps the recorded verdict, never actions.
+                        PermissionStateRow(permission: permission, horizontalInset: 0)
+                    }
                 }
                 ToolCallBody(tool: block.tool, basePath: model.basePath)
                 Text("Agent process").font(.headline)

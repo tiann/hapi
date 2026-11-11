@@ -27,6 +27,28 @@ class FakeSocket {
     }
 }
 
+it('does not rebroadcast stored messages and retains repeated consumption acknowledgements', () => {
+    const store = new Store(':memory:')
+    const session = store.sessions.getOrCreateSession('dedupe-replay', {}, null, 'default')
+    const socket = new FakeSocket()
+    const events: SyncEvent[] = []
+    const progress = mock(() => {})
+    registerSessionHandlers(socket as unknown as CliSocketWithData, {
+        store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+        onWebappEvent: event => events.push(event), onAgentProgress: progress
+    })
+    const message = { sid: session.id, localId: 'stable-1', message: { role: 'user', content: { type: 'text', text: 'hello' } } }
+    socket.trigger('message', message)
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['stable-1'] })
+    socket.trigger('message', message)
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['stable-1'] })
+    expect(events.filter(event => event.type === 'message-received')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'messages-consumed')).toHaveLength(2)
+    expect(progress).toHaveBeenCalledTimes(1)
+    expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+    store.close()
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',
@@ -438,9 +460,18 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+    it.each([
+        ['supersededBySessionId', 'foreign-session'],
+        ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],
+        ['titleSuggestionAutoAttemptedAt', 1234],
+        ['titleSuggestionTurn', { first: false, completed: true }],
+        ['promptTitle', 'Forged title'],
+        ['jobsAcceptedFromSessionIds', ['foreign-session']],
+        ['jobsTransferredToSessionId', 'foreign-session'],
+        ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
+    ] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
-        (field) => {
+        (field, forged) => {
             const store = new Store(':memory:')
             const session = store.sessions.getOrCreateSession('forged-clear-link', { path: '/tmp/project' }, null, 'default')
             const socket = new FakeSocket()
@@ -454,20 +485,22 @@ describe('cli session handlers', () => {
                 expectedVersion: session.metadataVersion,
                 metadata: {
                     path: '/tmp/project',
-                    [field]: field === 'supersededBySessionId'
-                        ? 'foreign-session'
-                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                    [field]: forged
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
         }
     )
 
-    it('preserves existing hub-owned clear metadata across CLI metadata updates', () => {
+    it('preserves existing hub-owned clear and job-redirect metadata across CLI metadata updates', () => {
         const store = new Store(':memory:')
         const operation = { replacementSessionId: 'owned-target', state: 'completed', updatedAt: Date.now() }
         const session = store.sessions.getOrCreateSession('preserve-clear-link', {
-            supersededBySessionId: 'owned-target', opencodeClearOperation: operation
+            supersededBySessionId: 'owned-target',
+            opencodeClearOperation: operation,
+            jobsAcceptedFromSessionIds: ['old-session'],
+            jobsTransferredToSessionId: 'merge-target',
+            jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -481,11 +514,47 @@ describe('cli session handlers', () => {
             metadata: {
                 lifecycleState: 'archived',
                 supersededBySessionId: 'forged-target',
-                opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 }
+                opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 },
+                jobsAcceptedFromSessionIds: ['forged-session'],
+                jobsTransferredToSessionId: 'forged-target',
+                jobKeyRedirects: { 'forged/beets': 'beets.forged' },
             }
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
-            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+            supersededBySessionId: 'owned-target',
+            opencodeClearOperation: operation,
+            jobsAcceptedFromSessionIds: ['old-session'],
+            jobsTransferredToSessionId: 'merge-target',
+            jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
+            lifecycleState: 'archived',
+        })
+    })
+
+    it('preserves the automatic title attempt marker across CLI metadata updates', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-auto-title-marker', {
+            path: '/tmp/project',
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false },
+            promptTitle: 'Fix the login bug'
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', titleSuggestionAutoAttemptedAt: 9999, titleSuggestionTurn: { first: false, completed: true } }
+        }, () => {})
+
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false },
+            promptTitle: 'Fix the login bug'
         })
     })
 })

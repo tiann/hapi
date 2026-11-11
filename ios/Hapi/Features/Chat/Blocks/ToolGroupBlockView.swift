@@ -31,16 +31,23 @@ struct ToolGroupPresentation: Identifiable, Equatable {
         let parts = ToolGroupActionKind.allCases.compactMap { kind -> String? in
             let count = countsByKind[kind] ?? 0
             guard count > 0 else { return nil }
-            let format: String
+            // Interpolated lookups pass the count to the catalog so the Russian
+            // plural variations are selected; the explicit singular keys keep
+            // the English labels grammatical.
             switch kind {
-            case .read: format = count == 1 ? String(localized: "1 read") : String(localized: "%lld reads")
-            case .search: format = count == 1 ? String(localized: "1 search") : String(localized: "%lld searches")
-            case .command: format = count == 1 ? String(localized: "1 command") : String(localized: "%lld commands")
-            case .mutation: format = count == 1 ? String(localized: "1 edit") : String(localized: "%lld edits")
-            case .web: format = count == 1 ? String(localized: "1 web request") : String(localized: "%lld web requests")
-            case .other: format = count == 1 ? String(localized: "1 other tool") : String(localized: "%lld other tools")
+            case .read:
+                return count == 1 ? String(localized: "1 read") : String(localized: "\(count) reads")
+            case .search:
+                return count == 1 ? String(localized: "1 search") : String(localized: "\(count) searches")
+            case .command:
+                return count == 1 ? String(localized: "1 command") : String(localized: "\(count) commands")
+            case .mutation:
+                return count == 1 ? String(localized: "1 edit") : String(localized: "\(count) edits")
+            case .web:
+                return count == 1 ? String(localized: "1 web request") : String(localized: "\(count) web requests")
+            case .other:
+                return count == 1 ? String(localized: "1 other tool") : String(localized: "\(count) other tools")
             }
-            return String(format: format, Int64(count))
         }
         return parts.joined(separator: " · ")
     }

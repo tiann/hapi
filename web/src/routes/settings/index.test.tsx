@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import SettingsHubPage from './index'
@@ -24,8 +24,20 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setAppBadgeEnabled: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const hubSettingsFixture = {
+    sessionSummaryContract: false,
+    sessionSummaryInChat: false,
+    peerSpawnDefaults: {
+        agent: 'claude' as const,
+        permissionMode: 'bypassPermissions' as const,
+        models: { claude: 'sonnet' }
+    }
+}
+const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
+const updateHubSettings = vi.fn().mockResolvedValue({
+    ...hubSettingsFixture,
+    sessionSummaryContract: true
+})
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -42,7 +54,10 @@ vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
 }))
 
-vi.mock('@hapi/protocol', () => ({ PROTOCOL_VERSION: 1 }))
+vi.mock('@hapi/protocol', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@hapi/protocol')>(),
+    PROTOCOL_VERSION: 1,
+}))
 
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance }),
@@ -83,7 +98,16 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
-    usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
+    usePinInProgressSessions: () => ({
+        pinInProgressMode: 'off' as const,
+        setPinInProgressMode: vi.fn(),
+        pinInProgressSessions: false,
+        setPinInProgressSessions: vi.fn(),
+    }),
+}))
+
+vi.mock('@/hooks/useKeepUnreadSessionsVisible', () => ({
+    useKeepUnreadSessionsVisible: () => ({ keepUnreadSessionsVisible: true, setKeepUnreadSessionsVisible: vi.fn() }),
 }))
 
 vi.mock('@/hooks/useAppBadgePreference', () => ({
@@ -95,6 +119,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
         preferences: {
             showLabels: true,
             agent: true,
+            project: true,
             model: true,
             reasoning: true,
             fastMode: true,
@@ -109,6 +134,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
 }))
 
 vi.mock('@/hooks/useSessionPreviewLimit', () => ({
+    DEFAULT_SESSION_PREVIEW_LIMIT: 8,
     MIN_SESSION_PREVIEW_LIMIT: 1,
     MAX_SESSION_PREVIEW_LIMIT: 99,
     normalizeSessionPreviewLimit: (value: number) => Math.max(1, Math.min(99, Math.round(value))),
@@ -132,14 +158,6 @@ vi.mock('@/hooks/useComposerEnterBehavior', () => ({
     getComposerEnterBehaviorOptions: () => [
         { value: 'send', labelKey: 'settings.chat.enterBehavior.send' },
         { value: 'newline', labelKey: 'settings.chat.enterBehavior.newline' },
-    ],
-}))
-
-vi.mock('@/hooks/useTerminalToolDisplayMode', () => ({
-    useTerminalToolDisplayMode: () => ({ terminalToolDisplayMode: 'compact', setTerminalToolDisplayMode: vi.fn() }),
-    getTerminalToolDisplayModeOptions: () => [
-        { value: 'compact', labelKey: 'settings.chat.terminalToolDisplay.compact' },
-        { value: 'detailed', labelKey: 'settings.chat.terminalToolDisplay.detailed' },
     ],
 }))
 
@@ -221,8 +239,11 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue(hubSettingsFixture)
+        updateHubSettings.mockResolvedValue({
+            ...hubSettingsFixture,
+            sessionSummaryContract: true
+        })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -268,7 +289,7 @@ describe('responsive settings pages', () => {
         expect(await screen.findByRole('heading', { name: 'Session status summaries' })).toBeInTheDocument()
         expect(screen.getByText('Choose whether supported agents emit status summaries and whether they appear in chat.')).toBeInTheDocument()
         expect(await screen.findByRole('checkbox', { name: 'Emit status summaries' })).toBeInTheDocument()
-        expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)')).toBeInTheDocument()
+        expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok, Cursor ACP; not yet supported: local Grok)')).toBeInTheDocument()
         expect(screen.queryByRole('heading', { name: 'Chat display', level: 3 })).not.toBeInTheDocument()
         expect(screen.getByText('Only affects display in chat and copied content; it does not affect summary generation, notifications, or background work records. When on, a status row is shown; when off, it is hidden. Stored messages remain unchanged.')).toBeInTheDocument()
 
@@ -295,12 +316,16 @@ describe('responsive settings pages', () => {
         fireEvent.click(appBadgeToggle)
         expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
-        expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+        // Fixed session order removed — SessionListView owns list order (#2263).
+        expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Long-running jobs' })).toBeInTheDocument()
     })
 
     it('keeps the session status description visible with its choice group', () => {
@@ -314,17 +339,54 @@ describe('responsive settings pages', () => {
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
-    it('keeps chat enum choices inline', () => {
+    it('shows one three-level tool card control with a persistent live preview', () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
         expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
-        expect(screen.getByText('Grouped Tool Use Background')).toBeInTheDocument()
+
+        expect(screen.getByRole('radiogroup', { name: 'Display Style' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Combined' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Combined' })).toBeChecked()
+        expect(screen.getByRole('radio', { name: 'Compact' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Detailed' })).toBeInTheDocument()
+        expect(screen.getByText('Combine consecutive tool calls into one card')).toBeInTheDocument()
+        expect(screen.getByText('Edit project files')).toBeInTheDocument()
+        expect(screen.getByText('Edit 2')).toBeInTheDocument()
+        const groupedPreview = screen.getByTestId('tool-card-display-preview')
+        const groupedPreviewContent = screen.getByTestId('tool-card-display-preview-content')
+        expect(groupedPreview.className).toContain('bg-[var(--app-bg)]')
+        expect(groupedPreviewContent.className).not.toContain('min-h-')
+        expect(groupedPreviewContent).not.toHaveAttribute('inert')
+        expect(groupedPreviewContent).not.toHaveAttribute('aria-hidden')
+
+        fireEvent.click(within(groupedPreviewContent).getByText('Edit project files'))
+        expect(within(groupedPreviewContent).getAllByText('Apply changes')).toHaveLength(2)
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Compact' }))
+        expect(screen.getByText('Show each tool separately; terminal cards show commands only')).toBeInTheDocument()
+        expect(screen.getByText('bun run test:web -- toolGroups.test.ts')).toBeInTheDocument()
+        expect(screen.getByText('git diff --stat')).toBeInTheDocument()
+        expect(screen.queryByText('12 tests passed')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Detailed' }))
+        expect(screen.getByText('Show each tool separately; terminal cards include an output preview')).toBeInTheDocument()
+        const detailedPreview = within(screen.getByTestId('tool-card-display-preview-content'))
+        expect(detailedPreview.getByText('Input')).toBeInTheDocument()
+        expect(detailedPreview.getByText('Result')).toBeInTheDocument()
+        expect(detailedPreview.getByText('12 tests passed')).toBeInTheDocument()
+        expect(screen.getByText('Combined Tool Use Background')).toBeInTheDocument()
     })
 
-    it('renders the default-collapse switch for Codex exploration groups', () => {
+    it('only enables the Codex exploration collapse switch outside grouped mode', () => {
         renderPage(<SettingsChatPage />)
-        const toggle = screen.getByRole('checkbox', { name: 'Collapse explored tool groups by default' })
+
+        const toggle = screen.getByRole('checkbox', { name: 'Collapse explored tool groups' })
         expect(toggle).toBeChecked()
+        expect(toggle).toBeDisabled()
+        expect(screen.getByText('Collapse Codex read and search activity; click to view details.')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('radio', { name: 'Compact' }))
+        expect(toggle).toBeEnabled()
         fireEvent.click(toggle)
         expect(setCodexExplorationCollapsed).toHaveBeenCalledWith(false)
     })

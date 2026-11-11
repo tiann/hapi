@@ -64,10 +64,13 @@ upward drags keep their reading offset without immediately showing the button.
 It appears at 80pt from the retained bottom and hides at 24pt, retaining its
 previous visibility between those thresholds. Hiding never resumes following;
 the actual-bottom tolerance remains 1pt. The collection reports a hysteretic
-Boolean rather than publishing per-frame distances. A trimmed live tail,
-in-flight latest navigation, or an inspection pause awaiting explicit resume
-keeps the action available regardless of proximity. Failed catch-up retains
-the retry action. Thresholds do not change history demand or retention.
+Boolean rather than publishing per-frame distances. A trimmed live tail or
+in-flight latest navigation keeps the action available regardless of proximity.
+Inspection alone does not: opening/closing a sheet at bottom leaves the action
+hidden, including output updates that do not resize transcript rows. New visible
+content can reveal it through the same distance thresholds without moving the
+reading anchor. Failed catch-up retains the retry action. Thresholds do not
+change history demand or retention.
 
 Visible-rectangle queries binary-search the ordered frame array, then visit
 only intersecting rows (`O(log n + visible rows)`). Height changes update the
@@ -80,6 +83,10 @@ hosting roots read a shared observable renderer and the latest representable
 environment; SwiftUI diffs their content without reinstalling every visible
 hosting configuration. This preserves theme, Dynamic Type, locale, direction,
 services, and action/value captures without an incomplete environment whitelist.
+SwiftUI re-runs the representable update only for environment keys read during
+it (strictly on iOS 27), so the update reads every runtime-changing value rows
+follow (Dynamic Type, bold text, typography, locale, direction, color scheme,
+theme, link action, enabled state); the snapshot handed to rows stays complete.
 The row builder executes inside a SwiftUI body so row-owned observable reads
 belong to the row. Dynamic heights still use UIKit self-sizing; no frozen-height
 or measurement-result cache is introduced.
@@ -194,7 +201,9 @@ stable recomputes. UIKit tests also verify that regrouping preserves both
 groups and the existing reading anchor, plus duplicate-delivery handling.
 `TranscriptRefreshTests` verifies that offscreen streaming does not reconfigure
 unchanged visible cells, while visible edits resize, recycled rows see the
-latest data, and equal items receive updated environments and action captures.
+latest data, and equal items receive updated environments and action captures,
+including environment-only theme and Dynamic Type changes. Tests change Dynamic
+Type through UIKit traits, as the system does.
 Debug counters also check the zero-configuration budget for ordinary context
 updates; UIKit may request cells itself when layout-direction traits change.
 Replay-gap tests cover same-epoch retention, epoch/reset replacement, and

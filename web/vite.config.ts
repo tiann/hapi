@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { shareTargetPathnameFromBase } from './src/lib/sharePath'
 
@@ -44,6 +44,9 @@ function getVendorChunkName(id: string): string | undefined {
         return undefined
     }
 
+    const grammar = id.match(/\/node_modules\/@shikijs\/(?:langs|themes)\/dist\/([^/]+)\.mjs$/)
+    if (grammar) return `shiki-${grammar[1]}`
+
     if (id.includes('/node_modules/@xterm/')) {
         return 'vendor-terminal'
     }
@@ -61,6 +64,24 @@ function getVendorChunkName(id: string): string | undefined {
     }
 
     return undefined
+}
+
+function copyKaTeXFonts(): Plugin {
+    return {
+        name: 'copy-katex-fonts',
+        apply: 'build',
+        generateBundle() {
+            const fontsDir = resolve(__dirname, 'node_modules/katex/dist/fonts')
+            for (const fileName of readdirSync(fontsDir)) {
+                if (!/\.(?:ttf|woff|woff2)$/i.test(fileName)) continue
+                this.emitFile({
+                    type: 'asset',
+                    fileName: `assets/fonts/${fileName}`,
+                    source: readFileSync(resolve(fontsDir, fileName))
+                })
+            }
+        }
+    }
 }
 
 export default defineConfig({
@@ -85,6 +106,7 @@ export default defineConfig({
     plugins: [
         react(),
         spaFallback(),
+        copyKaTeXFonts(),
         VitePWA({
             // User-controlled reload avoids mid-session surprise reloads (autoUpdate reloads all tabs).
             registerType: 'prompt',
@@ -112,6 +134,30 @@ export default defineConfig({
                 scope: base,
                 start_url: base,
                 icons: [
+                    {
+                        src: 'pwa-16x16.png',
+                        sizes: '16x16',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-24x24.png',
+                        sizes: '24x24',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-32x32.png',
+                        sizes: '32x32',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-48x48.png',
+                        sizes: '48x48',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
                     {
                         src: 'pwa-64x64.png',
                         sizes: '64x64',
@@ -177,6 +223,8 @@ export default defineConfig({
             },
             injectManifest: {
                 globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+                // Optional syntax grammars are cached after use, not during PWA installation.
+                globIgnores: ['**/shiki-*.js'],
                 // The SPA entry contains the complete multi-agent control surface.
                 // Keep it available offline after adding Pi history import instead
                 // of silently dropping the entry chunk from the PWA precache.

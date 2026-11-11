@@ -437,6 +437,45 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('refuses a transcript import for an active Codex thread when stored messages do not match its prefix', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-active-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '10101010-1010-4010-8010-101010101010'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const liveSession = store.sessions.getOrCreateSession('live-session', {
+                path: 'C:\\work\\project',
+                flavor: 'codex',
+                codexSessionId
+            }, {}, 'default')
+            store.messages.addMessage(liveSession.id, {
+                role: 'user',
+                content: { type: 'text', text: 'different from the transcript' }
+            }, 'live-1')
+            const engine = {
+                getSessionsByNamespace: () => [{ ...liveSession, active: true }]
+            } as unknown as SyncEngine
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            expect(result.success).toBe(false)
+            if (result.success) throw new Error('Expected active-session transcript import to fail')
+            expect(result.error).toContain('matching HAPI session is active')
+            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+            expect(store.messages.getAllMessages(liveSession.id)).toHaveLength(1)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
     it('updates an existing forked import when syncing the original Codex session id', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
         const store = new Store(':memory:')
@@ -1324,6 +1363,9 @@ describe('Codex Desktop import routes', () => {
         store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
         const engine = {
             getSessionsByNamespace: () => [engineSession],
+            transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
+                store.sessionJobs.transfer(fromSessionId, toSessionId)
+            },
             deleteSession: async (sessionId: string) => {
                 store.sessions.deleteSession(sessionId, 'default')
             },
@@ -1352,6 +1394,56 @@ describe('Codex Desktop import routes', () => {
             const sessions = store.sessions.getSessionsByNamespace('default')
             expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
             expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('defers no-engine merge when the source still has attached jobs', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-with-history',
+            { codexSessionId: 'codex-thread-jobs' },
+            {},
+            'default'
+        )
+        const source = store.sessions.getOrCreateSession(
+            'source-with-job',
+            { codexSessionId: 'codex-thread-jobs' },
+            {},
+            'default'
+        )
+        store.messages.addMessage(canonical.id, { type: 'text', text: 'keep me canonical' }, 'canon-1')
+        const upserted = store.sessionJobs.upsert(source.id, 'beets', {
+            label: 'beets import',
+            status: 'running',
+            remaining: 5
+        })
+        expect(upserted.outcome).toBe('upserted')
+
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-jobs'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: false; error: string }
+            expect(body.success).toBe(false)
+            expect(body.error).toMatch(/attached-job redirects/i)
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
+            expect(store.sessions.getSessionByNamespace(canonical.id, 'default')).not.toBeNull()
+            expect(store.sessionJobs.getPrimaryRunning(source.id)?.key).toBe('beets')
         } finally {
             store.close()
         }

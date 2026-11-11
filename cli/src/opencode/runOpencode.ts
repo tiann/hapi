@@ -1,3 +1,4 @@
+import type { OpencodeSteerCancelHandler } from './utils/opencodeV2Steer';
 import { logger } from '@/ui/logger';
 import { randomUUID } from 'node:crypto';
 import { opencodeLoop } from './loop';
@@ -27,6 +28,8 @@ export async function runOpencode(opts: {
     modelReasoningEffort?: string | null;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -69,7 +72,8 @@ export async function runOpencode(opts: {
             workingDirectory,
             agentState: initialState,
             model: initialModel ?? undefined,
-            modelReasoningEffort: initialModelReasoningEffort ?? undefined
+            modelReasoningEffort: initialModelReasoningEffort ?? undefined,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 
@@ -144,13 +148,14 @@ export async function runOpencode(opts: {
         session,
         logTag: 'opencode',
         stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => sessionWrapperRef.current?.kill(),
         onAfterClose: () => {
             hookServer.stop();
         }
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {
@@ -435,9 +440,12 @@ export async function runOpencode(opts: {
         });
     });
 
+    let cancelNativeSteer: OpencodeSteerCancelHandler | null = null;
     session.onCancelQueuedMessage((localId) => {
+        const nativeCancellation = cancelNativeSteer?.(localId);
+        if (nativeCancellation !== undefined) return nativeCancellation;
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
-        if (removedFromQueue) {
+        if (removedFromQueue === true) {
             if (queuedClearLocalId === localId) {
                 queuedClearLocalId = null;
                 clearTransitionLatched = false;
@@ -454,6 +462,7 @@ export async function runOpencode(opts: {
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
         }
+        if (removedFromQueue !== false) return removedFromQueue;
         if (preparingLocalIds.has(localId)) {
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
@@ -540,6 +549,7 @@ export async function runOpencode(opts: {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
             },
+            onSteerCancelHandlerChange: (handler) => { cancelNativeSteer = handler; },
             onCompactAvailabilityChange: (available) => {
                 compactSupported = available;
                 if (!available) {
