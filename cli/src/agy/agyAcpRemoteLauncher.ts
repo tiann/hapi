@@ -1070,8 +1070,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // instead of polling a transcript that will never grow: scan the turn's
             // own range for the first background-completion SYSTEM step — everything
             // from there on belongs to the wakeup.
-            const backlog = (await source.readStepsSince(Math.max(opts.accountedIdx, opts.turnBaseIdx)).catch(() => [] as AgyTranscriptStep[]))
-                .filter((step) => step.idx <= baseline);
+            // One stateless read answers both questions: the raced backlog and
+            // how far the transcript has actually parsed. The DB can lead the
+            // JSONL (its row lands before the transcript line is written or
+            // parsed), so the watcher must not skip steps the transcript has
+            // not parsed yet: a completion recorded at DB idx N while the
+            // JSONL ends at N-1 would otherwise be discarded by the live
+            // filter when the line catches up.
+            const parsed = await source.readStepsSince(-1).catch(() => [] as AgyTranscriptStep[]);
+            const transcriptCoverage = parsed.reduce((max, step) => Math.max(max, step.idx), -1);
+            const backlog = parsed.filter((step) => step.idx > Math.max(opts.accountedIdx, opts.turnBaseIdx) && step.idx <= baseline);
             let racedThroughIdx: number | null = null;
             // agy's own backgrounding records pair completions with their
             // original ACP calls by task id: seed the map from the backlog
@@ -1112,7 +1120,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
             const watcher = new AgyWakeWatcher({
                 source: windowSource,
-                baselineIdx: baseline,
+                // Skip only what the transcript had already parsed at window
+                // start: a step between that coverage and the DB baseline must
+                // surface when its line catches up, not fall through both the
+                // scan and the live filter.
+                baselineIdx: transcriptCoverage >= 0 ? Math.min(baseline, transcriptCoverage) : baseline,
                 pollMs: this.wakeTiming.pollMs,
                 maxPollMs: this.wakeTiming.maxPollMs,
                 quietMs: this.wakeTiming.quietMs,

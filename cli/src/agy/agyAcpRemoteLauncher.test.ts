@@ -3288,6 +3288,44 @@ describe('AgyAcpRemoteLauncher idle-period ACP updates (google-antigravity/antig
     });
 });
 
+describe('AgyAcpRemoteLauncher late continuation (baseline vs transcript coverage)', () => {
+    it('surfaces a completion the DB recorded before the transcript parsed it', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            // The brain transcript has parsed the turn's own steps...
+            source.push(wakeStep(1, 'planner', 'Checking the sample.'), wakeStep(2, 'planner', 'Started the background check.'));
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            // ...but the DB already records a completion (idx 3) whose
+            // transcript line has not been parsed yet.
+            source.latest = 3;
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The transcript catches up: the completion's line parses late, below
+        // the DB baseline the window sampled.
+        source.push(wakeStep(3, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDB-AHEAD-OUT'));
+        source.latest = 3;
+
+        // The completion must surface (the card closes with the real result)
+        // and ready must fire instead of riding the safety cap.
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(result)).toContain('DB-AHEAD-OUT');
+    });
+});
+
 describe('AgyAcpRemoteLauncher dequeue hold', () => {
     it('surfaces steps that appeared after the last watcher before running the held message', async () => {
         const { session, queue, client } = makeSession();
