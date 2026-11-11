@@ -16,6 +16,39 @@ export function getAskUserQuestionOptionFrameClassName(checked: boolean, classNa
     )
 }
 
+export function AskUserQuestionOptionRow(props: {
+    checked: boolean
+    mode: AskUserQuestionChoiceMode
+    disabled: boolean
+    title: string
+    description?: string | null
+    onClick: () => void
+}) {
+    return (
+        <button
+            type="button"
+            role={props.mode === 'multi' ? 'checkbox' : 'radio'}
+            aria-checked={props.checked}
+            className={getAskUserQuestionOptionFrameClassName(
+                props.checked,
+                'w-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:pointer-events-none disabled:opacity-50'
+            )}
+            disabled={props.disabled}
+            onClick={props.onClick}
+        >
+            <AskUserQuestionOptionBody
+                checked={props.checked}
+                mode={props.mode}
+                title={props.title}
+                description={props.description}
+                interactive
+            />
+        </button>
+    )
+}
+
+export const askUserQuestionNavButtonClassName = 'h-8 rounded-full border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3.5 text-[var(--app-fg)] hover:border-[var(--app-md-quote-border)] hover:bg-[var(--app-subtle-bg)]'
+
 export function AskUserQuestionSelectionControl(props: {
     checked: boolean
     mode: AskUserQuestionChoiceMode
