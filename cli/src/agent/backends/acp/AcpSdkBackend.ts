@@ -767,6 +767,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.promptUsageCallback = onUpdate;
         this.childEmitSink = onUpdate;
         let stopReason: string | null = null;
+        let numTurns: number | undefined = undefined;
         let promptUsage: AcpPromptUsage | null = null;
 
         try {
@@ -788,6 +789,7 @@ export class AcpSdkBackend implements AgentBackend {
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
+            numTurns = this.extractNumTurns(response);
         } finally {
             // Cursor (#2267/#2268): drain any session updates already queued with
             // the native response, then seal a done footer before the quiet
@@ -845,7 +847,11 @@ export class AcpSdkBackend implements AgentBackend {
                     });
                 }
                 if (stopReason) {
-                    onUpdate({ type: 'turn_complete', stopReason });
+                    onUpdate({
+                        type: 'turn_complete',
+                        stopReason,
+                        ...(numTurns !== undefined ? { numTurns } : {})
+                    });
                 }
             } finally {
                 this.promptUsageCallback = null;
@@ -1706,6 +1712,26 @@ export class AcpSdkBackend implements AgentBackend {
         return typeof value === 'number' && Number.isFinite(value) ? value : null;
     }
 
+
+    /**
+     * The agent's own per-prompt turn count when its result carries one
+     * (google-antigravity/antigravity-cli#1045: agy ACP does not report it —
+     * HAPI then counts model calls from agy's transcript instead). Accepted
+     * from `usage.num_turns`/`numTurns`, the response top level, or `_meta`.
+     */
+    extractNumTurns(response: unknown): number | undefined {
+        if (!isObject(response)) return undefined;
+        const candidates: unknown[] = [];
+        if (isObject(response.usage)) candidates.push(response.usage.num_turns, response.usage.numTurns);
+        candidates.push(response.num_turns, response.numTurns);
+        if (isObject(response._meta)) candidates.push(response._meta.num_turns, response._meta.numTurns);
+        for (const candidate of candidates) {
+            if (typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0) {
+                return Math.round(candidate);
+            }
+        }
+        return undefined;
+    }
 
     private captureSessionMetadata(sessionId: string, response: unknown): void {
         this.captureSessionModelsMetadata(sessionId, response);

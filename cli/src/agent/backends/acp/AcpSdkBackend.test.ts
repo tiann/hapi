@@ -2611,3 +2611,26 @@ describe('AcpSdkBackend config_option_update', () => {
         }
     });
 });
+
+describe('AcpSdkBackend num_turns extraction (google-antigravity/antigravity-cli#1045)', () => {
+    const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'] });
+
+    it('prefers usage.num_turns over the response top level and _meta', () => {
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', usage: { num_turns: 7 } })).toBe(7);
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', usage: { numTurns: 3 }, _meta: { num_turns: 9 } })).toBe(3);
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', num_turns: 4 })).toBe(4);
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', _meta: { numTurns: 5 } })).toBe(5);
+    });
+
+    it('ignores non-positive, garbage, and missing values', () => {
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', usage: {} })).toBeUndefined();
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', usage: { num_turns: 0 } })).toBeUndefined();
+        expect(backend.extractNumTurns({ stopReason: 'end_turn', usage: { num_turns: 'many' } })).toBeUndefined();
+        expect(backend.extractNumTurns({})).toBeUndefined();
+        expect(backend.extractNumTurns(null)).toBeUndefined();
+    });
+
+    it('rounds fractional numbers instead of dropping them', () => {
+        expect(backend.extractNumTurns({ usage: { num_turns: 2.9 } })).toBe(3);
+    });
+});

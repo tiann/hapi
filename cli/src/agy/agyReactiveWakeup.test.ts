@@ -573,6 +573,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 nativeArgs: { CommandLine: 'sleep 5 && echo READY', toolSummary: 'Background check' }
             });
             onUpdate({ type: 'text', text: 'Waiting for background task...' });
+            onUpdate({ type: 'usage', inputTokens: 40, outputTokens: 10 });
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
             writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
                 { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run check' },
@@ -662,8 +663,53 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             type: 'round-summary',
             summary: expect.objectContaining({
                 provider: 'agy',
+                num_turns: 1,
                 agy_usage: expect.objectContaining({ input_tokens: 80, output_tokens: 15 })
             })
+        }));
+        // The prompt round counts its own model calls (the transcript's DONE
+        // PLANNER_RESPONSE steps inside the turn), not the wakeup's.
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({ provider: 'agy', num_turns: 2 })
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('prefers an ACP-reported turn count over the transcript count in the prompt round summary', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'usage', inputTokens: 12, outputTokens: 4 });
+            onUpdate({ type: 'text', text: 'Done.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn', numTurns: 9 });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'summarize' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Done.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('summarize', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({ provider: 'agy', num_turns: 9 })
         }));
 
         queue.close();

@@ -106,7 +106,8 @@ export function agyRoundSummary(
     usage: UsageMessage,
     durationMs: number | null,
     model: string | null,
-    generationMs: number | null = null
+    generationMs: number | null = null,
+    numTurns: number | null = null
 ) {
     // Thinking is generated too, as in OpenCode's tok/s.
     const generatedTokens = usage.outputTokens + (usage.thoughtTokens ?? 0);
@@ -126,6 +127,9 @@ export function agyRoundSummary(
                 ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {})
             },
             ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+            // Model calls of this round alone (google-antigravity/antigravity-cli#1045):
+            // a reactive wakeup emits its own summary and counts its own turns.
+            ...(numTurns !== null && numTurns > 0 ? { num_turns: numTurns } : {}),
             ...generation
         }
     } as const;
@@ -185,6 +189,10 @@ type AgyTurn = {
     // Settled non-live assistant text segments streamed during this turn, used
     // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
     streamedTextCounts: Map<string, number>;
+    // Turn count for the round footer: agy's own report when its ACP result
+    // carries one, else this turn's transcript model calls.
+    numTurns: number | undefined;
+    transcriptNumTurns: number | undefined;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -380,14 +388,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turnStartStepIndex,
             streamedTextCounts: new Map(turn.streamedTextCounts)
         };
-        this.advanceCursorFromLastTurnState();
+        this.advanceCursorFromLastTurnState(turn);
         this.pausedWakeupStepIndex = null;
     }
 
-    private advanceCursorFromLastTurnState(): void {
+    private advanceCursorFromLastTurnState(turn?: AgyTurn): number | null {
         const acpSessionId = this.acpSessionId;
         const state = this.lastTurnTranscriptState;
-        if (!acpSessionId || !state) return;
+        if (!acpSessionId || !state) return null;
         const stepsAfterStart = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, state.turnStartStepIndex);
         const nextCursor = advanceAgyTurnTranscriptCursor(
             stepsAfterStart,
@@ -397,6 +405,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (nextCursor > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = nextCursor;
         }
+        if (turn) {
+            // Round footer turn count (google-antigravity/antigravity-cli#1045):
+            // count this turn's own model calls from the transcript the cursor
+            // walk just bounded. Steps past that boundary belong to a reactive
+            // wakeup, which counts its own round.
+            turn.transcriptNumTurns = stepsAfterStart.filter((step) =>
+                step.source === 'MODEL'
+                && step.type === 'PLANNER_RESPONSE'
+                && step.status === 'DONE'
+                && step.step_index > state.turnStartStepIndex
+                && step.step_index <= nextCursor
+            ).length;
+        }
+        return nextCursor;
     }
 
     private hasPendingReactiveWakeup(): boolean {
@@ -644,8 +666,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         this.forwardAgentMessage(this.showQuestionCard(msg));
                     }
                     if (converted.usage) {
+                        const wakeupNumTurns = inspection.steps.filter((step) =>
+                            step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
+                        ).length;
                         session.sendAgentMessage(
-                            agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null)
+                            agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
                         );
                     }
                     session.onThinkingChange(false);
@@ -871,6 +896,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
+            numTurns: undefined,
+            transcriptNumTurns: undefined,
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -1012,7 +1039,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     ? Math.max(0, turn.answeredAt - turn.sentAt)
                     : null;
                 const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
-                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs));
+                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, turn.numTurns ?? turn.transcriptNumTurns ?? null));
             }
             session.onThinkingChange(false);
             await this.permissionHandler?.cancelAll('Prompt finished');
@@ -1457,6 +1484,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             case 'turn_complete':
                 turn.stopReason = message.stopReason;
+                if (typeof message.numTurns === 'number' && Number.isFinite(message.numTurns) && message.numTurns > 0) {
+                    turn.numTurns = message.numTurns;
+                }
                 return;
             default: {
                 turn.sawActivity = true;

@@ -78,7 +78,7 @@ export type AgentMessage =
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
-    | { type: 'turn_complete'; stopReason: string }
+    | { type: 'turn_complete'; stopReason: string; numTurns?: number }
     | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };
 
