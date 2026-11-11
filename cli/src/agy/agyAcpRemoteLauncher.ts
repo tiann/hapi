@@ -220,6 +220,38 @@ type AgyTurn = {
  * Antigravity over `agy acp`. The agy conversation id is the ACP session id,
  * so a stored `agySessionId` resumes through `session/resume` without replay.
  */
+/**
+ * Reliably identified state: the only state readiness, the dequeue hold, and
+ * the wake window's lifetime may depend on. Every member is keyed by something
+ * HAPI or agy's own records identified (an ACP call id, a native task id), or
+ * is a count over transcript facts.
+ */
+type WakeGatingState = {
+    /** ACP call ids agy left open at end_turn (HAPI-observed), not yet completed. */
+    bgIds: string[];
+    /** Native task ids backgrounded during this window, not yet completed. */
+    openContinuation: Set<string>;
+};
+
+/**
+ * Display-only pairing: routes results onto cards. It may mispair (FIFO order,
+ * command-text matching) and must fail open: an unpaired card is left for the
+ * next prompt's flush/label path and never extends the window or holds a
+ * prompt.
+ */
+type WakeCardPairing = {
+    /** Synthetic wake-call cards awaiting results, FIFO. */
+    pendingWakeCalls: string[];
+    /** Native agy task id -> command text, from agy's own backgrounding records. */
+    backgrounding: Map<string, string>;
+    /** ACP call id -> command text, for pairing a completion with its call. */
+    taskDescriptions: Map<string, string>;
+    /** Synthetic wake-call id -> command text, for backgrounding records. */
+    wakeCommands: Map<string, string>;
+    /** Native task id -> the synthetic wake call that launched it. */
+    wakeCallByTask: Map<string, string>;
+};
+
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
     private readonly createBackend: () => AcpSdkBackend;
@@ -974,13 +1006,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (baseline === null || baseline < 0) {
             return { reason: 'error', surfacedThroughIdx: null, latestSeenIdx: null, surfacedFully: false, steps: 0 };
         }
-        const pendingWakeCalls: string[] = [];
-        const backgrounding = new Map<string, string>();
-        const openContinuation = new Set<string>();
-        const wakeCommands = new Map<string, string>();
-        const wakeCallByTask = new Map<string, string>();
-        const surface = (step: AgyTranscriptStep): void =>
-            this.surfaceWakeStep(step, { bgIds: opts.bgIds, pendingWakeCalls, backgrounding, taskDescriptions: opts.taskDescriptions, openContinuation, wakeCommands, wakeCallByTask });
+        const gating: WakeGatingState = { bgIds: opts.bgIds, openContinuation: new Set() };
+        const pairing: WakeCardPairing = {
+            pendingWakeCalls: [],
+            backgrounding: new Map(),
+            taskDescriptions: opts.taskDescriptions,
+            wakeCommands: new Map(),
+            wakeCallByTask: new Map()
+        };
+        const surface = (step: AgyTranscriptStep): void => this.surfaceWakeStep(step, gating, pairing);
         // Window-scoped lease: one persistent readonly DB connection for fast
         // progress probes plus the fs.watch event wait; closed with the window.
         const lease = this.acpSessionId ? this.createWakeLease(this.acpSessionId) : null;
@@ -1010,7 +1044,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             for (const step of backlog) {
                 if (step.kind === 'tool' && step.status === 'running') {
                     const backgrounded = parseAgyBackgroundStart(step.content);
-                    if (backgrounded) backgrounding.set(backgrounded.taskId, backgrounded.description);
+                    if (backgrounded) pairing.backgrounding.set(backgrounded.taskId, backgrounded.description);
                 }
             }
             // The turn's outstanding commands, by command text: a completion
@@ -1024,7 +1058,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // A completion for a command that is no longer outstanding was
                 // already delivered over ACP; replaying from it would duplicate
                 // the frames the turn rendered live.
-                const description = backgrounding.get(completion.taskId);
+                const description = pairing.backgrounding.get(completion.taskId);
                 return description === undefined || outstandingDescriptions.has(description.trim());
             });
             if (racedAt) {
@@ -1051,9 +1085,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // Live work: the original commands, a surfaced continuation
                 // tool call awaiting its result, and commands the continuation
                 // backgrounded itself — all bound by the safety cap.
-                hasOpenBackgroundCommands: () => opts.bgIds.length > 0
-                    || pendingWakeCalls.length > 0
-                    || openContinuation.size > 0,
+                hasOpenBackgroundCommands: () => gating.bgIds.length > 0
+                    || pairing.pendingWakeCalls.length > 0
+                    || gating.openContinuation.size > 0,
                 onStep: surface,
                 onActivity: () => this.session.onThinkingChange(true)
             });
@@ -1092,40 +1126,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * ACP thread speaks. Background-task completions (SYSTEM_MESSAGE) close
      * the original ACP tool card; wakeup tool calls and their results pair FIFO.
      */
-    private surfaceWakeStep(
-        step: AgyTranscriptStep,
-        state: {
-            bgIds: string[];
-            pendingWakeCalls: string[];
-            /** Native agy task id -> command text, from agy's own backgrounding records. */
-            backgrounding: Map<string, string>;
-            /** ACP call id -> command text, for pairing a completion with its call. */
-            taskDescriptions: Map<string, string>;
-            /** Native task ids backgrounded during this window, not yet completed. */
-            openContinuation: Set<string>;
-            /** Synthetic wake-call id -> command text, for backgrounding records. */
-            wakeCommands: Map<string, string>;
-            /** Native task id -> the synthetic wake call that launched it. */
-            wakeCallByTask: Map<string, string>;
-        }
-    ): void {
+    private surfaceWakeStep(step: AgyTranscriptStep, gating: WakeGatingState, pairing: WakeCardPairing): void {
         if (step.kind === 'system') {
             const completion = parseAgyTaskCompletion(step.content);
             // An unrelated system message (no completion marker) touches no
             // pending command.
             if (!completion) return;
-            if (completion.taskId !== null) state.openContinuation.delete(completion.taskId);
+            if (completion.taskId !== null) gating.openContinuation.delete(completion.taskId);
             let bgId: string | undefined;
-            const description = completion.taskId !== null ? state.backgrounding.get(completion.taskId) : undefined;
+            const description = completion.taskId !== null ? pairing.backgrounding.get(completion.taskId) : undefined;
             if (description === undefined) {
                 // No native task id on the completion, or no backgrounding
                 // record for it (older builds): launch-order pairing, as before.
-                bgId = state.bgIds.shift();
+                bgId = gating.bgIds.shift();
             } else {
                 // Pair by the native task id agy recorded at backgrounding time,
                 // so out-of-order completions complete their own card.
-                bgId = state.bgIds.find((id) => (state.taskDescriptions.get(id) ?? '').trim() === description);
-                if (bgId !== undefined) state.bgIds.splice(state.bgIds.indexOf(bgId), 1);
+                bgId = gating.bgIds.find((id) => (pairing.taskDescriptions.get(id) ?? '').trim() === description);
+                if (bgId !== undefined) gating.bgIds.splice(gating.bgIds.indexOf(bgId), 1);
             }
             if (bgId !== undefined) {
                 this.forwardAgentMessage({
@@ -1142,10 +1160,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // A command the continuation backgrounded itself has no ACP
                 // call: settle its synthetic wake card and free the pending
                 // entry so the window does not ride the cap after the answer.
-                const wakeId = state.wakeCallByTask.get(completion.taskId);
+                const wakeId = pairing.wakeCallByTask.get(completion.taskId);
                 if (wakeId !== undefined) {
-                    const at = state.pendingWakeCalls.indexOf(wakeId);
-                    if (at >= 0) state.pendingWakeCalls.splice(at, 1);
+                    const at = pairing.pendingWakeCalls.indexOf(wakeId);
+                    if (at >= 0) pairing.pendingWakeCalls.splice(at, 1);
                     this.forwardAgentMessage({
                         type: 'tool_result',
                         id: wakeId,
@@ -1173,11 +1191,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     status: 'in_progress',
                     nativeName: call.name
                 });
-                state.pendingWakeCalls.push(id);
+                pairing.pendingWakeCalls.push(id);
                 const command = call.args && typeof call.args === 'object' && !Array.isArray(call.args)
                     ? (call.args as { CommandLine?: unknown }).CommandLine
                     : undefined;
-                if (typeof command === 'string' && command.trim().length > 0) state.wakeCommands.set(id, command);
+                if (typeof command === 'string' && command.trim().length > 0) pairing.wakeCommands.set(id, command);
             }
             return;
         }
@@ -1187,16 +1205,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // id so its completion pairs with the original ACP call.
                 const backgrounded = parseAgyBackgroundStart(step.content);
                 if (backgrounded) {
-                    state.backgrounding.set(backgrounded.taskId, backgrounded.description);
-                    state.openContinuation.add(backgrounded.taskId);
+                    pairing.backgrounding.set(backgrounded.taskId, backgrounded.description);
+                    gating.openContinuation.add(backgrounded.taskId);
                     // The synthetic card this command launched under completes
                     // when the task does.
-                    const wakeId = state.pendingWakeCalls.find((id) => (state.wakeCommands.get(id) ?? '').trim() === backgrounded.description);
-                    if (wakeId !== undefined) state.wakeCallByTask.set(backgrounded.taskId, wakeId);
+                    const wakeId = pairing.pendingWakeCalls.find((id) => (pairing.wakeCommands.get(id) ?? '').trim() === backgrounded.description);
+                    if (wakeId !== undefined) pairing.wakeCallByTask.set(backgrounded.taskId, wakeId);
                 }
                 return; // the ACP card already shows the backgrounded command
             }
-            const wakeId = state.pendingWakeCalls.shift();
+            const wakeId = pairing.pendingWakeCalls.shift();
             if (!wakeId) return; // result without a surfaced call: nothing to attach it to
             this.forwardAgentMessage({
                 type: 'tool_result',
