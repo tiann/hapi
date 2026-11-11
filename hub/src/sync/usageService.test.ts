@@ -866,4 +866,41 @@ describe('usage service', () => {
         expect(store.usage.getEvents([target.id])).toHaveLength(1)
         store.close()
     })
+
+    it('extracts Antigravity (agy) round-summary token usage', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'agy-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'agy' },
+            null,
+            'default',
+            'gemini-3.1-pro-high'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'round-summary',
+                summary: {
+                    provider: 'agy',
+                    model: 'gemini-3.1-pro-high',
+                    agy_usage: {
+                        input_tokens: 1000,
+                        output_tokens: 200,
+                        cache_read_tokens: 800
+                    }
+                }
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals.requests).toBe(1)
+        expect(result.totals.inputTokens).toBe(1000)
+        expect(result.totals.outputTokens).toBe(200)
+        expect(result.totals.cacheReadTokens).toBe(800)
+        expect(result.totals.totalTokens).toBe(1200)
+        expect(result.byAgent.find((row) => row.key === 'agy')?.totalTokens).toBe(1200)
+        expect(result.byModel.find((row) => row.key === 'gemini-3.1-pro-high')?.totalTokens).toBe(1200)
+        store.close()
+    })
 })

@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
+import { recordClaudeRateLimitEvent } from '@/agent/agentQuotas'
 import type {
     SDKMessage,
     SDKUserMessage,
@@ -207,6 +208,8 @@ export class SDKToLogConverter {
     private convertRateLimitEvent(sdkMessage: SDKMessage): RawJSONLines | null {
         const info = (sdkMessage as any).rate_limit_info
         if (typeof info !== 'object' || info === null) return null
+
+        recordClaudeRateLimitEvent(info)
 
         const { status, resetsAt, utilization, rateLimitType } = info
 
