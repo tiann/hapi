@@ -578,6 +578,32 @@ describe('getSessionBlockedState', () => {
         }), { now })).toBeNull()
     })
 
+    it('ignores a prompt left on an archived session', () => {
+        // `handleSessionEnd` drops activity but keeps `agentState.requests`, so
+        // without this the row sits in Blocked forever on a prompt nobody can
+        // answer. Matches `classifySessionAttention`.
+        expect(getSessionBlockedState(makeSummary({
+            id: 'a',
+            active: false,
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: now }]
+        }), { now })).toBeNull()
+    })
+
+    it('still reports a notify footer on an archived session', () => {
+        // The footer stands on its own: the agent said it was stuck before the
+        // session ended, and that is still true.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            active: false,
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['permission'],
+            lastNotify: { status: 'blocked', at: now, note: 'needs a decision' }
+        }), { now })
+        expect(state?.reason).toBe('blocked')
+    })
+
     it('returns null when nothing is blocking', () => {
         expect(getSessionBlockedState(makeSummary({ id: 'a' }), { now })).toBeNull()
     })

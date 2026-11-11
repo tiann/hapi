@@ -119,6 +119,15 @@ function getPendingBlockedState(
     ackAt: number | null,
     now: number
 ): SessionBlockedState | null {
+    // Requests left on an archived session can no longer be answered, and
+    // `handleSessionEnd` clears activity without clearing `agentState.requests`
+    // — so without this the row would sit in the Blocked section forever with
+    // nothing the operator could do about it. Mirrors `classifySessionAttention`.
+    // The caller falls through to the notify footer, which stands on its own.
+    if (!summary.active) {
+        return null
+    }
+
     const kinds = Array.isArray(summary.pendingRequestKinds) ? summary.pendingRequestKinds : []
     // `pendingRequestsCount` is the authoritative total; a count without kinds
     // still parks the agent on a prompt, so do not drop it from the list.
