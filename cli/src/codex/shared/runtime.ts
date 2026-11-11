@@ -214,7 +214,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, fresh = false) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -225,11 +225,18 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
         assertRunning();
         roots.set(threadId, root);
-        await root.bind(threadId, response, subscribe, fresh);
+        await root.bind(threadId, response, subscribe, freshThread);
+        // A thread this runtime created (thread/start) starts from zero
+        // cumulative usage: seed before activate() opens the input gates, or
+        // a prompt released at session-ready starts the first turn with a
+        // null baseline that later seeding cannot repair. Forks are
+        // excluded: their totals arrive through the app-server's attach-time
+        // usage replay.
+        if (freshThread) root.seedFreshUsage();
         assertRunning();
         // Cold-resumed threads predate the control connection's automatic
         // new-thread subscription. Subscribe once without changing settings.
-        if (!fresh) await control.request('thread/resume', { threadId, excludeTurns: true });
+        if (!freshThread) await control.request('thread/resume', { threadId, excludeTurns: true });
         // The native thread and its history are attached. Register the owned
         // process before activation releases buffered history notifications;
         // flushing their outbox must not race the runner's startup deadline.
