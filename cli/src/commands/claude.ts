@@ -98,7 +98,18 @@ export const claudeCommand: CommandDefinition = {
 
         logger.debug('Ensuring hapi background service is running & matches our version...')
 
-        if (!(await isRunnerRunningCurrentlyInstalledHappyVersion())) {
+        if (process.env.HAPI_RUNNER_SPAWNED_SESSION === '1') {
+            // This session was spawned by the runner itself. Leave stale-runner
+            // replacement to the runner's own heartbeat handoff, which spawns
+            // the replacement from the undemoted runner process: spawning it
+            // from here would inherit this session's demoted scheduling
+            // priority (see spawnHappyCLI's lowerPriority), permanently
+            // demoting the replacement runner — niceness cannot be lowered
+            // back without privileges.
+            if (!(await isRunnerRunningCurrentlyInstalledHappyVersion())) {
+                logger.debug('Runner is version-stale; leaving its replacement to the runner\'s own heartbeat handoff')
+            }
+        } else if (!(await isRunnerRunningCurrentlyInstalledHappyVersion())) {
             logger.debug('Starting hapi background service...')
 
             const runnerProcess = spawnHappyCLI(['runner', 'start-sync'], {

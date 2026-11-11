@@ -4,12 +4,16 @@ const {
     initializeTokenMock,
     maybeAutoStartServerMock,
     authAndSetupMachineIfNeededMock,
-    runClaudeMock
+    runClaudeMock,
+    spawnHappyCLIMock,
+    isRunnerVersionCurrentMock
 } = vi.hoisted(() => ({
     initializeTokenMock: vi.fn(async () => {}),
     maybeAutoStartServerMock: vi.fn(async () => {}),
     authAndSetupMachineIfNeededMock: vi.fn(async () => {}),
-    runClaudeMock: vi.fn(async () => {})
+    runClaudeMock: vi.fn(async () => {}),
+    spawnHappyCLIMock: vi.fn((): unknown => ({ pid: 4242, unref: () => {} })),
+    isRunnerVersionCurrentMock: vi.fn(async () => true)
 }))
 
 vi.mock('@/ui/tokenInit', () => ({
@@ -25,7 +29,11 @@ vi.mock('@/ui/auth', () => ({
 }))
 
 vi.mock('@/runner/controlClient', () => ({
-    isRunnerRunningCurrentlyInstalledHappyVersion: async () => true
+    isRunnerRunningCurrentlyInstalledHappyVersion: isRunnerVersionCurrentMock
+}))
+
+vi.mock('@/utils/spawnHappyCLI', () => ({
+    spawnHappyCLI: spawnHappyCLIMock
 }))
 
 vi.mock('@/claude/runClaude', () => ({
@@ -47,6 +55,10 @@ describe('claudeCommand arguments', () => {
         maybeAutoStartServerMock.mockClear()
         authAndSetupMachineIfNeededMock.mockClear()
         runClaudeMock.mockClear()
+        spawnHappyCLIMock.mockClear()
+        isRunnerVersionCurrentMock.mockReset()
+        isRunnerVersionCurrentMock.mockResolvedValue(true)
+        delete process.env.HAPI_RUNNER_SPAWNED_SESSION
     })
 
     it('tracks --model as session state instead of an opaque Claude argument', async () => {
@@ -106,5 +118,38 @@ describe('claudeCommand arguments', () => {
         expect(runClaudeMock).toHaveBeenCalledWith({
             existingSessionId: 'fork-child-id',
         })
+    })
+})
+
+describe('claudeCommand stale-runner replacement', () => {
+    beforeEach(() => {
+        initializeTokenMock.mockClear()
+        maybeAutoStartServerMock.mockClear()
+        authAndSetupMachineIfNeededMock.mockClear()
+        runClaudeMock.mockClear()
+        spawnHappyCLIMock.mockClear()
+        isRunnerVersionCurrentMock.mockReset()
+        delete process.env.HAPI_RUNNER_SPAWNED_SESSION
+    })
+
+    it('spawns a replacement runner when the installed one is stale (terminal session)', async () => {
+        isRunnerVersionCurrentMock.mockResolvedValue(false)
+        await claudeCommand.run(createCommandContext([]))
+        expect(spawnHappyCLIMock).toHaveBeenCalledWith(
+            ['runner', 'start-sync'],
+            expect.objectContaining({ detached: true })
+        )
+        expect(runClaudeMock).toHaveBeenCalled()
+    })
+
+    it('leaves the replacement to the runner heartbeat for runner-started sessions', async () => {
+        // A runner-started session is demoted (nice); a replacement runner
+        // spawned from here would inherit that demotion forever. The
+        // runner's own heartbeat handoff replaces it undemoted instead.
+        isRunnerVersionCurrentMock.mockResolvedValue(false)
+        process.env.HAPI_RUNNER_SPAWNED_SESSION = '1'
+        await claudeCommand.run(createCommandContext([]))
+        expect(spawnHappyCLIMock).not.toHaveBeenCalled()
+        expect(runClaudeMock).toHaveBeenCalled()
     })
 })

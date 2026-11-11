@@ -152,6 +152,12 @@ export function resolveAgentNiceLevel(
   if (raw === undefined || raw === '') {
     return DEFAULT_AGENT_NICE_LEVEL;
   }
+  // Validate the complete string, not just a numeric prefix: parseInt would
+  // accept "0.5", "0abc" or "5x" as numbers, and a prefix-parsed zero would
+  // silently disable the scheduling protection on a malformed value.
+  if (!/^[+-]?\d+$/.test(raw)) {
+    return DEFAULT_AGENT_NICE_LEVEL;
+  }
   const parsed = Number.parseInt(raw, 10);
   if (parsed === 0) {
     return null;

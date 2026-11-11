@@ -23,8 +23,19 @@ describe('resolveAgentNiceLevel', () => {
     expect(resolveAgentNiceLevel('abc')).toBe(15);
   });
 
+  it('rejects numeric prefixes instead of parseInt-truncating them', () => {
+    // parseInt would read "0.5"/"0abc" as 0 — silently disabling the
+    // protection on a malformed value — and "5x" as a valid 5.
+    expect(resolveAgentNiceLevel('0.5')).toBe(15);
+    expect(resolveAgentNiceLevel('0abc')).toBe(15);
+    expect(resolveAgentNiceLevel('5x')).toBe(15);
+    expect(resolveAgentNiceLevel(' 12 ')).toBe(12);
+  });
+
   it("returns null for '0' (opt-out)", () => {
     expect(resolveAgentNiceLevel('0')).toBeNull();
+    expect(resolveAgentNiceLevel('+0')).toBeNull();
+    expect(resolveAgentNiceLevel('-0')).toBeNull();
   });
 });
 

@@ -867,7 +867,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           lowerPriority: true,
           env: {
             ...process.env,
-            ...extraEnv
+            ...extraEnv,
+            // Marks this child as runner-started. The session entry commands
+            // use it to leave stale-runner replacement to THIS runner's own
+            // heartbeat handoff: a replacement spawned from inside the
+            // demoted session would inherit its nice value, permanently
+            // demoting the new runner and recreating the contention the
+            // demotion exists to prevent (nice cannot be lowered back
+            // unprivileged).
+            HAPI_RUNNER_SPAWNED_SESSION: '1'
           }
         });
         happyProcess.once('exit', () => {
