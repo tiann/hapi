@@ -1126,7 +1126,28 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         const context = await api.getMessageContext(sessionId, candidate.id)
                         if (!isCurrentTailSync(sessionId, generation)) return
                         const refreshed = context?.messages.find((message) => message.id === candidate.id)
-                        if (!refreshed || context!.page.epoch !== getState(sessionId).epoch) return
+                        if (!refreshed) {
+                            // The row is no longer reachable through the
+                            // context endpoint: leave it as is and finish the
+                            // run's bookkeeping — an early return here would
+                            // leave the window marked syncing.
+                            finishTailSync(sessionId, generation, 'Failed to refresh a merged tool call')
+                            return
+                        }
+                        if (context!.page.epoch !== getState(sessionId).epoch) {
+                            // The refresh answered under a different epoch:
+                            // server rows may have been deleted since the
+                            // page was fetched. Mark the window for the
+                            // authoritative replacement instead of
+                            // reconciling against a stale snapshot, and
+                            // finish the run's bookkeeping.
+                            updateState(sessionId, (previous) => {
+                                if (previous.syncGeneration !== generation) return previous
+                                return buildState(previous, { requiresLatestReset: true })
+                            })
+                            finishTailSync(sessionId, generation, 'Failed to refresh a merged tool call')
+                            return
+                        }
                         updateState(sessionId, (previous) => {
                             if (previous.syncGeneration !== generation) return previous
                             return buildState(previous, { messages: mergeMessages(previous.messages, [refreshed]) })

@@ -3284,6 +3284,99 @@ describe('gap recovery', () => {
         expect(state.messages).toHaveLength(310)
     })
 
+    it('finishes the run with a warning when the context refresh finds no row', async () => {
+        const id = sessionId('gap-recovery-refresh-missing')
+        const cachedTail = Array.from({ length: 9 }, (_, i) => (
+            makeUserMessage({ id: `n${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const missed = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `n${11 + i}`, seq: 11 + i, invokedAt: (11 + i) * 10, createdAt: (11 + i) * 10 })
+        ))
+        const latestPage = missed.filter((message) => (message.seq ?? 0) >= 111)
+        let latestCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse(missed, {
+                    epoch: 1,
+                    hasMore: false,
+                    nextAfterAt: 3_100,
+                    nextAfterSeq: 310,
+                    snapshotHeadAt: 3_100,
+                    snapshotHeadSeq: 310
+                })
+            }
+            latestCalls += 1
+            if (latestCalls === 1) {
+                return latestResponse([...cachedTail, stale], { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+            }
+            return latestResponse(latestPage, { epoch: 1, hasMore: true, nextBeforeAt: 1_110, nextBeforeSeq: 111 })
+        }, async () => null)
+
+        await syncTailMessages(api, id)
+        await recoverWindowAfterGapResume(api, id)
+
+        // The context endpoint no longer knows the row: the sweep leaves it
+        // as is, surfaces the warning, and — critically — finishes the run's
+        // bookkeeping instead of leaving the window marked syncing.
+        const state = getMessageWindowState(id)
+        expect(mergedContentOf(state)).toEqual(stale.content)
+        expect(state.warning).toBeTruthy()
+        expect(state.isSyncingTail).toBe(false)
+        expect(state.messages).toHaveLength(310)
+    })
+
+    it('marks the window for authoritative recovery when the context refresh answers under a different epoch', async () => {
+        const id = sessionId('gap-recovery-refresh-epoch')
+        const cachedTail = Array.from({ length: 9 }, (_, i) => (
+            makeUserMessage({ id: `n${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const missed = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `n${11 + i}`, seq: 11 + i, invokedAt: (11 + i) * 10, createdAt: (11 + i) * 10 })
+        ))
+        const latestPage = missed.filter((message) => (message.seq ?? 0) >= 111)
+        let latestCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse(missed, {
+                    epoch: 1,
+                    hasMore: false,
+                    nextAfterAt: 3_100,
+                    nextAfterSeq: 310,
+                    snapshotHeadAt: 3_100,
+                    snapshotHeadSeq: 310
+                })
+            }
+            latestCalls += 1
+            if (latestCalls === 1) {
+                return latestResponse([...cachedTail, stale], { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+            }
+            return latestResponse(latestPage, { epoch: 1, hasMore: true, nextBeforeAt: 1_110, nextBeforeSeq: 111 })
+        }, async (_sessionId, messageId) => (
+            contextResponse([toolCallRow(messageId, 10, 1_000, 'completed')], {
+                epoch: 2,
+                nextBeforeAt: 10,
+                nextBeforeSeq: 1,
+                snapshotHeadAt: 3_100,
+                snapshotHeadSeq: 310,
+                targetMessageId: messageId
+            })
+        ))
+
+        await syncTailMessages(api, id)
+        await recoverWindowAfterGapResume(api, id)
+
+        // A refresh under a different epoch means server rows may have been
+        // deleted since the page was fetched: the window is marked for the
+        // authoritative replacement instead of being left marked syncing.
+        const state = getMessageWindowState(id)
+        expect(mergedContentOf(state)).toEqual(stale.content)
+        expect(state.warning).toBeTruthy()
+        expect(state.requiresLatestReset).toBe(true)
+        expect(state.isSyncingTail).toBe(false)
+    })
+
     it('leaves the window reset-marked when the recovery catch-up overflows the history budget', async () => {
         const id = sessionId('gap-recovery-overflow')
         const cached = Array.from({ length: 600 }, (_, i) => (
