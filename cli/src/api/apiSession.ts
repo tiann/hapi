@@ -565,6 +565,11 @@ export class ApiSessionClient extends EventEmitter {
         return this.state === 'pending' || this.state === 'materializing'
     }
 
+    /** Whether hub reads are served live: a null read then is a transient miss, not a waiting socket. */
+    isActive(): boolean {
+        return this.state === 'active'
+    }
+
     private isClosed(): boolean {
         return this.state === 'closed'
     }

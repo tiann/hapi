@@ -943,6 +943,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // snapshot below still decides whether admission is safe.
             await session.client.flushMetadata().catch(() => false);
             if (initialSnapshot) await reconcileEntry();
+            // A null startup read on a live socket is a transient miss (the GET
+            // swallowed a timeout/503 or saw a stale version), not a waiting
+            // socket: retry it through the same serialized backoff. A socket
+            // still connecting keeps the existing connected-event path.
+            else if (!this.rewindStopped && typeof session.client.isActive === 'function' && session.client.isActive()) this.scheduleEntryRetry();
         } catch (error) {
             this.noteSupersededRewind(error);
             if (this.entryFailureRetriable(error)) this.scheduleEntryRetry();
