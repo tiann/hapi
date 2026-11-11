@@ -2593,6 +2593,53 @@ describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)',
         expect(JSON.stringify(first)).toContain('FIRST-OUT');
     });
 
+    it('seeds task identities from the backlog even without a raced completion', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const args1 = { CommandLine: 'sleep 30 && echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+        const args2 = { CommandLine: 'sleep 10 && echo SECOND-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('run two checks');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run first sample', input: args1, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args1 });
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run second sample', input: args2, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args2 });
+            onUpdate({ type: 'text', text: 'Started both checks in the background.' });
+            // agy's backgrounding records land in the transcript during the
+            // turn, before the window's baseline.
+            source.push(
+                { ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', 'sleep 30 && echo FIRST-OUT')), status: 'running' },
+                { ...wakeStep(4, 'tool', BACKGROUNDING('sample/task-2', 'sleep 10 && echo SECOND-OUT')), status: 'running' }
+            );
+            source.latest = 4;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('run two checks', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // Completions land out of launch order, after the baseline.
+        source.push(wakeStep(5, 'system', COMPLETION('sample/task-2', 'SECOND-OUT')));
+        source.latest = 5;
+        await vi.waitFor(() => expect(agentRows(client).some((row) => row.type === 'tool-call-result' && row.callId === 'bg-2')).toBe(true));
+
+        const rowsMid = agentRows(client);
+        const second = rowsMid.find((row) => row.type === 'tool-call-result' && row.callId === 'bg-2') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(second)).toContain('SECOND-OUT');
+        expect(rowsMid.some((row) => row.type === 'tool-call-result' && row.callId === 'bg-1')).toBe(false);
+
+        source.push(wakeStep(6, 'system', COMPLETION('sample/task-1', 'FIRST-OUT')));
+        source.latest = 6;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        const first = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(first)).toContain('FIRST-OUT');
+    });
+
     it('leaves an unrelated system message untouched instead of discarding a pending command', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();

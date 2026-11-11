@@ -1009,17 +1009,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const backlog = (await source.readStepsSince(Math.max(opts.accountedIdx, opts.turnBaseIdx)).catch(() => [] as AgyTranscriptStep[]))
                 .filter((step) => step.idx <= baseline);
             let racedThroughIdx: number | null = null;
+            // agy's own backgrounding records pair completions with their
+            // original ACP calls by task id: seed the map from the backlog
+            // unconditionally — both the turn's own records (pre-baseline) and
+            // any that landed with the raced wakeup.
+            for (const step of backlog) {
+                if (step.kind === 'tool' && step.status === 'running') {
+                    const backgrounded = parseAgyBackgroundStart(step.content);
+                    if (backgrounded) backgrounding.set(backgrounded.taskId, backgrounded.description);
+                }
+            }
             const racedAt = backlog.find((step) => step.kind === 'system' && parseAgyTaskCompletion(step.content) !== null);
             if (racedAt) {
-                // agy's own backgrounding records precede the completion; pair
-                // them by task id without re-rendering the turn's own steps.
-                for (const step of backlog) {
-                    if (step.idx >= racedAt.idx) break;
-                    if (step.kind === 'tool' && step.status === 'running') {
-                        const backgrounded = parseAgyBackgroundStart(step.content);
-                        if (backgrounded) backgrounding.set(backgrounded.taskId, backgrounded.description);
-                    }
-                }
                 for (const step of backlog) {
                     if (step.idx < racedAt.idx) continue;
                     surface(step);
