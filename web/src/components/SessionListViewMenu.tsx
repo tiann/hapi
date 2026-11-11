@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 import { useTranslation } from '@/lib/use-translation'
 import { cn } from '@/lib/utils'
 import { CheckIcon } from '@/components/icons'
+import { useFue } from '@/lib/use-fue'
+import { FueCallout, FueDot } from '@/components/Fue'
 import {
     getMachineFilterMenuClampStyle,
     MachineFilterMenuRow,
@@ -121,6 +123,7 @@ export function SessionListViewMenu(props: {
         setDatePickerOpen(false)
         dateFilterButtonRef.current?.focus()
     }, [])
+    const fue = useFue('session-list-view-menu')
 
     const close = useCallback(() => {
         setOpen(false)
@@ -198,7 +201,10 @@ export function SessionListViewMenu(props: {
                 ref={triggerRef}
                 type="button"
                 data-testid="session-list-view-button"
-                onClick={() => setOpen(value => !value)}
+                onClick={() => {
+                    fue.engage()
+                    setOpen(value => !value)
+                }}
                 aria-label={label}
                 title={label}
                 aria-haspopup="menu"
@@ -213,7 +219,23 @@ export function SessionListViewMenu(props: {
                 {customized ? (
                     <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" aria-hidden="true" />
                 ) : null}
+                {!customized && fue.status !== 'acknowledged' ? (
+                    <FueDot
+                        pulsing={fue.status === 'unseen'}
+                        ariaLabel={t('fue.newFeatureDot')}
+                    />
+                ) : null}
             </button>
+            {fue.status === 'engaging' ? (
+                <FueCallout
+                    title={t('sessions.view.fueTitle')}
+                    body={t('sessions.view.fueBody')}
+                    onDismiss={fue.dismiss}
+                    dismissLabel={t('fue.gotIt')}
+                    closeAriaLabel={t('fue.closeAriaLabel')}
+                    anchorRef={triggerRef}
+                />
+            ) : null}
             {open ? (
                 <>
                     <button

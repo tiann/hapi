@@ -31,6 +31,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -195,7 +197,7 @@ describe('SessionList machine filter', () => {
     it('filters directory groups when a machine chip is selected', () => {
         renderSessionList(multiMachineSessions)
 
-        fireEvent.click(screen.getByRole('button', { name: /Teemo \(1\)/ }))
+        fireEvent.click(screen.getByRole('button', { name: /^Teemo \(1\)/ }))
 
         expect(screen.queryByTitle('/work/hapi')).toBeNull()
         expect(screen.getByTitle('/work/docs')).toBeTruthy()
@@ -244,14 +246,14 @@ describe('SessionList machine filter', () => {
             })
         ])
 
-        const teemo = screen.getByRole('button', { name: /Teemo \(1\)/ })
+        const teemo = screen.getByRole('button', { name: /^Teemo \(1\)$/ })
         fireEvent.click(teemo)
         expect(teemo).toHaveAttribute('aria-pressed', 'true')
 
         fireEvent.click(screen.getAllByRole('button', { name: 'Sort and filter' })[0])
         fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Unread only' }))
 
-        expect(screen.getByRole('button', { name: /Teemo \(1\)/ })).toHaveAttribute('aria-pressed', 'true')
+        expect(screen.getByRole('button', { name: /^Teemo \(1\)$/ })).toHaveAttribute('aria-pressed', 'true')
         expect(screen.queryByTitle('/work/m1-unread')).toBeNull()
         expect(screen.queryByTitle('/work/m2-read')).toBeNull()
         expect(screen.getByText('No sessions match your filters.')).toBeTruthy()
@@ -282,7 +284,7 @@ describe('SessionList machine filter', () => {
 
         fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
         fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'alpha' } })
-        fireEvent.click(screen.getByRole('button', { name: /Teemo \(1\)/ }))
+        fireEvent.click(screen.getByRole('button', { name: /^Teemo \(1\)/ }))
 
         expect(screen.getByText('No sessions match your filters.')).toBeTruthy()
         expect(screen.queryByTitle('/work/hapi')).toBeNull()
@@ -346,7 +348,7 @@ describe('SessionList machine filter', () => {
         ])
         expect(within(menu).getByRole('menuitemradio', { name: /All \(2\)/ })).toBeTruthy()
         expect(within(menu).getByRole('menuitemradio', { name: /Mint \(1\)/ })).toBeTruthy()
-        expect(within(menu).getByRole('menuitemradio', { name: /Teemo \(1\)/ })).toBeTruthy()
+        expect(within(menu).getByRole('menuitemradio', { name: /^Teemo \(1\)$/ })).toBeTruthy()
     })
 })
 

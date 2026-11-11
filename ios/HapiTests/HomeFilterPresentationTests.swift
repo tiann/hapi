@@ -155,6 +155,13 @@ final class HomeFilterPresentationTests: XCTestCase {
             row.pendingRequestsCount = [1, 2, 7, 0, 0, 1][sample]
             row.pendingRequestKinds = sample == 1 ? [.permission] : (sample == 2 ? [.input, .permission] : [.input])
             row.thinking = sample == 0 || sample == 3
+            // One mark per presence: working, waiting, background, stopped,
+            // plus an attached job's progress line.
+            row.backgroundTaskCount = sample == 4 ? 2 : 0
+            if sample == 2 {
+                row.attachedJob = AttachedJob(key: "import", label: "导入历史会话", done: 1_284, total: 3_000,
+                                              heartbeatAt: now, startedAt: now - 3 * 3_600_000, updatedAt: now)
+            }
             row.active = sample != 5
             if sample == 0 || sample == 3 || sample == 4 {
                 row.todoProgress = .init(completed: sample == 4 ? 5 : 3, total: 5)

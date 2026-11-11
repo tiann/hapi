@@ -221,10 +221,10 @@ provider credentials as described below.
   the generic alert unchanged. The appex links nothing beyond the SDK — it
   carries an SDK-only copy of the HapiKit `PushEnvelope` decrypt, kept honest
   by the shared test vector.
-- **Actions.** `permission-request` → Allow / Deny; `ready` and
-  `task-notification` → inline Reply. `input-request` previews the first
-  question, remaining question count and session name, with tap-to-open only
-  (no approval or Reply action). Apple Watch mirrors the preview; answer on
+- **Actions.** `permission-request` → Allow / Deny; `ready` → inline
+  Reply. `input-request` previews the first question, remaining question
+  count and session name, with tap-to-open only (no approval or Reply
+  action). Apple Watch mirrors the preview; answer on
   the phone. Handlers run in the notification
   delegate's async completion and resolve the owning hub Android-style
   (active hub first, then the roster; 404 "Session not found" / 403 = try
@@ -704,17 +704,34 @@ TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
 ### Home filtering
 
 Home keeps a fixed Sessions title: hub switching on the leading edge,
-Filters and New Session on the trailing edge. The native menu offers an
-**Unread Only** lens, machine single-selection (two or more machines) and
-**Mark All as Read** (shared read state, confirmed first); only applied filters
-add a summary line. The unread lens keeps the iPad's selected chat listed.
+**Sort & Filter** and New Session on the trailing edge. The native menu mirrors
+the web sort and filter menu: **Sort By** last message (default) or date
+created, **Active First** (on by default: connected sessions lead the pinned
+and recent sections, below manual pins), **Show** all / active only / archived
+only, an **Unread Only** lens, machine single-selection (two or more machines)
+and **Mark All as Read** (shared read state, confirmed first). Only applied
+filters add a summary line; a non-default order just tints the menu button.
+The status and unread filters keep the iPad's selected chat listed.
 The search field (`.searchable`) ranks matches with the web relevance rules
 (`SessionListSearch`: title, worktree, summary, agent, machine, path and id;
-every word must match; `*`/`?` wildcards) while keeping pinned sections first.
-Filters and search are transient per home/hub and never select a new session's machine.
+every word must match; `*`/`?` wildcards) while keeping pinned sections first;
+relevance ties use the base order, not the chosen sort, as on web.
+Sort and Active First persist app-wide (`SessionListOrderPrefs`). Filters and
+search are transient per home/hub and never select a new session's machine.
 Options/counts come from all session summaries, including historical machines;
 the online roster supplies names only. Missing names use a labeled short ID.
 Session-count updates do not reorder options or reset the list's scroll position.
+
+Each row's agent icon carries the web presence badge (one mark per state):
+solid green pulsing while working, solid blue pulsing when only background
+tasks run, a green ring when connected and waiting, and a power mark when
+stopped or archived. Pending requests stay a separate attention symbol on the
+second line. A running [attached job](../docs/guide/session-jobs.md) counts as
+working even when the agent is idle or disconnected, keeps the session under
+**Active Only**, and replaces the project on the second line with
+`label · remaining or percent · elapsed` (amber `no heartbeat` after 15
+minutes; no progress bar). Job patches are versioned like web's: a lagged
+heartbeat cannot resurrect a cleared job.
 
 App-hosted filter tests use observable in-memory stores (no network or pairing).
 Optional layout captures are test specimens, not live or App Store screenshots:

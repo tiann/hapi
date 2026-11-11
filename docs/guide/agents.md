@@ -54,6 +54,74 @@ hapi resume <session-id>   # Resume a specific HAPI session
 
 `hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
+### Displaying images
+
+HAPI supports two image delivery methods: Markdown images embedded in conversation text and the `display_image` tool.
+
+#### Client support
+
+| Client | Local workspace Markdown images | HTTP(S) Markdown images |
+|--------|---------------------------------|-------------------------|
+| Web/PWA | Loaded through the authenticated session file API | Loaded directly by the browser |
+| Native iOS | Placeholder rows or alternative text; no image loading | Placeholder rows or alternative text, with links where applicable; no inline image loading |
+| Native Android | Alternative text or links; no image loading | Alternative text or links; no inline image loading |
+
+The native clients can display images delivered through `display_image`. Those generated-image messages use a separate rendering path from Markdown images.
+
+#### Local Markdown images in Web/PWA
+
+Use standard Markdown image syntax:
+
+```markdown
+![Screenshot](screenshots/result.png)
+```
+
+For paths containing spaces, enclose the path in angle brackets:
+
+```markdown
+![Screenshot](<screenshots/my result.png>)
+```
+
+Local Markdown images must meet these requirements:
+
+- The file exists within the current session's configured working directory. Relative paths resolve from that directory, not from the browser URL or a shell command's temporary working directory.
+- The file is no larger than 10 MiB (10,485,760 bytes).
+- The file has a supported image extension and can be decoded by the browser.
+- The normalized path remains within the session workspace. Out-of-workspace paths and `file:`, `data:`, or `blob:` URLs are not supported.
+
+Recognized extensions are APNG, AVIF, BMP, GIF, ICO, JPEG, JPG, PNG, SVG, TIF, TIFF, and WebP. Recognizing an extension does not guarantee browser decoding; for example, Chromium does not normally display TIFF images. PNG, JPEG, GIF, and WebP are recommended for broad browser compatibility.
+
+Local images are read through the authenticated session file API. The referenced file and the session file-reading connection must remain available. A Markdown reference does not create a permanent attachment.
+
+Reachable HTTP(S) images load directly in the browser. The 10 MiB session-file limit applies to local images, not remote image URLs.
+
+#### Using display_image
+
+Use the available HAPI `display_image` tool with an absolute filesystem path when:
+
+- The image needs to be viewable in both Web/PWA and native clients.
+- The image is outside the session workspace.
+- Markdown image delivery is unsuitable, or the user prefers a separate image card.
+
+The MCP tool accepts supported image content up to 25 MiB. Its supported formats differ from Markdown/browser rendering, so a file unsupported by one method is not necessarily supported by the other.
+
+The MCP `display_image` tool presents the image to the user; it does not provide image input to the model for inspection or analysis. Pi's separate `hapi_display_image` extension tool also returns image bytes to the model context.
+
+Neither Markdown references nor the current generated-image delivery path guarantee permanent image storage.
+
+#### Choosing a delivery method
+
+Follow an explicit user or workspace preference when supported and permitted. Without a stated preference, use the available `display_image` tool.
+
+For a Web/PWA-only workflow, users can record a preference in their agent's workspace instruction file, such as `AGENTS.md`:
+
+> I use HAPI Web/PWA only. Prefer Markdown for local images that meet HAPI's workspace, size, and format requirements. Otherwise, use the available `display_image` tool when the file meets that tool's requirements.
+
+Normally show each image once. Do not deliver the same image through both Markdown and a display tool, or redisplay a user-provided image, unless requested.
+
+Check each method's own requirements before using it. Do not switch delivery methods to bypass denied file access or tool approval.
+
+
 ### Mathematical formulas in HAPI Markdown
 
 HAPI renders LaTeX-style mathematics through KaTeX. When generating or revising Markdown intended for display in HAPI, follow these rules exactly:
@@ -312,8 +380,8 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
 - **Claude Code** (`hapi claude`) — local sessions wrap the native TUI, remote sessions drive the Claude Agent SDK. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
 - **Codex** (`hapi codex`) — OpenAI's Codex CLI, with terminal/Web control and a dedicated `plan` mode. See [Codex usage and limits](./codex-shared-sessions.md) for resume, terminal-exit behavior, and launch options. [openai/codex](https://github.com/openai/codex)
-- **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). [GitHub Copilot](https://github.com/features/copilot)
-- **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
+- **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). Remote sessions can pick a reasoning effort in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [GitHub Copilot](https://github.com/features/copilot)
+- **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). Remote sessions can pick a thinking level in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
   (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the

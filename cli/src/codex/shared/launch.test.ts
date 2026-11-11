@@ -27,6 +27,7 @@ describe('shared launch configuration', () => {
         }
     });
     it('keeps unspecified settings inherited and explicit Standard distinct', () => {
+        expect(sharedLaunchConfig({}, '/tmp').threadParams).not.toHaveProperty('developerInstructions');
         expect(sharedLaunchConfig({}, '/tmp').threadParams).not.toHaveProperty('serviceTier');
         expect(sharedLaunchConfig({}, '/tmp').threadParams.config).not.toHaveProperty('model_reasoning_effort');
         expect(sharedLaunchConfig({ serviceTier: 'standard' }, '/tmp').threadParams.serviceTier).toBeNull();

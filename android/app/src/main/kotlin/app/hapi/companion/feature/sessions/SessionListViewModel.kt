@@ -6,7 +6,10 @@ import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
+import app.hapi.protocol.wire.AttachedJob
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.SessionListOrder
+import app.hapi.protocol.wire.SessionListSort
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.sortSessionSummaries
 import java.time.ZoneId
@@ -56,6 +59,60 @@ data class SessionRowUi(
     val machine: MachineFilterUi? = null,
 ) {
     val id: String get() = summary.id
+    val presence: SessionPresence get() = SessionPresence.of(summary)
+
+    /** Only a running job is shown; finished ones leave no trace on the row. */
+    val runningJob: AttachedJob? get() = summary.runningAttachedJob
+}
+
+/** Work that outlives the agent (tiann/hapi#1404); web `hasRunningAttachedJob`. */
+val SessionSummary.runningAttachedJob: AttachedJob?
+    get() = attachedJob?.takeIf { it.isRunning }
+
+/**
+ * The agent icon's presence badge (web `SessionRowSummary`, #2296). Every
+ * state has its own mark, so none is shown by the absence of one: solid and
+ * pulsing while working (blue when only background tasks run), a ring when
+ * connected and waiting, a power mark when stopped or archived. A running
+ * attached job counts as working even when the agent is idle or gone.
+ */
+enum class SessionPresence {
+    Working,
+    Background,
+    Waiting,
+    Stopped;
+
+    val pulses: Boolean get() = this == Working || this == Background
+
+    companion object {
+        /** Same precedence as web: background-only before an attached job. */
+        fun of(summary: SessionSummary): SessionPresence = when {
+            summary.active && !summary.thinking && summary.backgroundTaskCount > 0 -> Background
+            (summary.active && summary.thinking) || summary.runningAttachedJob != null -> Working
+            summary.active -> Waiting
+            else -> Stopped
+        }
+    }
+}
+
+/**
+ * Web "Show" filter. Archived means not connected: closed sessions and ones
+ * whose CLI went away. A running attached job keeps an idle session under
+ * Active and out of Archived (web #1404 exception).
+ */
+enum class SessionListStatus {
+    All,
+    Active,
+    Archived;
+
+    fun includes(summary: SessionSummary): Boolean {
+        val live = summary.active || summary.runningAttachedJob != null
+        return when (this) {
+            All -> true
+            Active -> live
+            Archived -> !live
+        }
+    }
 }
 
 data class MachineFilterUi(
@@ -79,6 +136,15 @@ data class SessionListUiState(
     val isOffline: Boolean,
     /** Transient date-range lens (web `customStart`/`customEnd` `useState`); null = off, never persisted. */
     val dateRange: SessionDateRange? = null,
+    /** Transient "Show" filter; the open session always stays listed. */
+    val statusFilter: SessionListStatus = SessionListStatus.All,
+    /** Transient unread lens; the open session always stays listed. */
+    val unreadOnly: Boolean = false,
+    /**
+     * Persisted sort key + Active first (ignored while searching). Defaults to
+     * the uncustomized order so the toolbar dot never flashes before prefs load.
+     */
+    val order: SessionListOrder = SessionListOrder.Default,
     /**
      * Local epoch-days that carry any session activity — the picker's
      * activity hint, derived before any list filtering (web
@@ -97,7 +163,11 @@ data class SessionListUiState(
     val connectionStatus: HomeConnectionStatus? = null,
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
-    val hasActiveFilters: Boolean get() = activeMachineFilter != null || dateRange != null
+    val hasActiveFilters: Boolean
+        get() = activeMachineFilter != null || dateRange != null || statusFilter != SessionListStatus.All || unreadOnly
+
+    /** Filters or a non-default order: the toolbar button carries a dot (web). */
+    val isCustomized: Boolean get() = hasActiveFilters || !order.isDefault
     val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
 
@@ -132,8 +202,15 @@ class SessionListViewModel(
     /** Global SSE transport state (`SseEngine.connectionState(Global)`); none in tests by default. */
     connectionState: Flow<ConnectionState> = emptyFlow(),
     private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Sort key + Active first. Home passes the persisted prefs; the default is
+     * Home's unpersisted default, and the share picker passes the base order.
+     */
+    private val orderStore: SessionListOrderStore = InMemorySessionListOrderStore(),
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
+    private val statusFilter = MutableStateFlow(SessionListStatus.All)
+    private val unreadOnly = MutableStateFlow(false)
     private val searchQuery = MutableStateFlow("")
     private val selectedSessionId = MutableStateFlow<String?>(null)
     private val isRefreshing = MutableStateFlow(false)
@@ -185,8 +262,8 @@ class SessionListViewModel(
         combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
             Triple(sessions, machines, lastSeen)
         },
-        combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
-            Triple(filter, query, selected)
+        combine(machineFilter, searchQuery, selectedSessionId, statusFilter, unreadOnly) { filter, query, selected, status, unread ->
+            ListInputs(filter, query, selected, status, unread)
         },
         combine(
             combine(isRefreshing, isOffline, hasRefreshedOnce, dateRange, timeZone) { refreshing, offline, loaded, range, _ ->
@@ -195,18 +272,22 @@ class SessionListViewModel(
             lastRefreshedAt,
             connectionStatus,
         ) { chrome, refreshedAt, status -> chrome.copy(lastRefreshedAt = refreshedAt, connectionStatus = status) },
-    ) { (sessions, machines, lastSeen), (filter, query, selected), chrome ->
+        orderStore.order,
+    ) { (sessions, machines, lastSeen), inputs, chrome, order ->
         buildUiState(
             sessions = sessions,
             machines = machines,
             lastSeen = lastSeen,
-            filter = filter,
-            searchQuery = query,
-            selectedSessionId = selected,
+            filter = inputs.machineFilter,
+            searchQuery = inputs.searchQuery,
+            selectedSessionId = inputs.selectedSessionId,
             isRefreshing = chrome.refreshing,
             isOffline = chrome.offline,
             hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
             dateRange = chrome.dateRange,
+            statusFilter = inputs.statusFilter,
+            unreadOnly = inputs.unreadOnly,
+            order = order,
         ).copy(lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
     }.stateIn(
         scope = scope,
@@ -307,10 +388,32 @@ class SessionListViewModel(
         dateRange.value = null
     }
 
-    /** Reset the consolidated sheet's conditions without changing the search. */
+    /** Web "Show" filter (transient, like the other sheet conditions). */
+    fun setStatusFilter(status: SessionListStatus) {
+        statusFilter.value = status
+    }
+
+    /** Web "Unread only" lens (transient). */
+    fun setUnreadOnly(enabled: Boolean) {
+        unreadOnly.value = enabled
+    }
+
+    /** Persisted sort key (app-wide). */
+    fun setSort(sort: SessionListSort) {
+        scope.launch { orderStore.setSort(sort) }
+    }
+
+    /** Persisted Active first (app-wide). */
+    fun setActiveFirst(enabled: Boolean) {
+        scope.launch { orderStore.setActiveFirst(enabled) }
+    }
+
+    /** Reset the consolidated sheet's conditions without changing the search or the order. */
     fun clearFilters() {
         machineFilter.value = null
         dateRange.value = null
+        statusFilter.value = SessionListStatus.All
+        unreadOnly.value = false
     }
 
     /** Search-box input; blank disables filtering/ranking entirely. */
@@ -428,6 +531,9 @@ class SessionListViewModel(
         isOffline: Boolean,
         hasLoaded: Boolean,
         dateRange: SessionDateRange? = null,
+        statusFilter: SessionListStatus = SessionListStatus.All,
+        unreadOnly: Boolean = false,
+        order: SessionListOrder = SessionListOrder.Base,
     ): SessionListUiState {
         // Use one current zone for both filtering and the calendar activity marks.
         val zone = zoneProvider()
@@ -485,16 +591,25 @@ class SessionListViewModel(
             prepared.filter { SessionDateRangeFilter.matches(it.updatedAt, dateRange, zone) }
         }
 
-        val visible = if (activeFilter == null) {
+        val machineScoped = if (activeFilter == null) {
             timeScoped
         } else {
             timeScoped.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
+        // Status and unread lenses never hide the open session (web).
+        val visible = machineScoped.filter { summary ->
+            summary.id == selectedSessionId || (
+                statusFilter.includes(summary) &&
+                    (!unreadOnly || LastSeenStore.isUnread(summary, lastSeen))
+                )
+        }
+
         // Text search: relevance ranking over the already-prepared corpus,
-        // pins kept contiguous ahead of ordinary rows.
+        // pins kept contiguous ahead of ordinary rows, base-order ties (web
+        // keeps the default order while a query is active).
         val searched = if (searchQuery.isBlank()) {
-            visible
+            if (order == SessionListOrder.Base) visible else sortSessionSummaries(visible, order)
         } else {
             val machineLabels = filters.associate { it.id to it.label }
             val index = SessionListSearch.buildSessionSearchScoreIndex(visible, searchQuery) { machineId ->
@@ -537,8 +652,20 @@ class SessionListViewModel(
             isOffline = isOffline,
             dateRange = dateRange,
             dateActivityEpochDays = activityDays,
+            statusFilter = statusFilter,
+            unreadOnly = unreadOnly,
+            order = order,
         )
     }
+
+    /** Row-selection inputs, aggregated so [combine] stays within its typed arity. */
+    private data class ListInputs(
+        val machineFilter: String?,
+        val searchQuery: String,
+        val selectedSessionId: String?,
+        val statusFilter: SessionListStatus,
+        val unreadOnly: Boolean,
+    )
 
     /** Aggregated non-session inputs so [combine] stays within its typed arity. */
     private data class ChromeState(
