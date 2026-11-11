@@ -364,8 +364,18 @@ struct MessageWindowControllerTests {
         await controller.recoverAfterGapResume()
 
         let retried = await provider.requests
-        guard retried.count == 2, case .latest = retried[1] else {
-            Issue.record("retry must run catch-up then the latest page, got \(retried)")
+        // provider.requests is cumulative: the failed first catch-up, then
+        // the retry's catch-up and latest page.
+        guard retried.count == 3 else {
+            Issue.record("retry must run exactly catch-up + latest page, got \(retried)")
+            return
+        }
+        guard case .after = retried[1] else {
+            Issue.record("retry must run its catch-up, got \(retried[1])")
+            return
+        }
+        guard case .latest = retried[2] else {
+            Issue.record("retry must reconcile the latest page, got \(retried[2])")
             return
         }
         let state = await controller.state
