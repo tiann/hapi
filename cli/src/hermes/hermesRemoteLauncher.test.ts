@@ -111,7 +111,8 @@ function createSessionWithBatches(batches: Array<[string, HermesMode]>, sessionI
             rpcHandlerManager: { registerHandler: vi.fn() },
             getMetadata: vi.fn(() => ({})),
             updateMetadata: vi.fn(),
-            sendClaudeSessionMessage: vi.fn()
+            sendClaudeSessionMessage: vi.fn(),
+            flushMetadata: vi.fn(async () => true)
         },
         queue,
         sessionId,

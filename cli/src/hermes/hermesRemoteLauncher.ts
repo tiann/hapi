@@ -149,6 +149,14 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 })
             }
             this.session.onSessionFound(acpSessionId)
+            // Pin hermesSessionId before the main loop so a runner restart can
+            // resume (tiann/hapi#913, ported from dsh: gate until the metadata
+            // write reaches the hub — a SIGTERM before that strands the session
+            // with no resume key).
+            const flushed = await this.session.client.flushMetadata()
+            if (!flushed) {
+                logger.warn(`[hermes-acp] hermesSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+            }
         } catch (error) {
             markFailed(error)
             throw error
@@ -191,9 +199,16 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         })
 
         while (!this.shouldExit) {
-            const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
+            // Capture the signal per iteration (ported from dsh): handleAbort
+            // swaps in a fresh AbortController right after aborting, so
+            // re-reading this.abortController.signal below would see the
+            // replacement (never aborted) and mistake an aborted wait for a
+            // closed queue — exiting the loop and tearing down the whole
+            // session on a Stop that arrived while the queue was idle.
+            const signal = this.abortController.signal
+            const batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) continue
+                if (signal.aborted && !this.shouldExit) continue
                 break
             }
 
@@ -376,15 +391,21 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        // Tear the wait down synchronously FIRST (ported from dsh): aborting
+        // and replacing the controller unparks a waiting loop iteration via
+        // its captured signal, and resetting the queue before the awaits drops
+        // anything queued ahead of the stop — a message dequeued while the
+        // cancel requests are still on the wire must not run after the user
+        // already saw "Session aborted".
+        this.abortController.abort()
+        this.abortController = new AbortController()
+        this.session.queue.reset()
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
-        this.session.queue.reset()
         this.session.onThinkingChange(false)
-        this.abortController.abort()
-        this.abortController = new AbortController()
         this.messageBuffer.addMessage('Turn aborted', 'status')
     }
 
