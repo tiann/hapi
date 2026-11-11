@@ -2304,6 +2304,7 @@ describe('AgyAcpRemoteLauncher late continuation (quiet watcher)', () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
         const source = new FakeWakeSource();
+        source.plannerCount = 0; // readable, but no steps before this prompt
 
         backend.promptScripts.push(async (onUpdate) => {
             backend.echo?.('check the sample');
@@ -3110,6 +3111,7 @@ describe('AgyAcpRemoteLauncher round turn count (google-antigravity/antigravity-
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
         const source = new FakeWakeSource();
+        source.plannerCount = 0; // readable, but no steps before this prompt
         backend.promptScripts.push(async (onUpdate) => {
             onUpdate({
                 type: 'tool_call', id: 'p1', name: 'one', input: {}, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: { CommandLine: 'one' }
@@ -3184,6 +3186,53 @@ describe('AgyAcpRemoteLauncher round turn count (google-antigravity/antigravity-
         await run;
 
         expect(roundSummaries(client)[0]!.num_turns).toBeUndefined();
+    });
+
+    it('omits the turn count when the baseline probe is unreadable even if the count recovers', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('hello');
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            // The count query recovers by footer time (resumed history):
+            // counting from an unreadable baseline would report the whole
+            // conversation as this round's turn count.
+            source.plannerCount = 42;
+        });
+        queue.push('hello', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+        queue.close();
+        await run;
+
+        expect(roundSummaries(client)[0]!.num_turns).toBeUndefined();
+    });
+
+    it('counts the round from the first step when the conversation is readable but empty', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        source.latest = null; // MAX(idx) of an empty conversation
+        source.plannerCount = 0; // ...but readable: no steps yet
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('hello');
+            onUpdate(USAGE);
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            source.plannerCount = 2; // this round's own model calls
+        });
+        queue.push('hello', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+        queue.close();
+        await run;
+
+        expect(roundSummaries(client)[0]!.num_turns).toBe(2);
     });
 });
 

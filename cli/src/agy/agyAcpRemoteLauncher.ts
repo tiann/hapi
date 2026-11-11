@@ -201,9 +201,10 @@ type AgyTurn = {
     releaseSteerWait: () => void;
     steerWaitReleased: Promise<void>;
     // The conversation step idx just below this prompt's own steps: the base
-    // for the google-antigravity/antigravity-cli#1045 transcript model-call count (null-counted from zero when
-    // agy's records are unreadable).
-    countBaseIdx: number;
+    // for the google-antigravity/antigravity-cli#1045 transcript model-call count. null means the
+    // activity probe could not read agy's records at all (distinct from a
+    // readable-but-empty conversation, which counts from the first step).
+    countBaseIdx: number | null;
     // The prompt result's own turn count when agy reported one (google-antigravity/antigravity-cli#1045).
     numTurns?: number;
     // ACP tool-call ids of commands agy moved to the background; the watcher
@@ -627,7 +628,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             abandonSteers: [],
             releaseSteerWait,
             steerWaitReleased,
-            countBaseIdx: -1,
+            countBaseIdx: null,
             bgCompletionIds: [],
             pendingWakeCalls: [],
             labeledPreEcho: false
@@ -658,7 +659,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // Snapshot the conversation watermark before agy sees the prompt:
             // every PLANNER_RESPONSE step above it belongs to this round, and
             // the google-antigravity/antigravity-cli#1045 count adds the late-continuation calls on top.
-            turn.countBaseIdx = (await this.wakeSource?.latestStepIdx().catch(() => null)) ?? -1;
+            const probed = await this.wakeSource?.latestStepIdx().catch(() => null) ?? null;
+            if (probed !== null) {
+                turn.countBaseIdx = probed;
+            } else {
+                // A null watermark is ambiguous: agy's records are unreadable,
+                // or the conversation is brand-new. Counting from zero is only
+                // sound for the latter; resuming the whole history would
+                // inflate the footer (google-antigravity/antigravity-cli#1045 review).
+                const probe = this.wakeSource
+                    ? await this.wakeSource.countPlannerSteps(-1).catch(() => null)
+                    : null;
+                turn.countBaseIdx = probe === 0 ? -1 : null;
+            }
             // The drop mode is only safe while everything up to now is
             // accounted for; steps that appeared after the last watcher close
             // are unaccounted and must be labeled instead.
@@ -749,7 +762,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         bgIds: turn.bgCompletionIds,
                         signal: this.abortController.signal,
                         accountedIdx: this.accountedIdx ?? -1,
-                        turnBaseIdx: turn.countBaseIdx,
+                        turnBaseIdx: turn.countBaseIdx ?? this.accountedIdx ?? -1,
                         taskDescriptions: turn.bgTaskDescriptions
                     });
                 } finally {
@@ -801,7 +814,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // transcript (this prompt's plus the late continuation's).
                 const numTurns = turn.numTurns
                     ?? (this.wakeSource
-                        ? await this.wakeSource.countPlannerSteps(turn.countBaseIdx).catch(() => null)
+                        ? turn.countBaseIdx === null
+                            ? null
+                            : await this.wakeSource.countPlannerSteps(turn.countBaseIdx).catch(() => null)
                         : null)
                     ?? undefined;
                 session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, numTurns));
