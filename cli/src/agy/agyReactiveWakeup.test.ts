@@ -2567,4 +2567,165 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('defers alias creation when only one of two matching synthetic tasks has persisted its completion and the other finishes first over ACP', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Ready.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'init' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ]);
+        });
+
+        // Only `task-61` (card 0, exit 0, SUITE_A_PASS) has flushed its SYSTEM_MESSAGE!
+        // `task-62` (card 1, exit 1, SUITE_B_FAIL) has NOT flushed its SYSTEM_MESSAGE yet when its live ACP completion arrives first!
+        backend.promptScripts.push(async (onUpdate) => {
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                `${JSON.stringify({
+                    step_index: 7,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-61" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSUITE_A_PASS\n</SYSTEM_MESSAGE>`
+                })}\n`,
+                'utf8'
+            );
+
+            // Unpersisted `task-62` finishes FIRST over ACP — must NOT alias onto `task-61`!
+            onUpdate({
+                type: 'tool_call',
+                id: 'live_unpersisted_b',
+                name: 'npm test',
+                title: 'npm test',
+                status: 'failed',
+                input: { CommandLine: 'npm test' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm test' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live_unpersisted_b',
+                status: 'failed',
+                output: { output: 'Command exited with code 1.\n\nCommand output:\nSUITE_B_FAIL', exit_code: 1 }
+            });
+
+            // Persisted `task-61` finishes SECOND over ACP!
+            onUpdate({
+                type: 'tool_call',
+                id: 'live_persisted_a',
+                name: 'npm test',
+                title: 'npm test',
+                status: 'completed',
+                input: { CommandLine: 'npm test' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm test' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live_persisted_a',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nSUITE_A_PASS', exit_code: 0 }
+            });
+
+            onUpdate({ type: 'text', text: 'Reported partial-persistence completions.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('init', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Run both test suites</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: '"npm test"' } },
+                        { name: 'run_command', args: { CommandLine: '"npm test"' } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-61`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-62`
+                }),
+                JSON.stringify({
+                    step_index: 6,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Both npm test suites running.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        queue.push('check status', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-1`,
+            is_error: true,
+            output: { stdout: 'SUITE_B_FAIL', exit_code: 1 }
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+            is_error: false,
+            output: { stdout: 'SUITE_A_PASS', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
 });

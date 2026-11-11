@@ -789,8 +789,35 @@ export function inspectSyntheticBackgroundCommandMatch(
         : null;
     const hasResultSignal = liveResult !== null || lookup.resultStatus !== undefined;
 
+    if (compatible.length > 1 && !hasResultSignal) {
+        return { kind: 'ambiguous' };
+    }
+
+    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
+        if (step.step_index <= turnStartStepIndex) return false;
+        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
+        return (step.tool_calls ?? []).some((call) => {
+            if (call.name !== 'run_command') return false;
+            const args = decodeAgyTranscriptArgs(call.args);
+            const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
+            if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return false;
+            if (liveArgs) {
+                for (const [key, val] of Object.entries(liveArgs)) {
+                    if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
+                        continue;
+                    }
+                    if (args[key] !== undefined && args[key] !== val) return false;
+                }
+            }
+            return true;
+        });
+    });
+
     const completedCandidates = compatible.filter(
         (entry) => entry.taskId !== undefined && completedTasks.has(entry.taskId)
+    );
+    const unpersistedCompatible = compatible.filter(
+        (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
     if (completedCandidates.length > 0) {
         const filteredByResult = hasResultSignal
@@ -821,13 +848,21 @@ export function inspectSyntheticBackgroundCommandMatch(
             : completedCandidates;
 
         if (filteredByResult.length === 1) {
-            return { kind: 'matched', entry: filteredByResult[0]! };
+            if (unpersistedCompatible.length === 0) {
+                return { kind: 'matched', entry: filteredByResult[0]! };
+            }
+            const established = completedTasks.get(filteredByResult[0]!.taskId!)!;
+            if (
+                liveResult?.stdout !== undefined
+                && established.exitCode !== undefined
+                && (liveResult.exitCode !== undefined || lookup.resultStatus !== undefined)
+            ) {
+                return { kind: 'matched', entry: filteredByResult[0]! };
+            }
+            return { kind: 'ambiguous' };
         }
         if (filteredByResult.length > 1) {
-            // Multiple candidates match; only pick when we already have result
-            // payload and every matching completed task has identical stdout &
-            // exit status (so aliasing cannot swap output or exit status).
-            if (liveResult?.stdout !== undefined) {
+            if (unpersistedCompatible.length === 0 && liveResult?.stdout !== undefined) {
                 const first = completedTasks.get(filteredByResult[0]!.taskId!)!;
                 const allIdentical = filteredByResult.every((entry) => {
                     const current = completedTasks.get(entry.taskId!)!;
@@ -839,27 +874,19 @@ export function inspectSyntheticBackgroundCommandMatch(
             }
             return { kind: 'ambiguous' };
         }
+        if (
+            !turnPlannedCompatibleCommand
+            && unpersistedCompatible.length === 1
+            && liveResult?.stdout !== undefined
+        ) {
+            return { kind: 'matched', entry: unpersistedCompatible[0]! };
+        }
+        if (unpersistedCompatible.length > 0) {
+            return { kind: 'ambiguous' };
+        }
+        return { kind: 'none' };
     }
 
-    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
-        if (step.step_index <= turnStartStepIndex) return false;
-        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
-        return (step.tool_calls ?? []).some((call) => {
-            if (call.name !== 'run_command') return false;
-            const args = decodeAgyTranscriptArgs(call.args);
-            const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
-            if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return false;
-            if (liveArgs) {
-                for (const [key, val] of Object.entries(liveArgs)) {
-                    if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
-                        continue;
-                    }
-                    if (args[key] !== undefined && args[key] !== val) return false;
-                }
-            }
-            return true;
-        });
-    });
     if (turnPlannedCompatibleCommand) {
         return { kind: 'none' };
     }

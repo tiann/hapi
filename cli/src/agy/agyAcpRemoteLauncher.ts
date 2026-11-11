@@ -225,6 +225,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Maps native ACP toolCallIds to synthetic `agy-wakeup-*` IDs when a command
     // backgrounded in a reactive wakeup completes during a later live ACP turn.
     private readonly syntheticCallAliases = new Map<string, string>();
+    // Live ACP completions held while multiple compatible synthetic commands
+    // remain open with incomplete `SYSTEM_MESSAGE` persistence.
+    private readonly retainedAmbiguousCompletions: Array<{
+        turnStartStepIndex: number;
+        callMessage?: Extract<AgentMessage, { type: 'tool_call' }>;
+        resultMessage: Extract<AgentMessage, { type: 'tool_result' }>;
+        nativeArgs?: Record<string, unknown>;
+    }> = [];
     // Background `run_command` entries awaiting completion across turns.
     private readonly backgroundCommands: AgyOpenBackgroundCommand[] = [];
     private acpSessionId: string | null = null;
@@ -596,11 +604,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         this.backgroundCommands,
                         wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
                     );
+                    this.reconcileRetainedAmbiguousCompletions(null);
                     const converted = convertAgyReactiveSteps(
                         acpSessionId,
                         inspection.steps,
                         this.backgroundCommands
                     );
+                    if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
+                        this.retainedAmbiguousCompletions.length = 0;
+                    }
                     await this.advanceBackendCursor();
                     for (const msg of converted.messages) {
                         this.forwardAgentMessage(this.showQuestionCard(msg));
@@ -691,6 +703,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!acpSessionId) {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
                 this.backgroundCommands.length = 0;
+                this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
                 this.syntheticCallAliases.clear();
             }
@@ -1245,11 +1258,67 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private flushDeferredLiveCommandCalls(turn: AgyTurn): void {
-        if (turn.deferredLiveCommandCalls.size === 0) return;
-        const pending = [...turn.deferredLiveCommandCalls.values()];
-        turn.deferredLiveCommandCalls.clear();
-        for (const callMessage of pending) {
-            this.emitDeferredLiveCommandCall(turn, callMessage);
+        if (turn.deferredLiveCommandCalls.size > 0) {
+            const pending = [...turn.deferredLiveCommandCalls.values()];
+            turn.deferredLiveCommandCalls.clear();
+            for (const callMessage of pending) {
+                this.emitDeferredLiveCommandCall(turn, callMessage);
+            }
+        }
+        this.reconcileRetainedAmbiguousCompletions(turn);
+    }
+
+    private reconcileRetainedAmbiguousCompletions(turn: AgyTurn | null): void {
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId || this.retainedAmbiguousCompletions.length === 0) return;
+
+        let progressed = true;
+        while (progressed && this.retainedAmbiguousCompletions.length > 0) {
+            progressed = false;
+            for (let idx = 0; idx < this.retainedAmbiguousCompletions.length; idx += 1) {
+                const item = this.retainedAmbiguousCompletions[idx]!;
+                const match = inspectSyntheticBackgroundCommandMatch(
+                    this.brainDir,
+                    acpSessionId,
+                    this.backgroundCommands,
+                    item.turnStartStepIndex,
+                    {
+                        liveCallId: item.resultMessage.id,
+                        nativeArgs: item.nativeArgs,
+                        resultOutput: item.resultMessage.output,
+                        resultStatus: item.resultMessage.status
+                    }
+                );
+                if (match.kind === 'matched') {
+                    this.retainedAmbiguousCompletions.splice(idx, 1);
+                    idx -= 1;
+                    progressed = true;
+                    this.nativeToolNames.set(match.entry.callId, 'run_command');
+                    const effectiveResult: AgentMessage = { ...item.resultMessage, id: match.entry.callId };
+                    if (turn) {
+                        turn.generation.observe(effectiveResult);
+                        this.trackOpenCommand(turn, effectiveResult, false);
+                    } else {
+                        const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === match.entry.callId);
+                        if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
+                    }
+                    this.forwardAgentMessage(this.showQuestionCard(effectiveResult));
+                } else if (match.kind === 'none') {
+                    this.retainedAmbiguousCompletions.splice(idx, 1);
+                    idx -= 1;
+                    progressed = true;
+                    if (item.callMessage && turn) {
+                        this.emitDeferredLiveCommandCall(turn, item.callMessage);
+                    } else if (item.callMessage) {
+                        this.forwardAgentMessage(this.showQuestionCard(item.callMessage));
+                    }
+                    if (turn) {
+                        turn.generation.observe(item.resultMessage);
+                        this.trackOpenCommand(turn, item.resultMessage, false);
+                    }
+                    this.forwardAgentMessage(this.showQuestionCard(item.resultMessage));
+                }
+            }
         }
     }
 
@@ -1321,6 +1390,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     return { message: { ...message, id: match.entry.callId }, suppressForward: false };
                 }
+                if (match.kind === 'ambiguous') {
+                    this.retainedAmbiguousCompletions.push({
+                        turnStartStepIndex: turn.turnStartStepIndex,
+                        callMessage: deferredCall,
+                        resultMessage: message,
+                        nativeArgs
+                    });
+                    return { message, suppressForward: true, skipTracking: true };
+                }
                 if (deferredCall) {
                     this.emitDeferredLiveCommandCall(turn, deferredCall);
                 }
@@ -1356,6 +1434,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.trackOpenCommand(turn, effective, !reconciled.suppressForward);
                 if (!reconciled.suppressForward) {
                     this.forwardAgentMessage(this.showQuestionCard(effective));
+                }
+                if (effective.type === 'tool_result' && this.retainedAmbiguousCompletions.length > 0) {
+                    this.reconcileRetainedAmbiguousCompletions(turn);
                 }
             }
         }
