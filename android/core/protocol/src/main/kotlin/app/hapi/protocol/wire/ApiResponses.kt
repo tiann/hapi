@@ -33,6 +33,33 @@ data class MessagesResponse(
     val page: MessagesPage,
 )
 
+/**
+ * Cursor block of `GET /api/sessions/:id/messages/:messageId/context`
+ * (`MessageContextResponse['page']` in `shared/src/apiTypes.ts`): the bounded
+ * context window carries no direction/limit/reset keys.
+ */
+@Serializable
+data class MessageContextPage(
+    val epoch: Long,
+    val nextBeforeSeq: Long? = null,
+    val nextBeforeAt: Long? = null,
+    val snapshotHeadSeq: Long? = null,
+    val snapshotHeadAt: Long? = null,
+    val hasMore: Boolean,
+)
+
+/**
+ * `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+ * window centered on one message. The hub answers a bare JSON `null` when the
+ * message does not resolve (web `MessageContextResponse | null`).
+ */
+@Serializable
+data class MessageContextResponse(
+    val messages: List<DecryptedMessage>,
+    val targetMessageId: String,
+    val page: MessageContextPage,
+)
+
 /** `GET /api/sessions`. */
 @Serializable
 data class SessionsResponse(

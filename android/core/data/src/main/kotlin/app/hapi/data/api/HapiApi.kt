@@ -8,6 +8,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.RestartRunnerResponse
 import app.hapi.protocol.wire.CodexModelsResponse
@@ -258,6 +259,15 @@ class HapiApi internal constructor(
             epoch = query.epoch,
         )
     }
+
+    /**
+     * `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+     * window centered on one message, or null when it does not resolve
+     * ([MessagesApi] seam over the same call — the recovery sweep's
+     * transport).
+     */
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? =
+        request("GET", url("api", "sessions", sessionId, "messages", messageId, "context").build())
 
     /**
      * `POST /api/sessions/:id/messages` — responds `{ok: true}` only; the

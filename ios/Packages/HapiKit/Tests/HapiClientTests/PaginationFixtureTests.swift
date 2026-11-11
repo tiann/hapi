@@ -432,6 +432,12 @@ actor ScriptedMessagesProvider: MessagesProviding {
         throw ScriptError(message: "scripted MessagesProviding does not serve queued-state")
     }
 
+    func messageContext(sessionId: String, messageId: String) async throws -> MessageContextResponse? {
+        // The context endpoint is never scripted: the fixtures do not drive
+        // the recovery sweep.
+        nil
+    }
+
     private static func requestJSON(_ query: MessagesPageQuery) -> JSONValue {
         switch query {
         case .latest(let limit):
