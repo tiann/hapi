@@ -27,6 +27,7 @@ import {
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
+    findCompletedSyntheticBackgroundCommand,
     inspectAgyReactiveSteps,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
@@ -170,6 +171,7 @@ type AgyTurn = {
     // if an earlier command completes during a steer so call ordinals stay 1:1
     // with transcript `PLANNER_RESPONSE.tool_calls` entries.
     commandCallIds: string[];
+    turnStartStepIndex: number;
     // Settled non-live assistant text segments streamed during this turn, used
     // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
     streamedTextCounts: Map<string, number>;
@@ -214,6 +216,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: AcpPermissionHandler | null = null;
     // agy's own tool name by call id, to map results of the calls it started.
     private readonly nativeToolNames = new Map<string, string>();
+    // Maps native ACP toolCallIds to synthetic `agy-wakeup-*` IDs when a command
+    // backgrounded in a reactive wakeup completes during a later live ACP turn.
+    private readonly syntheticCallAliases = new Map<string, string>();
     // Background `run_command` entries awaiting completion across turns.
     private readonly backgroundCommands: AgyOpenBackgroundCommand[] = [];
     private acpSessionId: string | null = null;
@@ -622,9 +627,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     if (this.reactiveWakeupAbort === abortController) {
                         this.reactiveWakeupAbort = null;
                     }
+                    const replayAfterStepIndex = this.lastTranscriptStepIndex;
                     const mode = this.currentWakeupMode();
                     const modeHash = session.queue.modeHasher(mode);
-                    await this.runTurn(AGY_WAKEUP_CONTINUE_PROMPT, mode, modeHash, [], { internalWakeup: true });
+                    await this.runTurn(AGY_WAKEUP_CONTINUE_PROMPT, mode, modeHash, [], {
+                        internalWakeup: true,
+                        replayAfterStepIndex
+                    });
                     return;
                 }
 
@@ -677,6 +686,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
                 this.backgroundCommands.length = 0;
                 this.nativeToolNames.clear();
+                this.syntheticCallAliases.clear();
             }
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
@@ -778,7 +788,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         mode: AgyMode,
         modeHash: string,
         localIds: string[],
-        opts: { internalWakeup?: boolean } = {}
+        opts: { internalWakeup?: boolean; replayAfterStepIndex?: number } = {}
     ): Promise<void> {
         const internalWakeup = opts.internalWakeup === true;
         const session = this.session;
@@ -809,6 +819,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             generation: new GenerationClock(),
             openCommands: new Set(),
             commandCallIds: [],
+            turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
             usage: null,
             sawActivity: false,
@@ -857,10 +868,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             this.syncTranscriptCursor();
             const turnStartStepIndex = this.lastTranscriptStepIndex;
-            resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, turnStartStepIndex);
+            turn.turnStartStepIndex = turnStartStepIndex;
+            const commandWindowAfterStepIndex = opts.replayAfterStepIndex !== undefined
+                ? Math.min(opts.replayAfterStepIndex, turnStartStepIndex)
+                : turnStartStepIndex;
+            resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, commandWindowAfterStepIndex);
             for (const entry of this.backgroundCommands) {
                 if (!entry.taskId && entry.maxStepIndex === undefined) {
-                    entry.maxStepIndex = turnStartStepIndex;
+                    entry.maxStepIndex = commandWindowAfterStepIndex;
                 }
             }
             if (!internalWakeup) {
@@ -900,7 +915,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!turn.aborted && !this.backendLost) {
                 this.syncTurnTranscriptCursor(turn, turnStartStepIndex);
             }
-            this.closeBackgroundCommands(turn, turnStartStepIndex);
+            this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
             this.questionLabels.clear();
@@ -1190,6 +1205,57 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private reconcileSyntheticCommandMessage(
+        turn: AgyTurn,
+        message: AgentMessage
+    ): { message: AgentMessage; suppressForward: boolean } {
+        if ((message.type === 'tool_call' || message.type === 'tool_result') && this.syntheticCallAliases.has(message.id)) {
+            const syntheticId = this.syntheticCallAliases.get(message.id)!;
+            if (message.type === 'tool_result') {
+                this.syntheticCallAliases.delete(message.id);
+            }
+            return { message: { ...message, id: syntheticId }, suppressForward: message.type === 'tool_call' };
+        }
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId) return { message, suppressForward: false };
+
+        if (
+            message.type === 'tool_call'
+            && message.nativeName === 'run_command'
+            && message.status !== 'pending'
+            && !turn.commandCallIds.includes(message.id)
+        ) {
+            const rawCmd = (message.nativeArgs as { CommandLine?: unknown } | undefined)?.CommandLine;
+            const cmdLine = typeof rawCmd === 'string' ? rawCmd : undefined;
+            const matched = findCompletedSyntheticBackgroundCommand(
+                this.brainDir,
+                acpSessionId,
+                this.backgroundCommands,
+                turn.turnStartStepIndex,
+                cmdLine
+            );
+            if (matched) {
+                this.syntheticCallAliases.set(message.id, matched.callId);
+                return { message: { ...message, id: matched.callId }, suppressForward: true };
+            }
+        }
+
+        if (message.type === 'tool_result' && !this.nativeToolNames.has(message.id)) {
+            const matched = findCompletedSyntheticBackgroundCommand(
+                this.brainDir,
+                acpSessionId,
+                this.backgroundCommands,
+                turn.turnStartStepIndex
+            );
+            if (matched) {
+                this.nativeToolNames.set(matched.callId, 'run_command');
+                return { message: { ...message, id: matched.callId }, suppressForward: false };
+            }
+        }
+
+        return { message, suppressForward: false };
+    }
+
     private handleTurnUpdate(turn: AgyTurn, message: AgentMessage): void {
         switch (message.type) {
             case 'usage':
@@ -1198,18 +1264,23 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             case 'turn_complete':
                 turn.stopReason = message.stopReason;
                 return;
-            default:
+            default: {
                 turn.sawActivity = true;
                 turn.acknowledge();
-                turn.generation.observe(message);
-                if (message.type === 'text' && !message.live) {
-                    const trimmed = message.text.trim();
+                const reconciled = this.reconcileSyntheticCommandMessage(turn, message);
+                const effective = reconciled.message;
+                turn.generation.observe(effective);
+                if (effective.type === 'text' && !effective.live) {
+                    const trimmed = effective.text.trim();
                     if (trimmed) {
                         turn.streamedTextCounts.set(trimmed, (turn.streamedTextCounts.get(trimmed) ?? 0) + 1);
                     }
                 }
-                this.trackOpenCommand(turn, message);
-                this.forwardAgentMessage(this.showQuestionCard(message));
+                this.trackOpenCommand(turn, effective, !reconciled.suppressForward);
+                if (!reconciled.suppressForward) {
+                    this.forwardAgentMessage(this.showQuestionCard(effective));
+                }
+            }
         }
     }
 
@@ -1246,9 +1317,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /** Tracks commands agy moved to the background; the generation clock reads the same updates. */
-    private trackOpenCommand(turn: AgyTurn, message: AgentMessage): void {
+    private trackOpenCommand(turn: AgyTurn, message: AgentMessage, recordCallOrdinal = true): void {
         if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
-        if (message.type === 'tool_call' && message.nativeName === 'run_command') {
+        if (recordCallOrdinal && message.type === 'tool_call' && message.nativeName === 'run_command') {
             if (!turn.commandCallIds.includes(message.id)) {
                 turn.commandCallIds.push(message.id);
             }

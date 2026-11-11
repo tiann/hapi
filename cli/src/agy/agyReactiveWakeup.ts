@@ -63,6 +63,8 @@ export interface AgyOpenBackgroundCommand {
     ordinalInTurn?: number;
     maxStepIndex?: number;
     stepIndex?: number;
+    synthetic?: boolean;
+    commandLine?: string;
 }
 
 export type AgyReactiveInspection =
@@ -638,6 +640,66 @@ function parseCompletedBackgroundTask(
     return { taskId, body, ...(Number.isFinite(exitCode) ? { exitCode } : {}) };
 }
 
+/**
+ * Matches a live ACP background-command update during a subsequent prompt turn
+ * back to an open synthetic `agy-wakeup-*` command entry so the real result
+ * replaces the original wakeup placeholder instead of opening a duplicate card.
+ */
+export function findCompletedSyntheticBackgroundCommand(
+    brainDir: string,
+    sessionId: string,
+    openBackgroundCommands: AgyOpenBackgroundCommand[],
+    turnStartStepIndex: number,
+    commandLine?: string
+): AgyOpenBackgroundCommand | undefined {
+    const candidates = openBackgroundCommands.filter((entry) => entry.synthetic === true);
+    if (candidates.length === 0) return undefined;
+
+    resolveAgyBackgroundTaskIds(brainDir, sessionId, candidates);
+
+    let earliestStep = turnStartStepIndex;
+    for (const entry of candidates) {
+        if (entry.stepIndex !== undefined && entry.stepIndex < earliestStep) {
+            earliestStep = entry.stepIndex;
+        }
+    }
+    const recentSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, Math.max(-1, earliestStep - 1));
+    const completedTaskIds = new Set<string>();
+    for (const step of recentSteps) {
+        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+            const parsed = parseCompletedBackgroundTask(step.content, sessionId);
+            if (parsed) completedTaskIds.add(parsed.taskId);
+        }
+    }
+
+    const byCompletedTask = candidates.find(
+        (entry) =>
+            entry.taskId !== undefined
+            && completedTaskIds.has(entry.taskId)
+            && (commandLine === undefined || entry.commandLine === undefined || entry.commandLine === commandLine)
+    );
+    if (byCompletedTask) return byCompletedTask;
+
+    if (commandLine !== undefined) {
+        const turnPlannedSameCommand = recentSteps.some((step) => {
+            if (step.step_index <= turnStartStepIndex) return false;
+            if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
+            return (step.tool_calls ?? []).some((call) => {
+                if (call.name !== 'run_command') return false;
+                const args = decodeAgyTranscriptArgs(call.args);
+                return args.CommandLine === commandLine;
+            });
+        });
+        if (!turnPlannedSameCommand) {
+            return candidates.find((entry) => entry.commandLine === commandLine);
+        }
+    } else if (candidates.length === 1) {
+        return candidates[0];
+    }
+
+    return undefined;
+}
+
 function buildGenericToolOutput(
     toolName: string,
     step: AgyTranscriptStep
@@ -796,9 +858,14 @@ export function convertAgyReactiveSteps(
                 });
                 if (resultInfo.backgrounded) {
                     const taskId = extractAgyBackgroundTaskId(action.content);
+                    const commandLine = typeof decodedArgs.CommandLine === 'string'
+                        ? decodedArgs.CommandLine
+                        : undefined;
                     openBackgroundCommands.push({
                         callId: id,
                         stepIndex: action.step_index,
+                        synthetic: true,
+                        ...(commandLine !== undefined ? { commandLine } : {}),
                         ...(taskId ? { taskId } : {})
                     });
                 }
