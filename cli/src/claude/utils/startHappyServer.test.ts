@@ -477,6 +477,138 @@ describe('startHappyServer skill_lookup', () => {
 
 })
 
+describe('startHappyServer ask_user_question', () => {
+    let client: Client | null
+    let stopServer: (() => void) | null
+    let escalated: unknown[]
+
+    afterEach(async () => {
+        await client?.close()
+        stopServer?.()
+    })
+
+    async function connect(options?: Parameters<typeof startHappyServer>[1]): Promise<Client> {
+        escalated = []
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, options)
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-ask-user-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return client
+    }
+
+    it('answers in-band with the DSH-shaped answer batch', async () => {
+        const mcp = await connect({
+            askUserTool: {
+                escalate: async (input) => {
+                    escalated.push(input)
+                    return {
+                        status: 'answered',
+                        answers: [
+                            { id: 'target', selected: ['Staging (Recommended)'] },
+                            { id: 'notes', selected: [], custom: 'ship at 6pm' }
+                        ]
+                    }
+                }
+            }
+        })
+        const result = await mcp.callTool({
+            name: 'ask_user_question',
+            arguments: {
+                questions: [
+                    { id: 'target', question: 'Deploy where?', options: [{ label: 'Staging (Recommended)' }, { label: 'Production' }] },
+                    { id: 'notes', question: 'Notes?' }
+                ]
+            }
+        }) as ToolResult
+        expect(escalated).toHaveLength(1)
+        expect((escalated[0] as { questions: unknown[] }).questions).toHaveLength(2)
+        expect(result.isError).toBeFalsy()
+        expect(JSON.parse(result.content![0]!.text!)).toEqual({
+            answers: [
+                { id: 'target', selected: ['Staging (Recommended)'] },
+                { id: 'notes', selected: [], custom: 'ship at 6pm' }
+            ]
+        })
+    })
+
+    it('maps a denied escalation onto DSH skip semantics, not an error', async () => {
+        const mcp = await connect({
+            askUserTool: { escalate: async () => ({ status: 'denied', reason: 'user dismissed' }) }
+        })
+        const result = await mcp.callTool({
+            name: 'ask_user_question',
+            arguments: { questions: [{ id: 'q', question: 'Proceed?' }] }
+        }) as ToolResult
+        expect(result.isError).toBeFalsy()
+        expect(result.content![0]!.text).toContain('skipped')
+        expect(result.content![0]!.text).toContain('user dismissed')
+    })
+
+    it('raceAskUserEscalation settles skip semantics when the MCP cancel signal fires', async () => {
+        // Agents that cannot raise their per-call MCP timeout (DSH: 60s) get
+        // notifications/cancelled from the client on expiry and the handler's
+        // extra.signal aborts (SDK chain verified: client cancel -> transport
+        // notification -> server _oncancel -> request AbortController). The
+        // race must settle immediately on abort — before, during, and after
+        // the escalation.
+        const { raceAskUserEscalation } = await import('./startHappyServer')
+        const parked = Promise.withResolvers<{ status: string }>()
+
+        // Signal aborts while the escalation is parked (the 60s-timeout path).
+        const controller = new AbortController()
+        const outcome = raceAskUserEscalation(parked.promise, controller.signal)
+        controller.abort()
+        await expect(outcome).resolves.toEqual({
+            status: 'canceled',
+            reason: 'the question was cancelled (agent timeout or retry)'
+        })
+
+        // Signal already aborted at entry.
+        const preAborted = raceAskUserEscalation(parked.promise, AbortSignal.abort())
+        await expect(preAborted).resolves.toMatchObject({ status: 'canceled' })
+
+        // No signal: the escalation's own result passes through untouched.
+        const answered = raceAskUserEscalation(
+            Promise.resolve({ status: 'answered', answers: [] } as { status: string }),
+            undefined
+        )
+        await expect(answered).resolves.toEqual({ status: 'answered', answers: [] })
+
+        // A late rejection from the parked escalation no longer matters.
+        parked.reject(new Error('late'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+
+    it('does not register the tool without the option', async () => {
+        const mcp = await connect({})
+        const listed = await mcp.listTools()
+        expect(listed.tools.map((tool) => tool.name)).not.toContain('ask_user_question')
+    })
+
+    it('lists ask_user_question in toolNames when enabled', async () => {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, {
+            askUserTool: { escalate: async () => ({ status: 'canceled' }) }
+        })
+        try {
+            expect(server.toolNames).toContain('ask_user_question')
+        } finally {
+            server.stop()
+        }
+    })
+})
+
 describe('startHappyServer change_title', () => {
     let stopServer: (() => void) | null
     let client: Client | null

@@ -50,7 +50,7 @@ class QuestionToolPresentationTest {
                 answers = answers?.let(::json), presence = emptySet()))
 
     @Test fun askFlatNestedAndAliasesShowChoicesAndCustomAnswersWithoutChangingWireData() {
-        for (name in listOf("AskUserQuestion", "ask_user_question", "functions.AskUserQuestion")) {
+        for (name in listOf("AskUserQuestion", "ask_user_question", "functions.AskUserQuestion", "mcp__hapi__ask_user_question")) {
             for (answers in listOf("""{"0":[" SQLite ","Postgres","Redis"],"1":["Keep it simple"]}""",
                 """{"0":{"answers":[" SQLite ","Postgres","Redis"]},"1":{"answers":["Keep it simple"]}}""")) {
                 val call = tool(name, askInput, answers)
@@ -153,6 +153,7 @@ class QuestionToolPresentationTest {
         }
         assertFalse(isQuestionDetailsTool("request_user_input_async"))
         assertFalse(isQuestionDetailsTool("mcp__server__request_user_input"))
+        assertFalse(isQuestionDetailsTool("mcp__server__ask_user_question"))
         val duplicate = """{"questions":[{"id":"same","question":"First"},{"id":"same","question":"Second"}]}"""
         assertEquals(2, questionToolDetails(tool("request_user_input", duplicate)).questions.size)
     }
