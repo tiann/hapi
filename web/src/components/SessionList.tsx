@@ -511,8 +511,7 @@ export function filterWorkingSessionsOnly(
 ): SessionSummary[] {
     return sessions.filter(session =>
         session.id === selectedSessionId
-        || session.thinking
-        || (session.backgroundTaskCount ?? 0) > 0
+        || hasAgentForegroundWork(session)
     )
 }
 
