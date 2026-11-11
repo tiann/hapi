@@ -99,13 +99,15 @@ for (const touch of [false, true]) {
             await expect(plus).toHaveCSS('width', '40px')
 
             if (touch) {
-                const bounds = await strip.boundingBox()
+                const trigger = page.getByTestId('scratchlist-attachment-thumb').nth(2).getByTitle('Click to zoom')
+                const bounds = (await trigger.boundingBox())!
                 const cdp = await page.context().newCDPSession(page)
-                const startX = bounds!.x + bounds!.width - 24
-                const y = bounds!.y + 24
+                const startX = bounds.x + bounds.width / 2
+                const y = bounds.y + bounds.height / 2
                 await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: startX, y, id: 1 }] })
-                await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: startX - 160, y, id: 1 }] })
-                await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: startX - 260, y, id: 1 }] })
+                for (const delta of [20, 40, 60, 80, 100, 120, 140, 160]) {
+                    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: startX - delta, y, id: 1 }] })
+                }
                 await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
                 await cdp.detach()
             } else {
@@ -203,7 +205,7 @@ for (const touch of [false, true]) {
 
             const thumb = page.getByTestId('scratchlist-attachment-thumb').first()
             const trigger = thumb.getByTitle('Click to zoom')
-            await expect(trigger).toHaveCSS('touch-action', 'pan-y')
+            await expect(trigger).toHaveCSS('touch-action', 'auto')
             await expect(thumb.getByTestId('scratchlist-attachment-drag-handle')).toHaveCSS('touch-action', 'none')
             const box = await trigger.boundingBox()
             const cdp = await page.context().newCDPSession(page)

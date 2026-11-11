@@ -253,7 +253,7 @@ export function ScratchlistAttachments(props: Props) {
                     onContextMenu={(event) => { if (drag.current?.id === attachment.id || suppressClick.current === attachment.id) { event.preventDefault(); event.stopPropagation() } }}>
                     {src ? <ImagePreview src={src} fileName={attachment.filename} label={attachment.filename} fileSize={attachment.size}
                         galleryId={`scratchlist-attachments-${props.sessionId}`}
-                        buttonClassName={`group h-full w-full cursor-zoom-in overflow-hidden rounded-lg text-left ${canReorder ? 'touch-pan-y' : ''}`}
+                        buttonClassName={`group h-full w-full cursor-zoom-in overflow-hidden rounded-lg text-left ${canReorder ? 'touch-auto' : ''}`}
                         imageClassName="h-full w-full object-cover"
                         onTriggerPointerDown={(event) => start(event, attachment.id)}
                         onTriggerClick={(event) => { if (suppressClick.current === attachment.id) { event.preventDefault(); suppressClick.current = null } }}
