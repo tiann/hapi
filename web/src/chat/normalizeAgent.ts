@@ -86,12 +86,43 @@ function normalizeRoundSummary(value: unknown): RoundSummary | undefined {
         return undefined
     }
 
+    const generationMs = nonNegativeSafeInteger(value.generation_ms)
+    const generationOutputTokens = nonNegativeSafeInteger(value.generation_output_tokens)
+    const generation = generationMs !== undefined && generationMs > 0
+        && generationOutputTokens !== undefined && generationOutputTokens > 0
+        ? { generationMs, generationOutputTokens } : {}
+
     return {
         usage,
         modelUsage,
         totalCostUsd: totalCostUsd && totalCostUsd > 0 ? totalCostUsd : undefined,
         numTurns: numTurns && numTurns > 0 ? numTurns : undefined,
-        durationMs
+        durationMs,
+        ...generation
+    }
+}
+
+function normalizeAgyRoundSummary(value: Record<string, unknown>): RoundSummary | undefined {
+    const raw = value.agy_usage
+    const agyUsage: NonNullable<RoundSummary['agyUsage']> = {}
+    if (isObject(raw) && !Array.isArray(raw)) {
+        for (const key of ['input_tokens', 'output_tokens', 'thinking_tokens', 'cache_read_tokens', 'total_tokens'] as const) {
+            const token = nonNegativeSafeInteger(raw[key])
+            if (token !== undefined) agyUsage[key] = token
+        }
+    }
+    const durationMs = nonNegativeNumber(value.duration_ms)
+    const model = asString(value.model)
+    const hasUsage = Object.keys(agyUsage).length > 0
+    if (!hasUsage && durationMs === undefined) return undefined
+    const generationMs = nonNegativeSafeInteger(value.generation_ms)
+    const generationOutputTokens = nonNegativeSafeInteger(value.generation_output_tokens)
+    return {
+        provider: 'agy',
+        modelUsage: model ? { [model]: {} } : {},
+        ...(hasUsage ? { agyUsage } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(generationMs && generationOutputTokens ? { generationMs, generationOutputTokens } : {})
     }
 }
 
@@ -1084,7 +1115,9 @@ export function normalizeAgentRecord(
         }
 
         if (data.type === 'round-summary') {
-            const summary = normalizeOpencodeRoundSummary(data.summary)
+            const summary = isObject(data.summary) && data.summary.provider === 'agy'
+                ? normalizeAgyRoundSummary(data.summary)
+                : normalizeOpencodeRoundSummary(data.summary)
             if (!summary) return null
             return {
                 id: messageId,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cacheOkResponsesOnly } from './swCachePolicy'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './swCachePolicy'
 
 function redirectedResponse(body: string): Response {
     // Response objects built in tests cannot set `redirected`; model one that came through a redirect.
@@ -12,6 +12,23 @@ function redirectedResponse(body: string): Response {
         arrayBuffer: () => inner.arrayBuffer(),
     } as unknown as Response
 }
+
+describe('optional syntax module cache', () => {
+    it('stores JavaScript but rejects login HTML, redirects and failures', async () => {
+        for (const type of ['text/javascript', 'application/javascript; charset=utf-8']) {
+            const response = new Response('export default []', { headers: { 'content-type': type } })
+            expect(await cacheJavaScriptOnly.cacheWillUpdate({ response })).toBe(response)
+        }
+        for (const response of [
+            new Response('<html>Login</html>', { headers: { 'content-type': 'text/html' } }),
+            new Response('unavailable', { status: 503, headers: { 'content-type': 'text/javascript' } }),
+            new Response('unknown content type'),
+            redirectedResponse('redirected'),
+        ]) {
+            expect(await cacheJavaScriptOnly.cacheWillUpdate({ response })).toBeNull()
+        }
+    })
+})
 
 describe('cacheOkResponsesOnly', () => {
     it('stores plain 200 responses as they are', async () => {

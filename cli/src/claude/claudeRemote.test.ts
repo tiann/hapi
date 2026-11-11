@@ -125,6 +125,49 @@ describe('claudeRemote async message handling', () => {
         }
     });
 
+    it('marks every follow-up turn as thinking until its result', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const result = { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<unknown> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const promptIterator = prompt[Symbol.asyncIterator]();
+                await promptIterator.next();
+                yield result;
+                await promptIterator.next();
+                yield result;
+            }
+        }));
+
+        const thinking: boolean[] = [];
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ < 2
+                    ? { message: `turn ${nextCallCount}`, mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onThinkingChange: (value) => thinking.push(value)
+            });
+
+            expect(thinking).toEqual([true, false, true, false]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
     it('waits for async onReady work before completing the result stream', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -380,6 +423,8 @@ describe('claudeRemote async message handling', () => {
             await runPromise;
             await new Promise((resolve) => setTimeout(resolve, 0));
             expect(received.map((m) => m.type)).toEqual(['assistant', 'result']);
+            // A normal round result carries no compaction marker.
+            expect(received[1]).not.toHaveProperty('hapi_compact_turn');
             expect(unhandled).toEqual([]);
         } finally {
             queryMock.mockReset();
@@ -544,6 +589,24 @@ describe('claudeRemote /compact result reporting', () => {
 
         expect(completionEvents).toEqual(['📦 Compaction started']);
         expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 34492, tokensAfter: 2082 });
+    }, 15_000);
+
+    it('marks the compact turn result so the converter skips its tok/s fields', async () => {
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        const forwardedResult = lastForwarded.find((message) => message.type === 'result');
+        expect(forwardedResult).toBeTruthy();
+        // The compaction call is not an assistant round: no tok/s from it.
+        expect(forwardedResult).toHaveProperty('hapi_compact_turn', true);
     }, 15_000);
 
     it('ignores an autonomous result until the compact stream signal arrives', async () => {

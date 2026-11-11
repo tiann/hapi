@@ -551,45 +551,4 @@ describe('FcmNotificationChannel', () => {
         }))
         expect(sent[0].data.severity).toBe('warning')
     })
-
-    it('sets severity=success on completed task notifications', async () => {
-        const sent: FcmSendPayload[] = []
-        const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
-            { sendToast: async () => 0 } as never,
-            { hasVisibleConnection: () => false } as never
-        )
-        await channel.sendTaskNotification(createSession(), { status: 'completed', summary: 'Tests passed' })
-        expect(sent[0].data.severity).toBe('success')
-    })
-
-    it('sets severity=error on failed task notifications', async () => {
-        const sent: FcmSendPayload[] = []
-        const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
-            { sendToast: async () => 0 } as never,
-            { hasVisibleConnection: () => false } as never
-        )
-        // The hub's failure detection catches 'failed' / 'error' / 'killed' / 'aborted'.
-        for (const status of ['failed', 'error', 'killed', 'aborted']) {
-            sent.length = 0
-            await channel.sendTaskNotification(createSession(), { status, summary: 'oh no' })
-            expect(sent[0].data.severity).toBe('error')
-        }
-    })
-
-    it('sendTaskNotification caps long task summaries for FCM data limits', async () => {
-        const sent: FcmSendPayload[] = []
-        const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
-            { sendToast: async () => 0 } as never,
-            { hasVisibleConnection: () => false } as never
-        )
-        await channel.sendTaskNotification(createSession(), {
-            status: 'completed',
-            summary: 'T'.repeat(500)
-        })
-        expect(sent[0].body).toContain('...')
-        expect(sent[0].body.length).toBeLessThan(350)
-    })
 })

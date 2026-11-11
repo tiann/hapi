@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'bun:test'
 import type { Database } from 'bun:sqlite'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
-import { getReasoningStreamId } from '@hapi/protocol/messages'
+import { getReasoningStreamId, getToolCallId } from '@hapi/protocol/messages'
+import { MessageService } from '../sync/messageService'
+import type { EventPublisher } from '../sync/eventPublisher'
+import type { Server } from 'socket.io'
 import { Store } from './index'
+
+const noopIo = {
+    of: (_ns: string) => ({
+        to: (_room: string) => ({ emit: () => {}, timeout: (_ms: number) => ({ emit: () => {} }) }),
+        adapter: { rooms: { get: () => undefined } }
+    })
+} as unknown as Server
+const noopPublisher = { emit: () => {} } as unknown as EventPublisher
 
 function makeStore(): Store {
     return new Store(':memory:')
@@ -656,6 +667,53 @@ describe('content codec integration', () => {
         expect(store.messages.markMessagesInvoked(session.id, ['lid-uncertain'], invokedAt)).toBe(1)
         expect(store.messages.getMessages(session.id)[0]).toMatchObject({ invokedAt })
     })
+
+    it('scopes immediate-queued selection to user prompts — agent session events are not queueable prompts', () => {
+        // The compaction ":started" status events carry a stable localId but have no
+        // ack path (sendSessionEvent never acks), so without this scope they sit in
+        // every "queued prompts" selection forever and the session-end sweep
+        // force-invokes them at reopen time — which moves their thread position to
+        // the bottom and makes an old event read as if it just arrived.
+        const store = makeStore()
+        const session = makeSession(store, 'sweep-scope-events')
+        const eventContent = {
+            role: 'agent',
+            content: { id: 'e1', type: 'event', data: { type: 'message', message: '📦 Compaction started' } }
+        }
+        const localId = 'opencode:ses:compaction:msg_1:started'
+        const started = store.messages.addMessage(session.id, eventContent, localId)
+        expect(started.invokedAt).toBeNull()
+
+        // A re-send under the same stable localId (reopen/replay) dedupes and must
+        // not touch the stored row — including invoked_at.
+        const resent = store.messages.addMessage(session.id, eventContent, localId)
+        expect(resent.localId).toBe(localId)
+        expect(resent.id).toBe(started.id)
+        expect(resent.invokedAt).toBeNull()
+
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id)).toHaveLength(0)
+        expect(store.messages.getUninvokedLocalMessages(session.id).map(m => m.localId))
+            .toEqual(['opencode:ses:compaction:msg_1:started'])
+    })
+
+    it('sweeps a large compressed queued user prompt at session end', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sweep-scope-compressed')
+        const text = 'long prompt '.repeat(40) // > COMPRESS_MIN_CHARS, stored as BLOB
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text } },
+            'lid-compressed'
+        )
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id).map(m => m.localId))
+            .toEqual(['lid-compressed'])
+
+        const service = new MessageService(store, noopIo, noopPublisher)
+        const sweepAt = Date.now()
+        const swept = service.sweepImmediateQueuedOnSessionEnd(session.id, sweepAt)
+        expect(swept?.localIds).toEqual(['lid-compressed'])
+        expect(store.messages.getLocalMessageStates(session.id, ['lid-compressed'])[0]?.invokedAt).toBe(sweepAt)
+    })
 })
 
 describe('deleteLiveReasoningSnapshots', () => {
@@ -768,5 +826,335 @@ describe('deleteLiveReasoningSnapshots', () => {
 
         expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
         expect(reasoningTexts(store, session.id)).toEqual([])
+    })
+})
+
+type ToolCallFields = {
+    name?: string
+    input?: unknown
+    status?: string
+    nativeTitle?: string
+    nativeKind?: string
+    nativeName?: string
+    nativeArgs?: unknown
+    progress?: unknown
+}
+
+function toolCallContent(callId: string, fields: ToolCallFields = {}): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: {
+                type: 'tool-call',
+                callId,
+                name: fields.name ?? 'Read',
+                ...(fields.input !== undefined ? { input: fields.input } : {}),
+                ...(fields.status !== undefined ? { status: fields.status } : {}),
+                ...(fields.nativeTitle !== undefined ? { nativeTitle: fields.nativeTitle } : {}),
+                ...(fields.nativeKind !== undefined ? { nativeKind: fields.nativeKind } : {}),
+                ...(fields.nativeName !== undefined ? { nativeName: fields.nativeName } : {}),
+                ...(fields.nativeArgs !== undefined ? { nativeArgs: fields.nativeArgs } : {}),
+                ...(fields.progress !== undefined ? { progress: fields.progress } : {})
+            }
+        }
+    }
+}
+
+/** Agent chatter the lookback scan must walk through without stopping. */
+function agentMessageContent(text: string): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'message', message: text }
+        }
+    }
+}
+
+function toolCallResultContent(callId: string, output: unknown): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'tool-call-result', callId, output }
+        }
+    }
+}
+
+function toolCallDataOf(message: { content: unknown }): Record<string, unknown> {
+    return (message.content as { content: { data: Record<string, unknown> } }).content.data
+}
+
+function toolCallRows(store: Store, sessionId: string): Array<{ id: string; seq: number; createdAt: number; data: Record<string, unknown> }> {
+    return store.messages.getAllMessages(sessionId)
+        .filter(message => getToolCallId(message.content) !== null)
+        .map(message => ({
+            id: message.id,
+            seq: message.seq,
+            createdAt: message.createdAt,
+            data: toolCallDataOf(message)
+        }))
+}
+
+describe('tool-call upsert', () => {
+    it('stores repeated ACP tool-call updates as one merged row keeping the first identity', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-one-row')
+
+        const first = store.messages.upsertToolCallMessage(
+            session.id,
+            toolCallContent('call-1', { input: { path: '/a' }, status: 'in_progress', nativeTitle: 'Reading /a', nativeKind: 'read' }),
+            'call-1'
+        )
+        expect(first.updated).toBe(false)
+        const second = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        expect(second.updated).toBe(true)
+        const third = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        expect(third.updated).toBe(true)
+
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(1)
+        // The merged row keeps the first insert's id, seq and createdAt.
+        expect(rows[0]!.id).toBe(first.message.id)
+        expect(rows[0]!.seq).toBe(first.message.seq)
+        expect(rows[0]!.createdAt).toBe(first.message.createdAt)
+
+        const data = toolCallDataOf(rows[0]!)
+        expect(data.input).toEqual({ path: '/a' })
+        expect(data.nativeTitle).toBe('Reading /a')
+        expect(data.nativeKind).toBe('read')
+        expect(data.status).toBe('completed')
+        expect(data.callId).toBe('call-1')
+        store.close()
+    })
+
+    it('keeps the earlier input when a later update nulls or omits it', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-input')
+
+        store.messages.upsertToolCallMessage(
+            session.id,
+            toolCallContent('call-1', { input: { path: '/a' }, status: 'in_progress' }),
+            'call-1'
+        )
+        // Explicit null (the CLI emits `input: null` when it has no usable args)...
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { input: null, status: 'in_progress' }), 'call-1')
+        // ...and a payload without the key at all.
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.input).toEqual({ path: '/a' })
+        store.close()
+    })
+
+    it('keeps the earlier nativeTitle when a later update omits it', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-native-title')
+
+        store.messages.upsertToolCallMessage(
+            session.id,
+            toolCallContent('call-1', { status: 'in_progress', nativeTitle: 'Reading /a' }),
+            'call-1'
+        )
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.nativeTitle).toBe('Reading /a')
+        store.close()
+    })
+
+    it('stores the tool-call-result as its own row next to the merged call', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-result')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        // Results flow through the plain insert path (the handler only routes
+        // getToolCallId != null contents through the upsert).
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(2)
+        expect(getToolCallId(rows[0]!.content)).toBe('call-1')
+        const resultData = toolCallDataOf(rows[1]!)
+        expect(resultData.type).toBe('tool-call-result')
+        expect(resultData.callId).toBe('call-1')
+        store.close()
+    })
+
+    it('inserts a new row when a callId reappears after its tool-call-result', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-reused-callid')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+        const reused = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+
+        expect(reused.updated).toBe(false)
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(2)
+        expect(rows[0]!.id).toBe(first.message.id)
+        expect(rows[1]!.id).toBe(reused.message.id)
+        expect(rows[1]!.id).not.toBe(rows[0]!.id)
+        expect(rows[1]!.seq).toBeGreaterThan(rows[0]!.seq)
+        store.close()
+    })
+
+    it('stops the callId scan at a user message', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-user-boundary')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'next turn' } })
+        const afterUser = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+
+        expect(afterUser.updated).toBe(false)
+        expect(toolCallRows(store, session.id)).toHaveLength(2)
+        store.close()
+    })
+
+    it('merges per session and per callId without touching neighbours', () => {
+        const store = makeStore()
+        const sessionA = makeSession(store, 'acp-upsert-a')
+        const sessionB = makeSession(store, 'acp-upsert-b')
+
+        store.messages.upsertToolCallMessage(sessionA.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(sessionA.id, toolCallContent('call-2', { input: { path: '/b' }, status: 'in_progress' }), 'call-2')
+        store.messages.upsertToolCallMessage(sessionB.id, toolCallContent('call-1', { input: { path: '/other' }, status: 'in_progress' }), 'call-1')
+
+        store.messages.upsertToolCallMessage(sessionA.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rowsA = toolCallRows(store, sessionA.id)
+        expect(rowsA).toHaveLength(2)
+        const call1 = rowsA.find(row => row.data.callId === 'call-1')
+        const call2 = rowsA.find(row => row.data.callId === 'call-2')
+        expect(call1!.data.status).toBe('completed')
+        // A different callId in the same session keeps its own merged data.
+        expect(call2!.data.input).toEqual({ path: '/b' })
+        expect(call2!.data.status).toBe('in_progress')
+        // Another session's row with the same callId is untouched.
+        const rowsB = toolCallRows(store, sessionB.id)
+        expect(rowsB).toHaveLength(1)
+        expect(rowsB[0]!.data.input).toEqual({ path: '/other' })
+        expect(rowsB[0]!.data.status).toBe('in_progress')
+        store.close()
+    })
+
+    it('does not regress an in_progress call when a later tick re-emits pending', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-status-inprogress')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // normalizeStatus maps a missing/unknown status to 'pending', so
+        // permission rounds re-emit pending after the call already ran.
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('in_progress')
+        store.close()
+    })
+
+    it('does not regress a terminal call when a later tick re-emits pending', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-status-terminal')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('still advances pending through in_progress to completed', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-status-progression')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('merges nativeName, nativeArgs and progress from later ticks', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-native-fields')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', {
+            status: 'in_progress',
+            nativeName: 'run_command',
+            nativeArgs: { CommandLine: 'x' },
+            progress: { lines: 3 }
+        }), 'call-1')
+        // A later tick without those fields keeps what earlier ticks carried.
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.nativeName).toBe('run_command')
+        expect(rows[0]!.data.nativeArgs).toEqual({ CommandLine: 'x' })
+        expect(rows[0]!.data.progress).toEqual({ lines: 3 })
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('merges while the live row is inside the lookback window', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-lookback-inside')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // 199 rows after the call keep it within the 200-row scan window.
+        for (let i = 0; i < 199; i++) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler ${i}`))
+        }
+
+        const update = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        expect(update.updated).toBe(true)
+        expect(toolCallRows(store, session.id)).toHaveLength(1)
+        store.close()
+    })
+
+    it('inserts a new row once the live row falls outside the lookback window', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-lookback-outside')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // The 200th row after the call pushes it past the scan window.
+        for (let i = 0; i < 200; i++) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler ${i}`))
+        }
+
+        const outside = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        expect(outside.updated).toBe(false)
+        expect(outside.message.id).not.toBe(first.message.id)
+        expect(toolCallRows(store, session.id)).toHaveLength(2)
+        store.close()
+    })
+
+    it('walks past a tool-call-result for a different callId', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-other-result')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-2', 'unrelated'))
+        const update = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+
+        expect(update.updated).toBe(true)
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(2)
+        expect(getToolCallId(rows[0]!.content)).toBe('call-1')
+        expect(rows[0]!.id).toBe(update.message.id)
+        expect(toolCallDataOf(rows[1]!).callId).toBe('call-2')
+        store.close()
     })
 })

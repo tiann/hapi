@@ -51,7 +51,8 @@ ${chalk.bold('Notes:')}
   the peer needs to know now to adjust its current work, not after its current turn.
   State why the finding matters now and what the peer should adjust.
   Explicit steer requires an active turn in remote Claude, Pi, Codex, OpenCode,
-  or Cursor ACP; it neither resumes inactive targets nor sends to idle targets.
+  Antigravity (agy acp), or Cursor ACP; it neither resumes inactive targets nor
+  sends to idle targets.
   Steer uses the existing queued-message action. If it fails after send, inspect the
   target before retrying: the accepted message may still be queued or consumed.
   When a user cites [title](/sessions/<id>) or Copy-reference

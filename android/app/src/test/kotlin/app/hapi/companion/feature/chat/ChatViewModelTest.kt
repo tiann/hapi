@@ -20,6 +20,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
@@ -169,6 +170,8 @@ private open class FakeMessagesApi : ChatSessionApi {
 
     override suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse =
         QueuedStateResponse(queuedLocalIds = emptyList(), invokedLocalMessages = emptyList())
+
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
 
     // Interaction endpoints are exercised by ChatViewModelInteractionTest.
     override suspend fun sendMessage(sessionId: String, message: SendMessageRequest) {}

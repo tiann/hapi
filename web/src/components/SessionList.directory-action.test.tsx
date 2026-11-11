@@ -14,7 +14,8 @@ const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
 afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
-    localStorage.removeItem('hapi-pin-in-progress-sessions')
+    // Explicit off — unset now defaults to `jobs` (session-attached jobs stand).
+    localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -34,6 +35,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -116,6 +119,59 @@ describe('SessionList directory action', () => {
             machineId: 'machine-1',
             directory: '/home/ubuntu',
         })
+    })
+
+    it('archives only the live sessions of a project from its context menu', async () => {
+        const archiveSession = vi.fn(async () => {})
+        const metadata = (name: string, lifecycleState: string) => ({
+            path: '/work/proj', machineId: 'machine-1', name, flavor: 'codex', lifecycleState
+        })
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({ id: 'live', active: true, updatedAt: 3, metadata: metadata('Live', 'running') }),
+                    makeSession({ id: 'stale', updatedAt: 2, metadata: metadata('Stale', 'idle') }),
+                    makeSession({ id: 'done', updatedAt: 1, metadata: metadata('Done', 'archived') }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={{ archiveSession } as unknown as ApiClient}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByTitle('/work/proj'))
+        expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive all' }))
+        expect(screen.getByText('Archive 2 sessions in "work/proj"?')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledTimes(2))
+        expect(archiveSession).toHaveBeenCalledWith('live')
+        expect(archiveSession).toHaveBeenCalledWith('stale')
+    })
+
+    it('opens the project menu from the keyboard with Shift+F10', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({ id: 's1', metadata: { path: '/work/proj', name: 'S1', flavor: 'codex' } })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const header = screen.getByTitle('/work/proj')
+        expect(header).toHaveAttribute('tabindex', '0')
+        fireEvent.keyDown(header, { key: 'F10', shiftKey: true })
+        expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
     })
 
     it('keeps the sticky project header opaque and aligned with the list viewport', () => {
@@ -275,6 +331,35 @@ describe('SessionList fork session action', () => {
         fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
 
         await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session'))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
+
+    it('forks a running capable session through the latest completed native turn', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'source-session',
+            active: true,
+            thinking: true,
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/work/source',
+                name: 'Source session',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
@@ -480,7 +565,7 @@ describe('SessionList collapse behavior', () => {
     }
 
     it('keeps a selected running path collapsed across live session-list refreshes', async () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const baseSessions = [
             makeSession({
                 id: 'session-running',
@@ -518,6 +603,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('leaves active sessions in directory groups when pin-in-progress is off', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -541,8 +627,8 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('/work/hapi').nextElementSibling?.getAttribute('data-open')).toBe('true')
     })
 
-    it('pins active sessions into In progress when the preference is on', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    it('pins active sessions into In progress when mode is all activity', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -566,7 +652,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('keeps project-pinned active sessions in their project group when the preference is on', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-pinned-running',
@@ -590,6 +676,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('keeps In progress above project-pin groups; project pin stays first inside its group', () => {
+        // Legacy true → all (tri-state); floater under In progress; project folders stay below.
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         const sessions = [
             makeSession({
@@ -641,7 +728,101 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Unpinned floater/ })).toBeInTheDocument()
     })
 
-    it('does not label quiet active sessions as Idle', () => {
+    it('pins idle sessions with a running attachedJob when mode is jobs (default)', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+        const sessions = [
+            makeSession({
+                id: 'session-beets',
+                active: false,
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Music drain', flavor: 'claude' },
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets import',
+                    status: 'running',
+                    remaining: 12,
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+            makeSession({
+                id: 'session-thinking',
+                active: true,
+                thinking: true,
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Thinking agent', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/Jobs \(1\)/)).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Music drain/ })).toBeInTheDocument()
+        // Thinking agent is not a long-running job — stays in directory under jobs mode.
+        expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
+    })
+
+    it('keeps a real agent turn in Running when a job is also attached (#1553)', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const sessions = [
+            makeSession({
+                id: 'session-job-thinking',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Comfy batch', flavor: 'cursor' },
+                attachedJob: {
+                    key: 'comfy',
+                    label: 'Animate stills',
+                    status: 'running',
+                    remaining: 16,
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/^Running \(1\)/i)).toBeInTheDocument()
+        expect(screen.queryByText(/^Jobs \(/i)).toBeNull()
+        expect(screen.getByRole('button', { name: /Comfy batch/ })).toBeInTheDocument()
+    })
+
+    it('puts pending operator action ahead of Jobs when both apply', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+        const sessions = [
+            makeSession({
+                id: 'session-job-and-pending',
+                active: true,
+                thinking: false,
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['permission'],
+                updatedAt: 100,
+                metadata: { path: '/music', name: 'Needs approval', flavor: 'claude' },
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets import',
+                    status: 'running',
+                    remaining: 8,
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.getByText(/^pending \(1\)$/i)).toBeInTheDocument()
+        expect(screen.queryByText(/^Jobs \(/i)).toBeNull()
+        expect(screen.getByRole('button', { name: /Needs approval/ })).toBeInTheDocument()
+    })
+
+    it('does not label quiet connected sessions as Idle', () => {
         const sessions = [
             makeSession({
                 id: 'session-quiet',
@@ -657,8 +838,8 @@ describe('SessionList collapse behavior', () => {
         expect(screen.queryByTitle('Idle')).toBeNull()
     })
 
-    it('keeps quiet active sessions in the Active section when pin-in-progress is on', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    it('keeps quiet connected sessions in directory groups when pin-in-progress is on', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -686,28 +867,23 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('In progress')).toBeInTheDocument()
         expect(screen.getByText(/Running \(1\)/)).toBeInTheDocument()
         expect(screen.getByText(/pending \(1\)/)).toBeInTheDocument()
-        // Quiet active sessions float into their own Active section (finished
-        // executing, still connected) instead of falling into directory groups.
-        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
-        expect(screen.getByText(/Active \(1\)/)).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
-        // The directory header survives as an action-only header (copy-path /
-        // new-session-in-directory) even though every row floated.
+        expect(screen.queryByText(/Idle \(/)).toBeNull()
+        // Quiet active stays under its project directory, not an Idle pin bucket.
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/hapi').nextElementSibling).toBeNull()
-        expect(screen.getByTitle('/work/other')).toBeInTheDocument()
-        expect(screen.getByTitle('/work/other').nextElementSibling).toBeNull()
+        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(getProjectPanel().getAttribute('data-open')).toBe('true')
     })
 
     it('keeps new-session-in-directory actions for projects whose rows all floated', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const onNewSessionInDirectory = vi.fn()
         const sessions = [
             makeSession({
-                id: 'session-quiet',
+                id: 'session-running',
                 active: true,
+                thinking: true,
                 updatedAt: 100,
-                metadata: { path: '/work/hapi', machineId: 'machine-1', name: 'Quiet task', flavor: 'codex' },
+                metadata: { path: '/work/hapi', machineId: 'machine-1', name: 'Running task', flavor: 'codex' },
             }),
         ]
         renderWithProviders(
@@ -724,7 +900,7 @@ describe('SessionList collapse behavior', () => {
             />
         )
 
-        expect(screen.getByTitle('Active sessions')).toBeInTheDocument()
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
         // The project header survives as an action-only header.
         const header = screen.getByTitle('/work/hapi')
         expect(header.nextElementSibling).toBeNull()
@@ -792,8 +968,10 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Idle task/ })).toBeInTheDocument()
     })
 
-    it('toggles the Active section independently of In progress', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    it('does not pin quiet connected sessions as in-progress (#1404 jobs stand)', () => {
+        // Connected (session.active) ≠ working. Mode key `all` floats jobs +
+        // working + pending only — never quiet connected sockets.
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -811,27 +989,16 @@ describe('SessionList collapse behavior', () => {
         ]
         render(renderSessionList(sessions, null))
 
-        const activeHeader = screen.getByTitle('Active sessions')
-        const activePanel = () => activeHeader.nextElementSibling
-        expect(activePanel()?.getAttribute('data-open')).toBe('true')
-        expect(activeHeader.getAttribute('aria-expanded')).toBe('true')
-
-        // Keyboard toggle mirrors the In progress section.
-        fireEvent.keyDown(activeHeader, { key: 'Enter' })
-        expect(activeHeader.getAttribute('aria-expanded')).toBe('false')
-        expect(activePanel()?.getAttribute('data-open')).toBeNull()
-
-        // Searching forces the section open even while collapsed.
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), {
-            target: { value: 'Quiet' },
-        })
-        expect(activePanel()?.getAttribute('data-open')).toBe('true')
-        expect(activeHeader.getAttribute('aria-expanded')).toBe('true')
+        expect(screen.getByTitle('In progress')).toBeInTheDocument()
+        expect(screen.queryByTitle('Active sessions')).toBeNull()
+        expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(getProjectPanel().getAttribute('data-open')).toBe('true')
+        // Quiet connected stays under the project; working floats.
+        expect(screen.getByRole('button', { name: /Running task/ })).toBeInTheDocument()
     })
 
     it('keeps the running section open while searching even when collapsed', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
@@ -948,7 +1115,7 @@ describe('SessionList collapse behavior', () => {
     })
 
     it('toggles the running section with the keyboard', () => {
-        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
             makeSession({
                 id: 'session-running',
