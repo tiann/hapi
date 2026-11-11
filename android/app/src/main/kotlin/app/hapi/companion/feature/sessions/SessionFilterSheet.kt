@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -19,6 +20,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.protocol.wire.SessionListSort
 import kotlinx.coroutines.launch
 
 @Composable
@@ -28,10 +30,19 @@ internal fun machineFilterLabel(filter: MachineFilterUi): String = when {
     else -> filter.label
 }
 
+/**
+ * One sheet for every list view choice (web "Sort and filter"): the machine /
+ * date / status / unread filters (transient), then sort key and Active first
+ * (persisted). Choices apply immediately; Reset clears filters only.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SessionFilterSheet(
     state: SessionListUiState,
+    onSelectSort: (SessionListSort) -> Unit,
+    onSetActiveFirst: (Boolean) -> Unit,
+    onSelectStatus: (SessionListStatus) -> Unit,
+    onSetUnreadOnly: (Boolean) -> Unit,
     onSelectMachine: (String?) -> Unit,
     onOpenDates: () -> Unit,
     onClearDates: () -> Unit,
@@ -59,7 +70,7 @@ internal fun SessionFilterSheet(
         }
         LazyColumn(
             Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 480.dp)
-                .selectableGroup().testTag("session-filters"),
+                .testTag("session-filters"),
         ) {
             if (state.hasMachineFilters) {
                 item("machines-title") {
@@ -69,12 +80,14 @@ internal fun SessionFilterSheet(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
-                item("all") {
-                    FilterOption(stringResource(R.string.sessions_filter_all), state.activeMachineFilter == null) { onSelectMachine(null) }
-                }
-                items(state.machineFilters, key = { "machine:${it.id}" }) { filter ->
-                    FilterOption("${machineFilterLabel(filter)} · ${filter.sessionCount}", state.activeMachineFilter == filter.id) {
-                        onSelectMachine(filter.id)
+                item("machines") {
+                    Column(Modifier.selectableGroup()) {
+                        FilterOption(stringResource(R.string.sessions_filter_all), state.activeMachineFilter == null) { onSelectMachine(null) }
+                        state.machineFilters.forEach { filter ->
+                            FilterOption("${machineFilterLabel(filter)} · ${filter.sessionCount}", state.activeMachineFilter == filter.id) {
+                                onSelectMachine(filter.id)
+                            }
+                        }
                     }
                 }
                 item("divider") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
@@ -110,6 +123,41 @@ internal fun SessionFilterSheet(
                     }.testTag("session-date-filter"),
                 )
             }
+            // Filters first (machines and dates keep their place), then the
+            // rarely changed ordering at the bottom.
+            item("status-divider") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+            item("status-title") { SectionTitle(stringResource(R.string.sessions_view_status)) }
+            item("status") {
+                Column(Modifier.selectableGroup()) {
+                    FilterOption(stringResource(R.string.sessions_view_status_all), state.statusFilter == SessionListStatus.All) {
+                        onSelectStatus(SessionListStatus.All)
+                    }
+                    FilterOption(stringResource(R.string.sessions_view_status_active), state.statusFilter == SessionListStatus.Active) {
+                        onSelectStatus(SessionListStatus.Active)
+                    }
+                    FilterOption(stringResource(R.string.sessions_view_status_archived), state.statusFilter == SessionListStatus.Archived) {
+                        onSelectStatus(SessionListStatus.Archived)
+                    }
+                }
+            }
+            item("unread-only") {
+                SwitchOption(stringResource(R.string.sessions_view_unread_only), state.unreadOnly, onSetUnreadOnly, "session-unread-only")
+            }
+            item("sort-divider") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+            item("sort-title") { SectionTitle(stringResource(R.string.sessions_view_sort)) }
+            item("sort") {
+                Column(Modifier.selectableGroup()) {
+                    FilterOption(stringResource(R.string.sessions_view_sort_last_message), state.order.sort == SessionListSort.LastMessage) {
+                        onSelectSort(SessionListSort.LastMessage)
+                    }
+                    FilterOption(stringResource(R.string.sessions_view_sort_created), state.order.sort == SessionListSort.Created) {
+                        onSelectSort(SessionListSort.Created)
+                    }
+                }
+            }
+            item("active-first") {
+                SwitchOption(stringResource(R.string.sessions_view_active_first), state.order.activeFirst, onSetActiveFirst, "session-active-first")
+            }
         }
         Button(
             onClick = { scope.launch { sheetState.hide(); onDismiss() } },
@@ -117,6 +165,27 @@ internal fun SessionFilterSheet(
         ) {
             Text(stringResource(R.string.sessions_filters_done))
         }
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+    )
+}
+
+@Composable
+private fun SwitchOption(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, tag: String) {
+    Row(
+        Modifier.fillMaxWidth().toggleable(checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp).testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

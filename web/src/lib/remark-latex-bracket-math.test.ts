@@ -32,6 +32,23 @@ const pluginVariants = [
 ] as const
 
 describe('remarkLatexBracketMath', () => {
+    it('does not enable trusted math rendering through an inherited option', () => {
+        const original = Object.getOwnPropertyDescriptor(Object.prototype, 'trust')
+        Object.defineProperty(Object.prototype, 'trust', { value: true, writable: true, configurable: true })
+        try {
+            const html = render(String.raw`\(\href{javascript:alert(1)}{click}\)`)
+            expect(html).toContain('class="katex"')
+            expect(html).not.toContain('<a ')
+            expect(html).not.toContain('href="javascript:')
+        } finally {
+            if (original) {
+                Object.defineProperty(Object.prototype, 'trust', original)
+            } else {
+                Reflect.deleteProperty(Object.prototype, 'trust')
+            }
+        }
+    })
+
     it('is included before remarkMath in every production plugin variant', () => {
         for (const [, plugins] of pluginVariants) {
             const bracketIndex = plugins.indexOf(remarkLatexBracketMath)

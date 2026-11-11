@@ -33,6 +33,7 @@ const MetadataSummarySchema = z.object({
 
 const ConversationHistoryCapabilitiesSchema = z.object({
     forkCurrent: z.boolean().optional(),
+    forkLatestCompleted: z.boolean().optional(),
     forkAtMessage: z.boolean().optional(),
     rewindToMessage: z.boolean().optional()
 })

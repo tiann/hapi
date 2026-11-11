@@ -8,6 +8,7 @@ export type ConversationHistoryCapabilityStates = {
 
 export type ConversationHistoryCapabilities = {
     forkCurrent?: boolean
+    forkLatestCompleted?: boolean
     forkAtMessage?: boolean
     rewindToMessage?: boolean
 }

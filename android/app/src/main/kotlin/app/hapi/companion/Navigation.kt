@@ -65,6 +65,8 @@ import app.hapi.companion.feature.scratchlist.ContentResolverAttachmentImporter
 import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
+import app.hapi.companion.feature.sessions.InMemorySessionListOrderStore
+import app.hapi.companion.feature.sessions.SessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
@@ -79,6 +81,7 @@ import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
 import app.hapi.data.auth.AuthTerminalReason
 import app.hapi.data.sse.SseSubscriptionKey
+import app.hapi.protocol.wire.SessionListOrder
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -360,7 +363,7 @@ fun HapiNavigation() {
                 factory = viewModelFactory { SessionListViewModelHolder() },
             )
             HomeScreen(
-                viewModel = holder.forHub(hubGraph),
+                viewModel = holder.forHub(hubGraph, graph.sessionListOrderPrefs),
                 activeHubUrl = activeHubUrl,
                 pairedHubs = registryState.hubs,
                 onSwitchHub = { hub -> scope.launch { graph.hubRegistry.setActiveHub(hub) } },
@@ -772,7 +775,11 @@ private class ShareViewModelHolder : ViewModel() {
             }
         }
         return ShareModels(
-            SessionListViewModel(hub.sessionStore, hub.machineStore, hub.lastSeenStore, nextScope, hub.hubUrl),
+            SessionListViewModel(
+                hub.sessionStore, hub.machineStore, hub.lastSeenStore, nextScope, hub.hubUrl,
+                // The picker keeps the base order, not Home's sort preference.
+                orderStore = InMemorySessionListOrderStore(SessionListOrder.Base),
+            ),
             ShareTargetController(gateway, nextScope),
         ).also { models = it }
     }
@@ -796,7 +803,7 @@ private class SessionListViewModelHolder : ViewModel() {
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
 
-    fun forHub(hubGraph: HubGraph): SessionListViewModel {
+    fun forHub(hubGraph: HubGraph, orderStore: SessionListOrderStore): SessionListViewModel {
         model?.takeIf { graph === hubGraph }?.let { return it }
         model?.stop()
         scope?.cancel()
@@ -810,6 +817,7 @@ private class SessionListViewModelHolder : ViewModel() {
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
+            orderStore = orderStore,
         ).also { model = it }
     }
 

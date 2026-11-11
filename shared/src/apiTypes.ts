@@ -662,8 +662,9 @@ export const SendMessageRequestSchema = z.object({
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 export const ForkConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1).optional()
-})
+    messageLocalId: z.string().min(1).optional(),
+    latestCompleted: z.boolean().optional()
+}).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
 
@@ -695,6 +696,7 @@ export type RewindConversationResponse = {
 
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
+    completedTurnId?: string
     nativeSessionId: string
     opencodeHistoryCheckpoint?: NonNullable<Session['metadata']>['opencodeHistoryCheckpoint']
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
