@@ -33,7 +33,8 @@ export class SharedCodexPermissions {
         } : message, id);
     }
     constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string,
-        answerAsyncQuestion?: (reply: Reply) => Promise<boolean>) {
+        answerAsyncQuestion?: (reply: Reply) => Promise<boolean>,
+        private readonly onUserWait?: (threadId: string) => ((endedAt: number) => void) | undefined) {
         session.rpcHandlerManager.registerHandler(RPC_METHODS.Permission, async (raw: unknown) => {
             const reply = ReplySchema.parse(raw);
             if (await answerAsyncQuestion?.(reply)) return;
@@ -90,9 +91,14 @@ export class SharedCodexPermissions {
         });
         const handler = handlers.get(request.method);
         if (!handler) return;
+        // The wait for the user starts here and ends when the answer reached
+        // Codex (or the request was withdrawn); hosts time it for the round
+        // footer's tok/s, which must not count user waits as generation.
+        const endWait = this.onUserWait?.(threadId) ?? null;
         let response: unknown;
-        try { response = handler(request.params); } catch { return; }
+        try { response = handler(request.params); } catch { endWait?.(Date.now()); return; }
         void Promise.resolve(response).then(result => {
+            endWait?.(Date.now());
             if (result === IGNORE_SHARED_REQUEST) return;
             if (this.closed || this.retired.has(key)) return;
             // No pending entry means a native client already resolved the displayed request.
@@ -106,7 +112,7 @@ export class SharedCodexPermissions {
                     this.client.respond(request.id, { answers });
                 } else this.client.respond(request.id, result);
             }
-        }).catch(() => { /* Native resolution/disconnection withdraws, never responds with an error. */ });
+        }).catch(() => { endWait?.(Date.now()); /* Native resolution/disconnection withdraws, never responds with an error. */ });
     }
 
     resolved(threadId: string, nativeId: unknown, status: 'resolved' | 'canceled' = 'resolved'): void {

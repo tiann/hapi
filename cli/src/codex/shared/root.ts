@@ -166,7 +166,9 @@ export class SharedCodexRoot {
             const wasActivated = Boolean(this.heartbeat);
             // An emitted socket packet is not a durable hub acknowledgement.
             // Replay final native history with stable IDs after every reconnect.
-            this.projection?.reset();
+            // The native turn keeps running across a hub-only reconnect, so the
+            // active generation ledger must survive it.
+            this.projection?.resetAfterHubReconnect();
             this.steeringActive = undefined;
             this.publishedPlanId = undefined;
             this.publishedCompactionIds = undefined;
@@ -180,6 +182,21 @@ export class SharedCodexRoot {
         });
     }
 
+    /** The host's approval hooks: a wait for the user is not generation time. */
+    private readonly userWaitFor = (threadId: string): ((endedAt: number) => void) | undefined =>
+        threadId === this.threadId ? this.projection?.beginUserWait(Date.now()) : undefined;
+
+    /**
+     * Seeds a thread this runtime just created (thread/start) to zero
+     * cumulative usage so its first round's tok/s is measurable. Never call
+     * for resumed or forked threads: their totals arrive through the
+     * app-server's attach-time usage replay and already include inherited
+     * history.
+     */
+    seedFreshUsage(): void {
+        this.projection.seedFreshUsage();
+    }
+
     async prepare(): Promise<void> {
         await this.rewindBarrier.load();
         this.rewindBarrier.assertOpen();
@@ -190,7 +207,7 @@ export class SharedCodexRoot {
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);
         this.asyncQuestions = new SharedCodexAsyncQuestions(this.session, (threadId, text, id) => this.submitQuestionAnswer(threadId, text, id));
-        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.answerAsyncQuestion(reply));
+        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.answerAsyncQuestion(reply), this.userWaitFor);
         this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
     }
 
@@ -543,7 +560,7 @@ export class SharedCodexRoot {
                 try {
                     await initializeSharedClient(this.client);
                     if (this.stopping) return;
-                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.answerAsyncQuestion(reply));
+                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, reply => this.answerAsyncQuestion(reply), this.userWaitFor);
                     this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
                     const settingsRevision = this.settingsRevision;
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
