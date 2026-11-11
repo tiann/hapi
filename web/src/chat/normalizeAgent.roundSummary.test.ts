@@ -110,6 +110,64 @@ it('omits only the throughput pair for absent, partial or invalid optional gener
     }
 })
 
+describe('Claude turn_duration round summary carrier', () => {
+    const normalizeTurnDuration = (resultSummary: unknown) => normalizeDecryptedMessage({
+        id: 'claude-turn-duration', seq: 1, localId: null, createdAt: 1,
+        content: { role: 'agent', content: { type: 'output', data: { type: 'system', subtype: 'turn_duration', resultSummary } } }
+    })
+
+    it('keeps the Claude generation fields for the footer tok/s', () => {
+        expect(normalizeTurnDuration({
+            usage: { input_tokens: 4_422, output_tokens: 70, cache_read_input_tokens: 900, cache_creation_input_tokens: 100 },
+            modelUsage: { 'claude-opus-5': { inputTokens: 4_422, outputTokens: 70, cacheReadInputTokens: 900, cacheCreationInputTokens: 100 } },
+            total_cost_usd: 0.05,
+            num_turns: 3,
+            duration_ms: 14_900,
+            generation_ms: 2_500,
+            generation_output_tokens: 70
+        })).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'turn-summary',
+                summary: {
+                    usage: { input_tokens: 4_422, output_tokens: 70, cache_read_input_tokens: 900, cache_creation_input_tokens: 100 },
+                    numTurns: 3,
+                    durationMs: 14_900,
+                    generationMs: 2_500,
+                    generationOutputTokens: 70
+                }
+            }
+        })
+    })
+
+    it('keeps the legacy Claude summary shape and omits a partial or invalid tok/s pair', () => {
+        // Without generation fields the summary keeps rendering duration only.
+        expect(normalizeTurnDuration({ duration_ms: 5 })).toMatchObject({
+            content: { type: 'turn-summary', summary: { durationMs: 5 } }
+        })
+        const base = {
+            usage: { input_tokens: 1, output_tokens: 2 },
+            num_turns: 1,
+            duration_ms: 100
+        }
+        const pair = { generation_ms: 50, generation_output_tokens: 2 }
+        expect(normalizeTurnDuration({ ...base, ...pair })?.content).toMatchObject({
+            summary: { durationMs: 100, generationMs: 50, generationOutputTokens: 2 }
+        })
+        for (const generation of [
+            {}, { generation_ms: 50 }, { generation_output_tokens: 2 },
+            ...[0, -1, NaN, Infinity, '5', 0.5, Number.MAX_SAFE_INTEGER + 1].flatMap(value => [
+                { generation_ms: value, generation_output_tokens: 2 },
+                { generation_ms: 50, generation_output_tokens: value }
+            ])
+        ]) {
+            const normalized = normalizeTurnDuration({ ...base, ...generation })
+            expect(normalized?.content).not.toHaveProperty('summary.generationMs')
+            expect(normalized?.content).not.toHaveProperty('summary.generationOutputTokens')
+        }
+    })
+})
+
 describe('agy round summary carrier', () => {
     const normalizeCarrier = (summary: unknown) => normalizeDecryptedMessage({
         id: 'agy-round-summary', seq: 1, localId: null, createdAt: 1,

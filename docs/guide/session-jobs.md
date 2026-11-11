@@ -67,10 +67,11 @@ Prefer `"$HAPI_SESSION_ID"` only when it matches the operator chat URL uuid. Rem
 | `fraction` | `--remaining N --total M` **or** `--done N --total M` | determinate fill |
 | `until` | `--until <ISO-8601\|epoch-ms>` | determinate countdown (`s`); `job run` heartbeats re-stamp `remaining` |
 
-The bar and stripes are the Web list. The iOS list shows the same job as one
-text line in place of the project name (`label · remaining or percent ·
-elapsed`, amber with `no heartbeat` after ~15m) and a working presence badge,
-without a bar. Android does not show attached jobs yet.
+The bar and stripes are the Web list. The native lists show the same job as one
+text line (`label · remaining or percent · elapsed`, amber with `no heartbeat`
+after ~15m) and a working presence badge: Android adds a thin bar under the
+row's meta line (Material indeterminate animation instead of stripes); iOS puts
+the line in place of the project name, without a bar.
 
 #### Alive-only / indeterminate (`--progress unknown`)
 

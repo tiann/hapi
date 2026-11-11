@@ -212,6 +212,25 @@ class HomeScreenTest {
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filters_active)))
     }
 
+    @Test fun sheetShowsStatusAndSortChoicesBelowTheFilters() {
+        sessions.sessions.value = sessions.sessions.value.map { if (it.id == "research") it.copy(active = false) else it }
+        mount()
+        openFilters()
+        compose.onNodeWithTag("session-filters").performScrollToNode(hasText(label(R.string.sessions_view_status_archived)))
+        compose.onNodeWithText(label(R.string.sessions_view_status_archived)).performClick()
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.map { it.id } == listOf("research") }
+        compose.onNodeWithTag("session-filters").performScrollToNode(hasTestTag("session-active-first"))
+        compose.onNodeWithTag("session-active-first").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) { !viewModel.uiState.value.order.activeFirst && viewModel.uiState.value.isCustomized }
+        compose.onNodeWithTag("session-active-first").performClick()
+        compose.waitUntil(10_000) { viewModel.uiState.value.order.activeFirst }
+        compose.onNodeWithText(label(R.string.sessions_filters_reset)).performClick()
+        compose.waitUntil(10_000) { !viewModel.uiState.value.hasActiveFilters && viewModel.uiState.value.rows.size == 3 }
+        compose.onNodeWithText(label(R.string.sessions_filters_done)).performClick()
+        compose.onNodeWithContentDescription(label(R.string.sessions_filters))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filter_all)))
+    }
+
     @Test fun singleMachineStillOffersDateFilteringAndReset() {
         sessions.sessions.value = sessions.sessions.value.filter { it.metadata?.machineId == "laptop" }
         viewModel.setDateRange(today, today)

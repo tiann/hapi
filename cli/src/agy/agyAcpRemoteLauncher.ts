@@ -4,6 +4,7 @@ import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
+import { GenerationClock } from '@/agent/generationClock';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
@@ -102,28 +103,10 @@ export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): Usa
     };
 }
 
-type TimeWindow = { start: number; end: number | null };
-
-/**
- * agy reports no per-step timing, so generation time is the round minus the
- * spans spent running tools or waiting for the user. Spans are clipped to the
- * round and merged, so overlaps count once; an open span ends with the round.
- */
-export function agyGenerationMs(sentAt: number | null, answeredAt: number | null, windows: TimeWindow[]): number | null {
-    if (sentAt === null || answeredAt === null || answeredAt <= sentAt) return null;
-    const clipped = windows
-        .map(({ start, end }) => ({ start: Math.max(start, sentAt), end: Math.min(end ?? answeredAt, answeredAt) }))
-        .filter(({ start, end }) => end > start)
-        .sort((a, b) => a.start - b.start);
-    let excluded = 0;
-    let coveredUntil = sentAt;
-    for (const { start, end } of clipped) {
-        const from = Math.max(start, coveredUntil);
-        if (end > from) excluded += end - from;
-        coveredUntil = Math.max(coveredUntil, end);
-    }
-    return answeredAt - sentAt - excluded;
-}
+// agy reports no per-step timing, so generation time is the round minus the
+// spans spent running tools or waiting for the user: the shared GenerationClock
+// (cli/src/agent/generationClock.ts) is fed the same session updates and
+// permission waits it always was.
 
 /** The turn's response-footer record; the web reads `provider: 'agy'` summaries. */
 export function agyRoundSummary(
@@ -190,9 +173,9 @@ type AgyTurn = {
     stopReason: string | null;
     sentAt: number | null;
     answeredAt: number | null;
-    // Tool runs and waits for the user, which are not generation time.
-    idleWindows: TimeWindow[];
-    toolWindows: Map<string, TimeWindow>;
+    // Generation timing: tool runs and waits for the user become idle windows
+    // the shared clock subtracts from the round.
+    generation: GenerationClock;
     // Commands agy has not reported an end for; one still open at end_turn was
     // moved to the background.
     openCommands: Set<string>;
@@ -480,9 +463,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     onUserWait: () => {
                         const turn = this.turn;
                         if (!turn) return () => {};
-                        const window: TimeWindow = { start: Date.now(), end: null };
-                        turn.idleWindows.push(window);
-                        return () => { window.end ??= Date.now(); };
+                        return turn.generation.beginUserWait();
                     }
                 }
             );
@@ -563,8 +544,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             stopReason: null,
             sentAt: null,
             answeredAt: null,
-            idleWindows: [],
-            toolWindows: new Map(),
+            generation: new GenerationClock(),
             openCommands: new Set(),
             bgTaskDescriptions: new Map(),
             usage: null,
@@ -755,9 +735,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const durationMs = turn.sentAt !== null && turn.answeredAt !== null
                     ? Math.max(0, turn.answeredAt - turn.sentAt)
                     : null;
-                const generationMs = turn.sawActivity
-                    ? agyGenerationMs(turn.sentAt, turn.answeredAt, turn.idleWindows)
-                    : null;
+                const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
                 // google-antigravity/antigravity-cli#1045: agy reports no num_turns; the authoritative value wins
                 // when present, otherwise count model-call steps from agy's
                 // transcript (this prompt's plus the late continuation's).
@@ -1248,7 +1226,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         turn.sawActivity = true;
         turn.acknowledge();
-        this.trackToolWindow(turn, message);
+        turn.generation.observe(message);
+        this.trackOpenCommand(turn, message);
         this.forwardAgentMessage(this.showQuestionCard(message));
     }
 
@@ -1302,7 +1281,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         return shown.message;
     }
 
-    private trackToolWindow(turn: AgyTurn, message: AgentMessage): void {
+    /** Tracks commands agy moved to the background; the generation clock reads the same updates. */
+    private trackOpenCommand(turn: AgyTurn, message: AgentMessage): void {
         if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
         // Only a command agy reports as running counts: one still waiting
         // for approval (pending) did not start, whatever happens to the turn.
@@ -1315,14 +1295,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // retires the background-task indicator entry.
             this.noteBackgroundTaskSettled(message.id);
         }
-        const now = Date.now();
-        let window = turn.toolWindows.get(message.id);
-        if (!window) {
-            window = { start: now, end: null };
-            turn.toolWindows.set(message.id, window);
-            turn.idleWindows.push(window);
-        }
-        if (message.status === 'completed' || message.status === 'failed') window.end ??= now;
     }
 
     /**

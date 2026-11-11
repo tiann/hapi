@@ -86,12 +86,19 @@ function normalizeRoundSummary(value: unknown): RoundSummary | undefined {
         return undefined
     }
 
+    const generationMs = nonNegativeSafeInteger(value.generation_ms)
+    const generationOutputTokens = nonNegativeSafeInteger(value.generation_output_tokens)
+    const generation = generationMs !== undefined && generationMs > 0
+        && generationOutputTokens !== undefined && generationOutputTokens > 0
+        ? { generationMs, generationOutputTokens } : {}
+
     return {
         usage,
         modelUsage,
         totalCostUsd: totalCostUsd && totalCostUsd > 0 ? totalCostUsd : undefined,
         numTurns: numTurns && numTurns > 0 ? numTurns : undefined,
-        durationMs
+        durationMs,
+        ...generation
     }
 }
 

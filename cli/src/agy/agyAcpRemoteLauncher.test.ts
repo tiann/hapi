@@ -15,10 +15,10 @@ import {
     AgyAcpRemoteLauncher,
     addAgyUsage,
     agyAcpModeForPermission,
-    agyGenerationMs,
     agyRoundSummary,
     resolveAgyAcpModelId
 } from './agyAcpRemoteLauncher';
+import { generationTimeMs } from '@/agent/generationClock';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
@@ -1672,18 +1672,18 @@ describe('agy ACP helpers', () => {
 
     it('takes tool runs and waits for the user out of the generation time', () => {
         // A tool run and, separately, a wait for an approval.
-        expect(agyGenerationMs(0, 10_000, [{ start: 1_000, end: 4_000 }, { start: 6_000, end: 7_000 }])).toBe(6_000);
+        expect(generationTimeMs(0, 10_000, [{ start: 1_000, end: 4_000 }, { start: 6_000, end: 7_000 }])).toBe(6_000);
         // A steered turn: windows from both requests, in any order.
-        expect(agyGenerationMs(0, 20_000, [{ start: 12_000, end: 15_000 }, { start: 2_000, end: 8_000 }])).toBe(11_000);
+        expect(generationTimeMs(0, 20_000, [{ start: 12_000, end: 15_000 }, { start: 2_000, end: 8_000 }])).toBe(11_000);
         // An approval wait inside a tool's span counts once.
-        expect(agyGenerationMs(0, 10_000, [{ start: 1_000, end: 6_000 }, { start: 2_000, end: 3_000 }, { start: 5_000, end: 8_000 }])).toBe(3_000);
+        expect(generationTimeMs(0, 10_000, [{ start: 1_000, end: 6_000 }, { start: 2_000, end: 3_000 }, { start: 5_000, end: 8_000 }])).toBe(3_000);
         // Cancelled mid-tool: the open window ends with the round; spans
         // outside the round do not count.
-        expect(agyGenerationMs(1_000, 5_000, [{ start: 0, end: 2_000 }, { start: 3_000, end: null }])).toBe(1_000);
+        expect(generationTimeMs(1_000, 5_000, [{ start: 0, end: 2_000 }, { start: 3_000, end: null }])).toBe(1_000);
         // No answer, or nothing left but tools.
-        expect(agyGenerationMs(0, null, [])).toBeNull();
-        expect(agyGenerationMs(null, 5_000, [])).toBeNull();
-        expect(agyGenerationMs(0, 5_000, [{ start: 0, end: 5_000 }])).toBe(0);
+        expect(generationTimeMs(0, null, [])).toBeNull();
+        expect(generationTimeMs(null, 5_000, [])).toBeNull();
+        expect(generationTimeMs(0, 5_000, [{ start: 0, end: 5_000 }])).toBe(0);
     });
 
     it('reports generation tokens, thinking included, only with a positive generation time', () => {
