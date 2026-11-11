@@ -681,7 +681,7 @@ export default {
   'tool.other': '其他',
   'tool.otherDescription': '输入您自己的答案',
   'tool.question': '问题',
-  'tool.waitingForReply': 'Waiting for your reply',
+  'tool.waitingForReply': '等待你的回复',
   'tool.selectOption': '请至少选择一个选项或输入答案。',
   'tool.waitingForApproval': '等待审批…',
   'tool.resolved': '已在 Codex 中处理',
