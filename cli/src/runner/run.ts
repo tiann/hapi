@@ -12,6 +12,7 @@ import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
+import { ensureWatchdogInstalled, touchRunnerHeartbeat } from './watchdog';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
@@ -1774,6 +1775,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // (Codex review #814 [Major] - controlClient.ts:192 fix).
     const startedWithVersionHandoffDisabled = process.env.HAPI_DISABLE_VERSION_HANDOFF === '1';
 
+    // Liveness heartbeat + external watchdog: touch the heartbeat file so a
+    // freshly started runner is never judged stale, and install the watchdog
+    // LaunchAgent. Fire-and-forget: the watchdog is best-effort and must
+    // never block runner startup.
+    touchRunnerHeartbeat();
+    void ensureWatchdogInstalled().catch(() => {
+      // Swallowed inside ensureWatchdogInstalled too; belt and braces so an
+      // unexpected rejection can never surface as an unhandled rejection.
+    });
+
     // Write initial runner state (no lock needed for state file)
     const fileState: RunnerLocallyPersistedState = {
       sharedCodexRuntime: true,
@@ -1915,6 +1926,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     let nextHandoffAttemptAt = 0;
     const HANDOFF_RETRY_BACKOFF_MS = 5 * 60_000;
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
+      // Liveness heartbeat, unconditional and before the re-entry guard: a
+      // previous tick still parked on network I/O is *not* a frozen loop (the
+      // guard handles that), but a loop that cannot even reach this line for
+      // staleSeconds *is* frozen, and the external watchdog script will
+      // kill -9 this process so the guard can respawn a fresh one.
+      touchRunnerHeartbeat();
+
       if (heartbeatRunning) {
         return;
       }
