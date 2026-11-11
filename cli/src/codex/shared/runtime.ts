@@ -312,6 +312,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
             }
             await bind(reservation.root, record(response.result), true);
+            // A thread created through the gateway (native /new) is fresh:
+            // seed it to zero so its first turn measures, exactly like the
+            // runtime create path. Forks are excluded: their totals arrive
+            // through the app-server's attach-time usage replay.
+            if (request.method === 'thread/start') reservation.root.seedFreshUsage();
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {

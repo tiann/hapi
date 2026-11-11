@@ -285,6 +285,12 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const nextSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === next)!;
             expect(web.metadata.codexSessionId).toBe(initial);
             expect(process.env.HAPI_SESSION_ID).toBe('parent-must-not-leak');
+            // A thread created through the gateway (native /new) is fresh: the
+            // first turn must measure from the zero seed, not a null baseline.
+            await first.request('turn/start', { threadId: next, input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
+            await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
+                type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
+            })), { timeout: 15_000 });
             await first.request('thread/archive', { threadId: next }); roots = [initial];
             await vi.waitFor(() => expect(nextSession.dead).toBe(true)); expect(web.dead).toBe(false);
             await second.request('turn/start', { threadId: initial, model: 'second-mock', input: [{ type: 'text', text: 'HELLO FROM TERMINAL', text_elements: [] }], clientUserMessageId: 'native-1' });
