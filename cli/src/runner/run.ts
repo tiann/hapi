@@ -1552,7 +1552,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             // For externally started sessions, try to kill by PID
             try {
               if (!(await killProcess(pid, false, bindingUnchanged))) return 'still_alive';
-          terminated.add(pid);
+              terminated.add(pid);
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill external session PID ${pid}:`, error);
