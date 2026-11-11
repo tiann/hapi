@@ -67,7 +67,6 @@ describe('IosPushNotificationChannel', () => {
 
         await channel.sendReady(createSession({ active: false }))
         await channel.sendPermissionRequest(createSession({ active: false }))
-        await channel.sendTaskNotification(createSession({ active: false }), { summary: 'done' })
 
         expect(service.calls).toHaveLength(0)
     })
@@ -103,17 +102,5 @@ describe('IosPushNotificationChannel', () => {
         expect(payload.requestId).toBe('req-42')
         expect(payload.severity).toBe('warning')
         expect(payload.body).toContain('Bash')
-    })
-
-    it('maps task failure status to error severity', async () => {
-        const { channel, service } = makeChannel({ sent: 1, failed: 0, invalidTokens: [] })
-
-        await channel.sendTaskNotification(createSession(), { summary: 'exploded', status: 'failed' })
-
-        const payload = service.calls[0].payload
-        expect(payload.type).toBe('task-notification')
-        expect(payload.severity).toBe('error')
-        expect(payload.title).toBe('Task failed')
-        expect(payload.body).toContain('exploded')
     })
 })

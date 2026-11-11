@@ -22,11 +22,12 @@ const choice = { id: 'choice', question: 'Choose', isOther: true, options: [{ la
 
 function renderFooter(input: unknown = { questions: [choice] }) {
     const approvePermission = vi.fn().mockResolvedValue(undefined)
+    const denyPermission = vi.fn().mockResolvedValue(undefined)
     const props = {
-        api: { approvePermission } as unknown as ApiClient,
+        api: { approvePermission, denyPermission } as unknown as ApiClient,
         sessionId: 'session-1', tool: makeTool(input), disabled: false, onDone: vi.fn()
     }
-    return { ...render(<RequestUserInputFooter {...props} />), props, approvePermission }
+    return { ...render(<RequestUserInputFooter {...props} />), props, approvePermission, denyPermission }
 }
 
 function makeTool(input: unknown): ChatToolCall {
@@ -49,6 +50,39 @@ function makeTool(input: unknown): ChatToolCall {
 }
 
 describe('RequestUserInputFooter', () => {
+    it('dismisses only the optional request without validating or submitting answers', async () => {
+        const { props, denyPermission, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
+        fireEvent.click(screen.getByRole('button', { name: 'button.dismiss' }))
+        await waitFor(() => expect(props.onDone).toHaveBeenCalledOnce())
+        expect(denyPermission).toHaveBeenCalledExactlyOnceWith('session-1', 'permission-1')
+        expect(approvePermission).not.toHaveBeenCalled()
+        expect(screen.queryByText('tool.selectOption')).not.toBeInTheDocument()
+    })
+
+    it.each([true, undefined, 'false'])('does not offer dismissal without explicit non-blocking status (%s)', (isBlocking) => {
+        renderFooter({ isBlocking, questions: [choice] })
+        expect(screen.queryByRole('button', { name: 'button.dismiss' })).not.toBeInTheDocument()
+    })
+
+    it('prevents concurrent actions during dismissal and keeps the draft on failure', async () => {
+        const { props, rerender, denyPermission, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
+        let fail!: (reason: Error) => void
+        denyPermission.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'keep my draft' } })
+        fireEvent.click(screen.getByRole('button', { name: 'button.dismiss' }))
+        expect(screen.getByRole('button', { name: 'button.dismiss' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'tool.submitting' })).toBeDisabled()
+        fail(new Error('Connection lost'))
+        await screen.findByText('Connection lost')
+        expect(props.onDone).not.toHaveBeenCalled()
+        expect(screen.getByRole('textbox')).toHaveValue('keep my draft')
+        expect(screen.getByRole('button', { name: 'button.dismiss' })).toBeEnabled()
+        rerender(<RequestUserInputFooter {...props} disabled />)
+        fireEvent.click(screen.getByRole('button', { name: 'button.dismiss' }))
+        expect(denyPermission).toHaveBeenCalledOnce()
+        expect(approvePermission).not.toHaveBeenCalled()
+    })
+
     it.each(['', ' \n ', '  自定义\n说明  '])('focuses notes without submitting and posts canonical values (%j)', async (note) => {
         const { approvePermission } = renderFooter()
         fireEvent.click(screen.getByRole('button', { name: /Alpha/ }))

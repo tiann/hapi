@@ -1,5 +1,5 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationChannel } from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
@@ -75,37 +75,11 @@ export class PushNotificationChannel implements NotificationChannel {
         await this.deliverWebOrToast(session, payload, ctx, 'ready')
     }
 
-    async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
-        if (!session.active) {
-            return
-        }
-
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
-        const normalizedStatus = notification.status?.trim().toLowerCase()
-        const isFailure = normalizedStatus === 'failed'
-            || normalizedStatus === 'error'
-            || normalizedStatus === 'killed'
-            || normalizedStatus === 'aborted'
-
-        const payload: PushPayload = {
-            title: isFailure ? 'Task failed' : 'Task completed',
-            body: `${agentName} · ${name} · ${notification.summary}`,
-            data: {
-                type: 'task-notification',
-                sessionId: session.id,
-                url: this.buildSessionPath(session.id)
-            }
-        }
-
-        await this.deliverWebOrToast(session, payload, ctx, 'task')
-    }
-
     private async deliverWebOrToast(
         session: Session,
         payload: PushPayload,
         ctx: NotificationSendContext | undefined,
-        method: 'permission' | 'ready' | 'task'
+        method: 'permission' | 'ready'
     ): Promise<void> {
         if (ctx?.nativeGate?.sent) {
             this.logBranch(method, session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')

@@ -1,5 +1,4 @@
 import type { Session } from '../sync/syncEngine'
-import type { TaskNotification } from './notificationTypes'
 import { getAgentName, getSessionName } from './sessionInfo'
 import { formatToolArgumentsCompact, formatToolArgumentsDetailed } from './toolArgs'
 import { extractAssistantPlainText, extractNotifySummary, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -28,12 +27,12 @@ export type ComposedNativeNotification = {
     title: string
     body: string
     tag?: string
-    type: 'ready' | 'permission-request' | 'input-request' | 'task-notification'
+    type: 'ready' | 'permission-request' | 'input-request'
     sessionId: string
     sessionName: string
     url: string
     requestId?: string
-    severity: 'info' | 'success' | 'warning' | 'error'
+    severity: 'info' | 'warning'
     /** JSON-stringified AGENT_NOTIFY_SUMMARY object, `ready` only, when present. */
     notifySummary?: string
 }
@@ -103,27 +102,6 @@ export class NativeNotificationComposer {
             url: this.buildSessionPath(session.id),
             severity: 'info',
             ...(composed.notifySummary ? { notifySummary: JSON.stringify(composed.notifySummary) } : {})
-        }
-    }
-
-    composeTask(session: Session, notification: TaskNotification): ComposedNativeNotification {
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
-        const normalizedStatus = notification.status?.trim().toLowerCase()
-        const isFailure = normalizedStatus === 'failed'
-            || normalizedStatus === 'error'
-            || normalizedStatus === 'killed'
-            || normalizedStatus === 'aborted'
-        const taskSummary = this.truncateReadyText(notification.summary, READY_BODY_GLANCE_LIMIT)
-
-        return {
-            title: isFailure ? 'Task failed' : 'Task completed',
-            body: `${agentName} · ${name} · ${taskSummary}`,
-            type: 'task-notification',
-            sessionId: session.id,
-            sessionName: name,
-            url: this.buildSessionPath(session.id),
-            severity: isFailure ? 'error' : 'success'
         }
     }
 

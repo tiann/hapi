@@ -1,10 +1,10 @@
 /**
- * Optional session-status summary instruction for non-Cursor agent flavors.
+ * Optional session-status summary instruction for agent flavors with a
+ * system-prompt / developer-instructions seam (Claude / Codex / OpenCode / Grok).
  *
- * Cursor ACP has no system-prompt / rules-overlay seam in upstream today, so
- * it is intentionally not covered here. Claude / Codex / OpenCode / Grok get
- * this text via their existing system-prompt / developer-instructions /
- * one-shot instruction paths when the operator opts in.
+ * Cursor ACP has no HAPI system-prompt channel; when this toggle is on, the
+ * Cursor ACP launcher installs a transient workspace `.cursor/rules` overlay
+ * (`installCursorNotifyRuleOverlay`) instead — same opt-in gate, different inject path.
  *
  * Resolution order:
  * 1. Explicit `HAPI_SESSION_SUMMARY_CONTRACT` env (0|false|off|no → off; anything else → on)
@@ -57,7 +57,12 @@ export function buildSessionSummaryInstruction(): string {
         'Use the language used by the user in the current conversation for the',
         'human-readable "action" and "summary" values.',
         'Use status "blocked" if unsure. Keep action to 12 words or fewer when status',
-        'is "done" and follow-up remains.'
+        'is "done" and follow-up remains.',
+        // Cross-turn close (#2267): status "done" ends the spoken unit. Redundant
+        // background task-complete / "briefly inform" system pings must be silent
+        // until new user intent — do not open another user-visible reply.
+        'After status "done", do not emit further user-visible replies for redundant',
+        'background task-complete notifications until the user sends new intent.'
     ].join('\n')
 }
 

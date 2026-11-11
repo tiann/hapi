@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { hasUnreadMessageContent, getLiveReasoningStreamId } from '@hapi/protocol/messages'
+import { hasUnreadMessageContent, getLiveReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
@@ -118,7 +118,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
-        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {})
+        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
+        ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
     }
 }
 
@@ -679,6 +680,22 @@ export function getMatureScheduledMessages(
  *  CLI session that ended before the runner consumed them, so they cannot ever
  *  be delivered and must be force-invoked to clear the floating bar.
  *
+ *  Scoped to role='user' on purpose. Some agent session events (the opencode
+ *  compaction ":started" status) also carry a durable localId but have no ack
+ *  path — nothing ever flips their invoked_at — so without this scope they
+ *  matched "queued prompt" selections forever: the session-end sweep would
+ *  force-invoke them at reopen time, restamping their display position
+ *  (COALESCE(invoked_at, created_at)) to "now" and resurfacing days-old events
+ *  at the bottom of the thread as if they had just arrived. Session events are
+ *  already stored and rendered; they are never deliverable prompts and must
+ *  keep their original position. The check unwraps role-wrapped envelopes via
+ *  unwrapRoleWrappedRecordEnvelope, the same helper the delivery/export paths
+ *  use (isQueuedUserMessage), so both sides agree on what a queued user prompt
+ *  is even if a row stores the role inside an envelope. It runs on the decoded
+ *  content rather than json_extract in SQL because compressed rows store
+ *  content as a zstd BLOB, which SQLite's JSON functions reject ("malformed
+ *  JSON").
+ *
  *  Scheduled rows (scheduled_at IS NOT NULL) are *deliberately excluded*, mature
  *  or not.  The mature-scan path (releaseMatureScheduledMessages) is the sole
  *  emit channel for scheduled rows and it does not write invoked_at — the CLI
@@ -700,6 +717,7 @@ export function getImmediateQueuedLocalMessages(
         ORDER BY seq ASC
     `).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
+        .filter((message) => unwrapRoleWrappedRecordEnvelope(message.content)?.role === 'user')
 }
 
 /**
@@ -1034,6 +1052,17 @@ export function setMessagesDeliveryState(
            AND invoked_at IS NULL
            AND delivery_state IN (${fromStates})`
     ).run(state, sessionId, ...localIds).changes
+}
+
+/** Release confirmation-only state when the owning OpenCode worker ends or is replaced. */
+export function markDispatchingMessagesIndeterminate(db: Database, sessionId: string): string[] {
+    const rows = prepareCached(db, `
+        UPDATE messages SET delivery_state = 'indeterminate'
+        WHERE session_id = ? AND delivery_state = 'dispatching'
+          AND invoked_at IS NULL AND local_id IS NOT NULL
+        RETURNING local_id
+    `).all(sessionId) as Array<{ local_id: string }>
+    return rows.map(row => row.local_id)
 }
 
 /** Hold an ambiguous steer out of automatic replay without claiming delivery. */
