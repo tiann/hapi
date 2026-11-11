@@ -40,6 +40,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.share.ShareTurnEntry
+import app.hapi.companion.feature.chat.share.ShareTurnSelection
 import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.protocol.chat.VisibleChatBlock
@@ -75,6 +77,7 @@ internal fun ChatTranscript(
     readingState: TranscriptReadingState = rememberTranscriptReadingState(state.sessionId),
     messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
     onShowMessageInfo: (VisibleChatBlock) -> Unit = {},
+    onShareTurn: (VisibleChatBlock) -> Unit = {},
 ) {
     val rowState = rememberSaveableStateHolder()
     val stateKeys = remember(state.sessionId) { mutableSetOf<String>() }
@@ -279,8 +282,18 @@ internal fun ChatTranscript(
                             val labels = remember(metadata) {
                                 metadata?.let(::buildMessageMetadataLabels).orEmpty()
                             }
-                            if (labels.isNotEmpty()) {
-                                MessageInfoEntry(onClick = { onShowMessageInfo(row.block) })
+                            val shareable = remember(row.block) {
+                                ShareTurnSelection.canAnchorShareTurn(row.block)
+                            }
+                            if (labels.isNotEmpty() || shareable) {
+                                Row {
+                                    if (shareable) {
+                                        ShareTurnEntry(onClick = { onShareTurn(row.block) })
+                                    }
+                                    if (labels.isNotEmpty()) {
+                                        MessageInfoEntry(onClick = { onShowMessageInfo(row.block) })
+                                    }
+                                }
                             }
                         }
                     }

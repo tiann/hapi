@@ -12,4 +12,9 @@
     <cache-path
         name="generated_media"
         path="generated-media/" />
+    <!-- Shared turn card images (cache/share-images/), handed to the system
+         share panel via FileProvider; written fresh per share. -->
+    <cache-path
+        name="share_images"
+        path="share-images/" />
 </paths>
