@@ -879,9 +879,26 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const preSyncStepIndex = this.lastTranscriptStepIndex;
             this.syncTranscriptCursor();
             const turnStartStepIndex = this.lastTranscriptStepIndex;
-            const commandWindowAfterStepIndex = relaunched
-                ? turnStartStepIndex
-                : Math.min(opts.replayAfterStepIndex ?? preSyncStepIndex, preSyncStepIndex, turnStartStepIndex);
+            let commandWindowAfterStepIndex = turnStartStepIndex;
+            if (!relaunched) {
+                const baseAfterStep = Math.min(
+                    opts.replayAfterStepIndex ?? preSyncStepIndex,
+                    preSyncStepIndex,
+                    turnStartStepIndex
+                );
+                if (baseAfterStep < turnStartStepIndex) {
+                    // Only rows from a pending autonomous `SYSTEM_MESSAGE` wakeup onward
+                    // can be replayed by `agy`; earlier rows are late-flushed steps from
+                    // the already-completed previous turn.
+                    const interTurnSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, baseAfterStep);
+                    const firstWakeupStep = interTurnSteps.find(
+                        (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
+                    );
+                    if (firstWakeupStep !== undefined) {
+                        commandWindowAfterStepIndex = Math.max(baseAfterStep, firstWakeupStep.step_index - 1);
+                    }
+                }
+            }
             turn.turnStartStepIndex = commandWindowAfterStepIndex;
             turn.priorBackgroundCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
             resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, commandWindowAfterStepIndex);

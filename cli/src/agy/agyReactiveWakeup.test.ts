@@ -2388,4 +2388,183 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('excludes late-flushed previous-turn planner rows from new-turn command ordinals while resolving previous task IDs', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        // Turn 1 backgrounds `call-turn1-late`, while only step 0 (`USER_INPUT`) has flushed by `ready`.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-turn1-late',
+                name: 'sleep 30',
+                title: 'sleep 30',
+                status: 'in_progress',
+                input: { CommandLine: 'sleep 30' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 30' }
+            });
+            onUpdate({ type: 'text', text: 'Turn 1 backgrounded.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'turn 1' }
+            ]);
+        });
+
+        // Turn 2 starts a brand-new `call-turn2-new` (`task-52`) at ordinal 0 of Turn 2.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-turn2-new',
+                name: 'sleep 40',
+                title: 'sleep 40',
+                status: 'in_progress',
+                input: { CommandLine: 'sleep 40' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 40' }
+            });
+            onUpdate({ type: 'text', text: 'Turn 2 backgrounded.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'USER_EXPLICIT',
+                        type: 'USER_INPUT',
+                        content: 'turn 2'
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 40"' } }]
+                    }),
+                    JSON.stringify({
+                        step_index: 6,
+                        source: 'MODEL',
+                        type: 'GENERIC',
+                        status: 'RUNNING',
+                        content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-52`
+                    }),
+                    JSON.stringify({
+                        step_index: 7,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Turn 2 backgrounded.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('turn 1', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Now Turn 1's planner/action rows (`task-51`) flush AFTER `ready`, with NO `SYSTEM_MESSAGE` yet!
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 30"' } }]
+                }),
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-51`
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Turn 1 backgrounded.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        // User sends Turn 2 before any autonomous wakeup occurs!
+        queue.push('turn 2', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Both `task-52` (Turn 2) and `task-51` (Turn 1) finish in reverse order — each must update its own Bash card!
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 8,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-52" finished with result:\nCommand exited with code 0.\n\nCommand output:\nTURN2_NEW_OK\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 9,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-51" finished with result:\nCommand exited with code 0.\n\nCommand output:\nTURN1_LATE_OK\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 10,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Both background commands finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-turn2-new',
+            is_error: false,
+            output: { stdout: 'TURN2_NEW_OK', exit_code: 0 }
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-turn1-late',
+            is_error: false,
+            output: { stdout: 'TURN1_LATE_OK', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
 });
