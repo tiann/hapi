@@ -53,7 +53,12 @@ const harness = vi.hoisted(() => ({
     dieAfterPrompts: null as number | null,
     // One-shot prompt failure that does NOT kill the transport (an ordinary
     // in-band error, e.g. an unknown model).
-    promptError: null as Error | null
+    promptError: null as Error | null,
+    // When set, prompt() parks on this promise — lets tests abort mid-turn.
+    promptBlocker: null as null | Promise<void>,
+    // When set, cancelPrompt() parks on this promise — lets tests overlap
+    // prompt completion with a pending cancel (the queue-reset ordering).
+    cancelBlocker: null as null | Promise<void>
 }))
 
 vi.mock('./utils/berryBackend', () => ({
@@ -91,6 +96,9 @@ vi.mock('./utils/berryBackend', () => ({
             supportsImagePrompts: vi.fn(() => harness.supportsImages),
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
                 state.prompts += 1
+                if (harness.promptBlocker) {
+                    await harness.promptBlocker
+                }
                 if (harness.promptError) {
                     const error = harness.promptError
                     harness.promptError = null
@@ -103,7 +111,11 @@ vi.mock('./utils/berryBackend', () => ({
                 harness.prompts.push(content)
                 onUpdate({ type: 'text', text: 'answer' })
             }),
-            cancelPrompt: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {
+                if (harness.cancelBlocker) {
+                    await harness.cancelBlocker
+                }
+            }),
             getConfigOptionByCategory: vi.fn(() => harness.modelOption),
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
@@ -172,13 +184,7 @@ function deadTransportError(message = 'ACP process exited (code=1, signal=null)'
     return error
 }
 
-function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId: string | null = null) {
-    const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
-    for (const [message, mode] of batches) {
-        queue.push(message, mode)
-    }
-    queue.close()
-
+function createSessionFromQueue(queue: MessageQueue2<BerryMode>, sessionId: string | null = null) {
     const session = {
         path: '/tmp/berry-test',
         logPath: '/tmp/berry-test/hapi.log',
@@ -202,6 +208,15 @@ function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId
         sendSessionEvent: vi.fn()
     }
     return session
+}
+
+function createSessionWithBatches(batches: Array<[string, BerryMode]>, sessionId: string | null = null) {
+    const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
+    for (const [message, mode] of batches) {
+        queue.push(message, mode)
+    }
+    queue.close()
+    return createSessionFromQueue(queue, sessionId)
 }
 
 function createSession(mode?: BerryMode, sessionId: string | null = null) {
@@ -231,6 +246,8 @@ describe('BerryRemoteLauncher', () => {
         harness.newSessionBlocker = null
         harness.dieAfterPrompts = null
         harness.promptError = null
+        harness.promptBlocker = null
+        harness.cancelBlocker = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -780,5 +797,65 @@ describe('BerryRemoteLauncher', () => {
             type: 'message',
             message: 'Berry prompt failed: ACP process exited (code=1, signal=null)'
         })
+    })
+
+    it('keeps the session alive when a stop arrives while the queue is idle', async () => {
+        // Regression (ported from dsh): after the abort swapped in a fresh
+        // AbortController, re-reading this.abortController.signal saw the
+        // replacement (never aborted) and mistook the aborted idle wait for
+        // a closed queue — the loop broke and a Stop on an IDLE session
+        // killed the whole session instead of just cancelling the turn.
+        const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
+        const session = createSessionFromQueue(queue)
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.backend?.newSession).toHaveBeenCalled())
+
+        // Stop while the loop is parked on the empty queue.
+        await launcher.kill()
+
+        // The session survives: a message sent after the stop still runs.
+        queue.push('after-stop', {})
+        queue.close()
+        await done
+
+        expect(harness.backends).toHaveLength(1)
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'after-stop' }]])
+    })
+
+    it('drops a follow-up queued before the stop when the prompt finishes before the cancel', async () => {
+        // The queue reset must happen synchronously, BEFORE the cancel
+        // awaits (ported from dsh): the in-flight prompt can complete while
+        // cancelPrompt is still on the wire, and a follow-up queued ahead of
+        // the stop must already be gone when the loop comes back — not run
+        // after the user already saw "Session aborted".
+        let releasePrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releasePrompt = resolve })
+        let releaseCancel!: () => void
+        harness.cancelBlocker = new Promise((resolve) => { releaseCancel = resolve })
+        const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
+        queue.push('first', {})
+        const session = createSessionFromQueue(queue)
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.backend?.prompt).toHaveBeenCalled())
+
+        // Queued BEFORE the stop — must be dropped, not run.
+        queue.push('second', {})
+
+        const killPromise = launcher.kill()
+        // The prompt settles while the cancel is still pending; the loop
+        // returns to the queue in that window.
+        releasePrompt()
+        releaseCancel()
+        await killPromise
+
+        queue.close()
+        await done
+
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: 'Session aborted' })
     })
 })

@@ -231,4 +231,68 @@ describe('runBerry', () => {
             pushSpy.mockRestore()
         }
     })
+
+    it('does not push model:null over the keepalive when berry reports no catalog', async () => {
+        // Berry without a model catalog reports null on discovery. Mapping
+        // that onto the session as setModel(null) would re-send model:null
+        // over the keepalive runtime every 2s — wiping the stored --model
+        // off the hub row within seconds of spawn and breaking later resume.
+        // The three-state preference must survive: undefined stays unset.
+        await runBerry({
+            existingSessionId: 'hapi-session-berry',
+            startedBy: 'terminal',
+            workingDirectory: '/tmp/project',
+            model: 'newapi/glm-5.3'
+        })
+
+        const launcherOpts = harness.launcherConstructor.mock.calls[0]?.[1] as {
+            model?: string
+            onConfigDiscovered?: (model: string | null) => void
+        }
+        harness.session.keepAlive.mockClear()
+        launcherOpts.onConfigDiscovered?.(null)
+
+        // The sync still pushed a keepalive, but its runtime never carries
+        // model:null — the spawn model stays what the hub row already has.
+        const runtimes = harness.session.keepAlive.mock.calls
+            .map((call) => call[2] as { model?: unknown } | undefined)
+        expect(runtimes.length).toBeGreaterThan(0)
+        for (const runtime of runtimes) {
+            expect(runtime?.model).not.toBeNull()
+        }
+        expect(runtimes.map((runtime) => runtime?.model)).toContain('newapi/glm-5.3')
+
+        // The spawn override still flows at spawn: the launcher lever and
+        // the session's live model keep the opts.model seed (needed for
+        // BERRY_AGENT_MODEL respawns).
+        expect(launcherOpts.model).toBe('newapi/glm-5.3')
+        const sessionArg = harness.launcherConstructor.mock.calls[0]?.[0] as {
+            getModel?: () => unknown
+        }
+        expect(sessionArg.getModel?.()).toBe('newapi/glm-5.3')
+    })
+
+    it('still communicates an explicit Default reset through the keepalive', async () => {
+        // The gate must not swallow real values: a picker "Default" (null
+        // preference) is an actual change and still reaches the session.
+        await runBerry({
+            existingSessionId: 'hapi-session-berry',
+            startedBy: 'terminal',
+            workingDirectory: '/tmp/project',
+            model: 'newapi/glm-5.3'
+        })
+
+        const configOptions = harness.registerSessionConfigRpc.mock.calls[0][0] as {
+            onApply: (config: { model?: string | null }) => void
+            onAfterApply: () => void
+        }
+        configOptions.onApply({ model: null })
+        harness.session.keepAlive.mockClear()
+        configOptions.onAfterApply()
+
+        const runtimes = harness.session.keepAlive.mock.calls
+            .map((call) => call[2] as { model?: unknown } | undefined)
+        expect(runtimes.length).toBeGreaterThan(0)
+        expect(runtimes[0]?.model).toBeNull()
+    })
 })

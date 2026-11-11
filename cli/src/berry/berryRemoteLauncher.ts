@@ -176,6 +176,11 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         if (!this.currentBackendModel) {
             this.currentBackendModel = this.initialBackendModel
         }
+        // Null means "berry reported no catalog/default", NOT an explicit
+        // "Default" reset: the host (runBerry) maps it to the unset
+        // preference and must leave the session model untouched — collapsing
+        // it into setModel(null) would push model:null over the keepalive
+        // runtime and wipe the stored --model off the hub row.
         this.opts.onConfigDiscovered?.(this.currentBackendModel)
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
@@ -204,9 +209,18 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         })
 
         while (!this.shouldExit) {
-            const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
+            // Capture the signal per iteration (ported from dsh): handleAbort
+            // swaps in a fresh AbortController right after aborting, so
+            // re-reading this.abortController.signal below would see the
+            // replacement (never aborted) and mistake an aborted wait for a
+            // closed queue — breaking the loop and killing the whole session
+            // on a Stop that arrived while the queue was idle. The captured
+            // signal stays aborted forever, so the iteration continues and
+            // re-waits on the fresh controller.
+            const signal = this.abortController.signal
+            const batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) continue
+                if (signal.aborted && !this.shouldExit) continue
                 break
             }
 
@@ -542,15 +556,24 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        // Tear the queue wait down synchronously, BEFORE any await (ported
+        // from dsh): aborting (and replacing) the controller first unparks a
+        // waiting loop iteration via its captured signal so it re-waits on
+        // the fresh controller instead of dying, and resetting the queue
+        // before the cancel requests go on the wire drops anything queued
+        // ahead of the stop — the in-flight prompt can complete while
+        // cancelPrompt is still pending, and the loop would otherwise
+        // dequeue that already-aborted follow-up and run it after the user
+        // saw "Session aborted".
+        this.abortController.abort()
+        this.abortController = new AbortController()
+        this.session.queue.reset()
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
-        this.session.queue.reset()
         this.session.onThinkingChange(false)
-        this.abortController.abort()
-        this.abortController = new AbortController()
         this.messageBuffer.addMessage('Turn aborted', 'status')
     }
 

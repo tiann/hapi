@@ -65,7 +65,18 @@ export async function runBerry(opts: {
     const syncSessionMode = () => {
         const active = sessionRef.current
         if (!active) return
-        active.setModel(currentModel ?? null)
+        // Preserve the three-state model: `undefined` (no preference — e.g.
+        // berry reported no catalog) must never collapse into
+        // setModel(null). The keepalive runtime re-sends session.model every
+        // 2s, so a null would land on the hub within seconds of spawn and
+        // wipe the stored --model X off the session row — breaking later
+        // resume (which re-applies the stored model). Only an actual value —
+        // an explicit "Default" reset (null) or a concrete model — is worth
+        // communicating; the opts.model seed already reached the hub through
+        // bootstrap and stays on the session untouched.
+        if (currentModel !== undefined) {
+            active.setModel(currentModel)
+        }
         active.setPermissionMode(currentPermissionMode)
         active.pushKeepAlive()
     }
