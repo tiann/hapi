@@ -37,6 +37,13 @@ const now = Date.now()
 
 const sessions: SessionSummary[] = [
     makeSession({
+        id: 'session-detached-job',
+        active: false,
+        updatedAt: now - 60 * 60_000,
+        metadata: { path: '/work/hapi', name: 'Detached running job', flavor: 'codex' },
+        attachedJob: { key: 'batch', label: 'Batch job', status: 'running', remaining: 12, heartbeatAt: now, startedAt: now, updatedAt: now },
+    }),
+    makeSession({
         id: 'session-working',
         active: true,
         thinking: true,

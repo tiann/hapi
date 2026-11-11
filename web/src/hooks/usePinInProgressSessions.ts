@@ -129,7 +129,10 @@ export function usePinInProgressSessions(): {
         }
         window.addEventListener(PIN_CHANGED_EVENT, onLocalChange)
         window.addEventListener('storage', onStorage)
-        return () => window.removeEventListener('storage', onStorage)
+        return () => {
+            window.removeEventListener('storage', onStorage)
+            window.removeEventListener(PIN_CHANGED_EVENT, onLocalChange)
+        }
     }, [])
 
     const setPinInProgressMode = useCallback((value: PinInProgressMode) => {
