@@ -196,6 +196,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
         // so stamp them at merge time instead.
         const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but each repeated tick must still advance the
+        // keepalive-idle clock: feeding onAgentProgress the frozen
+        // first-snapshot timestamp lets an ACP call with thinking=false and
+        // no background task be marked idle despite fresh updates.
+        const progressAt = stored.updated ? Date.now() : msg.createdAt
         // The durable row already exists; replay must not be mistaken for
         // fresh agent progress or trigger another round of UI updates.
         if (wasStored) return
@@ -215,7 +221,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // tiann/hapi#1820: every stored message proves the agent is doing
         // something, so it refreshes the keepalive-idle clock. Only human
         // turns additionally bump `updatedAt` (list ordering).
-        onAgentProgress?.(sid, msg.createdAt)
+        onAgentProgress?.(sid, progressAt)
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
