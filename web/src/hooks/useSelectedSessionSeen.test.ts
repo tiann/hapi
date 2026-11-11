@@ -54,11 +54,17 @@ describe('rendered read receipt', () => {
     })
 
     it('hides output that arrives ahead of the rendered tail only while following it', async () => {
-        const view = viewport(false)
+        const view = viewport(true)
         const head = { id: 's', contentRevision: 4 }
         const { rerender, unmount } = renderHook(({ revision }: { revision?: number }) => useSelectedSessionSeen('s', revision, 0, view, content), {
             initialProps: { revision: 3 as number | undefined },
         })
+        expect(getUnreadSessionCount([head])).toBe(0)
+        view.current.scrollTop = 0
+        act(() => view.current.dispatchEvent(new Event('scroll')))
+        expect(getUnreadSessionCount([head])).toBe(1)
+        view.current.scrollTop = 100
+        act(() => view.current.dispatchEvent(new Event('scroll')))
         expect(getUnreadSessionCount([head])).toBe(0)
         rerender({ revision: undefined })
         expect(getUnreadSessionCount([head])).toBe(1)

@@ -31,9 +31,9 @@ export const INSPECT_PEER_TOOL_DESCRIPTION =
  * Shared across spawn_peer / ping_peer / inspect_peer descriptions.
  */
 export const PEER_IDENTITY_UUID_RULE =
-    'Never invent peer titles (upstream, orchestrator, nicknames). '
-    + 'Always copy [title](/sessions/<uuid>) from the handoff or inspect_peer / search_peers; '
-    + 'title is decoration - UUID is identity. Rename of a parent is a non-event.'
+    'Never invent peer titles. '
+    + 'Copy [title](/sessions/<uuid>) from the handoff or inspect_peer / search_peers - '
+    + 'UUID is identity; rename is a non-event.'
 
 /** MCP `spawn_peer` tool description. Remit is required; empty shell is failure. */
 export const SPAWN_PEER_TOOL_DESCRIPTION =
@@ -66,6 +66,10 @@ export const PEER_WAKE_PARAM_DESCRIPTION =
     'Resume the target if it is inactive. Default false: an inactive target is refused and no message is sent. ' +
     'Set true only when the user asked you to wake that peer or the work you hand off requires it to act; never for FYI, status, or done notes.'
 
+/** Zod `.describe` for ping_peer / spawn_peer `waitForReply`. */
+export const PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION =
+    'Post the peer\'s reply into this session when its turn ends (default false). End your turn after calling; do not poll.'
+
 /** Zod `.describe` for list_peers `includeInactive`. */
 export const LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION =
     'Also list inactive sessions (default false: active only). Inactive rows are history, not recipients.'
@@ -79,13 +83,14 @@ export const LIST_PEERS_TOOL_DESCRIPTION =
 
 /** Shared delivery guidance for the peer MCP schemas, descriptions, and prompts. */
 export const PEER_DELIVERY_MODE_DESCRIPTION =
-    'auto (default): steer an active Codex turn when steering is available; otherwise queue. ' +
-    'Auto currently queues for other agent flavors. Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
+    'auto (default): steer an active turn when the target supports steering and is ready; otherwise queue. Inactive peers require explicit wake=true and then receive a queued message. ' +
+    'Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
+    'If steering cannot be confirmed after acceptance, auto retains the same single accepted message without resending; accepted does not confirm consumption. ' +
     'queue: explicitly defer non-urgent updates that can wait instead of steering. ' +
     'steer: use for important, time-sensitive findings the peer needs to know now, not after finishing its current turn ' +
     '(e.g. a correction that invalidates its assumptions, a blocker, or a result that changes its next action). ' +
     'State why the finding matters now and what the peer should adjust. ' +
-    'Steer requires insertion into an active Claude, Pi, Codex, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
+    'Steer requires insertion into an active Claude, Pi, Codex, OpenCode, Antigravity, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
     'Steering does not abort the current turn or guarantee an immediate response. ' +
     'If send or steer is unconfirmed after submission, inspect the target before retrying; do not resend automatically.'
 
@@ -102,9 +107,9 @@ export const PING_PEER_TOOL_DESCRIPTION =
 
 /** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
-    'Target HAPI session id or unique id prefix (another session - not this chat). ' +
-    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context. ' +
-    'Do not pass invented titles or nicknames - UUID only.'
+    'Target HAPI session id or unique prefix (not this chat). ' +
+    'Prefer full UUID from [title](/sessions/<id>) or Copy-reference. ' +
+    'UUID only - no invented titles.'
 
 /**
  * Hub session ids have no dots. Reject dotted tails so source paths like

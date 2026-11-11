@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
-import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import { getReasoningStreamId, getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -68,11 +68,16 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
+// Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
+// (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
+    'jobsAcceptedFromSessionIds',
+    'jobsTransferredToSessionId',
+    'jobKeyRedirects',
     'promptTitle'
 ] as const
 
@@ -174,7 +179,23 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        // ACP agents re-emit one tool call under a stable callId for every
+        // state tick. When that callId is still live in the session tail, fold
+        // the tick into the call's existing row instead of appending another
+        // one, and broadcast the merged row under its original id/seq so
+        // clients upsert it in place. Peer CLIs in the session room dedupe
+        // that re-emit by message id, harmlessly: only user rows reach a
+        // consumer there (onUserMessage), agent rows do not.
+        const callId = getToolCallId(content)
+        const stored = callId !== null && !wasStored
+            ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
+            : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), updated: false }
+        const msg = stored.message
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but derived todo/team versions must strictly advance
+        // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
+        // so stamp them at merge time instead.
+        const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
         // The durable row already exists; replay must not be mistaken for
         // fresh agent progress or trigger another round of UI updates.
         if (wasStored) return
@@ -202,7 +223,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         const todos = extractTodoWriteTodosFromMessageContent(content)
         if (todos) {
-            const updated = store.sessions.setSessionTodos(sid, todos, msg.createdAt, session.namespace)
+            const updated = store.sessions.setSessionTodos(sid, todos, derivedAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 onWebappEvent?.({
@@ -224,7 +245,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             const existingSession = store.sessions.getSession(sid)
             const existingTeamState = existingSession?.teamState as import('@hapi/protocol/types').TeamState | null | undefined
             const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
-            const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
+            const updated = store.sessions.setSessionTeamState(sid, newTeamState, derivedAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 // Versioned clear: value null = TeamDelete. Consumers gate on

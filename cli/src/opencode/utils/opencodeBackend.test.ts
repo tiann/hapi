@@ -183,6 +183,14 @@ describe('createOpencodeBackend', () => {
         expect(calls[1]?.childSessionUpdates).toBeUndefined();
     });
 
+    it('advertises form elicitation only for v2', () => {
+        createOpencodeBackend({ cwd: '/tmp/x', majorVersion: 'v2' });
+        createOpencodeBackend({ cwd: '/tmp/x', majorVersion: 'v1' });
+        const calls = constructorCalls as unknown as Array<{ elicitationForm?: boolean }>;
+        expect(calls[0]?.elicitationForm).toBe(true);
+        expect(calls[1]?.elicitationForm).toBeUndefined();
+    });
+
     it('v2: defaults spawnCwd to the invoked cwd when opts.cwd is absent', () => {
         createOpencodeBackend({ majorVersion: 'v2' });
         const call = constructorCalls[0] as unknown as { spawnCwd?: string };

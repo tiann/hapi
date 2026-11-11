@@ -24,7 +24,7 @@ import app.hapi.data.push.PushType
  * Actions (contract v1, known types only):
  *  - `permission-request` → Allow / Deny → [NotificationActionReceiver] →
  *    expedited [PermissionActionWorker].
- *  - `ready` / `task-notification` → inline Reply (RemoteInput) →
+ *  - `ready` → inline Reply (RemoteInput) →
  *    [SendMessageWorker]; plus a mark-as-read style Dismiss.
  *
  * Unknown types / contract versions render title+body with tap-to-open only.
@@ -40,12 +40,10 @@ object PushNotifications {
 
     const val KEY_REMOTE_INPUT = "hapi_reply"
 
-    /** Severity accents per `hub/src/fcm/fcmService.ts` (blue/green/amber/red). */
+    /** Severity accents per `hub/src/fcm/fcmService.ts` (blue/amber). */
     private fun severityColor(severity: PushSeverity?): Int? = when (severity) {
         PushSeverity.INFO -> 0xFF3B82F6.toInt()
-        PushSeverity.SUCCESS -> 0xFF22C55E.toInt()
         PushSeverity.WARNING -> 0xFFF59E0B.toInt()
-        PushSeverity.ERROR -> 0xFFEF4444.toInt()
         null -> null
     }
 
@@ -63,7 +61,7 @@ object PushNotifications {
         if (payload.supportsActions) {
             when (payload.type) {
                 PushType.PERMISSION_REQUEST -> addPermissionActions(context, builder, payload)
-                PushType.READY, PushType.TASK_NOTIFICATION -> addReplyActions(context, builder, payload)
+                PushType.READY -> addReplyActions(context, builder, payload)
                 PushType.INPUT_REQUEST, null -> Unit
             }
         }
