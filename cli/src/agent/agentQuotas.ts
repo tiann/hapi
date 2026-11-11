@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type {
@@ -186,16 +186,12 @@ type PersistedLiveQuotaState = {
     claudeBuckets?: Record<string, LiveClaudeBucketRecord>
     agyTierLabel?: string | null
     agyUpdatedAt?: number
-    probedClaudeAccountKey?: string | null
 }
-
-const DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY = 'default-unprobed'
 
 let cachedResponse: { startedAt: number; expiresAt: number; response: AgentQuotasResponse } | null = null
 let inflightPromise: Promise<AgentQuotasResponse> | null = null
 const liveClaudeBuckets = new Map<string, LiveClaudeBucketRecord>()
 let liveAgyTierLabel: string | null = null
-let liveProbedClaudeAccountKey: string | null = null
 
 function shortHash(value: string): string {
     return createHash('sha256').update(value).digest('hex').slice(0, 16)
@@ -231,13 +227,34 @@ export function resolveClaudeEnvCredentialKey(env: NodeJS.ProcessEnv = process.e
     return `cred:${shortHash(token)}`
 }
 
+function normalizeClaudeAccountKey(rawIdentity: string | null | undefined): string | null {
+    const trimmed = asNonEmptyString(rawIdentity)
+    if (!trimmed) return null
+    const lower = trimmed.toLowerCase()
+    if (
+        lower.startsWith('acct:')
+        || lower.startsWith('cred:')
+        || lower.startsWith('url:')
+        || lower.startsWith('org:')
+        || lower.startsWith('auth:')
+    ) {
+        return lower
+    }
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+        return `url:${lower}`
+    }
+    return `acct:${lower}`
+}
+
 function readClaudeConfigAccountKey(env: NodeJS.ProcessEnv = process.env): string | null {
     const configDir = asNonEmptyString(env.CLAUDE_CONFIG_DIR)
+    const home = asNonEmptyString(env.HOME) ?? (env.VITEST === 'true' ? null : homedir())
     const candidates: string[] = []
     if (configDir) {
         candidates.push(join(configDir, '.claude.json'))
-    } else if (asNonEmptyString(env.HOME) && !asNonEmptyString(env.HAPI_HOME)) {
-        candidates.push(join(env.HOME!, '.claude.json'))
+    }
+    if (home) {
+        candidates.push(join(home, '.claude.json'))
     }
     for (const filePath of candidates) {
         if (!existsSync(filePath)) continue
@@ -256,22 +273,19 @@ function readClaudeConfigAccountKey(env: NodeJS.ProcessEnv = process.env): strin
     return null
 }
 
-function resolveSessionClaudeAccountKey(
+export function resolveClaudeSessionAccountKey(
     env: NodeJS.ProcessEnv = process.env,
     explicitIdentity?: string | null
-): string {
-    const explicit = asNonEmptyString(explicitIdentity)
-    if (explicit) {
-        return explicit.includes(':') ? explicit.toLowerCase() : `acct:${explicit.toLowerCase()}`
-    }
+): string | null {
+    const explicit = normalizeClaudeAccountKey(explicitIdentity)
+    if (explicit) return explicit
     const envCredKey = resolveClaudeEnvCredentialKey(env)
     if (envCredKey) return envCredKey
     const configKey = readClaudeConfigAccountKey(env)
     if (configKey) return configKey
     const baseUrl = asNonEmptyString(env.ANTHROPIC_BASE_URL)
     if (baseUrl) return `url:${baseUrl.toLowerCase()}`
-    const persistedProbed = readPersistedLiveQuotaState(env).probedClaudeAccountKey
-    return liveProbedClaudeAccountKey ?? persistedProbed ?? DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY
+    return null
 }
 
 function claudeBucketCompositeKey(accountKey: string, rateLimitType: string): string {
@@ -282,7 +296,7 @@ function claudeBucketFileName(accountKey: string, rateLimitType: string): string
     return `claude-bucket-${shortHash(accountKey)}-${sanitizeKeySegment(rateLimitType)}.json`
 }
 
-function parsePersistedClaudeBucket(raw: unknown, fallbackAccountKey?: string, fallbackRateLimitType?: string): LiveClaudeBucketRecord | null {
+function parsePersistedClaudeBucket(raw: unknown): LiveClaudeBucketRecord | null {
     const entry = asRecord(raw)
     if (!entry) return null
     const id = asNonEmptyString(entry.id)
@@ -290,9 +304,11 @@ function parsePersistedClaudeBucket(raw: unknown, fallbackAccountKey?: string, f
     const usedPercent = asFiniteNumber(entry.usedPercent)
     const remainingPercent = asFiniteNumber(entry.remainingPercent)
     const updatedAt = asFiniteNumber(entry.updatedAt)
-    if (!id || !label || usedPercent === null || remainingPercent === null || updatedAt === null) return null
-    const accountKey = asNonEmptyString(entry.accountKey) ?? fallbackAccountKey ?? DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY
-    const rateLimitType = asNonEmptyString(entry.rateLimitType) ?? fallbackRateLimitType ?? id.replace(/^claude-/, '')
+    const accountKey = normalizeClaudeAccountKey(asNonEmptyString(entry.accountKey))
+    if (!id || !label || usedPercent === null || remainingPercent === null || updatedAt === null || !accountKey) {
+        return null
+    }
+    const rateLimitType = asNonEmptyString(entry.rateLimitType) ?? id.replace(/^claude-/, '')
     return {
         id,
         label,
@@ -309,42 +325,12 @@ function parsePersistedClaudeBucket(raw: unknown, fallbackAccountKey?: string, f
 
 function readPersistedLiveQuotaState(env: NodeJS.ProcessEnv = process.env): PersistedLiveQuotaState {
     const dirPath = resolveLiveQuotaStateDir(env)
-    if (!dirPath) return {}
+    if (!dirPath || !existsSync(dirPath)) return {}
 
     let codexUpdatedAt: number | undefined
     let agyTierLabel: string | null = null
     let agyUpdatedAt: number | undefined
-    let probedClaudeAccountKey: string | null = null
     const claudeBuckets: Record<string, LiveClaudeBucketRecord> = {}
-
-    // Support both per-observation files in agent-quotas-live/ and legacy agent-quotas-live.json
-    const legacyFile = `${dirPath}.json`
-    if (existsSync(legacyFile)) {
-        try {
-            const parsed = asRecord(JSON.parse(readFileSync(legacyFile, 'utf8')))
-            if (parsed) {
-                const legacyCodex = asFiniteNumber(parsed.codexUpdatedAt)
-                if (legacyCodex !== null) codexUpdatedAt = legacyCodex
-                const legacyAgy = asNonEmptyString(parsed.agyTierLabel)
-                if (legacyAgy) agyTierLabel = legacyAgy
-                const rawBuckets = asRecord(parsed.claudeBuckets)
-                if (rawBuckets) {
-                    for (const [key, val] of Object.entries(rawBuckets)) {
-                        const bucket = parsePersistedClaudeBucket(val, DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY, key)
-                        if (bucket) {
-                            claudeBuckets[claudeBucketCompositeKey(bucket.accountKey, bucket.rateLimitType)] = bucket
-                        }
-                    }
-                }
-            }
-        } catch {
-            // Ignore malformed legacy file
-        }
-    }
-
-    if (!existsSync(dirPath)) {
-        return { codexUpdatedAt, claudeBuckets, agyTierLabel, agyUpdatedAt, probedClaudeAccountKey }
-    }
 
     try {
         const files = readdirSync(dirPath)
@@ -366,9 +352,6 @@ function readPersistedLiveQuotaState(env: NodeJS.ProcessEnv = process.env): Pers
                         agyTierLabel = tier
                         agyUpdatedAt = ts
                     }
-                } else if (name === 'claude-account.json') {
-                    const acct = asNonEmptyString(parsed.accountKey)
-                    if (acct) probedClaudeAccountKey = acct
                 } else if (name.startsWith('claude-bucket-')) {
                     const bucket = parsePersistedClaudeBucket(parsed)
                     if (bucket) {
@@ -387,7 +370,7 @@ function readPersistedLiveQuotaState(env: NodeJS.ProcessEnv = process.env): Pers
         // Ignore directory read errors
     }
 
-    return { codexUpdatedAt, claudeBuckets, agyTierLabel, agyUpdatedAt, probedClaudeAccountKey }
+    return { codexUpdatedAt, claudeBuckets, agyTierLabel, agyUpdatedAt }
 }
 
 function getLatestLiveQuotaUpdateAt(env: NodeJS.ProcessEnv = process.env): number {
@@ -437,7 +420,11 @@ export function recordClaudeRateLimitEvent(
     const explicitAccount = accountIdentity
         ?? asNonEmptyString(record.accountEmail)
         ?? asNonEmptyString(record.email)
-    const accountKey = resolveSessionClaudeAccountKey(env, explicitAccount)
+    const accountKey = resolveClaudeSessionAccountKey(env, explicitAccount)
+    cachedResponse = null
+    if (!accountKey) {
+        return
+    }
     const compKey = claudeBucketCompositeKey(accountKey, rateLimitType)
 
     const existingInMemory = liveClaudeBuckets.get(compKey)
@@ -958,60 +945,15 @@ function computeProbedClaudeAccountKey(params: {
     return null
 }
 
-function bindProbedClaudeAccount(env: NodeJS.ProcessEnv, probedAccountKey: string): void {
-    if (resolveClaudeEnvCredentialKey(env)) {
-        return
-    }
-    const persisted = readPersistedLiveQuotaState(env)
-    const previousProbed = liveProbedClaudeAccountKey ?? persisted.probedClaudeAccountKey ?? null
-    const dirPath = resolveLiveQuotaStateDir(env)
-
-    // Only promote unprobed default-credential observations on the very first probe before an account was known.
-    if (!previousProbed && probedAccountKey !== DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY) {
-        const allEntries = new Map<string, LiveClaudeBucketRecord>()
-        if (persisted.claudeBuckets) {
-            for (const [k, v] of Object.entries(persisted.claudeBuckets)) {
-                allEntries.set(k, v)
-            }
-        }
-        for (const [k, v] of liveClaudeBuckets.entries()) {
-            allEntries.set(k, v)
-        }
-        for (const [compKey, entry] of allEntries.entries()) {
-            if (entry.accountKey !== DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY) continue
-            const promoted: LiveClaudeBucketRecord = {
-                ...entry,
-                accountKey: probedAccountKey
-            }
-            const newCompKey = claudeBucketCompositeKey(probedAccountKey, entry.rateLimitType)
-            liveClaudeBuckets.delete(compKey)
-            liveClaudeBuckets.set(newCompKey, promoted)
-            if (dirPath) {
-                writeAtomicJsonFile(join(dirPath, claudeBucketFileName(probedAccountKey, entry.rateLimitType)), promoted)
-                try {
-                    unlinkSync(join(dirPath, claudeBucketFileName(DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY, entry.rateLimitType)))
-                } catch {
-                    // Ignore if file was only in memory
-                }
-            }
-        }
-    }
-
-    liveProbedClaudeAccountKey = probedAccountKey
-    if (dirPath) {
-        writeAtomicJsonFile(join(dirPath, 'claude-account.json'), {
-            accountKey: probedAccountKey,
-            updatedAt: Date.now()
-        })
-    }
-}
-
 export function getActiveClaudeBuckets(
     env: NodeJS.ProcessEnv = process.env,
     allowedAccountKeys?: ReadonlySet<string>
 ): AgentQuotaBucket[] {
     const now = Date.now()
-    const effectiveAllowed = allowedAccountKeys ?? new Set([resolveSessionClaudeAccountKey(env)])
+    const defaultSessionKey = resolveClaudeSessionAccountKey(env)
+    const effectiveAllowed = allowedAccountKeys
+        ?? (defaultSessionKey ? new Set([defaultSessionKey]) : new Set<string>())
+    if (effectiveAllowed.size === 0) return []
     const byRateLimitType = new Map<string, LiveClaudeBucketRecord>()
     const persisted = readPersistedLiveQuotaState(env)
 
@@ -1124,15 +1066,11 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
         })
         const allowedKeys = new Set<string>()
         if (probedAccountKey) {
-            bindProbedClaudeAccount(env, probedAccountKey)
             allowedKeys.add(probedAccountKey)
         }
         const envCredKey = resolveClaudeEnvCredentialKey(env)
         if (envCredKey) {
             allowedKeys.add(envCredKey)
-        }
-        if (allowedKeys.size === 0) {
-            allowedKeys.add(resolveSessionClaudeAccountKey(env))
         }
 
         const buckets = getActiveClaudeBuckets(env, allowedKeys)
@@ -1238,6 +1176,5 @@ export function _resetAgentQuotasCacheForTests(): void {
     inflightPromise = null
     liveClaudeBuckets.clear()
     liveAgyTierLabel = null
-    liveProbedClaudeAccountKey = null
     claudeStatusProbeOverrideForTests = null
 }

@@ -197,6 +197,42 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
+     * Query the running Claude process for its authenticated account/provider identity.
+     */
+    async getAccountIdentity(): Promise<string | null> {
+        if (!this.childStdin) {
+            throw new Error('getAccountIdentity requires --input-format stream-json')
+        }
+
+        const response = await this.request({
+            subtype: 'initialize'
+        } as unknown as ControlRequest, this.childStdin) as {
+            response?: {
+                account?: {
+                    email?: string
+                    tokenSource?: string
+                    apiProvider?: string
+                }
+            }
+        }
+        const account = response.response?.account
+        if (typeof account?.email === 'string' && account.email.trim()) {
+            return `acct:${account.email.trim().toLowerCase()}`
+        }
+        if (typeof account?.tokenSource === 'string' && account.tokenSource.trim()) {
+            return `auth:${account.tokenSource.trim().toLowerCase()}`
+        }
+        if (
+            typeof account?.apiProvider === 'string'
+            && account.apiProvider.trim()
+            && account.apiProvider !== 'firstParty'
+        ) {
+            return `auth:${account.apiProvider.trim().toLowerCase()}`
+        }
+        return null
+    }
+
+    /**
      * Change Claude's native permission mode without restarting the process
      */
     async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {

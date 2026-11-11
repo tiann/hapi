@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -315,20 +315,34 @@ describe('agentQuotas parsers and probes', () => {
         expect(claude.status).toBe('unavailable')
     })
 
-    it('shares live quota observations across process boundaries, isolates session credentials, and clears on account switch', async () => {
+    it('shares live quota observations across process boundaries, isolates session credentials, and binds to the producing session account across switches', async () => {
         const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-live-quotas-'))
         try {
-            const runnerEnv = { HAPI_HOME: hapiHome }
+            const runnerEnv = { HOME: hapiHome, HAPI_HOME: hapiHome }
             const resetSec = Math.floor(Date.now() / 1000) + 3600
 
-            // 1. Separate OS child process (default credentials) records a five_hour observation
+            // Write HOME/.claude.json for userA while HAPI_HOME is also configured
+            writeFileSync(
+                join(hapiHome, '.claude.json'),
+                JSON.stringify({ oauthAccount: { emailAddress: 'userA@example.com' } }),
+                'utf8'
+            )
+
+            // 1. Separate OS child process (default credentials) records a five_hour observation via SDKToLogConverter
             const childScript = `
-                import { recordClaudeRateLimitEvent } from './src/agent/agentQuotas.ts';
-                recordClaudeRateLimitEvent({
-                    status: 'allowed',
-                    rateLimitType: 'five_hour',
-                    utilization: 0.4,
-                    resetsAt: ${resetSec}
+                import { SDKToLogConverter } from './src/claude/utils/sdkToLogConverter.ts';
+                const converter = new SDKToLogConverter({
+                    sessionId: 'session-a',
+                    cwd: process.cwd()
+                });
+                converter.convert({
+                    type: 'rate_limit_event',
+                    rate_limit_info: {
+                        status: 'allowed',
+                        rateLimitType: 'five_hour',
+                        utilization: 0.4,
+                        resetsAt: ${resetSec}
+                    }
                 });
             `
             const childRes = spawnSync('bun', ['-e', childScript], {
@@ -387,7 +401,33 @@ describe('agentQuotas parsers and probes', () => {
             expect(claudeFirst?.buckets[0]?.usedPercent).toBe(40)
             expect(claudeFirst?.buckets[0]?.remainingPercent).toBe(60)
 
-            // 3. Switch machine default Claude account to userB@example.com (including across runner restart)
+            // 3. Switch machine default Claude account to userB@example.com while a userA session is still running
+            const lateSessionAScript = `
+                import { writeFileSync } from 'node:fs';
+                import { join } from 'node:path';
+                import { SDKToLogConverter } from './src/claude/utils/sdkToLogConverter.ts';
+                // Session A starts while HOME/.claude.json is still userA@example.com
+                const converterA = new SDKToLogConverter({
+                    sessionId: 'session-a-long-running',
+                    cwd: process.cwd()
+                });
+                // Host config then switches to userB@example.com
+                writeFileSync(
+                    join(process.env.HOME, '.claude.json'),
+                    JSON.stringify({ oauthAccount: { emailAddress: 'userB@example.com' } }),
+                    'utf8'
+                );
+                // Session A emits a new event after the switch; it must stay bound to userA
+                converterA.convert({
+                    type: 'rate_limit_event',
+                    rate_limit_info: {
+                        status: 'allowed',
+                        rateLimitType: 'five_hour',
+                        utilization: 0.75,
+                        resetsAt: ${resetSec}
+                    }
+                });
+            `
             _resetAgentQuotasCacheForTests()
             vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
                 agent,
@@ -401,35 +441,96 @@ describe('agentQuotas parsers and probes', () => {
                 ])
             }))
 
-            const afterSwitch = await probeClaudeQuota(runnerEnv)
-            expect(afterSwitch.accountLabel).toBe('userB@example.com')
-            expect(afterSwitch.buckets).toEqual([])
+            // Runner probes userB first
+            const beforeLateEvent = await probeClaudeQuota(runnerEnv)
+            expect(beforeLateEvent.accountLabel).toBe('userB@example.com')
+            expect(beforeLateEvent.buckets).toEqual([])
+
+            // Then the still-running userA session emits its late event after runner probed userB
+            const lateRes = spawnSync('bun', ['-e', lateSessionAScript], {
+                cwd: process.cwd(),
+                env: {
+                    PATH: process.env.PATH,
+                    HOME: hapiHome,
+                    HAPI_HOME: hapiHome
+                },
+                encoding: 'utf8'
+            })
+            expect(lateRes.status).toBe(0)
+
+            // Probing userB still must NOT inherit session A's late event
+            const afterLateEventB = await probeClaudeQuota(runnerEnv)
+            expect(afterLateEventB.accountLabel).toBe('userB@example.com')
+            expect(afterLateEventB.buckets).toEqual([])
+
+            // Probing userA sees the updated 75% bucket
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userA@example.com', subscriptionType: 'Claude Max' },
+                statusRows: new Map([
+                    ['Email', 'userA@example.com'],
+                    ['Login method', 'Claude Max Account']
+                ])
+            }))
+            const afterLateEventA = await probeClaudeQuota(runnerEnv)
+            expect(afterLateEventA.accountLabel).toBe('userA@example.com')
+            expect(afterLateEventA.buckets).toHaveLength(1)
+            expect(afterLateEventA.buckets[0]?.usedPercent).toBe(75)
         } finally {
             rmSync(hapiHome, { recursive: true, force: true })
         }
     })
 
-    it('preserves concurrent live quota writes across Codex, Antigravity, and multiple Claude windows', async () => {
+    it('preserves concurrent live quota writes across simultaneous OS processes', async () => {
         const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-concurrent-quotas-'))
         try {
             const env = { HAPI_HOME: hapiHome }
             const resetSec = Math.floor(Date.now() / 1000) + 3600
 
+            const runChildProcess = (script: string): Promise<void> =>
+                new Promise((resolve, reject) => {
+                    const child = spawn('bun', ['-e', script], {
+                        cwd: process.cwd(),
+                        env: {
+                            PATH: process.env.PATH,
+                            HOME: hapiHome,
+                            HAPI_HOME: hapiHome
+                        },
+                        stdio: 'ignore'
+                    })
+                    child.on('error', reject)
+                    child.on('close', (code) => {
+                        if (code === 0) resolve()
+                        else reject(new Error(`Child exited with code ${code}`))
+                    })
+                })
+
             await Promise.all([
-                Promise.resolve().then(() => recordCodexRateLimitsUpdate({ rateLimits: {} }, env)),
-                Promise.resolve().then(() => recordAgyTier('Google AI Ultra', env)),
-                Promise.resolve().then(() => recordClaudeRateLimitEvent({
-                    status: 'allowed',
-                    rateLimitType: 'five_hour',
-                    utilization: 0.25,
-                    resetsAt: resetSec
-                }, env, 'userA@example.com')),
-                Promise.resolve().then(() => recordClaudeRateLimitEvent({
-                    status: 'allowed',
-                    rateLimitType: 'seven_day',
-                    utilization: 0.5,
-                    resetsAt: resetSec + 86400
-                }, env, 'userA@example.com'))
+                runChildProcess(`
+                    import { recordCodexRateLimitsUpdate } from './src/agent/agentQuotas.ts';
+                    recordCodexRateLimitsUpdate({ rateLimits: {} });
+                `),
+                runChildProcess(`
+                    import { recordAgyTier } from './src/agent/agentQuotas.ts';
+                    recordAgyTier('Google AI Ultra');
+                `),
+                runChildProcess(`
+                    import { recordClaudeRateLimitEvent } from './src/agent/agentQuotas.ts';
+                    recordClaudeRateLimitEvent({
+                        status: 'allowed',
+                        rateLimitType: 'five_hour',
+                        utilization: 0.25,
+                        resetsAt: ${resetSec}
+                    }, process.env, 'userA@example.com');
+                `),
+                runChildProcess(`
+                    import { recordClaudeRateLimitEvent } from './src/agent/agentQuotas.ts';
+                    recordClaudeRateLimitEvent({
+                        status: 'allowed',
+                        rateLimitType: 'seven_day',
+                        utilization: 0.5,
+                        resetsAt: ${resetSec + 86400}
+                    }, process.env, 'userA@example.com');
+                `)
             ])
 
             _resetAgentQuotasCacheForTests()

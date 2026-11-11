@@ -497,4 +497,22 @@ describe('responsive settings pages', () => {
             expect(getUsageQuotas).toHaveBeenCalledWith(true)
         })
     })
+
+    it('renders quota errors instead of the empty state and preserves existing quota cards when refresh fails', async () => {
+        getUsageQuotas.mockRejectedValueOnce(new Error('Quota endpoint unreachable'))
+        const firstRender = renderPage(<SettingsUsagePage />)
+
+        expect(await screen.findByText('Quota endpoint unreachable')).toBeInTheDocument()
+        expect(screen.queryByText('No online machines with installed CLI accounts')).not.toBeInTheDocument()
+        firstRender.unmount()
+
+        renderPage(<SettingsUsagePage />)
+        expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+
+        getUsageQuotas.mockRejectedValueOnce(new Error('Refresh quota timeout'))
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh quotas' }))
+
+        expect(await screen.findByText('Refresh quota timeout')).toBeInTheDocument()
+        expect(screen.getByText('dev@example.com')).toBeInTheDocument()
+    })
 })

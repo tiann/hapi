@@ -163,6 +163,7 @@ export default function SettingsUsagePage() {
     const [range, setRange] = useState<UsageRange>('7d')
     const [timeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
     const [isRefreshingQuotas, setIsRefreshingQuotas] = useState(false)
+    const [refreshQuotasError, setRefreshQuotasError] = useState<string | null>(null)
 
     const query = useQuery({
         queryKey: queryKeys.usageSummary(range, timeZone),
@@ -180,6 +181,7 @@ export default function SettingsUsagePage() {
         queryKey: queryKeys.usageQuotas,
         queryFn: async () => {
             if (!api) throw new Error('API unavailable')
+            setRefreshQuotasError(null)
             return await api.getUsageQuotas(false)
         },
         enabled: Boolean(api),
@@ -191,15 +193,19 @@ export default function SettingsUsagePage() {
     const handleRefreshQuotas = async () => {
         if (!api || isRefreshingQuotas) return
         setIsRefreshingQuotas(true)
+        setRefreshQuotasError(null)
         try {
             const fresh = await api.getUsageQuotas(true)
             queryClient.setQueryData(queryKeys.usageQuotas, fresh)
-        } catch {
-            void quotasQuery.refetch()
+        } catch (error) {
+            setRefreshQuotasError(error instanceof Error ? error.message : String(error))
         } finally {
             setIsRefreshingQuotas(false)
         }
     }
+
+    const quotaErrorMessage = refreshQuotasError
+        ?? (quotasQuery.error ? (quotasQuery.error instanceof Error ? quotasQuery.error.message : String(quotasQuery.error)) : null)
 
     const visibleQuotaItems = useMemo(() => {
         const machines = quotasQuery.data?.machines ?? []
@@ -266,12 +272,20 @@ export default function SettingsUsagePage() {
                     </button>
                 </div>
                 <div className="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm divide-y divide-[var(--app-divider)]">
+                    {quotaErrorMessage ? (
+                        <SettingsRow
+                            label={t('settings.usage.quotas.status.error')}
+                            description={quotaErrorMessage}
+                        />
+                    ) : null}
                     {quotasQuery.isLoading ? (
                         <SettingsRow label={t('settings.usage.quotas.loading')} />
                     ) : visibleQuotaItems.length === 0 ? (
-                        <div className="px-3 py-4 text-sm text-[var(--app-hint)]">
-                            {t('settings.usage.quotas.empty')}
-                        </div>
+                        quotaErrorMessage ? null : (
+                            <div className="px-3 py-4 text-sm text-[var(--app-hint)]">
+                                {t('settings.usage.quotas.empty')}
+                            </div>
+                        )
                     ) : (
                         visibleQuotaItems.map((item) => (
                             item.kind === 'machine-error' ? (

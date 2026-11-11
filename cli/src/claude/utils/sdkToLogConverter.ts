@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
-import { recordClaudeRateLimitEvent } from '@/agent/agentQuotas'
+import { recordClaudeRateLimitEvent, resolveClaudeSessionAccountKey } from '@/agent/agentQuotas'
 import type {
     SDKMessage,
     SDKUserMessage,
@@ -56,6 +56,7 @@ export interface ConversionContext {
     // the only turn-1 signal that such a session is 1M. Used only to seed the very first
     // contextWindow estimate before result.modelUsage confirms the real value.
     selectedModel?: string | null
+    accountIdentity?: string | null
 }
 
 type PermissionResponse = {
@@ -109,6 +110,7 @@ export class SDKToLogConverter {
     // window (capped by DISABLE_1M / autoCompactWindow), so a result's raw contextWindow
     // must not overwrite it.
     private contextUsageKeys = new Set<string>()
+    private accountIdentity: string | null
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -121,6 +123,7 @@ export class SDKToLogConverter {
             parentUuid: null
         }
         this.responses = responses
+        this.accountIdentity = resolveClaudeSessionAccountKey(process.env, context.accountIdentity)
     }
 
     /**
@@ -193,6 +196,17 @@ export class SDKToLogConverter {
     }
 
     /**
+     * Bind the session's verified Claude account/provider identity so all subsequent
+     * rate_limit_event observations from this session stay attributed to its account.
+     */
+    updateAccountIdentity(accountIdentity: string | null | undefined): void {
+        const resolved = resolveClaudeSessionAccountKey(process.env, accountIdentity)
+        if (resolved) {
+            this.accountIdentity = resolved
+        }
+    }
+
+    /**
      * Reset parent chain (useful when starting new conversation)
      */
     resetParentChain(): void {
@@ -209,7 +223,7 @@ export class SDKToLogConverter {
         const info = (sdkMessage as any).rate_limit_info
         if (typeof info !== 'object' || info === null) return null
 
-        recordClaudeRateLimitEvent(info)
+        recordClaudeRateLimitEvent(info, process.env, this.accountIdentity)
 
         const { status, resetsAt, utilization, rateLimitType } = info
 
@@ -385,6 +399,18 @@ export class SDKToLogConverter {
                 // System messages with subtype 'init' might update session ID
                 if (systemMsg.subtype === 'init' && systemMsg.session_id) {
                     this.updateSessionId(systemMsg.session_id)
+                }
+
+                if (systemMsg.subtype === 'init') {
+                    const initAccount = (systemMsg as unknown as { account?: { email?: unknown }; email?: unknown }).account
+                    const initEmail = typeof initAccount?.email === 'string'
+                        ? initAccount.email
+                        : typeof (systemMsg as unknown as { email?: unknown }).email === 'string'
+                            ? (systemMsg as unknown as { email: string }).email
+                            : null
+                    if (initEmail) {
+                        this.updateAccountIdentity(initEmail)
+                    }
                 }
 
                 // Capture the resolved model name on init. The remote launcher re-emits
