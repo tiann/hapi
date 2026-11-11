@@ -712,11 +712,11 @@ describe('filterScratchlistSessionsOnly', () => {
     })
 })
 describe('filterWorkingSessionsOnly', () => {
-    it('keeps thinking sessions and sessions with a running background task', () => {
+    it('keeps connected thinking sessions and sessions with a running background task', () => {
         const sessions = [
-            makeSession({ id: 'thinking', thinking: true, metadata: { path: '/p' } }),
-            makeSession({ id: 'background-job', backgroundTaskCount: 1, metadata: { path: '/p' } }),
-            makeSession({ id: 'idle', metadata: { path: '/p' } }),
+            makeSession({ id: 'thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'background-job', active: true, backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'idle', active: true, metadata: { path: '/p' } }),
         ]
 
         expect(filterWorkingSessionsOnly(sessions).map(s => s.id).sort())
@@ -725,12 +725,23 @@ describe('filterWorkingSessionsOnly', () => {
 
     it('keeps the selected session visible even when idle', () => {
         const sessions = [
-            makeSession({ id: 'thinking', thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'thinking', active: true, thinking: true, metadata: { path: '/p' } }),
             makeSession({ id: 'selected-idle', metadata: { path: '/p' } }),
         ]
 
         expect(filterWorkingSessionsOnly(sessions, 'selected-idle').map(s => s.id).sort())
             .toEqual(['selected-idle', 'thinking'])
+    })
+
+    it('excludes a disconnected session with stale thinking/backgroundTaskCount data', () => {
+        const sessions = [
+            makeSession({ id: 'disconnected-stale-thinking', active: false, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'disconnected-stale-job', active: false, backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'connected-thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions).map(s => s.id))
+            .toEqual(['connected-thinking'])
     })
 })
 describe('getNextSessionVisibleCount', () => {

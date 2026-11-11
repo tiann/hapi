@@ -496,11 +496,12 @@ describe('SessionList session filter menu', () => {
         })
     })
 
-    it('filters to thinking or background-task sessions with Working only (#2002)', () => {
+    it('filters to connected thinking or background-task sessions with Working only (#2002)', () => {
         renderSessionList([
-            makeSession({ id: 'working-thinking', thinking: true, metadata: { path: '/work/thinking', name: 'Thinking session' } }),
-            makeSession({ id: 'working-job', backgroundTaskCount: 1, metadata: { path: '/work/job', name: 'Background job session' } }),
-            makeSession({ id: 'idle-session', metadata: { path: '/work/idle', name: 'Idle session' } })
+            makeSession({ id: 'working-thinking', active: true, thinking: true, metadata: { path: '/work/thinking', name: 'Thinking session' } }),
+            makeSession({ id: 'working-job', active: true, backgroundTaskCount: 1, metadata: { path: '/work/job', name: 'Background job session' } }),
+            makeSession({ id: 'idle-session', active: true, metadata: { path: '/work/idle', name: 'Idle session' } }),
+            makeSession({ id: 'disconnected-stale', active: false, thinking: true, metadata: { path: '/work/disconnected', name: 'Disconnected stale session' } })
         ])
 
         fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
@@ -509,6 +510,7 @@ describe('SessionList session filter menu', () => {
         expect(screen.getByTitle('/work/thinking')).toBeTruthy()
         expect(screen.getByTitle('/work/job')).toBeTruthy()
         expect(screen.queryByTitle('/work/idle')).toBeNull()
+        expect(screen.queryByTitle('/work/disconnected')).toBeNull()
     })
 
     it('keeps the existing unread filter behavior behind the unified menu', () => {
