@@ -1038,8 +1038,8 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
     }
 
     try {
-        const executable = getDefaultClaudeCodePath(env)
         const probeRunner = claudeStatusProbeOverrideForTests ?? runClaudeStatusProbe
+        const executable = claudeStatusProbeOverrideForTests ? 'claude' : getDefaultClaudeCodePath(env)
         const probe = await probeRunner(executable, env)
         const rows = probe.statusRows
         const account = probe.account
