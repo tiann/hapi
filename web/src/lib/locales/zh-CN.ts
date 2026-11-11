@@ -334,6 +334,8 @@ export default {
   'session.action.copy': '复制',
   'session.action.copyReference': '复制引用',
   'session.action.fork': '分叉会话',
+  'session.action.forkNoCompleted': '暂无已完成轮次可分叉。',
+  'dialog.sessionFork.completedDescription': '分叉到最后一个已完成轮次，不包含正在进行的轮次，原会话继续运行。',
   'session.action.forkRunning': '当前轮次完成后才能分叉此会话。',
 
   // Dialogs
