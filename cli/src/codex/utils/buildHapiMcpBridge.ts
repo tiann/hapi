@@ -119,9 +119,11 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    // Prompt — not approve: link_pr mutates session metadata. Native
+    // pre-approval would bypass BasePermissionHandler's read-only guard.
     if (happyServer.toolNames.includes('link_pr')) {
         tools.link_pr = {
-            approval_mode: 'approve'
+            approval_mode: 'prompt'
         };
     }
 

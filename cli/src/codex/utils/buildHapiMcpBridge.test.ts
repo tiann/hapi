@@ -79,7 +79,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
-            link_pr: { approval_mode: 'approve' },
+            link_pr: { approval_mode: 'prompt' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
@@ -88,6 +88,13 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             session_job: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
         })
+    })
+
+    it('prompts for link_pr so read-only mode still consults the permission handler', async () => {
+        const bridge = await buildHapiMcpBridge(createClient())
+
+        expect(bridge.mcpServers.hapi.tools.link_pr).toEqual({ approval_mode: 'prompt' })
+        expect(bridge.mcpServers.hapi.tools.change_title).toEqual({ approval_mode: 'approve' })
     })
 
     it('does not expose skill_lookup for native-skill bridge callers', async () => {
@@ -103,7 +110,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
-            link_pr: { approval_mode: 'approve' },
+            link_pr: { approval_mode: 'prompt' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
