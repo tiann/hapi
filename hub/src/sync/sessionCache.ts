@@ -1969,16 +1969,14 @@ export class SessionCache {
                 if (this.sessions.get(oldSessionId)?.active) {
                     throw new Error('Cannot merge a session that became active')
                 }
-                const moved = this.store.runInTransaction(() => {
-                    this.transferAttachedJobs(oldSessionId, newSessionId, namespace)
-                    return this.store.mergeSessionMessagesAndAttachmentsAndDeleteSession(
+                this.transferAttachedJobs(oldSessionId, newSessionId, namespace)
+                const moved = this.store.mergeSessionMessagesAndAttachmentsAndDeleteSession(
                     namespace,
                     oldSessionId,
                     newSessionId,
                     preparedScratchlistAttachments,
                     scratchlistSnapshot
-                    )
-                })
+                )
                 this.syncReadState(newSessionId)
                 committed = true
                 if (moved.moved > 0) {

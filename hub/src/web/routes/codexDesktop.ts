@@ -1459,20 +1459,18 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             const latestSourceMetadata = latestSource?.metadata as { codexResumePending?: unknown } | undefined
             if (latestSourceMetadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
 
-            const copiedMessages = options.store.runInTransaction(() => {
-                if (engine) {
-                    engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
-                } else if (options.store.sessionJobs.list(source.sessionId).length > 0) {
-                    throw new Error('Cannot persist attached-job redirects without SyncEngine')
-                }
-                return options.store.commitDuplicateSessionMerge({
+            if (engine) {
+                engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
+            } else if (options.store.sessionJobs.list(source.sessionId).length > 0) {
+                throw new Error('Cannot persist attached-job redirects without SyncEngine')
+            }
+            const copiedMessages = options.store.commitDuplicateSessionMerge({
                 namespace: options.namespace,
                 sourceSessionId: source.sessionId,
                 targetSessionId: canonical.sessionId,
                 sourceMessageIds: sourceMessages.map((message) => message.id),
                 updates,
                 inserts
-                })
             })
             committed = true
 
