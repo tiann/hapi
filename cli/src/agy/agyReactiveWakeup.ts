@@ -797,20 +797,6 @@ export function inspectSyntheticBackgroundCommandMatch(
         (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
 
-    // Argument compatibility alone never establishes a synthetic alias:
-    // without `tool_result` evidence, defer only when persisted task completion
-    // or a terminal call status exists, and let `in_progress` calls start fresh.
-    if (!hasResultSignal) {
-        if (
-            completedCandidates.length > 0
-            || lookup.callStatus === 'completed'
-            || lookup.callStatus === 'failed'
-        ) {
-            return { kind: 'ambiguous' };
-        }
-        return { kind: 'none' };
-    }
-
     const turnPlannedCompatibleCommand = recentSteps.some((step) => {
         if (step.step_index <= turnStartStepIndex) return false;
         if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
@@ -830,6 +816,22 @@ export function inspectSyntheticBackgroundCommandMatch(
             return true;
         });
     });
+
+    // Argument compatibility alone never establishes a synthetic alias:
+    // without `tool_result` evidence, hold compatible calls provisionally
+    // unless the current turn has already persisted a matching planned command
+    // with no completed synthetic candidates.
+    if (!hasResultSignal) {
+        if (
+            completedCandidates.length > 0
+            || (!turnPlannedCompatibleCommand && unpersistedCompatible.length > 0)
+            || lookup.callStatus === 'completed'
+            || lookup.callStatus === 'failed'
+        ) {
+            return { kind: 'ambiguous' };
+        }
+        return { kind: 'none' };
+    }
 
     if (completedCandidates.length > 0) {
         const filteredByResult = completedCandidates.filter((entry) => {

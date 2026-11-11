@@ -1891,6 +1891,139 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
+    it('reconciles provisional in_progress ACP command calls when the synthetic task completion row flushes after tool_call starts', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Initial turn done.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'first' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Initial turn done.' }
+            ]);
+        });
+
+        // `call_native_provisional` emits `in_progress` BEFORE `task-12`'s `SYSTEM_MESSAGE` completion row is written to disk!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_native_provisional',
+                name: 'sleep 5 && echo LATE_FLUSH_BG_OK',
+                title: 'sleep 5 && echo LATE_FLUSH_BG_OK',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 5 && echo LATE_FLUSH_BG_OK' }
+            });
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                `${JSON.stringify({
+                    step_index: 6,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-12" finished with result:\nCommand exited with code 0.\n\nCommand output:\nLATE_FLUSH_BG_OK\n</SYSTEM_MESSAGE>`
+                })}\n`,
+                'utf8'
+            );
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_native_provisional',
+                name: 'sleep 5 && echo LATE_FLUSH_BG_OK',
+                title: 'sleep 5 && echo LATE_FLUSH_BG_OK',
+                status: 'completed',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 5 && echo LATE_FLUSH_BG_OK' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call_native_provisional',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nLATE_FLUSH_BG_OK', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Handled late-flushed background result.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('first', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Timer fired</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5 && echo LATE_FLUSH_BG_OK"' } }]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-12`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Started background check in wakeup.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        queue.push('next user message', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+            is_error: false,
+            output: { stdout: 'LATE_FLUSH_BG_OK', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
     it('preserves replay task-ID attribution when a user prompt preempts a pending wakeup before reattachment', async () => {
         const backend = new WakeupTestBackend();
         const { session, queue, client } = makeHarness('always-proceed');

@@ -1368,6 +1368,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 { liveCallId: message.id, nativeArgs, callStatus: message.status }
             );
             if (match.kind === 'matched') {
+                turn.deferredLiveCommandCalls.delete(message.id);
                 turn.corroboratedSyntheticMatches += 1;
                 this.syntheticCallAliases.set(message.id, match.entry.callId);
                 return { message: { ...message, id: match.entry.callId }, suppressForward: true };
@@ -1376,6 +1377,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.deferredLiveCommandCalls.set(message.id, message);
                 return { message, suppressForward: true, skipTracking: true };
             }
+            turn.deferredLiveCommandCalls.delete(message.id);
         }
 
         if (message.type === 'tool_result') {
