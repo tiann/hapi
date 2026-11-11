@@ -1195,7 +1195,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             } else {
                 // Pair by the native task id agy recorded at backgrounding time,
                 // so out-of-order completions complete their own card.
-                bgId = pairing.bgIds.find((id) => (pairing.taskDescriptions.get(id) ?? '').trim() === description);
+                bgId = pairing.bgIds.find((id) => sameCommandText(pairing.taskDescriptions.get(id) ?? '', description));
                 if (bgId !== undefined) pairing.bgIds.splice(pairing.bgIds.indexOf(bgId), 1);
             }
             if (bgId !== undefined) {
@@ -1263,7 +1263,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     gating.openContinuation.add(backgrounded.taskId);
                     // The synthetic card this command launched under completes
                     // when the task does.
-                    const wakeId = pairing.pendingWakeCalls.find((id) => (pairing.wakeCommands.get(id) ?? '').trim() === backgrounded.description);
+                    const wakeId = pairing.pendingWakeCalls.find((id) => sameCommandText(pairing.wakeCommands.get(id) ?? '', backgrounded.description));
                     if (wakeId !== undefined) pairing.wakeCallByTask.set(backgrounded.taskId, wakeId);
                 }
                 return; // the ACP card already shows the backgrounded command
@@ -1672,6 +1672,11 @@ function isContinuationContent(message: AgentMessage): boolean {
         || message.type === 'tool_result'
         || message.type === 'plan'
         || message.type === 'generated_image';
+}
+
+/** Command-text equality that survives agy's whitespace normalization of multiline commands. */
+function sameCommandText(a: string, b: string): boolean {
+    return a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim();
 }
 
 /** The command text for the background-task indicator; the card title as fallback. */

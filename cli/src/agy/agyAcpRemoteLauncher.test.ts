@@ -2909,6 +2909,88 @@ describe('AgyAcpRemoteLauncher late continuation (gating on reliably identified 
     });
 });
 
+describe('AgyAcpRemoteLauncher late continuation (multiline command records)', () => {
+    const BACKGROUNDING = (taskId: string, description: string): string =>
+        `Created At: 2026-11-10T14:00:07+09:00\nTool is running as a background task with task id: ${taskId}\nTask Description: ${description}`;
+    const COMPLETION = (taskId: string, output: string): string =>
+        `Task id "${taskId}" finished with result:\nCommand exited with code 0.\n\nCommand output:\n${output}`;
+    const MULTILINE = "bash -c '\necho ONE\necho TWO'";
+
+    it('completes an ACP card whose multiline command agy records across lines', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const multilineArgs = { CommandLine: MULTILINE, WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: multilineArgs, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: multilineArgs });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // agy's record carries the command verbatim, newlines included.
+        source.push(
+            { ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', MULTILINE)), status: 'running' },
+            wakeStep(4, 'system', COMPLETION('sample/task-1', 'MULTILINE-OUT'))
+        );
+        source.latest = 4;
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        // The card closed with the real result, not the placeholder.
+        const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(result)).toContain('MULTILINE-OUT');
+        expect(agentRows(client).some((row) => JSON.stringify(row).includes(AGY_BACKGROUND_COMMAND_RESULT.stdout))).toBe(false);
+    });
+
+    it('completes a wake card whose multiline command agy records across lines', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The turn's command completes, then the continuation surfaces a call
+        // whose command spans lines and backgrounds it; agy's record repeats
+        // the command verbatim.
+        source.push(
+            wakeStep(3, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nTURN-OK'),
+            wakeStep(4, 'planner', '', [{ name: 'run_command', args: { CommandLine: MULTILINE, WaitMsBeforeAsync: 5000 } }]),
+            { ...wakeStep(5, 'tool', BACKGROUNDING('sample/task-2', MULTILINE)), status: 'running' },
+            wakeStep(6, 'system', COMPLETION('sample/task-2', 'WAKE-MULTILINE-OUT')),
+            wakeStep(7, 'planner', 'All wrapped up.')
+        );
+        source.latest = 7;
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        const wakeCall = agentRows(client).find((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-')) as Record<string, unknown> | undefined;
+        expect(wakeCall).toBeDefined();
+        const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === wakeCall!.callId) as Record<string, unknown> | undefined;
+        expect(JSON.stringify(result)).toContain('WAKE-MULTILINE-OUT');
+    });
+});
+
 describe('AgyAcpRemoteLauncher late continuation (raced completion keeps watching)', () => {
     it('surfaces the raced backlog and keeps watching for steps that land after it', async () => {
         const { session, queue, client } = makeSession();

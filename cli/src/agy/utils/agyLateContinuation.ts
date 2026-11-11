@@ -132,14 +132,16 @@ export function parseAgyTaskCompletion(content: string): { exitCode: number; out
 }
 
 const BACKGROUND_TASK_ID = /\btask id:\s*([^\s"]+)/i;
-const BACKGROUND_TASK_DESCRIPTION = /^Task Description:\s*(.+)$/m;
+// The description is the record's last field and may span lines (a multiline
+// command): capture the remainder, not just the first line.
+const BACKGROUND_TASK_DESCRIPTION = /\bTask Description:\s*([\s\S]+)$/;
 
 /**
  * Parses agy's own backgrounding record out of a transcript step: GENERIC tool
  * steps announce "task id: <native id>" with the command text as the task
- * description, letting a later completion pair with the original ACP call by
- * task id instead of launch order. The quoted `Task id "..."` of a completion
- * message does not match (its id is quoted).
+ * description (multiline commands verbatim), letting a later completion pair
+ * with the original ACP call by task id instead of launch order. The quoted
+ * `Task id "..."` of a completion message does not match (its id is quoted).
  */
 export function parseAgyBackgroundStart(content: string): { taskId: string; description: string } | null {
     const id = BACKGROUND_TASK_ID.exec(content)?.[1];
