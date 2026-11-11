@@ -295,6 +295,21 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            if (generationAtDequeue !== this.abortGeneration) {
+                // A user stop landed while the pre-prompt configuration
+                // awaited (edit-mode set_mode, model switch): the user
+                // already saw 'Session aborted' and the queue was reset, so
+                // the already-dequeued batch must not run (same contract as
+                // the reconnect windows).
+                this.messageBuffer.addMessage('Aborted while configuring the Hermes session; dropping the queued message', 'status')
+                this.session.onThinkingChange(false)
+                await this.permissionHandler?.cancelAll('Prompt finished')
+                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                    this.session.sendSessionEvent({ type: 'ready' })
+                }
+                continue
+            }
+
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
             const prompt: PromptContent[] = [{ type: 'text', text: batch.message }]
