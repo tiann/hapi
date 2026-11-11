@@ -74,7 +74,7 @@ Live broadcasts that occur while the replay is being written are queued server-s
 | `resume` verdict | Meaning | Client action |
 |---|---|---|
 | `ok` | The replay that follows contains **every** event missed since the cursor. | Skip the REST resync entirely. |
-| `gap` (or field absent — older hubs) | The hub cannot prove continuity. | Full refetch: session list, session detail(s), message tail sync, and queued-state reconcile for the open session (see [pagination](./pagination.md#queued-state-recovery)). |
+| `gap` (or field absent — older hubs) | The hub cannot prove continuity. | Full refetch: session list, session detail(s), message tail sync **catching up the cursor first, then the latest page applied by id** (rows updated in place keep their cursor position, so a cursor sync alone never re-delivers them; the applied page must not discard already-loaded history, and an epoch change falls back to a full replacement), and queued-state reconcile for the open session (see [pagination](./pagination.md#queued-state-recovery)). |
 
 `gap` is returned whenever: no cursor was sent, the cursor is malformed, `epoch` differs (hub restarted), `nsTag` differs (cursor issued under a different namespace — e.g. after a token swap on the same hub), `seq` is out of range, or events between the cursor and the ring's oldest entry were evicted.
 
