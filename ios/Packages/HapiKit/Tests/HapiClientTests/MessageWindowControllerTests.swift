@@ -538,7 +538,7 @@ struct MessageWindowControllerTests {
             (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
             epoch: 1
         ))
-        provider.failNextContextRequests(1)
+        await provider.failNextContextRequests(1)
 
         await controller.recoverAfterGapResume()
 
