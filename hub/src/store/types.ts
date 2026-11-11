@@ -1,4 +1,8 @@
+import type { SessionReadState } from '@hapi/protocol'
+
 export type StoredSession = {
+    contentRevision?: number
+    readState?: SessionReadState
     id: string
     tag: string | null
     namespace: string
@@ -42,6 +46,8 @@ export type StoredMachine = {
 export type MessageDeliveryState = 'indeterminate'
 
 export type StoredMessage = {
+    deliveryPending?: true
+    contentRevision?: number
     id: string
     sessionId: string
     content: unknown
@@ -97,6 +103,27 @@ export type StoredScratchlistEntry = {
     createdAt: number
     updatedAt: number
     attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+}
+
+export type StoredSessionJob = {
+    sessionId: string
+    key: string
+    label: string
+    status: import('@hapi/protocol').AttachedJobStatus
+    done?: number
+    total?: number
+    remaining?: number
+    unit?: string
+    detail?: string
+    runId?: string
+    /** Opt-in terminal wake (#1489). */
+    wakeOnTerminal: boolean
+    wakePrompt?: string
+    /** Dedup: runId for which a wake was already claimed. */
+    wakeEmittedRunId?: string
+    heartbeatAt: number
+    startedAt: number
+    updatedAt: number
 }
 
 export type VersionedUpdateResult<T> =

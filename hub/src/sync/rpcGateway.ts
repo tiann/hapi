@@ -25,8 +25,10 @@ import type {
     GeneratedImageResponse,
     ImplementCodexPlanResult,
     CopilotModelsResponse,
+    CopilotReasoningEffortResponse,
     GrokModelsResponse,
     KimiModelsResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortResponse,
     ListDirectoryResponse,
     ListCodexSessionsRpcResponse,
@@ -57,6 +59,13 @@ const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
+
+export class RunnerStopRpcError extends Error {
+    constructor(readonly timedOut: boolean, cause: unknown) {
+        super('Runner stop acknowledgement was not received', { cause })
+        this.name = 'RunnerStopRpcError'
+    }
+}
 
 /**
  * tiann/hapi#916: thrown by {@link RpcGateway.rpcCall} when the target CLI is
@@ -215,12 +224,22 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string }
+        opts?: { processStartMarker?: string; timeoutMs?: number }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
-            sessionId,
-            ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
-        })
+        const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
+        const started = performance.now()
+        let result: unknown
+        try {
+            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
+                sessionId,
+                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            }, timeoutMs)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) throw error
+            // Ack timeout does not cancel the remote stop. Preserve uncertainty
+            // instead of claiming that the process is definitely still alive.
+            throw new RunnerStopRpcError(performance.now() - started >= timeoutMs, error)
+        }
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
         if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-session response')
@@ -564,6 +583,10 @@ export class RpcGateway {
         ) as RpcListCopilotModelsResponse
     }
 
+    async listCopilotReasoningEffortOptionsForSession(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListCopilotReasoningEffortOptions, {}) as CopilotReasoningEffortResponse
+    }
+
     async listCopilotModelsForSession(sessionId: string): Promise<RpcListCopilotModelsResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -586,6 +609,10 @@ export class RpcGateway {
      * Active-session Kimi discovery. The probe runs in the CLI that owns the
      * session, so it works without a background runner on the machine.
      */
+    async listKimiReasoningEffortOptionsForSession(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListKimiReasoningEffortOptions, {}) as KimiReasoningEffortResponse
+    }
+
     async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -627,6 +654,13 @@ export class RpcGateway {
         ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResponse
     }
 
+    async forkArchivedCodex(machineId: string, request: import('@hapi/protocol/apiTypes').ForkArchivedCodexRequest): Promise<import('@hapi/protocol/apiTypes').ForkArchivedCodexResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ForkArchivedCodex, request, 120_000) as Record<string, unknown>
+        if (typeof result?.error === 'string') return { error: result.error, rollbackSafe: result.rollbackSafe === true }
+        if (typeof result?.nativeSessionId !== 'string' || !result.nativeSessionId) throw new Error('Native archived fork did not return a session id')
+        return { nativeSessionId: result.nativeSessionId }
+    }
+
     async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ClearConversation, {}, 120_000) as { sessionId: string }
     }
@@ -658,6 +692,10 @@ export class RpcGateway {
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListPiModelsForMachine, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListPiModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
     }
 
     async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {

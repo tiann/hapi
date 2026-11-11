@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import chalk from 'chalk'
 import { PeerDeliveryModeSchema, type PeerDeliveryMode } from '@/modules/pingPeer/deliveryMode'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import { initializeToken } from '@/ui/tokenInit'
 import {
     PingPeerError,
@@ -15,6 +16,8 @@ import type { CommandDefinition } from './types'
 type ParsedPingPeerArgs = {
     help: boolean
     list: boolean
+    all: boolean
+    wake: boolean
     sessionIdPrefix?: string
     message?: string
     messageFile?: string
@@ -24,27 +27,32 @@ type ParsedPingPeerArgs = {
 
 function showHelp(): void {
     console.log(`
-${chalk.bold('hapi ping-peer')} - Resume a HAPI session (if needed) and send it a message
+${chalk.bold('hapi ping-peer')} - Send a message to another HAPI session
 
 ${chalk.bold('Usage:')}
   hapi ping-peer <session-id-prefix> <message-text>
   hapi ping-peer <session-id-prefix> <message-text> --delivery-mode auto|queue|steer
+  hapi ping-peer <session-id-prefix> <message-text> --wake   # resume if inactive
   hapi ping-peer <session-id-prefix> --message-file <path>
   hapi ping-peer <session-id-prefix> --message-file -   # read message from stdin
-  hapi ping-peer --list
+  hapi ping-peer --list [--all]   # active sessions; --all includes inactive
 
 ${chalk.bold('Notes:')}
   Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
   Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
-  Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
-  Delivery defaults to auto: steer a steerable active Codex turn, otherwise queue.
-  Auto resumes inactive targets; other agent flavors currently queue in auto mode.
+  Message only peers tied to your task; never broadcast to the --list output.
+  Inactive targets are refused (exit 5) unless --wake, which resumes them via
+  POST /api/sessions/:id/resume first. Wake only when the peer must act, not for FYI.
+  Delivery defaults to auto: steer an active turn when its target supports steering
+  and is ready; otherwise queue. If steering cannot be confirmed after acceptance,
+  auto keeps the same accepted message without resending; acceptance is not consumption.
   Use auto for routine collaboration when queueing is an acceptable fallback.
   Use queue for non-urgent updates that can wait. Use steer for important findings
   the peer needs to know now to adjust its current work, not after its current turn.
   State why the finding matters now and what the peer should adjust.
-  Explicit steer requires an active turn in Pi, Codex,
-  or Cursor ACP; it neither resumes inactive targets nor sends to idle targets.
+  Explicit steer requires an active turn in remote Claude, Pi, Codex, OpenCode,
+  Antigravity (agy acp), or Cursor ACP; it neither resumes inactive targets nor
+  sends to idle targets.
   Steer uses the existing queued-message action. If it fails after send, inspect the
   target before retrying: the accepted message may still be queued or consumed.
   When a user cites [title](/sessions/<id>) or Copy-reference
@@ -61,7 +69,9 @@ ${chalk.bold('Env:')}
 export function parsePingPeerArgs(args: string[]): ParsedPingPeerArgs {
     const result: ParsedPingPeerArgs = {
         help: false,
-        list: false
+        list: false,
+        all: false,
+        wake: false
     }
 
     for (let i = 0; i < args.length; i++) {
@@ -72,6 +82,14 @@ export function parsePingPeerArgs(args: string[]): ParsedPingPeerArgs {
         }
         if (arg === '--list') {
             result.list = true
+            continue
+        }
+        if (arg === '--all') {
+            result.all = true
+            continue
+        }
+        if (arg === '--wake') {
+            result.wake = true
             continue
         }
         if (arg === '--delivery-mode' || arg.startsWith('--delivery-mode=')) {
@@ -164,14 +182,19 @@ function envWaitActiveSecs(): number | undefined {
     return value
 }
 
-async function handleList(): Promise<void> {
+async function handleList(includeInactive: boolean): Promise<void> {
     const maxRows = 30
+    const callerSessionId = process.env[HAPI_SESSION_ID_ENV]?.trim() || undefined
     const sessions = await listPeerSessions({
-        limit: peerListFetchLimit(maxRows)
+        limit: peerListFetchLimit(maxRows, { excludeCaller: Boolean(callerSessionId) }),
+        includeInactive
     })
+    const peerCount = sessions.filter((session) => session.id !== callerSessionId).length
     console.log(formatPeerSessionsList(sessions, {
         maxRows,
-        hasMore: sessions.length > maxRows
+        hasMore: peerCount > maxRows,
+        excludeSessionId: callerSessionId,
+        includeInactive
     }))
 }
 
@@ -185,7 +208,7 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
     await initializeToken()
 
     if (parsed.list) {
-        await handleList()
+        await handleList(parsed.all)
         return
     }
 
@@ -206,12 +229,13 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
         sessionIdPrefix: parsed.sessionIdPrefix,
         message,
         deliveryMode: parsed.deliveryMode,
+        wake: parsed.wake,
         waitActiveSecs: parsed.waitActiveSecs ?? envWaitActiveSecs(),
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 
     const receipt = result.delivery === 'accepted'
-        ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+        ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}`
         : `${result.delivery} to ${result.sessionId} localId=${result.localId}`
     console.log(chalk.green(`hapi ping-peer: OK - ${receipt}`))
 }

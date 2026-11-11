@@ -452,6 +452,49 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock.model).toBeUndefined()
     })
 
+    it('drops empty reasoning so it does not split adjacent tool calls', () => {
+        const row = (id: string, content: unknown[], offset: number): TracedMessage => ({
+            id,
+            localId: null,
+            createdAt: 1_700_000_000_000 + offset,
+            role: 'agent',
+            content,
+            isSidechain: false
+        } as TracedMessage)
+        const toolCall = (id: string) => ({
+            type: 'tool-call', id, name: 'Bash', input: { command: 'ls' }, description: null, uuid: id, parentUUID: null
+        })
+        const emptyThinking = (id: string) => ({ type: 'reasoning', text: '', uuid: id, parentUUID: null })
+
+        const { blocks } = reduceTimeline([
+            row('row-1', [toolCall('tool-1')], 0),
+            row('row-2', [emptyThinking('thinking-2'), toolCall('tool-2')], 100),
+            row('row-3', [emptyThinking('thinking-3'), toolCall('tool-3')], 200)
+        ], makeContext())
+
+        expect(blocks.some((block) => block.kind === 'agent-reasoning')).toBe(false)
+        const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: false, groupingMode: 'grouped' })
+        expect(visible).toHaveLength(1)
+        expect(visible[0]).toMatchObject({ kind: 'tool-group', tools: [{ id: 'tool-1' }, { id: 'tool-2' }, { id: 'tool-3' }] })
+    })
+
+    it('creates a streamed reasoning block once its first non-empty snapshot arrives', () => {
+        const snapshot = (id: string, text: string, offset: number): TracedMessage => ({
+            id,
+            localId: null,
+            createdAt: 1_700_000_000_000 + offset,
+            role: 'agent',
+            content: [{ type: 'reasoning', text, uuid: id, streamId: 'reasoning-stream-1', parentUUID: null }],
+            isSidechain: false
+        } as TracedMessage)
+
+        const { blocks } = reduceTimeline([snapshot('row-1', '', 0), snapshot('row-2', 'thinking', 100)], makeContext())
+
+        expect(blocks.filter((block) => block.kind === 'agent-reasoning')).toMatchObject([
+            { id: 'reasoning-stream-1', text: 'thinking' }
+        ])
+    })
+
     it('collapses reasoning snapshots with the same stream id', () => {
         const first: TracedMessage = {
             id: 'reasoning-row-1',
@@ -587,7 +630,8 @@ describe('reduceTimeline', () => {
         expect(textBlocks).toHaveLength(2)
         expect(textBlocks[0]).toMatchObject({
             id: 'text-stream-1',
-            text: 'first second'
+            text: 'first second',
+            sourceMessageIds: ['text-row-1', 'text-row-2']
         })
         expect(textBlocks[1]).toMatchObject({
             id: 'text-row-3:0',

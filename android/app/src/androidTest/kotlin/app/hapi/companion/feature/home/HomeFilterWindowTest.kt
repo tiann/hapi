@@ -51,11 +51,20 @@ class HomeFilterWindowTest {
     }
 
     private fun click(text: String) {
+        // The sheet scrolls; a retry while it is still opening must not strand
+        // the target above the viewport, so sweep back once the end is reached.
+        var direction = AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         await("click $text") {
             val candidates = nodes(text).filter { it.isVisibleToUser }
             if (candidates.isEmpty()) {
-                descendants().firstOrNull { it.isScrollable }
-                    ?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                val scrollable = descendants().firstOrNull { it.isScrollable }
+                if (scrollable != null && !scrollable.performAction(direction)) {
+                    direction = if (direction == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) {
+                        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                    } else {
+                        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                    }
+                }
             }
             candidates.any { node ->
                 var target = node

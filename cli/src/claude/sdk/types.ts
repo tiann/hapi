@@ -24,6 +24,10 @@ export interface SDKUserMessage extends SDKMessage {
      */
     isSynthetic?: boolean
     isMeta?: boolean
+    /** Stdin messages may set it; `--replay-user-messages` echoes it back. */
+    uuid?: string
+    /** Set on the `--replay-user-messages` echo of a stdin message. */
+    isReplay?: boolean
     message: {
         role: 'user'
         content: string | Array<{
@@ -97,6 +101,12 @@ export interface SDKResultMessage extends SDKMessage {
     duration_api_ms: number
     is_error: boolean
     session_id: string
+    /**
+     * Set in-process by claudeRemote on the result of a manual /compact turn,
+     * so the log converter can skip tok/s fields for it: a compaction call is
+     * not an assistant round. Never present on the wire from Claude itself.
+     */
+    hapi_compact_turn?: boolean
 }
 
 export interface SDKControlResponse extends SDKMessage {
@@ -130,6 +140,11 @@ export interface InterruptRequest extends ControlRequest {
 export interface SetPermissionModeRequest extends ControlRequest {
     subtype: 'set_permission_mode'
     mode: ClaudePermissionMode
+}
+
+export interface ApplyFlagSettingsRequest extends ControlRequest {
+    subtype: 'apply_flag_settings'
+    settings: Record<string, unknown>
 }
 
 export interface CanUseToolRequest extends ControlRequest {
@@ -211,6 +226,11 @@ export interface QueryOptions {
     fallbackModel?: string
     settingsPath?: string
     strictMcpConfig?: boolean
+    /**
+     * Echo every stdin user message back (`isReplay: true`, same uuid) when
+     * Claude starts processing it. Requires a streaming prompt.
+     */
+    replayUserMessages?: boolean
     canCallTool?: CanCallToolCallback
     promptFailureCleanupTimeoutMs?: number
 }

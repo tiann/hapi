@@ -51,6 +51,8 @@ export const RPC_METHODS = {
     ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
     ListCopilotModelsForCwd: 'listCopilotModelsForCwd',
     ListCopilotModels: 'listCopilotModels',
+    ListCopilotReasoningEffortOptions: 'listCopilotReasoningEffortOptions',
+    ListKimiReasoningEffortOptions: 'listKimiReasoningEffortOptions',
     ListKimiModelsForCwd: 'listKimiModelsForCwd',
     ListKimiModels: 'listKimiModels',
     ListDshModels: 'listDshModels',
@@ -61,6 +63,7 @@ export const RPC_METHODS = {
     /** Deliver one queued message into the active Pi turn (native steer). */
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
+    ForkArchivedCodex: 'fork-archived-codex',
     RewindConversation: 'rewind-conversation',
     ClearConversation: 'clear-conversation',
     ImplementCodexPlan: 'implement-codex-plan',

@@ -12,9 +12,21 @@ import {
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
     isRenderIrrelevantSessionPatch,
+    sameSessionSummaryMetadata,
     shouldInvalidateSessionListForEvent,
     useSSE
 } from './useSSE'
+
+describe('session summary metadata equality', () => {
+    it('detects capability changes that control list actions', () => {
+        const base = { path: '/p', host: 'h' }
+        expect(sameSessionSummaryMetadata(base, { ...base, conversationHistory: { forkCurrent: true } })).toBe(false)
+        expect(sameSessionSummaryMetadata(
+            { ...base, conversationHistory: { forkCurrent: true } },
+            { ...base, conversationHistory: { forkCurrent: true } },
+        )).toBe(true)
+    })
+})
 
 class FakeEventSource {
     static instances: FakeEventSource[] = []
@@ -183,6 +195,8 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -327,6 +341,23 @@ describe('isRenderIrrelevantPatch', () => {
         const current = makeSummary()
         const next = makeSummary({ ...change, activeAt: 11_000 })
 
+        expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
+
+    it('reports attachedJob.startedAt changes as relevant', () => {
+        const job = {
+            key: 'beets',
+            label: 'beets',
+            status: 'running' as const,
+            heartbeatAt: 100,
+            startedAt: 100,
+            updatedAt: 100
+        }
+        const current = makeSummary({ attachedJob: job })
+        const next = makeSummary({
+            attachedJob: { ...job, startedAt: 50 },
+            activeAt: 11_000
+        })
         expect(isRenderIrrelevantPatch(current, next)).toBe(false)
     })
 })

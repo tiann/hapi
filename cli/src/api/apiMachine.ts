@@ -6,6 +6,7 @@ import { io, type Socket } from 'socket.io-client'
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { logger } from '@/ui/logger'
+import { ForkArchivedCodexRequestSchema } from '@hapi/protocol/apiTypes'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
 import {
@@ -456,6 +457,11 @@ export class ApiMachineClient {
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.ForkArchivedCodex, async (raw: unknown) => {
+            const request = ForkArchivedCodexRequestSchema.parse(raw)
+            const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
+            return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
+        })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
             const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
 
@@ -596,6 +602,27 @@ export class ApiMachineClient {
                 errorMessage: 'Machine state update failed',
                 versionMismatchMessage: 'Runner state version mismatch'
             })
+        })
+    }
+
+    /**
+     * Tell the hub a runner-owned child died without the CLI's normal
+     * session-end handshake. Best effort: the hub also has the child socket
+     * and its keep-alive expiry as a backstop if this frame is lost.
+     */
+    reportSessionChildExited(payload: {
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time?: number
+    }): void {
+        if (!this.socket) return
+        this.socket.emit('session-child-exited', {
+            machineId: this.machine.id,
+            sid: payload.sid,
+            pid: payload.pid,
+            ...(payload.processStartMarker ? { processStartMarker: payload.processStartMarker } : {}),
+            time: payload.time ?? Date.now()
         })
     }
 

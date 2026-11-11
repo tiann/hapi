@@ -5,6 +5,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -59,6 +60,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.sessions.HomeConnectionStatus
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -66,6 +68,8 @@ internal fun HomeTopBar(
     activeHubUrl: String,
     pairedHubs: List<String>,
     hasActiveFilters: Boolean,
+    /** Delayed transient SSE status, shown quietly under the title; null while connected. */
+    connectionStatus: HomeConnectionStatus? = null,
     searchExpanded: Boolean,
     searchQuery: String,
     onOpenSearch: () -> Unit,
@@ -98,11 +102,30 @@ internal fun HomeTopBar(
                 if (searching) {
                     HomeSearchField(searchQuery, onSearchQueryChange, hideKeyboard, closeSearch)
                 } else {
-                    Text(
-                        stringResource(R.string.sessions_section_sessions),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    // The subtitle shares the bar, so a reconnect never
+                    // shifts the list (iOS 26 navigation-subtitle parity).
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            stringResource(R.string.sessions_section_sessions),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        connectionStatus?.let { status ->
+                            Text(
+                                stringResource(
+                                    when (status) {
+                                        HomeConnectionStatus.Connecting -> R.string.sessions_status_connecting
+                                        HomeConnectionStatus.Reconnecting -> R.string.sessions_status_reconnecting
+                                        HomeConnectionStatus.Paused -> R.string.sessions_status_paused
+                                    },
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.testTag("home-connection-status"),
+                            )
+                        }
+                    }
                 }
             },
             navigationIcon = {

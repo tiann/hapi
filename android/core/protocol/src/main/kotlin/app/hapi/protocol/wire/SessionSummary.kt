@@ -36,9 +36,15 @@ data class SessionSummary(
     val futureScheduledMessageCount: Int = 0,
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     val nextScheduledAt: Long? = null,
+    /** Primary session-attached job (tiann/hapi#1404), or null. */
+    val attachedJob: AttachedJob? = null,
+    /** Watermark for versioned `attachedJob` patches; absent (older hub) gates as 0. */
+    val attachedJobUpdatedAt: Long = 0,
     val model: String? = null,
     val modelReasoningEffort: String? = null,
     val effort: String? = null,
+    val contentRevision: Long? = null,
+    val readState: SessionReadState? = null,
 )
 
 /** `SessionSummaryMetadata` — list-sized metadata projection. */

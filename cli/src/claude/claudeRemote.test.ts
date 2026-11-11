@@ -125,6 +125,49 @@ describe('claudeRemote async message handling', () => {
         }
     });
 
+    it('marks every follow-up turn as thinking until its result', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const result = { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<unknown> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const promptIterator = prompt[Symbol.asyncIterator]();
+                await promptIterator.next();
+                yield result;
+                await promptIterator.next();
+                yield result;
+            }
+        }));
+
+        const thinking: boolean[] = [];
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ < 2
+                    ? { message: `turn ${nextCallCount}`, mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onThinkingChange: (value) => thinking.push(value)
+            });
+
+            expect(thinking).toEqual([true, false, true, false]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
     it('waits for async onReady work before completing the result stream', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -380,6 +423,8 @@ describe('claudeRemote async message handling', () => {
             await runPromise;
             await new Promise((resolve) => setTimeout(resolve, 0));
             expect(received.map((m) => m.type)).toEqual(['assistant', 'result']);
+            // A normal round result carries no compaction marker.
+            expect(received[1]).not.toHaveProperty('hapi_compact_turn');
             expect(unhandled).toEqual([]);
         } finally {
             queryMock.mockReset();
@@ -406,10 +451,12 @@ describe('claudeRemote /compact result reporting', () => {
     } as unknown as SDKMessage;
 
     let lastForwarded: SDKMessage[] = [];
+    let lastCompactSummary: { summary: string; tokensBefore?: number; tokensAfter?: number } | undefined;
     async function runCompact(sdkMessages: SDKMessage[]): Promise<string[]> {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const completionEvents: string[] = [];
+        lastCompactSummary = undefined;
         const forwarded: SDKMessage[] = [];
 
         queryMock.mockReturnValueOnce(createAsyncStream(sdkMessages));
@@ -432,7 +479,8 @@ describe('claudeRemote /compact result reporting', () => {
                     }
                     return null;
                 },
-                onReady: (completionEvent) => {
+                onReady: (completionEvent, compactSummary) => {
+                    lastCompactSummary = compactSummary;
                     if (completionEvent) completionEvents.push(completionEvent);
                 },
                 isAborted: () => false,
@@ -539,7 +587,26 @@ describe('claudeRemote /compact result reporting', () => {
             resultMessage
         ]);
 
-        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+        expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 34492, tokensAfter: 2082 });
+    }, 15_000);
+
+    it('marks the compact turn result so the converter skips its tok/s fields', async () => {
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        const forwardedResult = lastForwarded.find((message) => message.type === 'result');
+        expect(forwardedResult).toBeTruthy();
+        // The compaction call is not an assistant round: no tok/s from it.
+        expect(forwardedResult).toHaveProperty('hapi_compact_turn', true);
     }, 15_000);
 
     it('ignores an autonomous result until the compact stream signal arrives', async () => {
@@ -562,7 +629,8 @@ describe('claudeRemote /compact result reporting', () => {
             resultMessage
         ]);
 
-        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (100 → 10 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+        expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 100, tokensAfter: 10 });
     }, 15_000);
 
     it('does not relay the compact_boundary system message during a manual /compact', async () => {
@@ -779,8 +847,9 @@ describe('claudeRemote /compact result reporting', () => {
                     if (nextCallCount === 2) return { message: '/compact', mode: { permissionMode: 'default' } };
                     return null;
                 },
-                onReady: (completionEvent) => {
+                onReady: (completionEvent, compactSummary) => {
                     if (completionEvent) completionEvents.push(completionEvent);
+                    if (compactSummary) completionEvents.push('structured compact');
                 },
                 isAborted: () => false,
                 onSessionFound: () => {},
@@ -796,7 +865,7 @@ describe('claudeRemote /compact result reporting', () => {
         }
 
         expect(completionEvents).toContain('📦 Compaction started');
-        expect(completionEvents).toContain('📦 Compacted (100 → 10 tokens)');
+        expect(completionEvents).toContain('structured compact');
     }, 15_000);
 
     it('flushes the result carrier before publishing compact completion', async () => {
@@ -1202,7 +1271,7 @@ describe('claudeRemote compact summary promotion', () => {
                 readyCount += 1;
                 readyEvents.push(completionEvent);
             },
-            onCompactResultAccepted: () => {
+            onResultAccepted: () => {
                 acceptedCount += 1;
             },
             isAborted: () => false,
@@ -1225,7 +1294,7 @@ describe('claudeRemote compact summary promotion', () => {
         expect(nextCallCount).toBe(1);
         expect(readyCount).toBe(1);
         expect(acceptedCount).toBe(1);
-        expect(readyEvents).toEqual(['📦 Compacted (100 → 10 tokens)']);
+        expect(readyEvents).toEqual([undefined]);
         expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 
@@ -1279,7 +1348,7 @@ describe('claudeRemote compact summary promotion', () => {
             querySpy.mockRestore();
         }
 
-        expect(readyEvents).toEqual(['📦 Compacted (100 → 10 tokens)']);
+        expect(readyEvents).toEqual([undefined]);
         expect(nextCallCount).toBe(1);
     }, 15_000);
 
@@ -1514,12 +1583,12 @@ describe('claudeRemote compact summary promotion', () => {
         }
     }, 15_000);
 
-    it('keeps the token delta fallback line when the transcript never yields a summary', async () => {
+    it('preserves exact token facts for a static header when the transcript has no summary', async () => {
         const { completionEvents, compactSummaries, contextTokens } = await runCompactWithSummary(null);
 
-        expect(compactSummaries).toEqual([]);
+        expect(compactSummaries).toEqual([{ summary: '', tokensBefore: 34492, tokensAfter: 2082 }]);
         expect(contextTokens).toEqual([2082]);
-        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 });
 
@@ -1687,5 +1756,81 @@ describe('claudeRemote rejected permission mode', () => {
             { type: 'result', subtype: 'success' } as unknown as SDKMessage
         ], 'auto', async () => {});
         expect(rejected).toHaveBeenCalledWith('default', expect.stringContaining('auto'));
+    });
+});
+
+describe('claudeRemote live effort', () => {
+    async function run(
+        setEffort: (effort: string | null) => Promise<void>,
+        exercise: (apply: (effort: string | null) => Promise<boolean>) => Promise<void>
+    ) {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        let applier: ((effort: string | null) => Promise<boolean>) | null = null;
+        const setEffortApplier = vi.fn((next: typeof applier) => {
+            applier = next;
+        });
+        queryMock.mockReturnValueOnce({
+            setPermissionMode: async () => {},
+            setEffort,
+            async *[Symbol.asyncIterator]() {
+                await exercise((effort) => applier!(effort));
+                yield { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+            }
+        });
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                setEffortApplier,
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'A', mode: { permissionMode: 'default', effort: 'high' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+        expect(setEffortApplier).toHaveBeenLastCalledWith(null);
+    }
+
+    it('changes effort in the running process and skips unchanged levels', async () => {
+        const setEffort = vi.fn(async () => {});
+        const results: boolean[] = [];
+        await run(setEffort, async (apply) => {
+            results.push(await apply('high'));
+            results.push(await apply('low'));
+            results.push(await apply('low'));
+            results.push(await apply(null));
+        });
+        expect(setEffort.mock.calls).toEqual([['low'], [null]]);
+        expect(results).toEqual([true, true, true, true]);
+    });
+
+    it('asks for a restart when Claude rejects or never answers the change', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+            const results: boolean[] = [];
+            await run(async (effort) => {
+                if (effort === 'low') throw new Error('Unsupported control request subtype: apply_flag_settings');
+                await new Promise(() => {});
+            }, async (apply) => {
+                results.push(await apply('low'));
+                const pending = apply('max');
+                await vi.advanceTimersByTimeAsync(5_000);
+                results.push(await pending);
+            });
+            expect(results).toEqual([false, false]);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

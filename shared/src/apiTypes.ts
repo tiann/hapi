@@ -9,6 +9,10 @@ import {
     SessionSchema
 } from './schemas'
 import { AgentFlavorSchema } from './modes'
+import {
+    PeerSpawnDefaultsSchema,
+    ResolvedPeerSpawnDefaultsSchema
+} from './peerSpawnDefaults'
 import type {
     DecryptedMessage,
     Machine,
@@ -73,7 +77,8 @@ export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
-    sessionSummaryInChat: z.boolean()
+    sessionSummaryInChat: z.boolean(),
+    peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
 export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
@@ -81,10 +86,14 @@ export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
 export const UpdateHubSettingsRequestSchema = z
     .object({
         sessionSummaryContract: z.boolean().optional(),
-        sessionSummaryInChat: z.boolean().optional()
+        sessionSummaryInChat: z.boolean().optional(),
+        peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
-        (data) => data.sessionSummaryContract !== undefined || data.sessionSummaryInChat !== undefined,
+        (data) =>
+            data.sessionSummaryContract !== undefined
+            || data.sessionSummaryInChat !== undefined
+            || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
 
@@ -121,10 +130,34 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[] }
+export type SessionContentMatch = {
+    messageId: string
+    role: 'user' | 'assistant'
+    seq: number
+    createdAt: number
+    snippet: string
+    truncated: boolean
+}
+export type SessionContentSearchResponse = {
+    results: Array<{
+        session: SessionSummary
+        match: SessionContentMatch
+    }>
+    /** True when this query may miss content omitted by an indexing optimization. */
+    hasPotentiallyIncompleteResults: boolean
+}
+export type SessionContentMatchesResponse = {
+    matches: SessionContentMatch[]
+    total: number
+    /** True when this query may miss content omitted by an indexing optimization. */
+    hasPotentiallyIncompleteResults: boolean
+}
 export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
+        /** Readable revision covered by this tail snapshot; absent on history pages. */
+        readThroughRevision?: number
         direction: 'latest' | 'before' | 'after'
         limit: number
         epoch: number
@@ -133,6 +166,20 @@ export type MessagesResponse = {
         nextBeforeAt: number | null
         nextAfterSeq: number | null
         nextAfterAt: number | null
+        snapshotHeadSeq: number | null
+        snapshotHeadAt: number | null
+        hasMore: boolean
+    }
+}
+
+/** A bounded history window centered on a message selected from search results. */
+export type MessageContextResponse = {
+    messages: DecryptedMessage[]
+    targetMessageId: string
+    page: {
+        epoch: number
+        nextBeforeSeq: number | null
+        nextBeforeAt: number | null
         snapshotHeadSeq: number | null
         snapshotHeadAt: number | null
         hasMore: boolean
@@ -180,7 +227,8 @@ export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionM
 
 export const CursorChatStoreStatusSchema = z.object({
     onDisk: z.boolean(),
-    store: z.enum(['legacy', 'acp']).nullable()
+    // 'empty': ACP thread dir exists but no store.db, i.e. no chat was ever persisted.
+    store: z.enum(['legacy', 'acp', 'empty']).nullable()
 })
 
 export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
@@ -375,8 +423,11 @@ export const SessionServiceTierRequestSchema = z.object({
 
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
+/** Hub session display-name ceiling (`PATCH /api/sessions/:id`). */
+export const SESSION_NAME_MAX_LENGTH = 255
+
 export const RenameSessionRequestSchema = z.object({
-    name: z.string().min(1).max(255).optional(),
+    name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH).optional(),
     titleLocked: z.boolean().optional()
 }).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
     message: 'name or titleLocked is required'
@@ -654,6 +705,17 @@ export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     error: string
 }
 
+/** Machine-scoped native history operation; never sends a source prompt. */
+export const ForkArchivedCodexRequestSchema = z.object({
+    operationId: z.string().uuid(),
+    sourceSessionId: z.string().uuid(),
+    sourceThreadId: z.string().min(1),
+    directory: z.string().min(1),
+    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional()
+})
+export type ForkArchivedCodexRequest = z.infer<typeof ForkArchivedCodexRequestSchema>
+export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: string; rollbackSafe: boolean }
+
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
@@ -685,6 +747,8 @@ export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
 export type QueuedStateResponse = {
     queuedLocalIds: string[]
     indeterminateLocalIds?: string[]
+    /** Subset of indeterminateLocalIds still awaiting delivery confirmation. */
+    dispatchingLocalIds?: string[]
     invokedLocalMessages: Array<{
         localId: string
         invokedAt: number
@@ -798,6 +862,7 @@ export type RpcListDirectoryResponse = ListDirectoryResponse
 
 export type FileMetadataEntry = {
     path: string
+    type?: 'file' | 'directory' | 'other'
     size?: number
     modified?: number
 }
@@ -987,6 +1052,12 @@ export type GrokReasoningEffortResponse = {
     currentValue?: string | null
     error?: string
 }
+
+/** Copilot's ACP `thought_level` option for the active model. */
+export type CopilotReasoningEffortResponse = GrokReasoningEffortResponse
+
+/** Kimi's ACP `thought_level` (`thinking`) option for the active model. */
+export type KimiReasoningEffortResponse = GrokReasoningEffortResponse
 
 export type OpencodeReasoningEffortOption = {
     value: string

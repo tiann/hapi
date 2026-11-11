@@ -15,6 +15,7 @@ import {
     type SDKControlRequest,
     type ControlRequest,
     type SetPermissionModeRequest,
+    type ApplyFlagSettingsRequest,
     type SDKControlResponse,
     type CanCallToolCallback,
     type CanUseToolControlRequest,
@@ -210,6 +211,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
+     * Change the session effort without restarting the process; null restores
+     * the model default. Older Claude Code builds reject the request.
+     */
+    async setEffort(effort: string | null): Promise<void> {
+        if (!this.childStdin) {
+            throw new Error('setEffort requires --input-format stream-json')
+        }
+
+        await this.request({
+            subtype: 'apply_flag_settings',
+            settings: { effortLevel: effort }
+        } as ApplyFlagSettingsRequest, this.childStdin)
+    }
+
+    /**
      * Send control request to Claude process
      */
     private request(request: ControlRequest, childStdin: Writable): Promise<SDKControlResponse['response']> {
@@ -348,6 +364,7 @@ export function query(config: {
             fallbackModel,
             settingsPath,
             strictMcpConfig,
+            replayUserMessages,
             canCallTool,
             promptFailureCleanupTimeoutMs = DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS
         } = {}
@@ -396,6 +413,7 @@ export function query(config: {
         args.push('--print', stripNewlinesForWindowsShellArg(prompt.trim()))
     } else {
         args.push('--input-format', 'stream-json')
+        if (replayUserMessages) args.push('--replay-user-messages')
     }
 
     // Determine how to spawn Claude Code

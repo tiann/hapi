@@ -16,6 +16,7 @@ function createSession(
         thinking,
         activeAt: updatedAt,
         updatedAt,
+        contentRevision: updatedAt,
         // Has real conversation content, so it's eligible for the sidebar's
         // "Unread" filter and "mark all read" — see createStubSession() below
         // for a session excluded from both.
@@ -33,6 +34,8 @@ function createSession(
         nextScheduledAt: null,
         model: null,
         effort: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
     }
 }
 
@@ -79,17 +82,10 @@ describe('useAppBadge', () => {
         )).toBe(1)
     })
 
-    it('does not count a session while it is generating, then counts it after completion', () => {
-        const lastSeenById = { 'session-a': 10 }
-
+    it('counts unseen output while a session is generating', () => {
         expect(countUnreadSessions(
             [createSession('session-a', 11, true)],
-            lastSeenById,
-        )).toBe(0)
-
-        expect(countUnreadSessions(
-            [createSession('session-a', 11)],
-            lastSeenById,
+            { 'session-a': 10 },
         )).toBe(1)
     })
 
@@ -111,10 +107,8 @@ describe('useAppBadge', () => {
     it('sets the native badge to the number of unread sessions in an installed PWA', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
-            'session-a': 10,
-            'session-b': 20,
-        }))
+        markSessionSeen('session-a', 10)
+        markSessionSeen('session-b', 20)
 
         renderHook(() => useAppBadge({
             enabled: true,
@@ -131,7 +125,7 @@ describe('useAppBadge', () => {
     it('clears the native badge after the unread session is seen', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'session-a': 10 }))
+        markSessionSeen('session-a', 10)
 
         renderHook(() => useAppBadge({
             enabled: true,
@@ -146,7 +140,7 @@ describe('useAppBadge', () => {
         await waitFor(() => expect(clearAppBadge).toHaveBeenCalledTimes(1))
     })
 
-    it('seeds the first session snapshot without showing existing sessions as unread', async () => {
+    it('shows unread content on the first load without silently seeding a baseline', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
 
@@ -158,14 +152,14 @@ describe('useAppBadge', () => {
             hasError: false,
         }))
 
-        await waitFor(() => expect(clearAppBadge).toHaveBeenCalledTimes(1))
-        expect(setAppBadge).not.toHaveBeenCalled()
+        await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(1))
+        expect(clearAppBadge).not.toHaveBeenCalled()
     })
 
     it('clears the badge when the feature is disabled', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'session-a': 10 }))
+        markSessionSeen('session-a', 10)
 
         const { rerender } = renderHook(
             (options: { enabled: boolean }) => useAppBadge({
@@ -186,7 +180,7 @@ describe('useAppBadge', () => {
     it('does not repeat the native update when the unread count is unchanged', async () => {
         setDisplayMode(true)
         const { setAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'session-a': 10 }))
+        markSessionSeen('session-a', 10)
 
         const { rerender } = renderHook(
             (sessions: SessionSummary[]) => useAppBadge({
@@ -208,7 +202,7 @@ describe('useAppBadge', () => {
     it('does not count an empty stub session the sidebar filters out of "Unread"/"mark all read" (hapi#1845)', async () => {
         setDisplayMode(true)
         const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'stub-session': 10 }))
+        markSessionSeen('stub-session', 10)
 
         renderHook(() => useAppBadge({
             enabled: true,

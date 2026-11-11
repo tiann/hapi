@@ -115,7 +115,7 @@ public enum SummaryPatching {
             switch AgentFlavor(rawValue: flavor) {
             case .claude: flavorSessionId = metadata.claudeSessionId
             case .codex: flavorSessionId = metadata.codexSessionId
-            case .dsh: flavorSessionId = nil
+            case .dsh: flavorSessionId = metadata.dshSessionId
             case .gemini: flavorSessionId = metadata.geminiSessionId
             case .opencode: flavorSessionId = metadata.opencodeSessionId
             case .grok: flavorSessionId = metadata.grokSessionId
@@ -141,6 +141,7 @@ public enum SummaryPatching {
             metadata.cursorSessionId,
             metadata.kimiSessionId,
             metadata.copilotSessionId,
+            metadata.dshSessionId,
         ]
         return legacyFallbacks.compactMap { $0 }.first
     }
@@ -150,6 +151,7 @@ public enum SummaryPatching {
         guard let metadata else { return nil }
         return SessionSummaryMetadata(
             name: metadata.name,
+            promptTitle: metadata.promptTitle,
             path: metadata.path,
             machineId: metadata.machineId,
             summary: metadata.summary.map { SessionSummaryMetadata.Summary(text: $0.text) },
@@ -168,6 +170,9 @@ public enum SummaryPatching {
     /// (`upsertSessionSummary` in the web reference does exactly that).
     public static func toSessionSummary(_ session: Session) -> SessionSummary {
         SessionSummary(
+            contentRevision: session.contentRevision,
+            readState: session.readState,
+            hasConversationContent: session.hasConversationContent ?? false,
             id: session.id,
             active: session.active,
             thinking: session.thinking,
@@ -213,6 +218,8 @@ public enum SummaryPatching {
     ///   (see the type doc for why equality is safe here and only here), then
     ///   recompute the derived fields. `pendingRequests`' fallback `since` is
     ///   the summary's post-patch `updatedAt`, matching the reference.
+    /// - `attachedJob` gates strictly (`>`) on `attachedJobUpdatedAt`, like
+    ///   the reference: a lagged heartbeat must not resurrect a clear.
     /// - `teamState` is a summary no-op (not rendered on the list).
     /// - `activeTurnStartedAt` / `scratchlistUpdatedAt` / `serviceTier` /
     ///   `permissionMode` / `collaborationMode` / `copilotAgentMode` have no
@@ -222,6 +229,8 @@ public enum SummaryPatching {
         _ patch: SessionPatch
     ) -> SessionSummary {
         var next = current
+        if let revision = patch.contentRevision { next.contentRevision = max(current.contentRevision ?? 0, revision) }
+        next.readState = SessionReadState.merge(current.readState, patch.readState)
         next.active = patch.active ?? current.active
         next.thinking = patch.thinking ?? current.thinking
         next.activeAt = patch.activeAt ?? current.activeAt
@@ -250,6 +259,10 @@ public enum SummaryPatching {
             next.metadata = toSessionSummaryMetadata(metadata.value)
             next.metadataVersion = metadata.version
         }
+        if let job = patch.attachedJob, job.version > (current.attachedJobUpdatedAt ?? 0) {
+            next.attachedJob = job.value
+            next.attachedJobUpdatedAt = job.version
+        }
         return next
     }
 
@@ -264,6 +277,7 @@ public enum SummaryPatching {
     ) -> Bool {
         guard let current, let next else { return current == nil && next == nil }
         if current.name != next.name { return false }
+        if current.promptTitle != next.promptTitle { return false }
         if current.path != next.path { return false }
         if current.machineId != next.machineId { return false }
         if current.summary?.text != next.summary?.text { return false }
@@ -292,6 +306,8 @@ public enum SummaryPatching {
     /// `undefined !== null` distinction for `modelReasoningEffort`; the only
     /// effect is suppressing a re-render that stores an equal-rendering value.
     public static func isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary) -> Bool {
+        if current.contentRevision != next.contentRevision || current.readState != next.readState { return false }
+        if current.hasConversationContent != next.hasConversationContent { return false }
         if current.active != next.active { return false }
         if current.thinking != next.thinking { return false }
         if current.updatedAt != next.updatedAt { return false }
@@ -314,6 +330,9 @@ public enum SummaryPatching {
         if current.metadataVersion != next.metadataVersion { return false }
         if current.agentStateVersion != next.agentStateVersion { return false }
         if current.todosUpdatedAt != next.todosUpdatedAt { return false }
+        // Heartbeats move only `heartbeatAt`, which drives the stale state.
+        if current.attachedJob != next.attachedJob { return false }
+        if current.attachedJobUpdatedAt != next.attachedJobUpdatedAt { return false }
         return true
     }
 

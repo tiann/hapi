@@ -15,7 +15,7 @@ const state = {
 const ctx = {
     metadata: { flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
         conversationHistoryPoints: { 'local-interrupted': true } as Record<string, true> },
-    disabled: false, historyActionPending: false,
+    disabled: false, historyActionPending: false, allowInactiveFork: false,
     isLatestCompletedBoundary: (_id: string) => true,
     onForkConversation: onFork, onRewindConversation: async () => {}
 }
@@ -54,6 +54,7 @@ describe('user-only completed fork boundary', () => {
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = true
         ctx.metadata.conversationHistoryPoints = { 'local-interrupted': true }
         ctx.disabled = false
+        ctx.allowInactiveFork = false
         ctx.historyActionPending = false
     })
 
@@ -75,6 +76,28 @@ describe('user-only completed fork boundary', () => {
         mount()
         await confirmFork()
         expect(onFork.mock.calls[0]).toEqual([])
+    })
+
+    it('offers an archived Codex fork while leaving rewind disabled', async () => {
+        state.thread.isRunning = false
+        ctx.disabled = true
+        ctx.allowInactiveFork = true
+        mount()
+        expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
+        await confirmFork()
+        expect(onFork.mock.calls[0]).toEqual([])
+    })
+
+    it('uses inactive-fork support when cached live capabilities no longer advertise fork', async () => {
+        state.thread.isRunning = false
+        ctx.disabled = true
+        ctx.allowInactiveFork = true
+        ctx.metadata.capabilities.conversationHistory.forkCurrent = false
+        ctx.metadata.capabilities.conversationHistory.forkAtMessage = false
+        try {
+            mount()
+            await confirmFork()
+        } finally { ctx.metadata.capabilities.conversationHistory.forkCurrent = true }
     })
 
     it.each(['claude', 'pi', 'agy', 'dsh'])('does not unlock a running %s current fork', flavor => {
