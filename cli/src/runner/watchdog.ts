@@ -9,11 +9,15 @@
  *
  * 1. The runner refreshes a heartbeat file (~/.hapi/runner-heartbeat) at the
  *    very top of every heartbeat tick, before any await/network work — so the
- *    file only goes stale when the event loop itself is frozen.
+ *    file only goes stale when the event loop itself is frozen. The file's
+ *    second line records whether the runner is supervised
+ *    (HAPI_RUNNER_SUPERVISED=1).
  * 2. A macOS LaunchAgent runs a pure-bash watchdog script every 60s. If the
- *    heartbeat is stale while a `hapi runner start` process still exists, the
- *    script kill -9's the oldest matching pid so the external guard can
- *    respawn a fresh runner.
+ *    heartbeat is stale while a `hapi runner start` process still exists AND
+ *    the runner advertised a supervisor, the script kill -9's the oldest
+ *    matching pid so the external guard can respawn a fresh runner. An
+ *    unsupervised runner is never killed: nothing would restart it, so the
+ *    kill would trade a frozen-but-recoverable machine for an offline one.
  *
  * Everything here is best-effort by contract: a watchdog failure must never
  * block or crash the runner it is supposed to protect.
@@ -37,14 +41,24 @@ export function runnerHeartbeatPath(): string {
 /**
  * Refresh the heartbeat file with the current epoch milliseconds. Called
  * unconditionally at the top of every heartbeat tick and once at startup, so
- * a fresh file means "the event loop is alive". Best-effort: a failed write
- * falls back to a utimes touch (mtime refresh), and a failed touch is
- * ignored — the watchdog must never take the runner down with it.
+ * a fresh file means "the event loop is alive". The second line records
+ * whether THIS runner is supervised (HAPI_RUNNER_SUPERVISED=1): the
+ * out-of-process watchdog only kills a frozen runner that advertised a
+ * supervisor which will respawn it — killing an unsupervised (default
+ * detached) runner would take the machine offline with nothing to restart
+ * it. Because every runner rewrites the whole file on every tick, a later
+ * unsupervised runner overwrites a stale supervised marker before it can
+ * authorize a kill. Best-effort: a failed write falls back to a utimes
+ * touch (mtime refresh), and a failed touch is ignored — the watchdog must
+ * never take the runner down with it.
  */
-export function touchRunnerHeartbeat(now: number = Date.now()): void {
+export function touchRunnerHeartbeat(
+    now: number = Date.now(),
+    supervised: boolean = process.env.HAPI_RUNNER_SUPERVISED === '1'
+): void {
     const heartbeatPath = runnerHeartbeatPath();
     try {
-        writeFileSync(heartbeatPath, String(now));
+        writeFileSync(heartbeatPath, `${now}\n${supervised ? 'supervised' : 'unsupervised'}\n`);
         return;
     } catch {
         // Fall through to the utimes touch below.
@@ -119,6 +133,20 @@ fi
 # No live runner process means a clean stop — that is the guard's business.
 pids=$(pgrep -f "$RUNNER_PATTERN" 2>/dev/null || true)
 if [ -z "$pids" ]; then
+  exit 0
+fi
+
+# Destructive recovery only for supervised runners. The kill assumes an
+# external supervisor (launchd KeepAlive, pm2, systemd, guard script) will
+# respawn a fresh runner afterwards — that promise is exactly what
+# HAPI_RUNNER_SUPERVISED=1 advertises, and the runner rewrites it into the
+# heartbeat file's second line on every tick. An unsupervised (default
+# detached) runner must be left alone: killing it would take the machine
+# offline with nothing to restart it, and the rewrite above guarantees a
+# stale supervised marker from an earlier runner cannot authorize this kill.
+supervision=$(sed -n '2p' "$HEARTBEAT" 2>/dev/null | tr -d '[:space:]')
+if [ "$supervision" != "supervised" ]; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') stale runner heartbeat: age=\${age}s but the runner is unsupervised; leaving recovery to the operator" >> "$LOG_PATH" 2>/dev/null || true
   exit 0
 fi
 

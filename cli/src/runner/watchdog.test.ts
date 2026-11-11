@@ -86,6 +86,11 @@ describe('buildWatchdogScript', () => {
     expect(script).toContain('head -n 1');
     // Missing heartbeat file means "never started" — nothing to watch.
     expect(script).toContain('[ ! -f "$HEARTBEAT" ]');
+    // Destructive recovery is gated on the runner's own supervision claim
+    // (heartbeat file line 2): an unsupervised runner is never killed.
+    expect(script).toContain("sed -n '2p' \"$HEARTBEAT\"");
+    expect(script).toContain('[ "$supervision" != "supervised" ]');
+    expect(script).toContain('unsupervised; leaving recovery to the operator');
   });
 
   it('honors custom staleSeconds and runnerPattern', async () => {
@@ -292,6 +297,60 @@ describe('ensureWatchdogInstalled', () => {
     expect(loggerDebugMock).toHaveBeenCalledWith(
       expect.stringContaining('bootstrap did not report success')
     );
+  });
+});
+
+describe('touchRunnerHeartbeat supervision claim', () => {
+  const realWriteFileSync = vi.importActual<typeof import('node:fs')>('node:fs') as unknown as { writeFileSync: (p: string, d: string) => void };
+  const originalSupervisedEnv = process.env.HAPI_RUNNER_SUPERVISED;
+  const heartbeatPath = join(os.homedir(), '.hapi', 'runner-heartbeat');
+  const written: Array<{ path: string; data: string }> = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    written.length = 0;
+    writeFileSyncMock.mockImplementation(((path: unknown, data: unknown) => {
+      written.push({ path: String(path), data: String(data) });
+    }) as any);
+  });
+
+  afterAll(() => {
+    if (originalSupervisedEnv === undefined) {
+      delete process.env.HAPI_RUNNER_SUPERVISED;
+    } else {
+      process.env.HAPI_RUNNER_SUPERVISED = originalSupervisedEnv;
+    }
+    if (originalPlatformDescriptor) {
+      Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+    }
+  });
+
+  it('writes the timestamp plus an unsupervised claim by default', async () => {
+    delete process.env.HAPI_RUNNER_SUPERVISED;
+    const { touchRunnerHeartbeat } = await import('./watchdog');
+
+    touchRunnerHeartbeat(1_700_000_000_000);
+
+    expect(written[0].path).toBe(heartbeatPath);
+    expect(written[0].data).toBe('1700000000000\nunsupervised\n');
+  });
+
+  it('writes the supervised claim when HAPI_RUNNER_SUPERVISED=1', async () => {
+    process.env.HAPI_RUNNER_SUPERVISED = '1';
+    const { touchRunnerHeartbeat } = await import('./watchdog');
+
+    touchRunnerHeartbeat(1_700_000_000_001);
+
+    expect(written[0].data).toBe('1700000000001\nsupervised\n');
+  });
+
+  it('rewrites the claim on every tick so a later unsupervised runner clears a stale marker', async () => {
+    process.env.HAPI_RUNNER_SUPERVISED = '1';
+    const { touchRunnerHeartbeat } = await import('./watchdog');
+    touchRunnerHeartbeat(1);
+    delete process.env.HAPI_RUNNER_SUPERVISED;
+    touchRunnerHeartbeat(2);
+    expect(written[1].data).toBe('2\nunsupervised\n');
   });
 });
 
