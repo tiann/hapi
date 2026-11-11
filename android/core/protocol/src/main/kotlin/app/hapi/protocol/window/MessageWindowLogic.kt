@@ -45,6 +45,14 @@ object MessageWindowLogic {
         return MessagePosition(at = message.positionAt, seq = seq)
     }
 
+    /**
+     * Swap one row's content in place (the gap-recovery sweep's by-id
+     * refresh): merged by id, re-deriving the seq bounds and bumping the
+     * messages version like every other messages change.
+     */
+    fun mergeRefreshedRow(previous: MessageWindowState, row: WindowMessage): MessageWindowState =
+        previous.withMessages(MessageMerge.mergeMessages(previous.messages, listOf(row)))
+
     enum class PositionEnd { Oldest, Newest }
 
     fun derivePosition(messages: List<WindowMessage>, end: PositionEnd): MessagePosition? {

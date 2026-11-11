@@ -14,6 +14,8 @@ import app.hapi.protocol.window.PAGE_SIZE
 import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.DecryptedMessage
+import app.hapi.protocol.wire.MessageContextPage
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.OptionalField
@@ -116,6 +118,8 @@ class MessageWindowStoreTest {
     /** Api whose responses are released manually, so tests control interleaving. */
     private class GatedMessagesApi : MessagesApi {
         val requests = mutableListOf<MessagesQuery>()
+        val contextRequests = mutableListOf<String>()
+        val contextResponses = ArrayDeque<MessageContextResponse?>()
         private val responses = Channel<MessagesResponse>(Channel.UNLIMITED)
 
         fun release(response: MessagesResponse) {
@@ -129,6 +133,11 @@ class MessageWindowStoreTest {
 
         override suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse =
             QueuedStateResponse(emptyList(), emptyList())
+
+        override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? {
+            contextRequests += messageId
+            return if (contextResponses.isEmpty()) null else contextResponses.removeFirst()
+        }
     }
 
     // ------------------------------------------------------------ tail sync --
@@ -637,5 +646,69 @@ class MessageWindowStoreTest {
         assertEquals(800, state.messages.size)
         assertEquals(1L, state.oldestPosition!!.seq)
         assertTrue(state.hasMore)
+    }
+
+    @Test
+    fun `refreshes a retained non-terminal tool-call row the latest page cannot reach`() = runTest {
+        val stale = toolCallRow("call-row", 10, 10_000, "in_progress")
+        val merged = toolCallRow("call-row", 10, 10_000, "completed")
+        val cachedTail = (1L..9L).map { agentRow("r-$it", it, it * 1000) }
+        val missed = (11L..310L).map { agentRow("r-$it", it, it * 1000) }
+        val latestPageRows = (111L..310L).map { agentRow("r-$it", it, it * 1000) }
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("gap-sweep", api, backgroundScope, initialState = MessageWindowState(
+            sessionId = "gap-sweep", epoch = 1, hasMore = true,
+            oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(10_000, 10),
+            messages = cachedTail.map { it.asWindowMessage() } + stale.asWindowMessage(),
+        ))
+        api.release(afterPage(missed, epoch = 1, nextAfter = 310_000L to 310L, hasMore = false))
+        api.release(latestPage(latestPageRows, epoch = 1))
+        api.contextResponses += MessageContextResponse(
+            messages = listOf(merged),
+            targetMessageId = "call-row",
+            page = MessageContextPage(
+                epoch = 1, nextBeforeSeq = 1, nextBeforeAt = 1000,
+                snapshotHeadSeq = 310, snapshotHeadAt = 310_000, hasMore = false,
+            ),
+        )
+
+        store.recoverAfterGapResume()
+
+        // The call was enriched while disconnected and 300 newer rows pushed
+        // it beyond the latest page: only a by-id context refresh can
+        // converge the cached card.
+        assertEquals(listOf("call-row"), api.contextRequests)
+        val state = store.state.value
+        assertEquals(merged.content, state.messages.first { it.id == "call-row" }.wire.content)
+        assertEquals(310, state.messages.size)
+        assertEquals(310L, state.newestPosition!!.seq)
+        assertNull(state.warning)
+    }
+
+    @Test
+    fun `finishes the run with a warning when the context refresh finds no row`() = runTest {
+        val stale = toolCallRow("call-row", 10, 10_000, "in_progress")
+        val cachedTail = (1L..9L).map { agentRow("r-$it", it, it * 1000) }
+        val missed = (11L..310L).map { agentRow("r-$it", it, it * 1000) }
+        val latestPageRows = (111L..310L).map { agentRow("r-$it", it, it * 1000) }
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("gap-sweep-missing", api, backgroundScope, initialState = MessageWindowState(
+            sessionId = "gap-sweep-missing", epoch = 1, hasMore = true,
+            oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(10_000, 10),
+            messages = cachedTail.map { it.asWindowMessage() } + stale.asWindowMessage(),
+        ))
+        api.release(afterPage(missed, epoch = 1, nextAfter = 310_000L to 310L, hasMore = false))
+        api.release(latestPage(latestPageRows, epoch = 1))
+
+        store.recoverAfterGapResume()
+
+        // The context endpoint no longer knows the row: the sweep leaves it
+        // as is, surfaces the warning, and finishes the run's bookkeeping
+        // instead of leaving the window marked syncing.
+        assertEquals(listOf("call-row"), api.contextRequests)
+        val state = store.state.value
+        assertEquals(stale.content, state.messages.first { it.id == "call-row" }.wire.content)
+        assertTrue(state.warning != null)
+        assertEquals(false, state.isSyncingTail)
     }
 }

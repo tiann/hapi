@@ -2,6 +2,8 @@ package app.hapi.data.store
 
 import app.hapi.data.api.MessagesApi
 import app.hapi.data.api.MessagesQuery
+import app.hapi.protocol.chat.AGENT_MESSAGE_PAYLOAD_TYPE
+import app.hapi.protocol.window.MessageMerge
 import app.hapi.protocol.window.MessagePosition
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageViewMode
@@ -19,6 +21,9 @@ import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.SyncEvent
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -375,6 +380,58 @@ class MessageWindowStore(
                         ).copy(pendingGapRecovery = false, preferLatestOnActivation = false)
                     }
 
+                    // A tool-call row the client cached before the gap can be
+                    // enriched in place afterwards; when more than a latest
+                    // page of newer rows followed, neither the catch-up
+                    // (newer rows only) nor the page reaches it, and the
+                    // cached card keeps its stale input/status. Refresh those
+                    // retained non-terminal rows by id through the
+                    // message-context endpoint: bounded, newest first, and
+                    // skipped for rows the catch-up already delivered fresh
+                    // (at or after the recovery cursor).
+                    val pageOldest = MessageWindowLogic.pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
+                    if (pageOldest != null) {
+                        val refreshCandidates = _state.value.messages
+                            .filter { message ->
+                                val position = MessageWindowLogic.messagePosition(message)
+                                if (position == null || position >= pageOldest) return@filter false
+                                if (initialCursor != null && position > initialCursor) return@filter false
+                                isNonTerminalToolCallRow(message)
+                            }
+                            .sortedByDescending { MessageWindowLogic.messagePosition(it)!! }
+                            .take(GAP_ROW_REFRESH_LIMIT)
+                        for (candidate in refreshCandidates) {
+                            val context = api.getMessageContext(sessionId, candidate.id)
+                            if (!isCurrentTailSync(generation)) return
+                            val refreshed = context?.messages?.find { it.id == candidate.id }?.asWindowMessage()
+                            if (refreshed == null) {
+                                // The row is no longer reachable through the
+                                // context endpoint: leave it as is and finish
+                                // the run's bookkeeping — an early return here
+                                // would leave the window marked syncing.
+                                finishTailSync(generation, "Failed to refresh a merged tool call")
+                                return
+                            }
+                            if (context.page.epoch != _state.value.epoch) {
+                                // The refresh answered under a different
+                                // epoch: server rows may have been deleted
+                                // since the page was fetched. Mark the window
+                                // for the authoritative replacement instead
+                                // of reconciling against a stale snapshot,
+                                // and finish the run's bookkeeping.
+                                update { previous ->
+                                    if (previous.syncGeneration != generation) return@update previous
+                                    previous.copy(requiresLatestReset = true)
+                                }
+                                finishTailSync(generation, "Failed to refresh a merged tool call")
+                                return
+                            }
+                            update { previous ->
+                                if (previous.syncGeneration != generation) return@update previous
+                                MessageWindowLogic.mergeRefreshedRow(previous, refreshed)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -758,6 +815,26 @@ class MessageWindowStore(
 
     private companion object {
         const val QUEUED_STATE_BATCH_SIZE = 1000
+
+        /** Gap recovery refreshes at most this many retained non-terminal
+         *  tool-call rows through the message-context endpoint (newest
+         *  first). Live calls are a handful; the bound keeps a pathological
+         *  window from fanning out requests. */
+        const val GAP_ROW_REFRESH_LIMIT = 20
     }
 
+    /** A cached tool-call row that can still be enriched in place: its
+     *  payload is a live `tool-call` whose merged status has not reached a
+     *  terminal tier. Terminal rows are done; unknown or missing status
+     *  reads as pending. */
+    private fun isNonTerminalToolCallRow(message: WindowMessage): Boolean {
+        val envelope = message.wire.content as? JsonObject ?: return false
+        if ((envelope["role"] as? JsonPrimitive)?.contentOrNull != "agent") return false
+        val payload = envelope["content"] as? JsonObject ?: return false
+        if ((payload["type"] as? JsonPrimitive)?.contentOrNull != AGENT_MESSAGE_PAYLOAD_TYPE) return false
+        val data = payload["data"] as? JsonObject ?: return false
+        if ((data["type"] as? JsonPrimitive)?.contentOrNull != "tool-call") return false
+        val status = (data["status"] as? JsonPrimitive)?.contentOrNull
+        return status != "completed" && status != "failed"
+    }
 }
