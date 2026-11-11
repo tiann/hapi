@@ -31,6 +31,8 @@ import { fileURLToPath } from 'node:url';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
+import { DISCLAIM_RESPONSIBILITY_ENV, shouldDisclaimResponsibility } from '@/runtime/disclaimExec';
+import { canDisclaimForChildren } from '@/runtime/responsibility';
 
 const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
 
@@ -147,8 +149,12 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // for when "hapi" was started and don't care about the underlying node process
   // details and flags we use to achieve the same result.
   const fullCommand = `hapi ${args.join(' ')}`;
-  logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
-  
+  // A detached process outlives its spawner. On macOS, when the spawner's
+  // responsible process goes away with it (launchd-managed runner, or its npm
+  // launcher), the child must not keep it (see runtime/disclaimExec.ts).
+  const disclaimResponsibility = shouldDisclaimResponsibility(process.platform, options.detached, canDisclaimForChildren);
+  logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}${disclaimResponsibility ? ' (macOS responsibility disclaim requested)' : ''}`);
+
   const compiledMode = isBunCompiled();
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
@@ -179,6 +185,12 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
         ? invokedCwd
         : resolveInvokedCwd(options.cwd);
     shouldSetEnv = true;
+  }
+  // Set or cleared explicitly so an inherited request never leaks to a child.
+  if (disclaimResponsibility) {
+    finalEnv[DISCLAIM_RESPONSIBILITY_ENV] = String(process.pid);
+  } else {
+    delete finalEnv[DISCLAIM_RESPONSIBILITY_ENV];
   }
   if (shouldSetEnv) {
     finalOptions.env = finalEnv;

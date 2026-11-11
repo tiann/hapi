@@ -204,20 +204,14 @@ export function getScrollIntent(params: {
 }
 
 export function shouldShowScrollToBottomButton(intent: ScrollIntent): boolean {
-    return intent.isScrollingDown && !intent.isNearBottom
+    return !intent.isNearBottom
 }
 
 export function getScrollToBottomButtonVisibility(
-    wasVisible: boolean,
+    _wasVisible: boolean,
     intent: ScrollIntent
 ): boolean {
-    if (intent.isNearBottom || intent.isScrollingUp) {
-        return false
-    }
-    if (intent.isScrollingDown) {
-        return true
-    }
-    return wasVisible
+    return shouldShowScrollToBottomButton(intent)
 }
 
 export function shouldRenderScrollToBottomButton(
@@ -1314,6 +1308,7 @@ export function HappyThread(props: {
             if (isInitialScrollSettling()) {
                 setShowScrollToBottom(false)
                 if (shouldCancelInitialScrollSettling(intent, hadExplicitUpwardIntent)) {
+                    setShowScrollToBottom(shouldShowScrollToBottomButton(intent))
                     initialScrollDeadlineRef.current = 0
                     clearInitialScrollTimers()
                     setAutoScrollMode(false)
@@ -1359,7 +1354,7 @@ export function HappyThread(props: {
 
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
                 tailScrollInProgressRef.current = false
-                setShowScrollToBottom(false)
+                setShowScrollToBottom(shouldShowScrollToBottomButton(intent))
                 setAutoScrollMode(false)
                 setAtBottomMode(false)
                 return

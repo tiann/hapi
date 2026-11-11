@@ -15,7 +15,8 @@ import {
     MODEL_OPTIONS,
     type AgentType,
     type CodexReasoningEffort,
-    type LaunchEffort
+    type LaunchEffort,
+    type NewSessionServiceTier
 } from './types'
 import { LEGACY_YOLO_BRIDGE_AGENTS, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
 
@@ -28,6 +29,7 @@ export type PreferredLaunchSettings = {
     cursorSelectedBase: string
     effort: LaunchEffort
     modelReasoningEffort: CodexReasoningEffort
+    serviceTier?: NewSessionServiceTier
     permissionMode?: PermissionMode
 }
 
@@ -154,6 +156,8 @@ export function loadPreferredLaunchSettings(
             modelReasoningEffort: typeof parsed.modelReasoningEffort === 'string'
                 ? parsed.modelReasoningEffort
                 : 'default',
+            ...(agent === 'codex' && (parsed.serviceTier === 'fast' || parsed.serviceTier === 'standard')
+                ? { serviceTier: parsed.serviceTier } : {}),
             ...(permissionMode ? { permissionMode } : {})
         }
     } catch {
@@ -227,7 +231,7 @@ export function resolvePreferredLaunchSettings(
         && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
         ? (legacyYolo
             ? resolveHapiYoloPermissionMode(agent)
-            : 'default')
+            : resolvePermissionModeForFlavor('default', agent as AgentFlavor))
         : null
     const hubMode = hubPermissionMode
         ? (() => {
@@ -244,10 +248,10 @@ export function resolvePreferredLaunchSettings(
             : preferredPermissionMode !== undefined
                 // Explicit saved mode that left the launch catalog → Default,
                 // never hub yolo (would upgrade sandboxed → unrestricted).
-                ? 'default'
+                ? resolvePermissionModeForFlavor('default', agent as AgentFlavor)
                 : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
                     ? legacyYoloBridgeMode
-                    : hubMode ?? 'default'
+                    : hubMode ?? resolvePermissionModeForFlavor('default', agent as AgentFlavor)
         : undefined
 
     return {
@@ -255,6 +259,7 @@ export function resolvePreferredLaunchSettings(
         cursorSelectedBase: preferred?.cursorSelectedBase ?? 'auto',
         effort,
         modelReasoningEffort,
+        ...(agent === 'codex' && preferred?.serviceTier ? { serviceTier: preferred.serviceTier } : {}),
         ...(permissionMode ? { permissionMode } : {})
     }
 }

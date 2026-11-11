@@ -22,6 +22,7 @@ import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
+import { JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX } from './sessionJobWake'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
@@ -65,7 +66,8 @@ function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage
         createdAt: message.createdAt,
         invokedAt: message.invokedAt,
         scheduledAt: message.scheduledAt,
-        ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
+        ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
+        ...(message.deliveryPending ? { deliveryPending: true as const } : {})
     }
 }
 
@@ -165,6 +167,10 @@ function contentForDeferredDelivery(content: unknown): unknown {
     if (!isObject(content) || content.role !== 'user' || !isObject(content.meta)) {
         return content
     }
+    // Replay paths (replayImmediateQueuedMessages, releaseDeliverableQueuedMessages)
+    // also surface stragglers that never had delivery metadata, e.g. legacy rows
+    // written before meta became mandatory (aliveEvents "queued-before-attach").
+    if (!Object.keys(content.meta).length) return content
     if (content.meta.deliveryMode !== 'steer') return content
     return {
         ...content,
@@ -257,7 +263,9 @@ export class MessageService {
 
     getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
         const states = this.store.messages.getLocalMessageStates(sessionId, localIds)
+        const dispatchingLocalIds = states.filter(state => state.invokedAt === null && state.deliveryState === 'dispatching').map(state => state.localId)
         return {
+            ...(dispatchingLocalIds.length ? { dispatchingLocalIds } : {}),
             queuedLocalIds: states
                 .filter((state) => state.invokedAt === null && state.deliveryState !== 'indeterminate' && state.deliveryState !== 'dispatching')
                 .map((state) => state.localId),
@@ -537,7 +545,8 @@ export class MessageService {
             createdAt: message.createdAt,
             invokedAt: message.invokedAt,
             scheduledAt: message.scheduledAt,
-            ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
+            ...(message.deliveryState ? { deliveryState: message.deliveryState } : {}),
+            ...(message.deliveryPending ? { deliveryPending: true as const } : {})
         }))
     }
 
@@ -1009,7 +1018,8 @@ export class MessageService {
                 createdAt: msg.createdAt,
                 invokedAt: msg.invokedAt,
                 scheduledAt: msg.scheduledAt,
-                ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {})
+                ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {}),
+                ...(msg.deliveryPending ? { deliveryPending: true as const } : {})
             }
         })
         return { actualSessionId, createdAt: msg.createdAt }
@@ -1028,11 +1038,13 @@ export class MessageService {
      * see the row in the next mature-scan tick and the user's prompt would be
      * silently dropped.  See HAPI Bot R4 finding.
      *
-     * Peer rows (`ping-peer-` localIds) are also skipped: the sweep's synthetic
-     * invokedAt is not a runtime-consumption ACK, so stamping one would falsely
-     * confirm a delivery the recipient runtime never made. Skipped peer rows
-     * stay pending and replayable on re-attach; only a real runtime ACK
-     * (messages-consumed) confirms them.
+     * Peer rows (`ping-peer-` localIds) and job-complete wakes (`hapi-job-wake:`)
+     * are also skipped: the sweep's synthetic invokedAt is not a runtime-consumption
+     * ACK, so stamping one would falsely confirm a delivery the recipient runtime
+     * never made. Skipped rows stay pending and replayable on re-attach; only a
+     * real runtime ACK (messages-consumed) confirms them. Job wakes additionally
+     * mark the SQLite claim delivered before the agent may have consumed the
+     * prompt — sweeping them would strand the batch continuation (#1489 / #1424).
      *
      * Returns the list of localIds that were stamped and the invokedAt timestamp,
      * or null if no messages needed sweeping.
@@ -1044,7 +1056,11 @@ export class MessageService {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
         const localIds = queued
             .map((m) => m.localId)
-            .filter((id): id is string => typeof id === 'string' && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX))
+            .filter((id): id is string =>
+                typeof id === 'string'
+                && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX)
+                && !id.startsWith(JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX)
+            )
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)

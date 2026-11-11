@@ -4,11 +4,12 @@ import type { FetchLike } from './opencodeCompactBridge';
 import { collapseWhitespace, truncateOpencodeProviderText } from './opencodeErrorText';
 
 /**
- * `session.status` with `type: "retry"` — OpenCode announcing that it hit an
- * upstream failure and will try again.
+ * An OpenCode retry announcement, normalized from v1 `session.status` or
+ * v2 `session.retry.scheduled` into a one-based retry count.
  *
- * The payload also carries `next` (the absolute timestamp of the following
+ * The v1 payload also carries `next` (the absolute timestamp of the following
  * attempt) and an optional `action` (a title/message/label/link hint).
+ * v2 carries its timestamp as `at`; neither timestamp is rendered.
  * Neither is modelled. `next` would only invite a countdown, which must not
  * be rendered — see formatOpencodeRetryStatus. `action` has never been
  * observed on a live retry, and rendering it meant concatenating four more
@@ -82,10 +83,11 @@ const UNPRODUCTIVE_ATTEMPTS_BEFORE_WARNING = 5;
  * over SSE to every connected client, and it is kept in session exports.
  * `foldApiErrorEvents` collapses a run of them when a client renders, but
  * that is a view concern — the rows, the traffic and the export are not
- * folded. OpenCode never gives up and its backoff tops out at 30 seconds,
- * so an unfiltered subscription writes about two rows a minute for as long
- * as the provider keeps refusing: the measured 40-minute stall alone would
- * have been 85 of them, and a session left overnight is four figures.
+ * folded. The measured OpenCode 1.18.15 retry loop kept going for a
+ * 40-minute stall (85 retries), with backoff capped at 30 seconds. An
+ * unfiltered subscription would persist each of those reports. Newer
+ * versions may bound retries, but retaining this sampling policy keeps
+ * long runs legible across versions.
  *
  * Sampling on the attempt number rather than on elapsed time keeps this a
  * pure function of what the agent itself published — so it is decidable the
@@ -116,7 +118,7 @@ function isReportableRetryAttempt(attempt: number): boolean {
  * like a clean end of stream forever, reconnecting twice a second without
  * even logging it.
  *
- * There is no attempt ceiling on purpose. This is the only channel carrying
+ * There is no connection-attempt ceiling on purpose. This subscription carries
  * upstream retry reports, a reconnect costs a loopback request, and a
  * session can outlive a transient outage by hours — giving up for good
  * would silently leave the user back where this feature started. (Only a
@@ -154,7 +156,7 @@ export function formatOpencodeRetryStatus(status: OpencodeRetryStatus): string {
 }
 
 /**
- * Reads one `session.status` retry payload.
+ * Validates the count and message from either retry event dialect.
  *
  * Every string here is provider-authored and unbounded, exactly like the
  * `session/prompt` error message, so it is capped at the parse boundary —
@@ -162,8 +164,7 @@ export function formatOpencodeRetryStatus(status: OpencodeRetryStatus): string {
  * rendered. See OPENCODE_PROVIDER_TEXT_MAX_LENGTH for the measurement
  * behind that.
  */
-function parseRetryStatus(status: unknown): OpencodeRetryStatus | null {
-    if (!isObject(status) || status.type !== 'retry') return null;
+function parseRetryStatus(attemptValue: unknown, messageValue: unknown): OpencodeRetryStatus | null {
     // A counting number or nothing. `typeof === 'number'` would let
     // JSON.parse's Infinity (from an overflowing literal) through, and
     // asNumber alone still admits 0, -1 and 0.5 — all of which satisfy the
@@ -171,12 +172,12 @@ function parseRetryStatus(status: unknown): OpencodeRetryStatus | null {
     // "(attempt 0.5)". Zero is worse than cosmetic: it is the same value
     // the turn-boundary reset uses as its sentinel, so accepting it merges
     // "saw a retry" with "this turn has had none".
-    const attempt = asNumber(status.attempt);
+    const attempt = asNumber(attemptValue);
     // Collapsed before it is judged, not after: a provider message of "  \n  "
     // is truthy but says nothing, and embedded newlines would survive into a
     // status line this module promises to keep to one line. Truncating alone
     // does neither.
-    const message = collapseWhitespace(asString(status.message) ?? '');
+    const message = collapseWhitespace(asString(messageValue) ?? '');
     // Only what is actually rendered is required: dropping a retry because a
     // field we never show is missing or malformed would hide the very report
     // this exists to deliver.
@@ -187,17 +188,19 @@ function parseRetryStatus(status: unknown): OpencodeRetryStatus | null {
 
 /**
  * Subscribes to an `opencode acp` subprocess's server event stream
- * (`GET {baseUrl}/event`, Server-Sent Events) and reports this session's
+ * (`/event` for v1, `/api/event` for v2, Server-Sent Events) and reports this session's
  * upstream retries.
  *
- * This exists because that is the *only* channel that carries them.
- * Measured against opencode 1.18.15 with a provider stubbed to always answer
+ * This was the only observed retry channel in opencode 1.18.15.
+ * Measured against that version with a provider stubbed to always answer
  * 429: over 40 minutes and 85 retries the ACP channel produced zero
  * `session/update` notifications and zero stderr output while
  * `session/prompt` stayed pending, yet this stream emitted a
  * `session.status` retry event — carrying the provider's own message and
  * attempt number — throughout. Without it the user sees a session that
  * appears to be thinking and never learns that it is rate limited.
+ * OpenCode 2.2.5 publishes `session.retry.scheduled` here; its ACP notices
+ * are a separate format and are not parsed by this subscription.
  *
  * **The `directory` query parameter is not optional.** Subscribing to the
  * same server with and without it from one process and comparing: the
@@ -294,42 +297,50 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
             const record = isObject(properties.info) ? properties.info : isObject(properties.part) ? properties.part : properties;
             if (record.sessionID === sessionId) options.onEvent?.(event.type, properties, typeof event.id === 'string' ? event.id : undefined);
         }
-        if (event.type !== 'session.status') return;
         if (!properties) return;
-        // Status is per-session bookkeeping and drives the dedupe state
-        // below, so an event that cannot be attributed must not touch it.
+        // Retry bookkeeping must be attributed before it changes dedupe state.
         if (asString(properties.sessionID) !== sessionId) return;
+
+        switch (event.type) {
+            case 'session.step.started':
+            case 'session.execution.started':
+            case 'session.execution.succeeded':
+            case 'session.execution.failed':
+            case 'session.execution.interrupted':
+                lastSeenAttempt = 0;
+                return;
+        }
+        if (event.type !== 'session.status' && event.type !== 'session.retry.scheduled') return;
 
         if (!sawAttributedStatus) {
             sawAttributedStatus = true;
-            // The one positive confirmation that this subscription is wired
-            // to the right session and directory. Without it, a wrong
-            // baseUrl and a session that simply never retried look
-            // identical in the logs — and this whole feature exists
-            // because silence was the bug.
+            // Constant text only: provider events may contain response credentials.
             logger.debug('[opencode-events] receiving status for this session; retry reporting is live');
         }
 
-        const isRetry = isObject(properties.status) && properties.status.type === 'retry';
-        if (!isRetry) {
-            // idle or busy: a turn boundary. Deliberately not surfaced —
-            // turn state already has its own channel, and the hub layers
-            // its own queue rules on top of what this session reports —
-            // but it does mean the next turn's attempt 1 is new
-            // information again. Both are honoured rather than just idle:
-            // a reconnect that lands between the two would otherwise leave
-            // the following turn's retries suppressed as duplicates.
-            lastSeenAttempt = 0;
-            return;
+        let retry: OpencodeRetryStatus | null;
+        if (event.type === 'session.retry.scheduled') {
+            // OpenCode 2.2.5 counts the initial request as attempt 1, then
+            // increments before scheduling a retry. HAPI counts retries from 1.
+            const attempt = asNumber(properties.attempt);
+            retry = parseRetryStatus(
+                attempt === null ? null : attempt - 1,
+                isObject(properties.error) ? properties.error.message : null
+            );
+        } else {
+            const status = properties.status;
+            if (!isObject(status) || status.type !== 'retry') {
+                // v1 idle/busy marks a turn boundary; turn state itself is
+                // reported through its existing channel.
+                lastSeenAttempt = 0;
+                return;
+            }
+            retry = parseRetryStatus(status.attempt, status.message);
         }
-
-        const retry = parseRetryStatus(properties.status);
         if (!retry) {
-            // A retry we could not read (empty message, schema drift) is
-            // still a retry: treating it as a turn boundary would reset
-            // the dedupe state and let the agent's next repeat of the
-            // same attempt through as if it were new.
-            logger.debug('[opencode-events] ignoring unreadable retry status', properties.status);
+            // Unreadable retries are still retries, not dedupe boundaries.
+            // Never log the payload: it may contain raw provider responses.
+            logger.debug('[opencode-events] ignoring unreadable retry status');
             return;
         }
 
@@ -366,8 +377,8 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         let payload: unknown;
         try {
             payload = JSON.parse(data);
-        } catch (error) {
-            logger.debug('[opencode-events] ignoring unparsable event payload', error);
+        } catch {
+            logger.debug('[opencode-events] ignoring unparsable event payload');
             return;
         }
         // v2 wraps the v1-shaped body in an envelope: { id, type, data },
@@ -389,8 +400,8 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         // "unparsable payload" would file it as the latter and lose it.
         try {
             handleEvent(payload);
-        } catch (error) {
-            logger.debug('[opencode-events] reporting a retry threw; continuing to read the stream', error);
+        } catch {
+            logger.debug('[opencode-events] reporting a retry threw; continuing to read the stream');
         }
     };
 
