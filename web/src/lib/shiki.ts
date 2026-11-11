@@ -1,61 +1,9 @@
-import { createHighlighterCore } from 'shiki/core'
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
+import { getLanguageHighlighter } from './shiki-loader'
 import type { HighlighterCore } from 'shiki/core'
 import type { Root, RootContent } from 'hast'
 import { useState, useEffect, useMemo, type ReactNode } from 'react'
 import { toJsxRuntime } from 'hast-util-to-jsx-runtime'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
-
-// Only 2 themes
-const THEMES = [
-    import('@shikijs/themes/github-light'),
-    import('@shikijs/themes/github-dark'),
-]
-
-// 30 common languages for LLM code output
-const LANGS = [
-    // Shell
-    import('@shikijs/langs/shellscript'),
-    import('@shikijs/langs/powershell'),
-    // Data formats
-    import('@shikijs/langs/json'),
-    import('@shikijs/langs/yaml'),
-    import('@shikijs/langs/toml'),
-    import('@shikijs/langs/xml'),
-    import('@shikijs/langs/ini'),
-    // Markup
-    import('@shikijs/langs/markdown'),
-    import('@shikijs/langs/html'),
-    import('@shikijs/langs/css'),
-    import('@shikijs/langs/scss'),
-    // JavaScript ecosystem
-    import('@shikijs/langs/javascript'),
-    import('@shikijs/langs/typescript'),
-    import('@shikijs/langs/jsx'),
-    import('@shikijs/langs/tsx'),
-    // Query languages
-    import('@shikijs/langs/sql'),
-    import('@shikijs/langs/graphql'),
-    // Systems languages
-    import('@shikijs/langs/c'),
-    import('@shikijs/langs/rust'),
-    import('@shikijs/langs/go'),
-    // JVM
-    import('@shikijs/langs/java'),
-    import('@shikijs/langs/kotlin'),
-    // Scripting
-    import('@shikijs/langs/python'),
-    import('@shikijs/langs/php'),
-    // Apple
-    import('@shikijs/langs/swift'),
-    // .NET
-    import('@shikijs/langs/csharp'),
-    // DevOps
-    import('@shikijs/langs/dockerfile'),
-    import('@shikijs/langs/make'),
-    // Misc
-    import('@shikijs/langs/diff'),
-]
 
 export const SHIKI_THEMES = {
     light: 'github-light',
@@ -69,6 +17,11 @@ export const langAlias: Record<string, string> = {
     zsh: 'shellscript',
     shell: 'shellscript',
     ps1: 'powershell',
+    ps: 'powershell',
+    properties: 'ini',
+    kts: 'kotlin',
+    'c#': 'csharp',
+    dockerfile: 'docker',
     js: 'javascript',
     ts: 'typescript',
     mjs: 'javascript',
@@ -89,24 +42,10 @@ export const langAlias: Record<string, string> = {
     makefile: 'make',
 }
 
-// Singleton highlighter instance
-let highlighterPromise: Promise<HighlighterCore> | null = null
-
-function getHighlighter(): Promise<HighlighterCore> {
-    if (!highlighterPromise) {
-        highlighterPromise = createHighlighterCore({
-            themes: THEMES,
-            langs: LANGS,
-            engine: createJavaScriptRegexEngine({ forgiving: true }),
-        })
-    }
-    return highlighterPromise
-}
-
 function resolveLanguage(lang: string | undefined): string {
     if (!lang) return 'text'
-    const cleaned = lang.startsWith('language-') ? lang.slice('language-'.length) : lang
-    const lower = cleaned.toLowerCase().trim()
+    const cleaned = lang.toLowerCase().trim()
+    const lower = cleaned.startsWith('language-') ? cleaned.slice('language-'.length) : cleaned
     if (lower === 'text' || lower === 'plaintext' || lower === 'txt') return 'text'
     return langAlias[lower] ?? lower
 }
@@ -172,106 +111,54 @@ function highlightToLineNodes(highlighter: HighlighterCore, code: string, lang: 
     })
 }
 
-/**
- * Custom hook for syntax highlighting with our minimal Shiki bundle.
- * Returns a single ReactNode of the highlighted code (inline structure),
- * or null while pending / for unsupported languages (plain-text fallback).
- */
-export function useShikiHighlighter(
-    code: string,
-    language: string | undefined
-): ReactNode | null {
-    const [highlighted, setHighlighted] = useState<ReactNode | null>(null)
-    const lang = useMemo(() => resolveLanguage(language), [language])
-
-    useEffect(() => {
-        let cancelled = false
-
-        async function highlight() {
-            const highlighter = await getHighlighter()
-            if (cancelled) return
-
-            const loadedLangs = highlighter.getLoadedLanguages()
-
-            // Skip highlighting for unsupported languages (graceful fallback to plain text)
-            if (lang === 'text' || !loadedLangs.includes(lang)) {
-                setHighlighted(null)
-                return
-            }
-
-            const hast = highlighter.codeToHast(code, {
-                lang,
-                themes: SHIKI_THEMES,
-                defaultColor: false,
-                structure: 'inline',
-            })
-
-            if (cancelled) return
-
-            const rendered = toJsxRuntime(hast, {
-                jsx,
-                jsxs,
-                Fragment,
-            })
-            setHighlighted(rendered as ReactNode)
-        }
-
-        // Debounce highlighting — 150ms reduces CPU pressure on Windows during
-        // streaming where code blocks update rapidly (see #310)
-        const timer = setTimeout(highlight, 150)
-        return () => {
-            cancelled = true
-            clearTimeout(timer)
-        }
-    }, [code, lang])
-
-    return highlighted
+function highlightToNode(highlighter: HighlighterCore, code: string, lang: string): ReactNode {
+    const hast = highlighter.codeToHast(code, {
+        lang,
+        themes: SHIKI_THEMES,
+        defaultColor: false,
+        structure: 'inline',
+    })
+    return toJsxRuntime(hast, { jsx, jsxs, Fragment })
 }
 
-/**
- * Like {@link useShikiHighlighter} but returns the highlighted code split
- * into one ReactNode per logical line, so callers can render each line in
- * its own row with an aligned line number that survives wrapping. Returns
- * null while pending / for unsupported languages (the caller falls back to
- * splitting the raw `code` on newlines).
- */
-export function useShikiHighlightedLines(
+function useHighlightedCode<T>(
     code: string,
-    language: string | undefined
-): ReactNode[] | null {
-    const [lines, setLines] = useState<ReactNode[] | null>(null)
+    language: string | undefined,
+    render: (highlighter: HighlighterCore, code: string, lang: string) => T,
+): T | null {
     const lang = useMemo(() => resolveLanguage(language), [language])
+    const [result, setResult] = useState<{ code: string; lang: string; value: T } | null>(null)
 
     useEffect(() => {
         let cancelled = false
-
         async function highlight() {
-            const highlighter = await getHighlighter()
-            if (cancelled) return
-
-            const loadedLangs = highlighter.getLoadedLanguages()
-
-            // Skip highlighting for unsupported languages (graceful fallback to plain text)
-            if (lang === 'text' || !loadedLangs.includes(lang)) {
-                setLines(null)
-                return
+            try {
+                const highlighter = await getLanguageHighlighter(lang)
+                if (cancelled || !highlighter) return
+                const value = render(highlighter, code, lang)
+                if (!cancelled) setResult({ code, lang, value })
+            } catch {
+                // Offline/chunk/tokenization failures retain readable plain text.
+                if (!cancelled) setResult(null)
             }
-
-            const lineNodes = highlightToLineNodes(highlighter, code, lang)
-
-            if (cancelled) return
-
-            setLines(lineNodes)
         }
-
-        // Debounce highlighting — 150ms reduces CPU pressure on Windows during
-        // streaming where code blocks update rapidly (see #310)
+        // Preserve the streaming debounce; do not display tokens for an older input.
         const timer = setTimeout(highlight, 150)
         return () => {
             cancelled = true
             clearTimeout(timer)
         }
-    }, [code, lang])
+    }, [code, lang, render])
 
-    return lines
+    return result?.code === code && result.lang === lang ? result.value : null
+}
+
+/** Highlight supported fences on demand; null means use the plain-text fallback. */
+export function useShikiHighlighter(code: string, language: string | undefined): ReactNode | null {
+    return useHighlightedCode(code, language, highlightToNode)
+}
+
+/** Highlight one ReactNode per logical line, preserving line numbers and wrapping. */
+export function useShikiHighlightedLines(code: string, language: string | undefined): ReactNode[] | null {
+    return useHighlightedCode(code, language, highlightToLineNodes)
 }

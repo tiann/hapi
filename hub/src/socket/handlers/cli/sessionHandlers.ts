@@ -68,6 +68,8 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
+// Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
+// (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
@@ -75,6 +77,9 @@ const HUB_OWNED_METADATA_KEYS = [
     'titleSuggestionTurn',
     'forkTitleSeed',
     'forkTitleGenerationAttemptedAt',
+    'jobsAcceptedFromSessionIds',
+    'jobsTransferredToSessionId',
+    'jobKeyRedirects',
     'promptTitle'
 ] as const
 

@@ -12,6 +12,7 @@ const mockOpencodeSession = vi.hoisted(() => ({
     pushKeepAlive: vi.fn(),
     thinking: false,
     stopKeepAlive: vi.fn(),
+    kill: vi.fn(async () => {}),
     onThinkingChange: vi.fn(),
     // Mirrors AgentSessionBase's own `mode` field ('local' | 'remote',
     // flipped synchronously by onModeChange before either launcher
@@ -138,6 +139,7 @@ vi.mock('@/modules/common/slashCommands', () => ({
 }));
 
 import { runOpencode } from './runOpencode';
+import { createRunnerLifecycle } from '@/agent/runnerLifecycle';
 
 describe('runOpencode set-session-config handler', () => {
     beforeEach(() => {
@@ -517,6 +519,15 @@ describe('runOpencode set-session-config handler', () => {
             expect.objectContaining({ message: 'continue in the source session', localId: 'after-cancel' })
         ]);
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('runs the session kill handler before the runner lifecycle closes the session', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const lifecycleOptions = vi.mocked(createRunnerLifecycle).mock.calls[0]?.[0];
+
+        await lifecycleOptions?.onBeforeClose?.();
+
+        expect(mockOpencodeSession.kill).toHaveBeenCalledTimes(1);
     });
 
     it('removes an individually cancelled prompt held behind queued clear', async () => {

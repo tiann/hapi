@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import {
     isRequestUserInputToolName,
+    isAsyncRequestUserInput,
     parseRequestUserInputInput,
     formatRequestUserInputAnswers,
     isRequestUserInputQuestionAnswered,
@@ -80,6 +81,7 @@ export function RequestUserInputFooter(props: {
     const permission = props.tool.permission
     const parsed = useMemo(() => parseRequestUserInputInput(props.tool.input), [props.tool.input])
     const questions = parsed.questions
+    const isAsync = isAsyncRequestUserInput(props.tool.name, props.tool.input)
 
     const [step, setStep] = useState(0)
     const [stateByQuestion, setStateByQuestion] = useState<Record<string, QuestionState>>({})
@@ -164,6 +166,13 @@ export function RequestUserInputFooter(props: {
         }
         setError(null)
         setStep((s) => Math.min(s + 1, questions.length - 1))
+    }
+
+    const dismiss = async () => {
+        if (!isAsync || loading) return
+        setLoading(true)
+        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
+        setLoading(false)
     }
 
     const prev = () => {
@@ -276,6 +285,18 @@ export function RequestUserInputFooter(props: {
 
             <div className="mt-3 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
+                    {isAsync ? (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={props.disabled || loading}
+                            onClick={dismiss}
+                            title={t('tool.requestUserInput.dismissHint')}
+                        >
+                            {t('button.dismiss')}
+                        </Button>
+                    ) : null}
                     {questions.length > 1 ? (
                         <Button
                             type="button"

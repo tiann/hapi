@@ -41,7 +41,7 @@ it('keeps rendered rows and machine filters stable by default, but promotes new 
     const { rerender } = render(list(sessions))
     const rowOrder = () => screen.getAllByRole('button', { name: /Order [ABC]/ })
         .map(row => row.textContent?.match(/Order [ABC]/)?.[0])
-    const machineOrder = () => screen.getAllByRole('button', { name: /Machine (One|Two)/ })
+    const machineOrder = () => screen.getAllByRole('button', { name: /^Machine (One|Two)/ })
         .map(button => button.textContent)
     expect(rowOrder()).toEqual(['Order C', 'Order B', 'Order A'])
     const machinesBefore = machineOrder()
