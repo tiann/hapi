@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +7,7 @@ import * as agentAvailability from './agentAvailability'
 import { CodexAppServerClient } from '@/codex/codexAppServerClient'
 import {
     _resetAgentQuotasCacheForTests,
+    _setClaudeStatusProbeForTests,
     extractCodexQuotaBuckets,
     getAgentQuotasResponse,
     parseAgyCreditsCommandJson,
@@ -313,51 +315,226 @@ describe('agentQuotas parsers and probes', () => {
         expect(claude.status).toBe('unavailable')
     })
 
-    it('shares live quota observations across process boundaries via HAPI_HOME state file', async () => {
+    it('shares live quota observations across process boundaries, isolates session credentials, and clears on account switch', async () => {
         const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-live-quotas-'))
         try {
-            const env = { HAPI_HOME: hapiHome, ANTHROPIC_BASE_URL: 'https://any.s6o.org' }
-            // Session process records a Claude rate_limit_event to HAPI_HOME
-            recordClaudeRateLimitEvent({
-                status: 'allowed',
-                rateLimitType: 'five_hour',
-                utilization: 0.4,
-                resetsAt: Math.floor(Date.now() / 1000) + 3600
-            }, env)
+            const runnerEnv = { HAPI_HOME: hapiHome }
+            const resetSec = Math.floor(Date.now() / 1000) + 3600
 
-            // Runner process has fresh in-memory state (liveClaudeBuckets is empty)
+            // 1. Separate OS child process (default credentials) records a five_hour observation
+            const childScript = `
+                import { recordClaudeRateLimitEvent } from './src/agent/agentQuotas.ts';
+                recordClaudeRateLimitEvent({
+                    status: 'allowed',
+                    rateLimitType: 'five_hour',
+                    utilization: 0.4,
+                    resetsAt: ${resetSec}
+                });
+            `
+            const childRes = spawnSync('bun', ['-e', childScript], {
+                cwd: process.cwd(),
+                env: {
+                    PATH: process.env.PATH,
+                    HOME: hapiHome,
+                    HAPI_HOME: hapiHome
+                },
+                encoding: 'utf8'
+            })
+            expect(childRes.status).toBe(0)
+
+            // 2. Separate OS child process with its own CLAUDE_CODE_OAUTH_TOKEN records a conflicting observation
+            const tokenChildScript = `
+                import { recordClaudeRateLimitEvent } from './src/agent/agentQuotas.ts';
+                recordClaudeRateLimitEvent({
+                    status: 'allowed',
+                    rateLimitType: 'five_hour',
+                    utilization: 0.95,
+                    resetsAt: ${resetSec}
+                });
+            `
+            const tokenChildRes = spawnSync('bun', ['-e', tokenChildScript], {
+                cwd: process.cwd(),
+                env: {
+                    PATH: process.env.PATH,
+                    HOME: hapiHome,
+                    HAPI_HOME: hapiHome,
+                    CLAUDE_CODE_OAUTH_TOKEN: 'session-specific-oauth-token-b'
+                },
+                encoding: 'utf8'
+            })
+            expect(tokenChildRes.status).toBe(0)
+
+            // Simulate separate runner process (clear module-local memory)
             _resetAgentQuotasCacheForTests()
-
-            const availabilitySpy = vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
                 agent,
-                available: false
+                available: agent === 'claude'
+            }))
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userA@example.com', subscriptionType: 'Claude Max' },
+                statusRows: new Map([
+                    ['Email', 'userA@example.com'],
+                    ['Login method', 'Claude Max Account']
+                ])
             }))
 
-            // Runner caches initial quota response
-            await getAgentQuotasResponse({ env })
-            expect(availabilitySpy).toHaveBeenCalledTimes(3)
+            const first = await getAgentQuotasResponse({ env: runnerEnv })
+            const claudeFirst = first.accounts.find((a) => a.agent === 'claude')
+            expect(claudeFirst?.status).toBe('ok')
+            expect(claudeFirst?.accountLabel).toBe('userA@example.com')
+            // Must return the 40% observation for userA, NOT the 95% observation from session B's token
+            expect(claudeFirst?.buckets).toHaveLength(1)
+            expect(claudeFirst?.buckets[0]?.usedPercent).toBe(40)
+            expect(claudeFirst?.buckets[0]?.remainingPercent).toBe(60)
 
-            // Another process updates agent-quotas-live.json without clearing runner's in-memory cachedResponse
-            writeFileSync(join(hapiHome, 'agent-quotas-live.json'), JSON.stringify({
-                codexUpdatedAt: Date.now() + 1000,
-                agyTierLabel: 'Google AI Ultra',
-                claudeBuckets: {
-                    five_hour: {
-                        id: 'claude-five_hour',
-                        label: '5h window',
-                        group: null,
-                        window: '5h',
-                        usedPercent: 40,
-                        remainingPercent: 60,
-                        resetsAt: Date.now() + 3_600_000,
-                        updatedAt: Date.now() + 1000
-                    }
+            // 3. Switch machine default Claude account to userB@example.com (including across runner restart)
+            _resetAgentQuotasCacheForTests()
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: agent === 'claude'
+            }))
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userB@example.com', subscriptionType: 'Claude Pro' },
+                statusRows: new Map([
+                    ['Email', 'userB@example.com'],
+                    ['Login method', 'Claude Pro Account']
+                ])
+            }))
+
+            const afterSwitch = await probeClaudeQuota(runnerEnv)
+            expect(afterSwitch.accountLabel).toBe('userB@example.com')
+            expect(afterSwitch.buckets).toEqual([])
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('preserves concurrent live quota writes across Codex, Antigravity, and multiple Claude windows', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-concurrent-quotas-'))
+        try {
+            const env = { HAPI_HOME: hapiHome }
+            const resetSec = Math.floor(Date.now() / 1000) + 3600
+
+            await Promise.all([
+                Promise.resolve().then(() => recordCodexRateLimitsUpdate({ rateLimits: {} }, env)),
+                Promise.resolve().then(() => recordAgyTier('Google AI Ultra', env)),
+                Promise.resolve().then(() => recordClaudeRateLimitEvent({
+                    status: 'allowed',
+                    rateLimitType: 'five_hour',
+                    utilization: 0.25,
+                    resetsAt: resetSec
+                }, env, 'userA@example.com')),
+                Promise.resolve().then(() => recordClaudeRateLimitEvent({
+                    status: 'allowed',
+                    rateLimitType: 'seven_day',
+                    utilization: 0.5,
+                    resetsAt: resetSec + 86400
+                }, env, 'userA@example.com'))
+            ])
+
+            _resetAgentQuotasCacheForTests()
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: agent === 'claude'
+            }))
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userA@example.com', subscriptionType: 'Claude Max' },
+                statusRows: new Map([['Email', 'userA@example.com']])
+            }))
+
+            const claude = await probeClaudeQuota(env)
+            expect(claude.buckets.map((b) => ({ id: b.id, usedPercent: b.usedPercent }))).toEqual([
+                { id: 'claude-five_hour', usedPercent: 25 },
+                { id: 'claude-seven_day', usedPercent: 50 }
+            ])
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('marks Claude window as exhausted when a rejected rate_limit_event omits utilization after a warning', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-rejected-quota-'))
+        try {
+            const env = { HAPI_HOME: hapiHome }
+            const resetSec = Math.floor(Date.now() / 1000) + 3600
+
+            recordClaudeRateLimitEvent({
+                status: 'allowed_warning',
+                rateLimitType: 'five_hour',
+                utilization: 0.85,
+                resetsAt: resetSec
+            }, env, 'userA@example.com')
+
+            recordClaudeRateLimitEvent({
+                status: 'rejected',
+                rateLimitType: 'five_hour',
+                resetsAt: resetSec
+            }, env, 'userA@example.com')
+
+            _resetAgentQuotasCacheForTests()
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: agent === 'claude'
+            }))
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userA@example.com', subscriptionType: 'Claude Max' },
+                statusRows: new Map([['Email', 'userA@example.com']])
+            }))
+
+            const claude = await probeClaudeQuota(env)
+            expect(claude.buckets).toEqual([
+                {
+                    id: 'claude-five_hour',
+                    label: '5h window',
+                    group: null,
+                    window: '5h',
+                    usedPercent: 100,
+                    remainingPercent: 0,
+                    resetsAt: resetSec * 1000
                 }
+            ])
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('bounds a stalled Codex initialization within probeTimeoutMs while preserving other provider results', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-stalled-codex-'))
+        try {
+            const env = { HAPI_HOME: hapiHome }
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: agent === 'codex' || agent === 'claude'
+            }))
+            vi.spyOn(CodexAppServerClient.prototype, 'connect').mockResolvedValue(undefined)
+            vi.spyOn(CodexAppServerClient.prototype, 'initialize').mockImplementation(
+                () => new Promise(() => { /* never resolves */ })
+            )
+            vi.spyOn(CodexAppServerClient.prototype, 'disconnect').mockResolvedValue(undefined)
+
+            _setClaudeStatusProbeForTests(async () => ({
+                account: { email: 'userA@example.com', subscriptionType: 'Claude Max' },
+                statusRows: new Map([
+                    ['Email', 'userA@example.com'],
+                    ['Login method', 'Claude Max Account']
+                ])
             }))
 
-            // Runner detects newer codexUpdatedAt/claudeBuckets.updatedAt on disk and invalidates its in-memory cache
-            await getAgentQuotasResponse({ env })
-            expect(availabilitySpy).toHaveBeenCalledTimes(6)
+            const started = Date.now()
+            const response = await getAgentQuotasResponse({
+                env,
+                refresh: true,
+                probeTimeoutMs: 60
+            })
+            const elapsed = Date.now() - started
+
+            expect(elapsed).toBeLessThan(1500)
+            const codex = response.accounts.find((a) => a.agent === 'codex')
+            const claude = response.accounts.find((a) => a.agent === 'claude')
+            expect(codex?.status).toBe('error')
+            expect(codex?.note).toContain('timed out')
+            expect(claude?.status).toBe('ok')
+            expect(claude?.accountLabel).toBe('userA@example.com')
         } finally {
             rmSync(hapiHome, { recursive: true, force: true })
         }

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type {
@@ -23,8 +24,9 @@ import { getAgentAvailability } from './agentAvailability'
 import { getAgentLaunchCommand } from './agentLaunchCommand'
 
 const CACHE_TTL_MS = 60_000
-const AGY_PROBE_TIMEOUT_MS = 12_000
-const CLAUDE_PROBE_TIMEOUT_MS = 12_000
+const DEFAULT_PROVIDER_PROBE_TIMEOUT_MS = 5_000
+const AGY_PROBE_TIMEOUT_MS = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
+const CLAUDE_PROBE_TIMEOUT_MS = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
 const CLAUDE_INIT_REQ_ID = 'hapi-claude-quota-init'
 const CLAUDE_STATUS_REQ_ID = 'hapi-claude-quota-status'
 
@@ -172,86 +174,225 @@ export function extractCodexQuotaBuckets(response: AccountRateLimitsReadResponse
     return buckets
 }
 
-// Live in-memory observations + cross-process shared state file under HAPI_HOME
-type LiveClaudeBucketRecord = AgentQuotaBucket & { updatedAt: number }
+// Live in-memory observations + cross-process per-observation atomic files under HAPI_HOME/agent-quotas-live
+type LiveClaudeBucketRecord = AgentQuotaBucket & {
+    updatedAt: number
+    accountKey: string
+    rateLimitType: string
+}
 
 type PersistedLiveQuotaState = {
     codexUpdatedAt?: number
     claudeBuckets?: Record<string, LiveClaudeBucketRecord>
     agyTierLabel?: string | null
+    agyUpdatedAt?: number
+    probedClaudeAccountKey?: string | null
 }
+
+const DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY = 'default-unprobed'
 
 let cachedResponse: { startedAt: number; expiresAt: number; response: AgentQuotasResponse } | null = null
 let inflightPromise: Promise<AgentQuotasResponse> | null = null
 const liveClaudeBuckets = new Map<string, LiveClaudeBucketRecord>()
 let liveAgyTierLabel: string | null = null
+let liveProbedClaudeAccountKey: string | null = null
 
-function resolveLiveQuotaStatePath(env: NodeJS.ProcessEnv = process.env): string | null {
+function shortHash(value: string): string {
+    return createHash('sha256').update(value).digest('hex').slice(0, 16)
+}
+
+function sanitizeKeySegment(value: string): string {
+    return value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'default'
+}
+
+function resolveLiveQuotaStateDir(env: NodeJS.ProcessEnv = process.env): string | null {
     if (env.VITEST === 'true' && !env.HAPI_HOME) {
         return null
     }
-    return join(resolveHapiHomeDir(env), 'agent-quotas-live.json')
+    return join(resolveHapiHomeDir(env), 'agent-quotas-live')
+}
+
+function writeAtomicJsonFile(filePath: string, payload: unknown): void {
+    try {
+        mkdirSync(dirname(filePath), { recursive: true })
+        const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+        writeFileSync(tmpPath, JSON.stringify(payload), 'utf8')
+        renameSync(tmpPath, filePath)
+    } catch {
+        // Best-effort cross-process state persistence
+    }
+}
+
+export function resolveClaudeEnvCredentialKey(env: NodeJS.ProcessEnv = process.env): string | null {
+    const token = asNonEmptyString(env.CLAUDE_CODE_OAUTH_TOKEN)
+        ?? asNonEmptyString(env.ANTHROPIC_AUTH_TOKEN)
+        ?? asNonEmptyString(env.ANTHROPIC_API_KEY)
+    if (!token) return null
+    return `cred:${shortHash(token)}`
+}
+
+function readClaudeConfigAccountKey(env: NodeJS.ProcessEnv = process.env): string | null {
+    const configDir = asNonEmptyString(env.CLAUDE_CONFIG_DIR)
+    const candidates: string[] = []
+    if (configDir) {
+        candidates.push(join(configDir, '.claude.json'))
+    } else if (asNonEmptyString(env.HOME) && !asNonEmptyString(env.HAPI_HOME)) {
+        candidates.push(join(env.HOME!, '.claude.json'))
+    }
+    for (const filePath of candidates) {
+        if (!existsSync(filePath)) continue
+        try {
+            const parsed = asRecord(JSON.parse(readFileSync(filePath, 'utf8')))
+            const oauthAccount = asRecord(parsed?.oauthAccount)
+            const identity = asNonEmptyString(oauthAccount?.emailAddress)
+                ?? asNonEmptyString(oauthAccount?.accountUuid)
+            if (identity) {
+                return `acct:${identity.toLowerCase()}`
+            }
+        } catch {
+            // Ignore malformed config file
+        }
+    }
+    return null
+}
+
+function resolveSessionClaudeAccountKey(
+    env: NodeJS.ProcessEnv = process.env,
+    explicitIdentity?: string | null
+): string {
+    const explicit = asNonEmptyString(explicitIdentity)
+    if (explicit) {
+        return explicit.includes(':') ? explicit.toLowerCase() : `acct:${explicit.toLowerCase()}`
+    }
+    const envCredKey = resolveClaudeEnvCredentialKey(env)
+    if (envCredKey) return envCredKey
+    const configKey = readClaudeConfigAccountKey(env)
+    if (configKey) return configKey
+    const baseUrl = asNonEmptyString(env.ANTHROPIC_BASE_URL)
+    if (baseUrl) return `url:${baseUrl.toLowerCase()}`
+    const persistedProbed = readPersistedLiveQuotaState(env).probedClaudeAccountKey
+    return liveProbedClaudeAccountKey ?? persistedProbed ?? DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY
+}
+
+function claudeBucketCompositeKey(accountKey: string, rateLimitType: string): string {
+    return `${accountKey}::${rateLimitType}`
+}
+
+function claudeBucketFileName(accountKey: string, rateLimitType: string): string {
+    return `claude-bucket-${shortHash(accountKey)}-${sanitizeKeySegment(rateLimitType)}.json`
+}
+
+function parsePersistedClaudeBucket(raw: unknown, fallbackAccountKey?: string, fallbackRateLimitType?: string): LiveClaudeBucketRecord | null {
+    const entry = asRecord(raw)
+    if (!entry) return null
+    const id = asNonEmptyString(entry.id)
+    const label = asNonEmptyString(entry.label)
+    const usedPercent = asFiniteNumber(entry.usedPercent)
+    const remainingPercent = asFiniteNumber(entry.remainingPercent)
+    const updatedAt = asFiniteNumber(entry.updatedAt)
+    if (!id || !label || usedPercent === null || remainingPercent === null || updatedAt === null) return null
+    const accountKey = asNonEmptyString(entry.accountKey) ?? fallbackAccountKey ?? DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY
+    const rateLimitType = asNonEmptyString(entry.rateLimitType) ?? fallbackRateLimitType ?? id.replace(/^claude-/, '')
+    return {
+        id,
+        label,
+        group: asNonEmptyString(entry.group),
+        window: asNonEmptyString(entry.window),
+        usedPercent,
+        remainingPercent,
+        resetsAt: asFiniteNumber(entry.resetsAt),
+        updatedAt,
+        accountKey,
+        rateLimitType
+    }
 }
 
 function readPersistedLiveQuotaState(env: NodeJS.ProcessEnv = process.env): PersistedLiveQuotaState {
-    const filePath = resolveLiveQuotaStatePath(env)
-    if (!filePath || !existsSync(filePath)) return {}
-    try {
-        const raw = readFileSync(filePath, 'utf8')
-        const parsed = asRecord(JSON.parse(raw))
-        if (!parsed) return {}
-        const codexUpdatedAt = asFiniteNumber(parsed.codexUpdatedAt) ?? undefined
-        const agyTierLabel = asNonEmptyString(parsed.agyTierLabel)
-        const claudeBuckets: Record<string, LiveClaudeBucketRecord> = {}
-        const rawBuckets = asRecord(parsed.claudeBuckets)
-        if (rawBuckets) {
-            for (const [key, val] of Object.entries(rawBuckets)) {
-                const entry = asRecord(val)
-                if (!entry) continue
-                const id = asNonEmptyString(entry.id)
-                const label = asNonEmptyString(entry.label)
-                const usedPercent = asFiniteNumber(entry.usedPercent)
-                const remainingPercent = asFiniteNumber(entry.remainingPercent)
-                const updatedAt = asFiniteNumber(entry.updatedAt)
-                if (!id || !label || usedPercent === null || remainingPercent === null || updatedAt === null) continue
-                claudeBuckets[key] = {
-                    id,
-                    label,
-                    group: asNonEmptyString(entry.group),
-                    window: asNonEmptyString(entry.window),
-                    usedPercent,
-                    remainingPercent,
-                    resetsAt: asFiniteNumber(entry.resetsAt),
-                    updatedAt
+    const dirPath = resolveLiveQuotaStateDir(env)
+    if (!dirPath) return {}
+
+    let codexUpdatedAt: number | undefined
+    let agyTierLabel: string | null = null
+    let agyUpdatedAt: number | undefined
+    let probedClaudeAccountKey: string | null = null
+    const claudeBuckets: Record<string, LiveClaudeBucketRecord> = {}
+
+    // Support both per-observation files in agent-quotas-live/ and legacy agent-quotas-live.json
+    const legacyFile = `${dirPath}.json`
+    if (existsSync(legacyFile)) {
+        try {
+            const parsed = asRecord(JSON.parse(readFileSync(legacyFile, 'utf8')))
+            if (parsed) {
+                const legacyCodex = asFiniteNumber(parsed.codexUpdatedAt)
+                if (legacyCodex !== null) codexUpdatedAt = legacyCodex
+                const legacyAgy = asNonEmptyString(parsed.agyTierLabel)
+                if (legacyAgy) agyTierLabel = legacyAgy
+                const rawBuckets = asRecord(parsed.claudeBuckets)
+                if (rawBuckets) {
+                    for (const [key, val] of Object.entries(rawBuckets)) {
+                        const bucket = parsePersistedClaudeBucket(val, DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY, key)
+                        if (bucket) {
+                            claudeBuckets[claudeBucketCompositeKey(bucket.accountKey, bucket.rateLimitType)] = bucket
+                        }
+                    }
                 }
             }
+        } catch {
+            // Ignore malformed legacy file
         }
-        return { codexUpdatedAt, claudeBuckets, agyTierLabel }
-    } catch {
-        return {}
     }
-}
 
-function writePersistedLiveQuotaState(
-    updater: (prev: PersistedLiveQuotaState) => PersistedLiveQuotaState,
-    env: NodeJS.ProcessEnv = process.env
-): void {
-    const filePath = resolveLiveQuotaStatePath(env)
-    if (!filePath) return
-    try {
-        const next = updater(readPersistedLiveQuotaState(env))
-        mkdirSync(dirname(filePath), { recursive: true })
-        const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-        writeFileSync(tmpPath, JSON.stringify(next), 'utf8')
-        renameSync(tmpPath, filePath)
-    } catch {
-        // Best-effort cross-process cache sharing
+    if (!existsSync(dirPath)) {
+        return { codexUpdatedAt, claudeBuckets, agyTierLabel, agyUpdatedAt, probedClaudeAccountKey }
     }
+
+    try {
+        const files = readdirSync(dirPath)
+        for (const name of files) {
+            if (!name.endsWith('.json') || name.endsWith('.tmp')) continue
+            const fullPath = join(dirPath, name)
+            try {
+                const parsed = asRecord(JSON.parse(readFileSync(fullPath, 'utf8')))
+                if (!parsed) continue
+                if (name === 'codex.json') {
+                    const ts = asFiniteNumber(parsed.updatedAt ?? parsed.codexUpdatedAt)
+                    if (ts !== null && (codexUpdatedAt === undefined || ts > codexUpdatedAt)) {
+                        codexUpdatedAt = ts
+                    }
+                } else if (name === 'agy.json') {
+                    const tier = asNonEmptyString(parsed.tierLabel ?? parsed.agyTierLabel)
+                    const ts = asFiniteNumber(parsed.updatedAt) ?? 0
+                    if (tier && (agyUpdatedAt === undefined || ts >= agyUpdatedAt)) {
+                        agyTierLabel = tier
+                        agyUpdatedAt = ts
+                    }
+                } else if (name === 'claude-account.json') {
+                    const acct = asNonEmptyString(parsed.accountKey)
+                    if (acct) probedClaudeAccountKey = acct
+                } else if (name.startsWith('claude-bucket-')) {
+                    const bucket = parsePersistedClaudeBucket(parsed)
+                    if (bucket) {
+                        const compKey = claudeBucketCompositeKey(bucket.accountKey, bucket.rateLimitType)
+                        const prev = claudeBuckets[compKey]
+                        if (!prev || bucket.updatedAt >= prev.updatedAt) {
+                            claudeBuckets[compKey] = bucket
+                        }
+                    }
+                }
+            } catch {
+                // Ignore individual file parse errors
+            }
+        }
+    } catch {
+        // Ignore directory read errors
+    }
+
+    return { codexUpdatedAt, claudeBuckets, agyTierLabel, agyUpdatedAt, probedClaudeAccountKey }
 }
 
 function getLatestLiveQuotaUpdateAt(env: NodeJS.ProcessEnv = process.env): number {
     const persisted = readPersistedLiveQuotaState(env)
-    let latest = persisted.codexUpdatedAt ?? 0
+    let latest = Math.max(persisted.codexUpdatedAt ?? 0, persisted.agyUpdatedAt ?? 0)
     if (persisted.claudeBuckets) {
         for (const entry of Object.values(persisted.claudeBuckets)) {
             if (entry.updatedAt > latest) {
@@ -271,23 +412,44 @@ export function recordCodexRateLimitsUpdate(params: unknown, env: NodeJS.Process
     const record = asRecord(params)
     if (!record) return
     const now = Date.now()
-    // Invalidate short cache in this process and across runner/session processes
     cachedResponse = null
-    writePersistedLiveQuotaState((prev) => ({
-        ...prev,
-        codexUpdatedAt: now
-    }), env)
+    const dirPath = resolveLiveQuotaStateDir(env)
+    if (dirPath) {
+        writeAtomicJsonFile(join(dirPath, 'codex.json'), { updatedAt: now })
+    }
 }
 
-export function recordClaudeRateLimitEvent(info: unknown, env: NodeJS.ProcessEnv = process.env): void {
+export function recordClaudeRateLimitEvent(
+    info: unknown,
+    env: NodeJS.ProcessEnv = process.env,
+    accountIdentity?: string | null
+): void {
     const record = asRecord(info)
     if (!record) return
-    const utilization = asFiniteNumber(record.utilization)
-    const resetsAt = normalizeResetTimestampMs(record.resetsAt)
-    const rateLimitType = asNonEmptyString(record.rateLimitType) ?? 'default'
-    if (utilization === null) return
+    const status = asNonEmptyString(record.status)?.toLowerCase()
+    const rawUtilization = asFiniteNumber(record.utilization)
+    const effectiveUtilization = status === 'rejected'
+        ? (rawUtilization !== null ? Math.max(1, rawUtilization) : 1)
+        : rawUtilization
+    if (effectiveUtilization === null) return
 
-    const usedPercent = clampPercent(utilization <= 1 ? utilization * 100 : utilization)
+    const rateLimitType = asNonEmptyString(record.rateLimitType) ?? 'default'
+    const explicitAccount = accountIdentity
+        ?? asNonEmptyString(record.accountEmail)
+        ?? asNonEmptyString(record.email)
+    const accountKey = resolveSessionClaudeAccountKey(env, explicitAccount)
+    const compKey = claudeBucketCompositeKey(accountKey, rateLimitType)
+
+    const existingInMemory = liveClaudeBuckets.get(compKey)
+    const existingPersisted = readPersistedLiveQuotaState(env).claudeBuckets?.[compKey]
+    const resetsAt = normalizeResetTimestampMs(record.resetsAt)
+        ?? existingInMemory?.resetsAt
+        ?? existingPersisted?.resetsAt
+        ?? null
+
+    const usedPercent = status === 'rejected'
+        ? 100
+        : clampPercent(effectiveUtilization <= 1 ? effectiveUtilization * 100 : effectiveUtilization)
     const remainingPercent = clampPercent(100 - usedPercent)
     const lowerType = rateLimitType.toLowerCase()
     const window = lowerType.includes('5h') || lowerType.includes('five_hour')
@@ -309,31 +471,37 @@ export function recordClaudeRateLimitEvent(info: unknown, env: NodeJS.ProcessEnv
         usedPercent,
         remainingPercent,
         resetsAt,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        accountKey,
+        rateLimitType
     }
-    liveClaudeBuckets.set(rateLimitType, bucketRecord)
+    liveClaudeBuckets.set(compKey, bucketRecord)
     cachedResponse = null
-    writePersistedLiveQuotaState((prev) => ({
-        ...prev,
-        claudeBuckets: {
-            ...(prev.claudeBuckets ?? {}),
-            [rateLimitType]: bucketRecord
-        }
-    }), env)
+    const dirPath = resolveLiveQuotaStateDir(env)
+    if (dirPath) {
+        writeAtomicJsonFile(join(dirPath, claudeBucketFileName(accountKey, rateLimitType)), bucketRecord)
+    }
 }
 
 export function recordAgyTier(tierName: string | null | undefined, env: NodeJS.ProcessEnv = process.env): void {
     const normalized = asNonEmptyString(tierName)
     if (normalized) {
         liveAgyTierLabel = normalized
-        writePersistedLiveQuotaState((prev) => ({
-            ...prev,
-            agyTierLabel: normalized
-        }), env)
+        cachedResponse = null
+        const dirPath = resolveLiveQuotaStateDir(env)
+        if (dirPath) {
+            writeAtomicJsonFile(join(dirPath, 'agy.json'), {
+                tierLabel: normalized,
+                updatedAt: Date.now()
+            })
+        }
     }
 }
 
-export async function probeCodexQuota(env: NodeJS.ProcessEnv = process.env): Promise<AgentQuotaAccount> {
+export async function probeCodexQuota(
+    env: NodeJS.ProcessEnv = process.env,
+    timeoutMs: number = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
+): Promise<AgentQuotaAccount> {
     const updatedAt = Date.now()
     const availability = getAgentAvailability('codex', env)
     if (!availability.available) {
@@ -347,70 +515,82 @@ export async function probeCodexQuota(env: NodeJS.ProcessEnv = process.env): Pro
     }
 
     const client = new CodexAppServerClient({ cwd: homedir() })
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+            reject(new Error('Codex quota probe timed out'))
+        }, timeoutMs)
+    })
+
     try {
-        await client.connect()
-        await client.initialize({
-            clientInfo: {
-                name: 'hapi-codex-quota',
-                version: '1.0.0'
-            },
-            capabilities: {
-                experimentalApi: true
-            }
-        })
+        return await Promise.race([
+            (async (): Promise<AgentQuotaAccount> => {
+                await client.connect()
+                await client.initialize({
+                    clientInfo: {
+                        name: 'hapi-codex-quota',
+                        version: '1.0.0'
+                    },
+                    capabilities: {
+                        experimentalApi: true
+                    }
+                })
 
-        const [accountRes, rateLimitsRes] = await Promise.all([
-            client.readAccount().catch((): AccountReadResponse => ({})),
-            client.readRateLimits().catch((): AccountRateLimitsReadResponse => ({}))
+                const [accountRes, rateLimitsRes] = await Promise.all([
+                    client.readAccount().catch((): AccountReadResponse => ({})),
+                    client.readRateLimits().catch((): AccountRateLimitsReadResponse => ({}))
+                ])
+
+                const account = accountRes.account
+                if (!account && accountRes.requiresOpenaiAuth) {
+                    return {
+                        agent: 'codex',
+                        available: true,
+                        status: 'unauthenticated',
+                        buckets: [],
+                        note: 'Not signed in to Codex',
+                        updatedAt
+                    }
+                }
+
+                const email = asNonEmptyString(account?.email)
+                const accountType = asNonEmptyString(account?.type)
+                const accountLabel = email ?? (accountType === 'apiKey' ? 'OpenAI API Key' : null)
+                const planLabel = formatPlanName(
+                    asNonEmptyString(account?.planType) ?? asNonEmptyString(rateLimitsRes.rateLimits?.planType)
+                )
+                const resetCount = asFiniteNumber(rateLimitsRes.rateLimitResetCredits?.availableCount)
+                const creditsLabel = formatCodexCredits(rateLimitsRes.rateLimits, resetCount)
+                const buckets = extractCodexQuotaBuckets(rateLimitsRes)
+
+                if (accountType === 'apiKey' && buckets.length === 0) {
+                    return {
+                        agent: 'codex',
+                        available: true,
+                        status: 'custom_provider',
+                        accountLabel,
+                        planLabel: planLabel ?? 'API Key',
+                        creditsLabel,
+                        buckets: [],
+                        note: 'Authenticated via OpenAI API key',
+                        updatedAt
+                    }
+                }
+
+                return {
+                    agent: 'codex',
+                    available: true,
+                    status: 'ok',
+                    accountLabel,
+                    planLabel,
+                    creditsLabel,
+                    buckets,
+                    note: rateLimitsRes.rateLimits?.spendControlReached ? 'Spend control limit reached' : null,
+                    updatedAt
+                }
+            })(),
+            timeoutPromise
         ])
-
-        const account = accountRes.account
-        if (!account && accountRes.requiresOpenaiAuth) {
-            return {
-                agent: 'codex',
-                available: true,
-                status: 'unauthenticated',
-                buckets: [],
-                note: 'Not signed in to Codex',
-                updatedAt
-            }
-        }
-
-        const email = asNonEmptyString(account?.email)
-        const accountType = asNonEmptyString(account?.type)
-        const accountLabel = email ?? (accountType === 'apiKey' ? 'OpenAI API Key' : null)
-        const planLabel = formatPlanName(
-            asNonEmptyString(account?.planType) ?? asNonEmptyString(rateLimitsRes.rateLimits?.planType)
-        )
-        const resetCount = asFiniteNumber(rateLimitsRes.rateLimitResetCredits?.availableCount)
-        const creditsLabel = formatCodexCredits(rateLimitsRes.rateLimits, resetCount)
-        const buckets = extractCodexQuotaBuckets(rateLimitsRes)
-
-        if (accountType === 'apiKey' && buckets.length === 0) {
-            return {
-                agent: 'codex',
-                available: true,
-                status: 'custom_provider',
-                accountLabel,
-                planLabel: planLabel ?? 'API Key',
-                creditsLabel,
-                buckets: [],
-                note: 'Authenticated via OpenAI API key',
-                updatedAt
-            }
-        }
-
-        return {
-            agent: 'codex',
-            available: true,
-            status: 'ok',
-            accountLabel,
-            planLabel,
-            creditsLabel,
-            buckets,
-            note: rateLimitsRes.rateLimits?.spendControlReached ? 'Spend control limit reached' : null,
-            updatedAt
-        }
     } catch (error) {
         return {
             agent: 'codex',
@@ -421,7 +601,12 @@ export async function probeCodexQuota(env: NodeJS.ProcessEnv = process.env): Pro
             updatedAt
         }
     } finally {
-        await client.disconnect().catch(() => undefined)
+        if (timeoutHandle) clearTimeout(timeoutHandle)
+        // Bound disconnect cleanup so a hung subprocess cannot stall the RPC response
+        await Promise.race([
+            client.disconnect().catch(() => undefined),
+            new Promise<void>((resolve) => setTimeout(resolve, 250))
+        ])
     }
 }
 
@@ -702,13 +887,13 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
             if (settled) return
             settled = true
             clearTimeout(timer)
-            void (async () => {
-                if (child.pid) {
+            if (child.pid) {
+                void (async () => {
                     await killProcessByChildProcess(child, false).catch(() => false)
                     await killProcessByChildProcess(child, true).catch(() => false)
-                }
-                cb()
-            })()
+                })()
+            }
+            cb()
         }
 
         const timer = setTimeout(() => {
@@ -760,32 +945,116 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
     })
 }
 
-function getActiveClaudeBuckets(env: NodeJS.ProcessEnv = process.env): AgentQuotaBucket[] {
-    const now = Date.now()
-    const merged = new Map<string, LiveClaudeBucketRecord>()
-    const persisted = readPersistedLiveQuotaState(env)
-    if (persisted.claudeBuckets) {
-        for (const [key, entry] of Object.entries(persisted.claudeBuckets)) {
-            merged.set(key, entry)
-        }
+function computeProbedClaudeAccountKey(params: {
+    email: string | null
+    baseUrl: string | null
+    organization: string | null
+    authTokenSource: string | null
+}): string | null {
+    if (params.email) return `acct:${params.email.toLowerCase()}`
+    if (params.baseUrl) return `url:${params.baseUrl.toLowerCase()}`
+    if (params.organization) return `org:${params.organization.toLowerCase()}`
+    if (params.authTokenSource) return `auth:${params.authTokenSource.toLowerCase()}`
+    return null
+}
+
+function bindProbedClaudeAccount(env: NodeJS.ProcessEnv, probedAccountKey: string): void {
+    if (resolveClaudeEnvCredentialKey(env)) {
+        return
     }
-    for (const [key, entry] of liveClaudeBuckets.entries()) {
-        const existing = merged.get(key)
-        if (!existing || entry.updatedAt >= existing.updatedAt) {
-            merged.set(key, entry)
+    const persisted = readPersistedLiveQuotaState(env)
+    const previousProbed = liveProbedClaudeAccountKey ?? persisted.probedClaudeAccountKey ?? null
+    const dirPath = resolveLiveQuotaStateDir(env)
+
+    // Only promote unprobed default-credential observations on the very first probe before an account was known.
+    if (!previousProbed && probedAccountKey !== DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY) {
+        const allEntries = new Map<string, LiveClaudeBucketRecord>()
+        if (persisted.claudeBuckets) {
+            for (const [k, v] of Object.entries(persisted.claudeBuckets)) {
+                allEntries.set(k, v)
+            }
+        }
+        for (const [k, v] of liveClaudeBuckets.entries()) {
+            allEntries.set(k, v)
+        }
+        for (const [compKey, entry] of allEntries.entries()) {
+            if (entry.accountKey !== DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY) continue
+            const promoted: LiveClaudeBucketRecord = {
+                ...entry,
+                accountKey: probedAccountKey
+            }
+            const newCompKey = claudeBucketCompositeKey(probedAccountKey, entry.rateLimitType)
+            liveClaudeBuckets.delete(compKey)
+            liveClaudeBuckets.set(newCompKey, promoted)
+            if (dirPath) {
+                writeAtomicJsonFile(join(dirPath, claudeBucketFileName(probedAccountKey, entry.rateLimitType)), promoted)
+                try {
+                    unlinkSync(join(dirPath, claudeBucketFileName(DEFAULT_UNPROBED_CLAUDE_ACCOUNT_KEY, entry.rateLimitType)))
+                } catch {
+                    // Ignore if file was only in memory
+                }
+            }
         }
     }
 
-    const buckets: AgentQuotaBucket[] = []
-    for (const [key, entry] of merged.entries()) {
+    liveProbedClaudeAccountKey = probedAccountKey
+    if (dirPath) {
+        writeAtomicJsonFile(join(dirPath, 'claude-account.json'), {
+            accountKey: probedAccountKey,
+            updatedAt: Date.now()
+        })
+    }
+}
+
+export function getActiveClaudeBuckets(
+    env: NodeJS.ProcessEnv = process.env,
+    allowedAccountKeys?: ReadonlySet<string>
+): AgentQuotaBucket[] {
+    const now = Date.now()
+    const effectiveAllowed = allowedAccountKeys ?? new Set([resolveSessionClaudeAccountKey(env)])
+    const byRateLimitType = new Map<string, LiveClaudeBucketRecord>()
+    const persisted = readPersistedLiveQuotaState(env)
+
+    const consider = (compKey: string, entry: LiveClaudeBucketRecord) => {
+        if (!effectiveAllowed.has(entry.accountKey)) return
         if (entry.resetsAt && entry.resetsAt <= now) {
-            liveClaudeBuckets.delete(key)
-            continue
+            liveClaudeBuckets.delete(compKey)
+            return
         }
-        const { updatedAt: _updatedAt, ...bucket } = entry
+        const existing = byRateLimitType.get(entry.rateLimitType)
+        if (!existing || entry.updatedAt >= existing.updatedAt) {
+            byRateLimitType.set(entry.rateLimitType, entry)
+        }
+    }
+
+    if (persisted.claudeBuckets) {
+        for (const [compKey, entry] of Object.entries(persisted.claudeBuckets)) {
+            consider(compKey, entry)
+        }
+    }
+    for (const [compKey, entry] of liveClaudeBuckets.entries()) {
+        consider(compKey, entry)
+    }
+
+    const buckets: AgentQuotaBucket[] = []
+    for (const entry of byRateLimitType.values()) {
+        const {
+            updatedAt: _updatedAt,
+            accountKey: _accountKey,
+            rateLimitType: _rateLimitType,
+            ...bucket
+        } = entry
         buckets.push(bucket)
     }
     return buckets
+}
+
+let claudeStatusProbeOverrideForTests: ((executable: string, env: NodeJS.ProcessEnv) => Promise<ClaudeControlProbeResult>) | null = null
+
+export function _setClaudeStatusProbeForTests(
+    fn: ((executable: string, env: NodeJS.ProcessEnv) => Promise<ClaudeControlProbeResult>) | null
+): void {
+    claudeStatusProbeOverrideForTests = fn
 }
 
 export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Promise<AgentQuotaAccount> {
@@ -803,7 +1072,8 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
 
     try {
         const executable = getDefaultClaudeCodePath(env)
-        const probe = await runClaudeStatusProbe(executable, env)
+        const probeRunner = claudeStatusProbeOverrideForTests ?? runClaudeStatusProbe
+        const probe = await probeRunner(executable, env)
         const rows = probe.statusRows
         const account = probe.account
 
@@ -835,8 +1105,6 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
             ?? asNonEmptyString(account?.apiProvider)
         const organization = rows.get('Organization')
 
-        const buckets = getActiveClaudeBuckets(env)
-
         if (!email && !authTokenSource && !loginMethod && !baseUrl) {
             return {
                 agent: 'claude',
@@ -847,6 +1115,27 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
                 updatedAt
             }
         }
+
+        const probedAccountKey = computeProbedClaudeAccountKey({
+            email: email ?? null,
+            baseUrl: baseUrl ?? null,
+            organization: organization ?? null,
+            authTokenSource: authTokenSource ?? null
+        })
+        const allowedKeys = new Set<string>()
+        if (probedAccountKey) {
+            bindProbedClaudeAccount(env, probedAccountKey)
+            allowedKeys.add(probedAccountKey)
+        }
+        const envCredKey = resolveClaudeEnvCredentialKey(env)
+        if (envCredKey) {
+            allowedKeys.add(envCredKey)
+        }
+        if (allowedKeys.size === 0) {
+            allowedKeys.add(resolveSessionClaudeAccountKey(env))
+        }
+
+        const buckets = getActiveClaudeBuckets(env, allowedKeys)
 
         const isCustomProvider = Boolean(baseUrl) || (apiProvider !== null && apiProvider !== 'firstParty') || (!loginMethod && Boolean(authTokenSource))
         const accountLabel = email ?? baseUrl ?? organization ?? authTokenSource
@@ -895,9 +1184,11 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
 export async function getAgentQuotasResponse(options?: {
     refresh?: boolean
     env?: NodeJS.ProcessEnv
+    probeTimeoutMs?: number
 }): Promise<AgentQuotasResponse> {
     const refresh = options?.refresh === true
     const env = options?.env ?? process.env
+    const probeTimeoutMs = options?.probeTimeoutMs ?? DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
     const now = Date.now()
     const latestLiveUpdateAt = getLatestLiveQuotaUpdateAt(env)
 
@@ -917,7 +1208,7 @@ export async function getAgentQuotasResponse(options?: {
     const startedAt = Date.now()
     const promise = (async (): Promise<AgentQuotasResponse> => {
         const accounts = await Promise.all([
-            probeCodexQuota(env),
+            probeCodexQuota(env, probeTimeoutMs),
             probeAgyQuota(env),
             probeClaudeQuota(env)
         ])
@@ -947,4 +1238,6 @@ export function _resetAgentQuotasCacheForTests(): void {
     inflightPromise = null
     liveClaudeBuckets.clear()
     liveAgyTierLabel = null
+    liveProbedClaudeAccountKey = null
+    claudeStatusProbeOverrideForTests = null
 }
