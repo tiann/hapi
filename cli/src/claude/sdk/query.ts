@@ -210,6 +210,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             response?: {
                 account?: {
                     email?: string
+                    accountUuid?: string
                     tokenSource?: string
                     apiProvider?: string
                 }
@@ -219,15 +220,8 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
         if (typeof account?.email === 'string' && account.email.trim()) {
             return `acct:${account.email.trim().toLowerCase()}`
         }
-        if (typeof account?.tokenSource === 'string' && account.tokenSource.trim()) {
-            return `auth:${account.tokenSource.trim().toLowerCase()}`
-        }
-        if (
-            typeof account?.apiProvider === 'string'
-            && account.apiProvider.trim()
-            && account.apiProvider !== 'firstParty'
-        ) {
-            return `auth:${account.apiProvider.trim().toLowerCase()}`
+        if (typeof account?.accountUuid === 'string' && account.accountUuid.trim()) {
+            return `acct:${account.accountUuid.trim().toLowerCase()}`
         }
         return null
     }

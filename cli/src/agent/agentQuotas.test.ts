@@ -640,4 +640,163 @@ describe('agentQuotas parsers and probes', () => {
             rmSync(hapiHome, { recursive: true, force: true })
         }
     })
+
+    it('preserves credential isolation across two distinct OAuth tokens when initialize returns only tokenSource through getAccountIdentity and updateAccountIdentity', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-token-source-isolation-'))
+        try {
+            const resetSec = Math.floor(Date.now() / 1000) + 3600
+
+            const runTokenSession = (token: string, utilization: number) => {
+                const script = `
+                    import { Writable } from 'node:stream';
+                    import { Query } from './src/claude/sdk/query.ts';
+                    import { SDKToLogConverter } from './src/claude/utils/sdkToLogConverter.ts';
+
+                    const converter = new SDKToLogConverter({
+                        sessionId: 'session-${utilization}',
+                        cwd: process.cwd()
+                    });
+                    const fakeQuery = Object.create(Query.prototype);
+                    fakeQuery.childStdin = new Writable({ write(_chunk, _enc, cb) { cb(); } });
+                    fakeQuery.request = async () => ({
+                        response: {
+                            account: {
+                                tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN',
+                                apiProvider: 'firstParty'
+                            }
+                        }
+                    });
+                    const identity = await fakeQuery.getAccountIdentity();
+                    converter.updateAccountIdentity(identity);
+                    converter.convert({
+                        type: 'rate_limit_event',
+                        rate_limit_info: {
+                            status: 'allowed',
+                            rateLimitType: 'five_hour',
+                            utilization: ${utilization},
+                            resetsAt: ${resetSec}
+                        }
+                    });
+                `
+                return spawnSync('bun', ['-e', script], {
+                    cwd: process.cwd(),
+                    env: {
+                        PATH: process.env.PATH,
+                        HOME: hapiHome,
+                        HAPI_HOME: hapiHome,
+                        CLAUDE_CODE_OAUTH_TOKEN: token
+                    },
+                    encoding: 'utf8'
+                })
+            }
+
+            expect(runTokenSession('oauth-token-alpha', 0.3).status).toBe(0)
+            expect(runTokenSession('oauth-token-beta', 0.85).status).toBe(0)
+
+            _resetAgentQuotasCacheForTests()
+            vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: agent === 'claude'
+            }))
+            _setClaudeStatusProbeForTests(async () => ({
+                account: {
+                    tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN',
+                    subscriptionType: 'Claude Max'
+                },
+                statusRows: new Map([
+                    ['Login method', 'Claude Max Account'],
+                    ['Auth token', 'CLAUDE_CODE_OAUTH_TOKEN']
+                ])
+            }))
+
+            const alphaQuota = await probeClaudeQuota({
+                HOME: hapiHome,
+                HAPI_HOME: hapiHome,
+                CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-alpha'
+            })
+            expect(alphaQuota.buckets).toHaveLength(1)
+            expect(alphaQuota.buckets[0]?.usedPercent).toBe(30)
+
+            const betaQuota = await probeClaudeQuota({
+                HOME: hapiHome,
+                HAPI_HOME: hapiHome,
+                CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-beta'
+            })
+            expect(betaQuota.buckets).toHaveLength(1)
+            expect(betaQuota.buckets[0]?.usedPercent).toBe(85)
+
+            const gammaQuota = await probeClaudeQuota({
+                HOME: hapiHome,
+                HAPI_HOME: hapiHome,
+                CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token-gamma'
+            })
+            expect(gammaQuota.buckets).toEqual([])
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('reports failed Codex account and rateLimits reads with status error while preserving partial account metadata', async () => {
+        vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+            agent,
+            available: agent === 'codex'
+        }))
+        vi.spyOn(CodexAppServerClient.prototype, 'connect').mockResolvedValue(undefined)
+        vi.spyOn(CodexAppServerClient.prototype, 'initialize').mockResolvedValue({})
+        vi.spyOn(CodexAppServerClient.prototype, 'disconnect').mockResolvedValue(undefined)
+
+        // 1. account/read succeeds, account/rateLimits/read rejects
+        vi.spyOn(CodexAppServerClient.prototype, 'readAccount').mockResolvedValueOnce({
+            account: {
+                type: 'chatgpt',
+                email: 'user@example.com',
+                planType: 'pro'
+            }
+        })
+        vi.spyOn(CodexAppServerClient.prototype, 'readRateLimits').mockRejectedValueOnce(
+            new Error('Rate limits endpoint unavailable')
+        )
+
+        const rateLimitFailed = await probeCodexQuota({})
+        expect(rateLimitFailed.status).toBe('error')
+        expect(rateLimitFailed.accountLabel).toBe('user@example.com')
+        expect(rateLimitFailed.planLabel).toBe('Pro')
+        expect(rateLimitFailed.buckets).toEqual([])
+        expect(rateLimitFailed.note).toBe('Rate limits endpoint unavailable')
+
+        // 2. account/read rejects, account/rateLimits/read succeeds
+        vi.spyOn(CodexAppServerClient.prototype, 'readAccount').mockRejectedValueOnce(
+            new Error('Account endpoint unavailable')
+        )
+        vi.spyOn(CodexAppServerClient.prototype, 'readRateLimits').mockResolvedValueOnce({
+            rateLimits: {
+                planType: 'plus',
+                primary: {
+                    usedPercent: 35,
+                    windowDurationMins: 300,
+                    resetsAt: 1775559600
+                }
+            }
+        })
+
+        const accountFailed = await probeCodexQuota({})
+        expect(accountFailed.status).toBe('error')
+        expect(accountFailed.planLabel).toBe('Plus')
+        expect(accountFailed.buckets).toHaveLength(1)
+        expect(accountFailed.buckets[0]?.usedPercent).toBe(35)
+        expect(accountFailed.note).toBe('Account endpoint unavailable')
+
+        // 3. Both reads reject
+        vi.spyOn(CodexAppServerClient.prototype, 'readAccount').mockRejectedValueOnce(
+            new Error('Account RPC failed')
+        )
+        vi.spyOn(CodexAppServerClient.prototype, 'readRateLimits').mockRejectedValueOnce(
+            new Error('RateLimits RPC failed')
+        )
+
+        const bothFailed = await probeCodexQuota({})
+        expect(bothFailed.status).toBe('error')
+        expect(bothFailed.buckets).toEqual([])
+        expect(bothFailed.note).toBe('RateLimits RPC failed')
+    })
 })

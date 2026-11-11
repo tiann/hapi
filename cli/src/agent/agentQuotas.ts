@@ -231,12 +231,14 @@ function normalizeClaudeAccountKey(rawIdentity: string | null | undefined): stri
     const trimmed = asNonEmptyString(rawIdentity)
     if (!trimmed) return null
     const lower = trimmed.toLowerCase()
+    if (lower.startsWith('auth:')) {
+        return null
+    }
     if (
         lower.startsWith('acct:')
         || lower.startsWith('cred:')
         || lower.startsWith('url:')
         || lower.startsWith('org:')
-        || lower.startsWith('auth:')
     ) {
         return lower
     }
@@ -523,9 +525,17 @@ export async function probeCodexQuota(
                     }
                 })
 
+                let accountReadError: unknown = null
+                let rateLimitsReadError: unknown = null
                 const [accountRes, rateLimitsRes] = await Promise.all([
-                    client.readAccount().catch((): AccountReadResponse => ({})),
-                    client.readRateLimits().catch((): AccountRateLimitsReadResponse => ({}))
+                    client.readAccount().catch((error): AccountReadResponse => {
+                        accountReadError = error
+                        return {}
+                    }),
+                    client.readRateLimits().catch((error): AccountRateLimitsReadResponse => {
+                        rateLimitsReadError = error
+                        return {}
+                    })
                 ])
 
                 const account = accountRes.account
@@ -550,7 +560,7 @@ export async function probeCodexQuota(
                 const creditsLabel = formatCodexCredits(rateLimitsRes.rateLimits, resetCount)
                 const buckets = extractCodexQuotaBuckets(rateLimitsRes)
 
-                if (accountType === 'apiKey' && buckets.length === 0) {
+                if (accountType === 'apiKey' && buckets.length === 0 && !rateLimitsReadError) {
                     return {
                         agent: 'codex',
                         available: true,
@@ -560,6 +570,21 @@ export async function probeCodexQuota(
                         creditsLabel,
                         buckets: [],
                         note: 'Authenticated via OpenAI API key',
+                        updatedAt
+                    }
+                }
+
+                const readError = rateLimitsReadError ?? accountReadError
+                if (readError !== null) {
+                    return {
+                        agent: 'codex',
+                        available: true,
+                        status: 'error',
+                        accountLabel,
+                        planLabel,
+                        creditsLabel,
+                        buckets,
+                        note: readError instanceof Error ? readError.message : 'Failed to query Codex quota',
                         updatedAt
                     }
                 }
@@ -934,14 +959,14 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
 
 function computeProbedClaudeAccountKey(params: {
     email: string | null
+    accountUuid?: string | null
     baseUrl: string | null
     organization: string | null
-    authTokenSource: string | null
 }): string | null {
     if (params.email) return `acct:${params.email.toLowerCase()}`
+    if (params.accountUuid) return `acct:${params.accountUuid.toLowerCase()}`
     if (params.baseUrl) return `url:${params.baseUrl.toLowerCase()}`
     if (params.organization) return `org:${params.organization.toLowerCase()}`
-    if (params.authTokenSource) return `auth:${params.authTokenSource.toLowerCase()}`
     return null
 }
 
@@ -1060,9 +1085,9 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
 
         const probedAccountKey = computeProbedClaudeAccountKey({
             email: email ?? null,
+            accountUuid: asNonEmptyString(account?.accountUuid),
             baseUrl: baseUrl ?? null,
-            organization: organization ?? null,
-            authTokenSource: authTokenSource ?? null
+            organization: organization ?? null
         })
         const allowedKeys = new Set<string>()
         if (probedAccountKey) {
@@ -1071,6 +1096,12 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
         const envCredKey = resolveClaudeEnvCredentialKey(env)
         if (envCredKey) {
             allowedKeys.add(envCredKey)
+        }
+        if (!probedAccountKey && !envCredKey) {
+            const configKey = readClaudeConfigAccountKey(env)
+            if (configKey) {
+                allowedKeys.add(configKey)
+            }
         }
 
         const buckets = getActiveClaudeBuckets(env, allowedKeys)

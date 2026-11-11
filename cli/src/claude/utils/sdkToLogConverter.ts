@@ -198,11 +198,14 @@ export class SDKToLogConverter {
     /**
      * Bind the session's verified Claude account/provider identity so all subsequent
      * rate_limit_event observations from this session stay attributed to its account.
+     * Retains any credential-specific binding captured at session startup when
+     * initialize returns no verified account identity.
      */
     updateAccountIdentity(accountIdentity: string | null | undefined): void {
-        const resolved = resolveClaudeSessionAccountKey(process.env, accountIdentity)
-        if (resolved) {
-            this.accountIdentity = resolved
+        if (!accountIdentity) return
+        const verified = resolveClaudeSessionAccountKey({}, accountIdentity)
+        if (verified) {
+            this.accountIdentity = verified
         }
     }
 
