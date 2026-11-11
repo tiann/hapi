@@ -3544,6 +3544,42 @@ describe('AcpMessageHandler kind other tools and inline tool-result images', () 
         expect(messages.some((message) => message.type === 'generated_image')).toBe(true);
     });
 
+    it('keeps an unregistrable tool-result image block in the output instead of discarding it', async () => {
+        // Registration rejects blocks whose payload is not a decodable image
+        // (sniffed-MIME mismatch / garbage base64). The block was already
+        // stripped from the text output path; dropping it there as well would
+        // discard the tool's only copy of the result with no trace.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const notAnImage = Buffer.from('definitely not image bytes').toString('base64');
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-image-3',
+            title: 'read_image',
+            kind: 'other',
+            rawInput: { file_path: '/tmp/shot3.png' },
+            status: 'in_progress'
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'other-image-3',
+            status: 'completed',
+            content: [
+                { type: 'content', content: { type: 'text', text: 'the screenshot' } },
+                { type: 'content', content: { type: 'image', mimeType: 'image/png', data: notAnImage } }
+            ]
+        });
+
+        const result = getToolResult(messages, 'other-image-3');
+        expect(result.status).toBe('completed');
+        // No generated image could be registered...
+        expect(messages.some((message) => message.type === 'generated_image')).toBe(false);
+        // ...so the image block survives in the raw output value.
+        expect(Array.isArray(result.output)).toBe(true);
+        expect(JSON.stringify(result.output)).toContain(notAnImage);
+    });
+
     it('prefers rawOutput and skips image extraction when rawOutput is present (regression guard)', async () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

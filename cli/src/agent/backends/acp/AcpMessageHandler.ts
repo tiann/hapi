@@ -962,11 +962,11 @@ export class AcpMessageHandler {
         }
     }
 
-    private async emitGeneratedImageFromAcpContent(content: Record<string, unknown>): Promise<void> {
+    private async emitGeneratedImageFromAcpContent(content: Record<string, unknown>): Promise<boolean> {
         try {
             const image = await registerGeneratedImageFromAcpBlock(content);
             if (!image) {
-                return;
+                return false;
             }
             this.onMessage({
                 type: 'generated_image',
@@ -975,11 +975,13 @@ export class AcpMessageHandler {
                 mimeType: image.mimeType,
                 source: this.buildAcpInlineMediaSource(),
             });
+            return true;
         } catch (error) {
             logger.debug(
                 '[AcpMessageHandler] Failed to register ACP image block:',
                 error instanceof Error ? error.message : String(error)
             );
+            return false;
         }
     }
 
@@ -1188,12 +1190,22 @@ export class AcpMessageHandler {
                 output = resolveToolResultOutput(update.rawOutput, update.content);
             } else {
                 const { imageBlocks, remaining, hadImages } = splitToolContentImages(update.content);
+                let source: unknown = update.content;
                 if (hadImages) {
+                    // Only blocks that actually registered as generated images
+                    // may be removed from the tool output. A rejected
+                    // registration (undecodable base64, sniffed-MIME mismatch,
+                    // or a write failure) must fall back to keeping the block
+                    // in the output — stripping it here would discard the
+                    // tool's only copy of the result with no trace.
+                    const unregistered: Array<Record<string, unknown>> = [];
                     for (const imageBlock of imageBlocks) {
-                        await this.emitGeneratedImageFromAcpContent(imageBlock);
+                        if (!(await this.emitGeneratedImageFromAcpContent(imageBlock))) {
+                            unregistered.push(imageBlock);
+                        }
                     }
+                    source = unregistered.length === 0 ? remaining : [...remaining, ...unregistered];
                 }
-                const source = hadImages ? remaining : update.content;
                 // If content is not an array (normalizeAcpToolContent returns
                 // null), fall back to the image-stripped value to avoid
                 // silent data loss — without ever re-introducing the image
