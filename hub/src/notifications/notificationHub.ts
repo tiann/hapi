@@ -1,8 +1,8 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
+import type { NotificationChannel, NotificationHubOptions } from './notificationTypes'
 import type { NotificationSendContext } from './notificationSendContext'
-import { extractMessageEventType, extractTaskNotification } from './eventParsing'
+import { extractMessageEventType } from './eventParsing'
 
 export class NotificationHub {
     private readonly channels: NotificationChannel[]
@@ -70,13 +70,6 @@ export class NotificationHub {
             if (eventType === 'ready') {
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
-                })
-            }
-
-            const taskNotification = extractTaskNotification(event)
-            if (taskNotification) {
-                this.sendTaskNotification(event.sessionId, taskNotification).catch((error) => {
-                    console.error('[NotificationHub] Failed to send task notification:', error)
                 })
             }
         }
@@ -164,15 +157,6 @@ export class NotificationHub {
         await this.notifyReady(session)
     }
 
-    private async sendTaskNotification(sessionId: string, notification: TaskNotification): Promise<void> {
-        const session = this.getNotifiableSession(sessionId)
-        if (!session) {
-            return
-        }
-
-        await this.notifyTask(session, notification)
-    }
-
     private async sendSessionCompletion(sessionId: string, reason: SessionEndReason): Promise<void> {
         const session = this.syncEngine.getSession(sessionId)
         if (!session) {
@@ -200,17 +184,6 @@ export class NotificationHub {
                 await channel.sendPermissionRequest(session, ctx)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
-            }
-        }
-    }
-
-    private async notifyTask(session: Session, notification: TaskNotification): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        for (const channel of this.channels) {
-            try {
-                await channel.sendTaskNotification(session, notification, ctx)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send task notification:', error)
             }
         }
     }

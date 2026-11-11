@@ -1,6 +1,6 @@
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationChannel } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
@@ -48,22 +48,6 @@ export class ServerChanChannel implements NotificationChannel {
             inputNotification ? `HAPI ${inputNotification.title}` : 'HAPI Permission Request',
             `${inputNotification?.body ?? `${name}${toolName}`}\n\n${url}`
         )
-    }
-
-    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
-        if (!session.active || this.shouldSuppress(session)) {
-            return
-        }
-
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
-        const status = notification.status?.trim().toLowerCase()
-        const isFailure = status === 'failed' || status === 'error' || status === 'killed' || status === 'aborted'
-        if (!isFailure) {
-            return
-        }
-        const url = buildSessionUrl(this.publicUrl, session.id)
-        await this.send('HAPI Task failed', `${agentName} · ${name}\n\n${notification.summary}\n\n${url}`)
     }
 
     async sendSessionCompletion(session: Session, _reason: SessionEndReason): Promise<void> {

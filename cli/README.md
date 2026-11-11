@@ -47,11 +47,12 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi usage [--since 24h|7d|<ISO>|<ms>] [--until …] [--json]` - When agents were working across every machine on the hub, from `GET /api/activity`. `--json` prints one `hapi.activity.v1` report for other tools (time trackers); errors go to stderr with exit codes 2 (arguments), 3 (no token or refused), 4 (hub too old), 1 (other).
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
+- `hapi job set|update|clear|list|run` - Attach long-running outliving work to a session so the list UI shows progress while the agent is idle (`tiann/hapi#1404`). Prefer `"$HAPI_SESSION_ID"`. Heartbeat via `update` (or `run`); honest `--remaining` or `--done`/`--total` (omit counts if unknown — never invent a percent). Late-attach clock fix: `set --started-at <epoch-ms>` or clear+set. See `docs/guide/session-jobs.md` and `hapi job --help`.
 
 Peer messages default to `auto`: use the target's live capabilities and turn
 state to steer an active, eligible turn; otherwise queue. Inactive peers require explicit `wake: true`; awakened peers enter the ordinary queue. This applies to every steering-supported
-flavor: remote Claude, Pi, Codex, OpenCode, and Cursor ACP. Unsupported agents and
-legacy Cursor sessions queue instead. Prefer auto for routine collaboration
+flavor: remote Claude, Pi, Codex, OpenCode, Antigravity on agy acp, and Cursor ACP.
+Unsupported agents and legacy Cursor sessions queue instead. Prefer auto for routine collaboration
 when queueing is an acceptable fallback.
 
 Use explicit `queue` for non-urgent updates that can wait. Use `steer` for
@@ -314,6 +315,10 @@ The first message is required and verified in the transcript before success;
 machine-spawn HTTP 200 alone does not prove the task was delivered. In-session
 spawns add a Parent `[title](/sessions/<uuid>)` citation so parent renames do not
 change its identity.
+With `waitForReply` on `ping_peer` or `spawn_peer`, the peer's reply is posted
+back into the calling session when the peer's turn ends (Pi peers are not
+supported). The caller's CLI process does the polling, so if that process exits
+first, the reply is not posted back; it stays in the peer session.
 On a remote runner host, configure the matching hub URL and token so shell
 commands reach the same hub (`hapi auth login` saves the token).
 
@@ -332,6 +337,20 @@ bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional
   completes the same session. Wait for that row or explicitly stop it rather
   than creating duplicates. Process exit and explicit stop still clean up the
   child. The Hub gives Codex spawn RPCs 60 seconds for preflight plus startup.
+- On macOS, when the spawner's responsible process goes away with it (a runner
+  started by launchd, directly or through the npm launcher `bin/hapi.cjs`,
+  which passes `HAPI_LAUNCHER_PID`), every detached `spawnHappyCLI` child
+  (sessions, runner handoff, runner start) is started with
+  `HAPI_DISCLAIM_RESPONSIBILITY=<spawner pid>`. In a direct child of that pid,
+  the entry hook clears the variable and re-executes the same executable in
+  place so the child becomes its own responsible process; the pid, stdio and
+  cwd are unchanged. Without this, a session kept alive across a runner restart
+  loses LAN access for every new process in its tree (macOS Local Network
+  check, `EHOSTUNREACH`) once the old runner is gone. Spawners started from
+  Terminal or SSH keep the inherited responsibility (and its implicit LAN
+  allowance). Binaries without the hook ignore the variable; any failure in the
+  hook falls back to a plain exec or to continuing in-process, and is logged.
+  Implementation: `src/runtime/disclaimExec.ts`, `src/runtime/responsibility.ts`.
 
 When changing agent bootstrap, handoff, or shared-session plumbing:
 
