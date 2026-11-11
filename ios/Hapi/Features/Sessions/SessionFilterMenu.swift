@@ -1,9 +1,12 @@
+import HapiProtocol
 import HapiUI
 import SwiftUI
 
-/// One expandable home affordance: the unread lens, machine selection (two
-/// or more machines) and Mark All as Read. Future filter dimensions belong in
+/// One expandable home affordance (web "Sort and filter"): sort key and
+/// Active first, the status and unread filters, machine selection (two or
+/// more machines) and Mark All as Read. Future filter dimensions belong in
 /// this menu, not in a row of always-visible machine / status / agent chips.
+/// Choices apply immediately; ordering persists, filters stay per home.
 struct SessionFilterMenu: View {
     @Environment(\.hapiTheme) private var theme
     let model: SessionListModel
@@ -11,7 +14,28 @@ struct SessionFilterMenu: View {
 
     var body: some View {
         Menu {
-            Section {
+            Section("Sort By") {
+                choice("Last Message", selected: model.order.sort == .lastMessage) {
+                    model.setSort(.lastMessage)
+                }
+                choice("Date Created", selected: model.order.sort == .created) {
+                    model.setSort(.created)
+                }
+                Toggle(isOn: Binding(get: { model.order.activeFirst }, set: { model.setActiveFirst($0) })) {
+                    Label("Active First", systemImage: "arrow.up.to.line")
+                }
+                .accessibilityIdentifier("home.filters.active-first")
+            }
+            Section("Show") {
+                choice("All Sessions", selected: model.filters.status == .all) {
+                    model.setStatus(.all)
+                }
+                choice("Active Only", selected: model.filters.status == .active) {
+                    model.setStatus(.active)
+                }
+                choice("Archived Only", selected: model.filters.status == .archived) {
+                    model.setStatus(.archived)
+                }
                 Toggle(isOn: Binding(get: { model.filters.unreadOnly }, set: { model.setUnreadOnly($0) })) {
                     Label("Unread Only", systemImage: "circle.inset.filled")
                 }
@@ -35,11 +59,12 @@ struct SessionFilterMenu: View {
             }
         } label: {
             // No .circle variant: the iOS 26 glass button is already the
-            // circle. Active filters show through the accent tint.
-            Label("Filters", systemImage: "line.3.horizontal.decrease")
+            // circle. Filters or a non-default order show through the accent
+            // tint (web's dot on the trigger).
+            Label("Sort & Filter", systemImage: "line.3.horizontal.decrease")
                 .frame(minWidth: 44, minHeight: 44)
         }
-        .tint(model.hasActiveFilters ? theme.accent : .primary)
+        .tint(model.isCustomized ? theme.accent : .primary)
         .accessibilityValue(model.filterSummary ?? String(localized: "No filters"))
         .accessibilityIdentifier("home.filters")
         .alert("Mark All as Read?", isPresented: $confirmMarkAllRead) {
@@ -51,6 +76,16 @@ struct SessionFilterMenu: View {
                 Int64(model.unreadCount)
             ))
         }
+    }
+
+    /// Single-choice row with the same checkmark presentation as the
+    /// machine options (a Picker would discard the native layout we rely on).
+    private func choice(_ title: LocalizedStringKey, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+            if selected { Image(systemName: "checkmark") }
+        }
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var machineSection: some View {

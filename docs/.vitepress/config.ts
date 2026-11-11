@@ -33,6 +33,7 @@ export default defineConfig({
           { text: 'How it Works', link: '/guide/how-it-works' },
           { text: 'Session List', link: '/guide/session-list' },
           { text: 'Agent quota queries', link: '/guide/usage-query' },
+          { text: 'Session-attached jobs', link: '/guide/session-jobs' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
           { text: 'FAQ', link: '/guide/faq' }

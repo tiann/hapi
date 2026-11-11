@@ -68,11 +68,16 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
+// Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
+// (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
+    'jobsAcceptedFromSessionIds',
+    'jobsTransferredToSessionId',
+    'jobKeyRedirects',
     'promptTitle'
 ] as const
 
@@ -523,8 +528,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 sessionAccess.value.namespace
             )
             reply({ ok })
-            if (ok && data.state === 'queued') {
-                onWebappEvent?.({ type: 'messages-requeued', sessionId: data.sid, localIds })
+            if (ok) {
+                onWebappEvent?.(data.state === 'queued'
+                    ? { type: 'messages-requeued', sessionId: data.sid, localIds }
+                    : { type: 'messages-indeterminate', sessionId: data.sid, localIds, dispatching: true })
             }
         } catch (err) {
             console.error('recordSteerDeliveryState failed', err)

@@ -38,7 +38,8 @@ for platform differences, web-only features and everyday use.
 
 - Xcode 27.1 or newer (the app uses iOS 27.1 SDK APIs such as
   `UIHingeInteraction`).
-- Deployment target: iOS 17.0.
+- Deployment target: iOS 17.0; the Mac Catalyst build therefore requires
+  macOS 14.
 - Runtime dependencies (SPM, declared in `Packages/HapiKit/Package.swift`,
   used only by the `HapiUI` target): `swiftlang/swift-markdown` (GFM parsing
   for the custom renderer) and `raspu/Highlightr` (code highlighting, kept
@@ -57,6 +58,10 @@ the command line:
 # App (simulator, no signing)
 xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+
+# App (Mac Catalyst, unsigned; launching it needs signing, see below)
+xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
+  -destination 'platform=macOS,variant=Mac Catalyst' CODE_SIGNING_ALLOWED=NO
 
 # Package tests (macOS; protocol/client plus UI package tests)
 swift test --package-path ios/Packages/HapiKit
@@ -216,10 +221,10 @@ provider credentials as described below.
   the generic alert unchanged. The appex links nothing beyond the SDK — it
   carries an SDK-only copy of the HapiKit `PushEnvelope` decrypt, kept honest
   by the shared test vector.
-- **Actions.** `permission-request` → Allow / Deny; `ready` and
-  `task-notification` → inline Reply. `input-request` previews the first
-  question, remaining question count and session name, with tap-to-open only
-  (no approval or Reply action). Apple Watch mirrors the preview; answer on
+- **Actions.** `permission-request` → Allow / Deny; `ready` → inline
+  Reply. `input-request` previews the first question, remaining question
+  count and session name, with tap-to-open only (no approval or Reply
+  action). Apple Watch mirrors the preview; answer on
   the phone. Handlers run in the notification
   delegate's async completion and resolve the owning hub Android-style
   (active hub first, then the roster; 404 "Session not found" / 403 = try
@@ -417,8 +422,10 @@ chat, draft, attachment tray and transcript anchor. Native menus/sheets remain
 native; the hub sign-out and attachment dialogs are anchored to their buttons.
 The explicit scene manifest disables additional HAPI windows, **not** Split
 View/Stage Manager with other apps. Do not enable scene-manifest generation
-(which generates multiple-scene support) or require full screen. Multiwindow,
-third-column inspectors, keyboard shortcuts and drag/drop are not implemented.
+(which generates multiple-scene support) or require full screen. Multiwindow
+and third-column inspectors are not implemented; the menu commands and
+composer drag/drop described under [macOS](#macos-mac-catalyst) also work with
+an iPad hardware keyboard and Files drags.
 
 `SessionNavigationTests` covers navigation/removal policy and the built scene
 manifest. `SessionSplitPresentationTests` runs on an actual iPad simulator and
@@ -446,6 +453,65 @@ one-third/half-screen and Stage Manager resizing, keyboard docking/floating and
 hardware-keyboard transitions, light/dark, Chinese/English, Dynamic Type and
 VoiceOver. Check settings/new-session/Scratchlist/inspection sheets while
 resizing, notification navigation, and background/foreground reconnection.
+
+### macOS (Mac Catalyst)
+
+The same `Hapi` target and notification extension build for Mac Catalyst with
+the Mac idiom (`TARGETED_DEVICE_FAMILY = 1,2,6`, "Optimize Interface for
+Mac"), so windows render 1:1 with native Mac controls instead of the 77 %
+scaled iPad app. The Mac app keeps the `run.hapi.app` bundle ID (no derived
+`maccatalyst.` prefix): it is the same App Store purchase and replaces the
+iPad app on Apple silicon Macs. Both use the `~/Library/Containers/run.hapi.app`
+container and the same Keychain group, so existing pairings (and the
+notification permission) carry over; a locally signed Catalyst build opened
+directly into the iPad app's paired hub. Mac signing uses `Hapi-macOS.entitlements` /
+`HapiNotificationService-macOS.entitlements` (App Sandbox, outgoing network,
+microphone, user-selected files, Mac APNs environment).
+
+Mac-specific behavior, compiled with `targetEnvironment(macCatalyst)`:
+
+- The window always uses the split (sidebar list style, denser rows) with a
+  unified toolbar and a 480×480pt minimum size. The NSToolbar drops the
+  custom `.principal` chat header, so the chat uses the system title (as on
+  the folded Duo); keep the titlebar title visible, it carries that title.
+- Reading typography steps down to a 14pt body (`HapiTypography` platform
+  scale 0.875); system text styles already resolve to Mac sizes.
+- Pairing hides the live QR scanner (VisionKit `DataScannerViewController` is
+  unavailable); manual entry, pasted pairing links and `hapicompanion://`
+  links remain. Web links open in the default browser, not an in-app Safari
+  sheet. Sheets use page sizing so long forms are not clipped.
+- Return sends from the composer and picks the first `/` or `@` suggestion;
+  Shift/Option-Return insert a newline, IME composition is never intercepted,
+  and ⌘↩ still sends. Scratchlist drafts keep Return as a newline.
+
+Shared with iPad: the menu bar / hardware-keyboard commands in
+`AppCommands.swift` — New Session ⌘N, Settings ⌘, Toggle Sidebar ⌃⌘S, and a
+Session menu (Session Settings ⌘I, Session Files ⌘⇧O, Rename, Export, Stop ⌘.,
+Previous/Next Session ⌥⌘↑/↓). Dropping files on the composer or pasting an
+image-only clipboard or copied files adds attachments
+(`ItemProviderAttachmentLoader` copies the provider file before preparing it).
+
+Run locally: Xcode → `Hapi` scheme → **My Mac (Mac Catalyst)** with your team
+selected; the first run creates the Mac Catalyst development profiles. An
+ad-hoc signed build launches but cannot write the Keychain, so pairing fails
+with "Could not save". Regression checks run on the Mac directly (CI does the
+same, unsigned):
+
+```sh
+xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi \
+  -destination 'platform=macOS,variant=Mac Catalyst' \
+  -enableCodeCoverage NO -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO \
+  -only-testing:HapiTests/SessionNavigationTests \
+  -only-testing:HapiTests/SessionSplitPresentationTests \
+  -only-testing:HapiTests/TranscriptGeometryTests
+```
+
+`TranscriptTypographyTests` stay on iOS simulators: content-size overrides do
+not scale Mac-idiom windows. Coverage must stay off for Catalyst test builds
+(the instrumented `cmark-gfm` dynamic product fails to link). Before release,
+manually check window resizing to the compact collapse, full screen, light/dark,
+Chinese/English, VoiceOver and full keyboard access, notification delivery
+and click-through, and reconnection after sleep.
 
 ### Reading typography
 
@@ -638,17 +704,34 @@ TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
 ### Home filtering
 
 Home keeps a fixed Sessions title: hub switching on the leading edge,
-Filters and New Session on the trailing edge. The native menu offers an
-**Unread Only** lens, machine single-selection (two or more machines) and
-**Mark All as Read** (shared read state, confirmed first); only applied filters
-add a summary line. The unread lens keeps the iPad's selected chat listed.
+**Sort & Filter** and New Session on the trailing edge. The native menu mirrors
+the web sort and filter menu: **Sort By** last message (default) or date
+created, **Active First** (on by default: connected sessions lead the pinned
+and recent sections, below manual pins), **Show** all / active only / archived
+only, an **Unread Only** lens, machine single-selection (two or more machines)
+and **Mark All as Read** (shared read state, confirmed first). Only applied
+filters add a summary line; a non-default order just tints the menu button.
+The status and unread filters keep the iPad's selected chat listed.
 The search field (`.searchable`) ranks matches with the web relevance rules
 (`SessionListSearch`: title, worktree, summary, agent, machine, path and id;
-every word must match; `*`/`?` wildcards) while keeping pinned sections first.
-Filters and search are transient per home/hub and never select a new session's machine.
+every word must match; `*`/`?` wildcards) while keeping pinned sections first;
+relevance ties use the base order, not the chosen sort, as on web.
+Sort and Active First persist app-wide (`SessionListOrderPrefs`). Filters and
+search are transient per home/hub and never select a new session's machine.
 Options/counts come from all session summaries, including historical machines;
 the online roster supplies names only. Missing names use a labeled short ID.
 Session-count updates do not reorder options or reset the list's scroll position.
+
+Each row's agent icon carries the web presence badge (one mark per state):
+solid green pulsing while working, solid blue pulsing when only background
+tasks run, a green ring when connected and waiting, and a power mark when
+stopped or archived. Pending requests stay a separate attention symbol on the
+second line. A running [attached job](../docs/guide/session-jobs.md) counts as
+working even when the agent is idle or disconnected, keeps the session under
+**Active Only**, and replaces the project on the second line with
+`label · remaining or percent · elapsed` (amber `no heartbeat` after 15
+minutes; no progress bar). Job patches are versioned like web's: a lagged
+heartbeat cannot resurrect a cleared job.
 
 App-hosted filter tests use observable in-memory stores (no network or pairing).
 Optional layout captures are test specimens, not live or App Store screenshots:

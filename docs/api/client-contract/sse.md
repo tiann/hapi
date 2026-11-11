@@ -180,6 +180,7 @@ Patch application, field by field:
   Strictly greater, because the two SSE connections have **no shared ordering** — the same version can arrive twice and an older version can arrive after a newer one. Applying a stale `agentState` would resurrect resolved permission requests; a stale `metadata` would regress the resume/session-id state. (The web session-*list* path tolerates `>=` because re-deriving its summary from an equal version is idempotent; for a single-cache native client, strict `>` is the rule.)
 - **Never wholesale-spread the wrapper.** `session.metadata` must become `wrapper.value` — assigning `{version, value}` itself into the session is a classic porting bug.
 - **`scratchlistUpdatedAt`** — a bare refetch trigger: the patch carries no entries; its presence means "refetch `GET /api/sessions/:id/scratchlist`". Nothing else to apply.
+- **`attachedJob`** — `{version, value: AttachedJob | null}` for the session list row only (`SessionSummary.attachedJob` / `attachedJobUpdatedAt`, [session jobs](../../guide/session-jobs.md)); the detail `Session` has no such field. Apply when `version` is strictly greater than the row's `attachedJobUpdatedAt` (missing = 0), so a lagged heartbeat cannot resurrect a cleared job. A full-session payload cannot carry the job; keep the row's existing job and watermark when one replaces the summary.
 
 ### Keep-alive noise
 

@@ -409,12 +409,13 @@ export function ComposerToolbarItemPreview(props: { item: ComposerToolbarItemId;
             case 'voiceMic': return <SpeakerIcon />
             case 'scratchlist': return <ScratchlistToggleIcon />
             case 'schedule': return <ScheduleIcon className="h-[18px] w-[18px]" />
+            case 'fast': return <span className="text-xs font-medium">{props.label}</span>
             case 'model':
             case 'effort':
                 return <><span className="max-w-24 truncate text-xs font-medium">{props.label}</span><ChevronIcon /></>
         }
     })()
-    const isTextControl = props.item === 'model' || props.item === 'effort'
+    const isTextControl = props.item === 'model' || props.item === 'effort' || props.item === 'fast'
     return (
         <span
             className={`flex h-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 ${isTextControl ? 'gap-1 px-3' : 'w-8'}`}
@@ -840,6 +841,8 @@ export function ComposerButtons(props: {
     modelValueDisabled?: boolean
     modelValueOpen?: boolean
     onModelValueToggle?: () => void
+    fastModeEnabled?: boolean
+    onFastModeToggle?: () => void
     effortValueLabel?: string
     effortValueButtonRef?: Ref<HTMLButtonElement>
     effortValueDisabled?: boolean
@@ -933,6 +936,26 @@ export function ComposerButtons(props: {
                     expanded={props.expanded}
                     onToggle={props.onExpandedToggle}
                 />
+                </ToolbarItemSlot>
+
+                <ToolbarItemSlot item="fast">
+                {props.onFastModeToggle ? (
+                    <button
+                        type="button"
+                        aria-label={t('misc.fastMode')}
+                        aria-pressed={props.fastModeEnabled}
+                        title={t('misc.fastMode')}
+                        disabled={props.controlsDisabled}
+                        onClick={props.onFastModeToggle}
+                        className={`flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                            props.fastModeEnabled
+                                ? 'bg-[var(--app-button)] text-[var(--app-button-text)]'
+                                : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('misc.fastModeFast')}
+                    </button>
+                ) : null}
                 </ToolbarItemSlot>
 
                 <ToolbarItemSlot item="model">

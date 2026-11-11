@@ -1329,4 +1329,42 @@ describe('machines routes', () => {
 
         expect(calls).toEqual([{ refresh: false }, { refresh: true }])
     })
+
+    it('returns a stable code when the DSH machine RPC target is absent', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listDshModelsForMachine: async () => {
+                throw new RpcTargetMissingError('machine-1:listDshModels', 'handler-not-registered')
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/dsh-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toMatchObject({ success: false, code: RPC_TARGET_MISSING_ERROR_CODE })
+    })
+
+    it('returns a stable code when the agy machine RPC target is absent', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listAgyModelsForMachine: async () => {
+                throw new RpcTargetMissingError('machine-1:listAgyModels', 'handler-not-registered')
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/agy-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toMatchObject({ success: false, code: RPC_TARGET_MISSING_ERROR_CODE })
+    })
 })
