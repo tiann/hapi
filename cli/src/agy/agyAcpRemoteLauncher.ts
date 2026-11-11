@@ -985,8 +985,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         const pendingWakeCalls: string[] = [];
         const backgrounding = new Map<string, string>();
+        const openContinuation = new Set<string>();
         const surface = (step: AgyTranscriptStep): void =>
-            this.surfaceWakeStep(step, { bgIds: opts.bgIds, pendingWakeCalls, backgrounding, taskDescriptions: opts.taskDescriptions });
+            this.surfaceWakeStep(step, { bgIds: opts.bgIds, pendingWakeCalls, backgrounding, taskDescriptions: opts.taskDescriptions, openContinuation });
         // Window-scoped lease: one persistent readonly DB connection for fast
         // progress probes plus the fs.watch event wait; closed with the window.
         const lease = this.acpSessionId ? this.createWakeLease(this.acpSessionId) : null;
@@ -1041,7 +1042,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 quietMs: this.wakeTiming.quietMs,
                 capMs: this.wakeTiming.capMs,
                 waitForChange: lease?.waitForChange,
-                hasOpenBackgroundCommands: () => opts.bgIds.length > 0,
+                // Live work: the original commands, a surfaced continuation
+                // tool call awaiting its result, and commands the continuation
+                // backgrounded itself — all bound by the safety cap.
+                hasOpenBackgroundCommands: () => opts.bgIds.length > 0
+                    || pendingWakeCalls.length > 0
+                    || openContinuation.size > 0,
                 onStep: surface,
                 onActivity: () => this.session.onThinkingChange(true)
             });
@@ -1089,6 +1095,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             backgrounding: Map<string, string>;
             /** ACP call id -> command text, for pairing a completion with its call. */
             taskDescriptions: Map<string, string>;
+            /** Native task ids backgrounded during this window, not yet completed. */
+            openContinuation: Set<string>;
         }
     ): void {
         if (step.kind === 'system') {
@@ -1096,6 +1104,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // An unrelated system message (no completion marker) touches no
             // pending command.
             if (!completion) return;
+            if (completion.taskId !== null) state.openContinuation.delete(completion.taskId);
             let bgId: string | undefined;
             const description = completion.taskId !== null ? state.backgrounding.get(completion.taskId) : undefined;
             if (description === undefined) {
@@ -1145,7 +1154,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // agy records the backgrounding itself; remember the native task
                 // id so its completion pairs with the original ACP call.
                 const backgrounded = parseAgyBackgroundStart(step.content);
-                if (backgrounded) state.backgrounding.set(backgrounded.taskId, backgrounded.description);
+                if (backgrounded) {
+                    state.backgrounding.set(backgrounded.taskId, backgrounded.description);
+                    state.openContinuation.add(backgrounded.taskId);
+                }
                 return; // the ACP card already shows the backgrounded command
             }
             const wakeId = state.pendingWakeCalls.shift();

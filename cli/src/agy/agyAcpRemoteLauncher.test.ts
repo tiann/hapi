@@ -2640,6 +2640,50 @@ describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)',
         expect(JSON.stringify(first)).toContain('FIRST-OUT');
     });
 
+    it('keeps watching while a continuation tool call awaits its result past the quiet interval', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The original command completes, and the continuation launches a
+        // follow-up tool call of its own.
+        source.push(
+            wakeStep(3, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nQUIET-GAP-OK'),
+            wakeStep(4, 'planner', '', [{ name: 'run_command', args: { CommandLine: 'echo follow-up' } }])
+        );
+        source.latest = 4;
+        await vi.waitFor(() => expect(agentRows(client).some((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'))).toBe(true));
+
+        // The follow-up result takes longer than the quiet interval: the
+        // window must stay armed while the continuation tool call is open.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        source.push(
+            wakeStep(5, 'tool', 'follow-up output'),
+            wakeStep(6, 'planner', 'All done.')
+        );
+        source.latest = 6;
+        await vi.waitFor(() => expect(textRows(client)).toContainEqual('All done.'));
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        const resultRow = agentRows(client).find((row) => row.type === 'tool-call-result' && String(row.callId).startsWith('agy-wake-'));
+        expect(resultRow).toBeDefined();
+    });
+
     it('leaves an unrelated system message untouched instead of discarding a pending command', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
