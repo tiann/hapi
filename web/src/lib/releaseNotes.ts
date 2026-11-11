@@ -76,7 +76,50 @@ function releaseNote(
  * guide and reusable authoring prompt.
  */
 export const RELEASE_NOTES = [
-    releaseNote('0.34.3', '2026-11-05',
+    releaseNote('0.34.6', '2026-11-11',
+        'Add Claude generation-rate telemetry, fork running Codex sessions at their latest completed turn, fade non-resident session rows, fold repeated ACP tool calls, and patch WebSocket and math dependencies.',
+        '显示 Claude 生成速率，支持 Codex 运行中会话按最近完成轮次派生，弱化非驻留会话行，合并重复 ACP 工具调用，并修复 WebSocket 与数学渲染依赖。',
+        [
+            group('Agent and session behavior', 'Agent 与会话行为', [
+                change('feature', 'Show Claude round generation rate in tokens per second.', '显示 Claude 回合的每秒生成 Token 数。'),
+                change('feature', 'Fork running Codex sessions through the latest completed turn while leaving the source running.', '在保留源会话继续运行的同时，按最近完成轮次派生正在运行的 Codex 会话。'),
+                change('feature', 'Fade non-resident session rows alongside their presence badge.', '让非驻留会话行与状态徽标一起弱化显示。'),
+                change('fix', 'Fold repeated ACP tool-call updates into one row per call ID.', '将重复的 ACP 工具调用更新合并在同一 call ID 行中。'),
+                change('fix', 'Respect workspace image delivery preferences for CLI agents and patch WebSocket and math rendering dependencies.', '让 CLI Agent 遵循工作区图片交付偏好，并修复 WebSocket 与数学渲染依赖。'),
+            ]),
+        ]), releaseNote('0.34.5', '2026-11-10',
+        'Add reasoning controls for Kimi and Copilot, visible progress for long-running jobs, richer project-group and presence controls, and faster on-demand syntax highlighting.',
+        '为 Kimi 和 Copilot 增加推理力度控制，为长时间运行任务显示进度，增强项目组与状态交互，并按需加载语法高亮以提升速度。',
+        [
+            group('Agent controls and visibility', 'Agent 控制与状态', [
+                change('feature', 'Select Kimi thinking levels and Copilot reasoning effort for remote sessions.', '为远程会话选择 Kimi 思考级别和 Copilot 推理力度。'),
+                change('feature', 'Show progress bars for attached jobs that run for hours.', '为持续数小时的附加任务显示进度条。'),
+                change('feature', 'Give every session state its own presence badge and emit Cursor status summaries when enabled.', '为每种会话状态提供独立徽标，并在启用时输出 Cursor 状态摘要。'),
+            ]),
+            group('Web interaction', 'Web 交互', [
+                change('feature', 'Add a right-click and long-press project-group menu with keyboard access.', '增加支持右键、长按和键盘操作的项目组菜单。'),
+                change('feature', 'Add just-in-time callouts for unlabelled icon-only controls.', '为未标注文本的纯图标控件增加即时说明。'),
+                change('feature', 'Load syntax grammars on demand.', '按需加载语法高亮规则。'),
+            ]),
+            group('Reliability fixes', '可靠性修复', [
+                change('fix', 'Scope the session-end sweep to queued user prompts, deactivate sessions when their runner child exits, and fix goal restart, workspace resume, and async-question cancellation states.', '将会话结束清理限定于排队用户消息，在 Runner 子进程退出后停用会话，并修复目标重启、工作区恢复和异步问题取消状态。'),
+                change('fix', 'Resolve Codex developer instructions after bootstrap and clarify ping-peer failure phases and delivery state.', '在启动后正确解析 Codex 开发者指令，并明确 ping-peer 失败阶段与投递状态。'),
+            ]),
+        ]), releaseNote('0.34.4', '2026-11-09',
+        'Expand ACP and notification support, add model RPC caching and peer-message steering, improve unread and question workflows, and fix SSE disconnects during buffered streaming.',
+        '扩展 ACP 与通知支持，增加模型 RPC 缓存和对等消息介入，改进未读与问题处理流程，并修复流式缓冲期间的 SSE 断连。',
+        [
+            group('ACP, notifications, and collaboration', 'ACP、通知与协作', [
+                change('feature', 'Re-enable ACP title changes with manual title precedence and add notification controls plus unread dots.', '重新启用 ACP 标题修改并保持手动标题优先，同时增加通知控制与未读圆点。'),
+                change('feature', 'Keep unread sessions visible, auto-steer peer messages into active turns, and support peer replies through waitForReply.', '让未读会话保持可见，将未读消息自主介入活动回合，并通过 waitForReply 支持对等回复。'),
+                change('feature', 'Show Antigravity and OpenCode questions and canonical tool cards, and expose Pi peer-session MCP tools.', '显示 Antigravity 与 OpenCode 的问题和标准工具卡片，并开放 Pi 对等会话 MCP 工具。'),
+                change('feature', 'Cache model-list RPCs with single-flight and stale-while-revalidate behavior.', '使用单次请求合并与陈旧优先刷新缓存模型列表 RPC。'),
+            ]),
+            group('Reliability fixes', '可靠性修复', [
+                change('fix', 'Keep jump-to-bottom visible while browsing history, preserve notification opt-out during startup recovery, and fix LAN access for sessions that outlive their runner on macOS.', '浏览历史时保持跳到底部按钮可见，在启动恢复时保留通知退出选择，并修复 macOS 上长于 Runner 的会话的局域网访问。'),
+                change('fix', 'Show queued-message steering feedback, improve OpenCode retry and tool-output rendering, and prevent buffered SSE disconnects from crashing the Hub.', '显示排队消息介入反馈，改进 OpenCode 重试与工具输出渲染，并防止缓冲 SSE 断连导致 Hub 崩溃。'),
+            ]),
+        ]), releaseNote('0.34.3', '2026-11-05',
         'Add an Unread-only option to the session list filter and avoid re-parsing session read state for every sidebar row when loading large lists.',
         '为会话列表过滤器增加仅看未读选项，并在加载大列表时避免对每一侧栏行重复解析会话已读状态。',
         [

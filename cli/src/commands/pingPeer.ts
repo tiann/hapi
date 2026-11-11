@@ -43,14 +43,16 @@ ${chalk.bold('Notes:')}
   Message only peers tied to your task; never broadcast to the --list output.
   Inactive targets are refused (exit 5) unless --wake, which resumes them via
   POST /api/sessions/:id/resume first. Wake only when the peer must act, not for FYI.
-  Delivery defaults to auto: steer a steerable active Codex turn, otherwise queue.
-  Other agent flavors currently queue in auto mode.
+  Delivery defaults to auto: steer an active turn when its target supports steering
+  and is ready; otherwise queue. If steering cannot be confirmed after acceptance,
+  auto keeps the same accepted message without resending; acceptance is not consumption.
   Use auto for routine collaboration when queueing is an acceptable fallback.
   Use queue for non-urgent updates that can wait. Use steer for important findings
   the peer needs to know now to adjust its current work, not after its current turn.
   State why the finding matters now and what the peer should adjust.
-  Explicit steer requires an active turn in Pi, Codex,
-  or Cursor ACP; it neither resumes inactive targets nor sends to idle targets.
+  Explicit steer requires an active turn in remote Claude, Pi, Codex, OpenCode,
+  Antigravity (agy acp), or Cursor ACP; it neither resumes inactive targets nor
+  sends to idle targets.
   Steer uses the existing queued-message action. If it fails after send, inspect the
   target before retrying: the accepted message may still be queued or consumed.
   When a user cites [title](/sessions/<id>) or Copy-reference
@@ -233,7 +235,7 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
     })
 
     const receipt = result.delivery === 'accepted'
-        ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+        ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}`
         : `${result.delivery} to ${result.sessionId} localId=${result.localId}`
     console.log(chalk.green(`hapi ping-peer: OK - ${receipt}`))
 }

@@ -338,7 +338,7 @@ describe('scroll anchor helpers', () => {
         })
     })
 
-    it('shows the jump button only while scrolling down away from the bottom', () => {
+    it('shows the jump button in either direction away from the bottom', () => {
         const downward = getScrollIntent({
             scrollTop: 610,
             previousScrollTop: 590,
@@ -360,7 +360,7 @@ describe('scroll anchor helpers', () => {
 
         expect(downward.isScrollingDown).toBe(true)
         expect(shouldShowScrollToBottomButton(downward)).toBe(true)
-        expect(shouldShowScrollToBottomButton(upward)).toBe(false)
+        expect(shouldShowScrollToBottomButton(upward)).toBe(true)
         expect(shouldShowScrollToBottomButton(atBottom)).toBe(false)
     })
 
@@ -370,7 +370,7 @@ describe('scroll anchor helpers', () => {
         expect(shouldRenderScrollToBottomButton(false, 0)).toBe(false)
     })
 
-    it('keeps the jump button visible after downward scrolling stops', () => {
+    it('keeps the jump button visible when scrolling stops or reverses', () => {
         const downward = getScrollIntent({
             scrollTop: 610,
             previousScrollTop: 590,
@@ -392,7 +392,7 @@ describe('scroll anchor helpers', () => {
 
         expect(getScrollToBottomButtonVisibility(false, downward)).toBe(true)
         expect(getScrollToBottomButtonVisibility(true, stationary)).toBe(true)
-        expect(getScrollToBottomButtonVisibility(true, upward)).toBe(false)
+        expect(getScrollToBottomButtonVisibility(true, upward)).toBe(true)
     })
 
     it('cancels initial scroll settling when the user scrolls up away from the bottom', () => {
