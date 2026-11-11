@@ -136,6 +136,54 @@ type ToolOpts = {
     t?: Translator
 }
 
+// AskUserQuestion, its lowercase alias and CursorAskQuestion share one
+// presentation: the parsed header titles the card and the question text is the
+// subtitle. While pending, the header stays minimal because the open card body
+// already shows the question; both return once the card settles and collapses.
+// Cursor payloads name the fields `title`/`prompt`, the others `header`/
+// `question` — the readers accept both, mirroring parseCursorAskQuestionInput.
+function readQuestionFields(raw: unknown): { header: string; question: string } {
+    if (!isObject(raw)) return { header: '', question: '' }
+    const header = typeof raw.header === 'string' && raw.header.trim()
+        ? raw.header.trim()
+        : (typeof raw.title === 'string' ? raw.title.trim() : '')
+    const question = typeof raw.question === 'string' && raw.question.trim()
+        ? raw.question.trim()
+        : (typeof raw.prompt === 'string' ? raw.prompt.trim() : '')
+    return { header, question }
+}
+
+const questionToolPresentation = {
+    icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
+    title: (opts: ToolOpts) => {
+        const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
+            ? opts.input.questions : []
+        const count = questions.length
+        const { header } = readQuestionFields(questions[0] ?? null)
+
+        if (count > 1) {
+            return `${count} Questions`
+        }
+        return header.length > 0 ? header : 'Question'
+    },
+    subtitle: (opts: ToolOpts) => {
+        const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
+            ? opts.input.questions : []
+        const count = questions.length
+        const { question } = readQuestionFields(questions[0] ?? null)
+
+        // While the question awaits a reply the open card body already
+        // shows the question text, so the header must not repeat it.
+        if (opts.pending) return null
+
+        if (count > 1 && question.length > 0) {
+            return truncate(question, 100) + ` (+${count - 1} more)`
+        }
+        return question.length > 0 ? truncate(question, 120) : null
+    },
+    minimal: true
+}
+
 export const knownTools: Record<string, {
     icon: (opts: ToolOpts) => ReactNode
     title: (opts: ToolOpts) => string
@@ -594,74 +642,9 @@ export const knownTools: Record<string, {
         title: () => 'Plan proposal',
         minimal: false
     },
-    AskUserQuestion: {
-        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const header = isObject(first) && typeof first.header === 'string'
-                ? first.header.trim() : ''
-
-            if (count > 1) {
-                return `${count} Questions`
-            }
-            return header.length > 0 ? header : 'Question'
-        },
-        subtitle: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const question = isObject(first) && typeof first.question === 'string'
-                ? first.question.trim() : ''
-
-            // While the question awaits a reply the open card body already
-            // shows the question text, so the header must not repeat it.
-            if (opts.pending) return null
-
-            if (count > 1 && question.length > 0) {
-                return truncate(question, 100) + ` (+${count - 1} more)`
-            }
-            return question.length > 0 ? truncate(question, 120) : null
-        },
-        minimal: true
-    },
-    ask_user_question: {
-        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const header = isObject(first) && typeof first.header === 'string'
-                ? first.header.trim() : ''
-
-            if (count > 1) {
-                return `${count} Questions`
-            }
-            return header.length > 0 ? header : 'Question'
-        },
-        subtitle: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const question = isObject(first) && typeof first.question === 'string'
-                ? first.question.trim() : ''
-
-            // While the question awaits a reply the open card body already
-            // shows the question text, so the header must not repeat it.
-            if (opts.pending) return null
-
-            if (count > 1 && question.length > 0) {
-                return truncate(question, 100) + ` (+${count - 1} more)`
-            }
-            return question.length > 0 ? truncate(question, 120) : null
-        },
-        minimal: true
-    },
+    AskUserQuestion: questionToolPresentation,
+    ask_user_question: questionToolPresentation,
+    CursorAskQuestion: questionToolPresentation,
     request_user_input: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {

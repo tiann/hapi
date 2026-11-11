@@ -702,6 +702,51 @@ describe('getToolPresentation — request_user_input', () => {
     })
 })
 
+describe('getToolPresentation — CursorAskQuestion', () => {
+    it('titles single-question cards with the parsed header instead of the tool name', () => {
+        const presentation = getToolPresentation({
+            toolName: 'CursorAskQuestion',
+            input: {
+                questions: [{
+                    id: '1',
+                    title: 'Deployment',
+                    prompt: 'Deploy the build now?',
+                    options: [{ id: 'yes', label: 'Yes' }]
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Deployment')
+        expect(presentation.subtitle).toBe('Deploy the build now?')
+    })
+
+    it('keeps the pending header minimal like the other question tools', () => {
+        const presentation = getToolPresentation({
+            toolName: 'CursorAskQuestion',
+            input: {
+                questions: [{
+                    id: '1',
+                    title: 'Deployment',
+                    prompt: 'Deploy the build now?',
+                    options: [{ id: 'yes', label: 'Yes' }]
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+            pending: true,
+        })
+
+        expect(presentation.title).toBe('Deployment')
+        expect(presentation.subtitle).toBeNull()
+    })
+})
+
 describe('getToolPresentation — AskUserQuestion pending header', () => {
     it('keeps the header title but hides the question subtitle while pending', () => {
         const presentation = getToolPresentation({
