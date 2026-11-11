@@ -129,6 +129,11 @@ export type SessionSummary = {
      *  / per-row UX. The full count (which may exceed the cap) is in
      *  `pendingRequestsCount`. */
     pendingRequests: PendingRequest[]
+    /** Newest request time across ALL pending requests, ignoring the cap above.
+     *  Optional so an older hub can omit it. Lets a client tell "every prompt
+     *  was acknowledged" from "the acknowledged ones are merely the only ones
+     *  the capped slice carried". */
+    pendingRequestsNewestAt?: number
     backgroundTaskCount: number
     /**
      * Hub-derived "open tool work exists in the transcript tail" (work-scoped
@@ -219,6 +224,31 @@ export function getPendingRequests(
 
 export function computePendingRequestsCount(agentState: AgentState | null | undefined): number {
     return agentState?.requests ? Object.keys(agentState.requests).length : 0
+}
+
+/**
+ * Newest request time across ALL pending requests, uncapped (0 when none).
+ *
+ * `pendingRequests` is capped at `PENDING_REQUEST_SUMMARY_CAP` and keeps the
+ * OLDEST entries, so once the cap is full the carried slice cannot answer
+ * "did anything arrive after the operator dismissed this?" — the newer prompt
+ * is simply absent. Computed from `agentState` like `pendingRequestsCount`,
+ * so it costs no storage and needs no migration.
+ */
+export function computePendingRequestsNewestAt(
+    agentState: AgentState | null | undefined,
+    fallbackSince: number
+): number {
+    const requests = agentState?.requests
+    if (!requests) {
+        return 0
+    }
+    let newest = 0
+    for (const request of Object.values(requests)) {
+        const since = typeof request.createdAt === 'number' ? request.createdAt : fallbackSince
+        if (since > newest) newest = since
+    }
+    return newest
 }
 
 export function computeTodoProgress(todos: TodoItem[] | undefined): SessionSummary['todoProgress'] {
@@ -334,6 +364,7 @@ export function toSessionSummary(
         pendingRequestsCount: computePendingRequestsCount(session.agentState),
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
+        pendingRequestsNewestAt: computePendingRequestsNewestAt(session.agentState, session.updatedAt),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         derivedToolWork: session.derivedToolWork === true,
         lastNotify: session.lastNotify ?? null,

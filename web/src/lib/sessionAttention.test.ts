@@ -404,17 +404,31 @@ describe('getSessionBlockedState', () => {
         expect(sessionBlockedIsError(blocked)).toBe(false)
     })
 
-    it('suppresses blocked chrome while the agent is thinking again', () => {
+    it('suppresses a stored footer while the agent is thinking again', () => {
         // The hub clears lastNotify on the same transition; this guards the
         // window before that patch lands.
         expect(getSessionBlockedState(
             makeSummary({ id: 'a', thinking: true, lastNotify: { status: 'blocked', at: now, note: null } }),
             { now }
         )).toBeNull()
-        expect(getSessionBlockedState(
-            makeSummary({ id: 'a', thinking: true, pendingRequestsCount: 1, pendingRequestKinds: ['permission'] }),
+    })
+
+    it('still blocks on a live prompt while the agent is thinking', () => {
+        // A remote Claude agent keeps `thinking` true for the whole wait: the
+        // SDK only clears it on the turn's result, and the permission handler
+        // never touches it. Suppressing here hid the commonest blocker there
+        // is — an agent parked on a permission — for as long as it waited.
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                thinking: true,
+                pendingRequestsCount: 1,
+                pendingRequestKinds: ['permission'],
+                pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: now }]
+            }),
             { now }
-        )).toBeNull()
+        )
+        expect(state?.reason).toBe('permission')
     })
 
     it('marks a report older than the loud window stale rather than dropping it', () => {
@@ -504,6 +518,64 @@ describe('getSessionBlockedState', () => {
 
         expect(state?.reason).toBe('permission')
         expect(state?.note).toBe('Edit')
+    })
+
+    it('blocks on a new permission when an acknowledged question outranks it', () => {
+        // Kind priority ran before the acknowledgement filter, so 'question'
+        // won, the matching pool held only the dismissed input request, and the
+        // genuinely unanswered permission was discarded entirely.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 2,
+            pendingRequestKinds: ['input', 'permission'],
+            pendingRequests: [
+                { id: 'r1', kind: 'input', tool: 'AskUserQuestion', since: now - 5000 },
+                { id: 'r2', kind: 'permission', tool: 'Bash', since: now + 5000 }
+            ],
+            blockedAck: { at: now, reason: 'answered the question elsewhere' }
+        }), { now })
+
+        expect(state?.reason).toBe('permission')
+        expect(state?.note).toBe('Bash')
+    })
+
+    it('blocks on a prompt that arrived beyond the capped summary slice', () => {
+        // `pendingRequests` keeps the 5 OLDEST. With all five acknowledged, a
+        // sixth prompt is absent from the slice, so the capped view alone
+        // cannot tell "all answered" from "the new one is not shown".
+        const capped = Array.from({ length: 5 }, (_, index) => ({
+            id: `r${index}`,
+            kind: 'permission' as const,
+            tool: 'Bash',
+            since: now - 5000 + index
+        }))
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 6,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: capped,
+            pendingRequestsNewestAt: now + 5000,
+            blockedAck: { at: now, reason: 'cleared the visible ones' }
+        }), { now })
+
+        expect(state?.reason).toBe('permission')
+    })
+
+    it('stays clear when the uncapped watermark predates the acknowledgement', () => {
+        const capped = Array.from({ length: 5 }, (_, index) => ({
+            id: `r${index}`,
+            kind: 'permission' as const,
+            tool: 'Bash',
+            since: now - 5000 + index
+        }))
+        expect(getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 6,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: capped,
+            pendingRequestsNewestAt: now - 1000,
+            blockedAck: { at: now, reason: 'handled them all' }
+        }), { now })).toBeNull()
     })
 
     it('returns null when nothing is blocking', () => {

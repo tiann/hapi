@@ -481,23 +481,58 @@ export class SyncEngine {
 
         let stamped = 0
         for (const session of candidates) {
-            const messages = this.store.messages.getMessages(session.id, NOTIFY_BACKFILL_MESSAGE_SCAN)
-            // Newest first: the most recent footer is the session's current
-            // self-report, and older ones have already been superseded.
-            for (let index = messages.length - 1; index >= 0; index -= 1) {
-                const message = messages[index]!
-                // Stop at the newest operator prompt. Anything older was already
-                // answered, and clear-on-new-turn deliberately erased it — a
-                // restart must not resurrect a blocker the operator dealt with.
-                if (isOperatorReplyMessage(message.content)) break
-                const signal = extractSessionNotifySignal(message.content, message.createdAt)
-                if (!signal) continue
-                this.sessionCache.setSessionLastNotify(session.id, signal)
-                stamped += 1
-                break
-            }
+            if (this.restoreNotifySignalFromTranscript(session.id)) stamped += 1
         }
         return stamped
+    }
+
+    /**
+     * Re-derive `lastNotify` from the stored transcript, newest footer wins.
+     *
+     * Returns true when a footer was found and stamped.
+     */
+    private restoreNotifySignalFromTranscript(sessionId: string): boolean {
+        const scanned = this.store.messages.getMessages(sessionId, NOTIFY_BACKFILL_MESSAGE_SCAN)
+        // Re-order by message time before scanning. `getMessages` sorts by
+        // insertion `seq`, but replayed transcripts keep their original
+        // timestamps, so an older footer can be stored after a newer one.
+        // Live notify writes are timestamp-monotonic; a restart must agree with
+        // them rather than resurrect a superseded blocker. The operator-reply
+        // boundary moves with it, or the stop point would be chosen in a
+        // different order than the footer it guards.
+        const messages = [...scanned].sort((a, b) => (
+            a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : a.seq - b.seq
+        ))
+        // Newest first: the most recent footer is the session's current
+        // self-report, and older ones have already been superseded.
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index]!
+            // Stop at the newest operator prompt. Anything older was already
+            // answered, and clear-on-new-turn deliberately erased it — a
+            // restart must not resurrect a blocker the operator dealt with.
+            if (isOperatorReplyMessage(message.content)) break
+            const signal = extractSessionNotifySignal(message.content, message.createdAt)
+            if (!signal) continue
+            this.sessionCache.setSessionLastNotify(sessionId, signal)
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Reconcile the persisted notify signal after history truncation (#1717).
+     *
+     * A rewind can delete the very message whose footer is driving the blocked
+     * chrome. Nothing else repairs that: a Codex rollback does not start a new
+     * turn, so the clear-on-new-turn transition never fires, and the next
+     * refresh simply re-reads the stale columns.
+     */
+    private reconcileNotifySignalAfterTruncate(sessionId: string): void {
+        // Clear before re-deriving. Any surviving footer is necessarily older
+        // than the one just dropped, and `setSessionLastNotify` is deliberately
+        // timestamp-monotonic, so it would refuse to move the signal backwards.
+        this.sessionCache.clearSessionLastNotify(sessionId)
+        this.restoreNotifySignalFromTranscript(sessionId)
     }
 
     private resolveOnlineMachineForSession(
@@ -3518,6 +3553,7 @@ export class SyncEngine {
         this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
         this.scrubHistoryLocators(sessionId, namespace)
         this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.reconcileNotifySignalAfterTruncate(sessionId)
         this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
         this.eventPublisher.emit({
             type: 'messages-invalidated',

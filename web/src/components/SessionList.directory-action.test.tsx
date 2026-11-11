@@ -1787,12 +1787,12 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
-            // #1717: `thinking` keeps these out of the Blocked section (a working
-            // agent is not blocked) so they stay group-resident while remaining
-            // required by the preview cap.
+            // Required via unread rather than a pending request. #1717 floats
+            // every prompt-parked row into the Blocked section, so a pending
+            // row can no longer be both group-resident and required — unread
+            // is the other `requiredIds` trigger and stays in its group.
             active: index > 0,
-            thinking: index > 0,
-            pendingRequestsCount: index > 0 ? 1 : 0,
+            readState: index > 0 ? { readRevision: 0, manualUnread: true, version: 0 } : undefined,
             metadata: {
                 path: '/work/hapi',
                 name: `Task ${index + 1}`,
@@ -1822,10 +1822,9 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 8 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
-            // See above: thinking keeps a queued-request row in its group.
+            // See above: unread keeps a required row in its group.
             active: index < 5,
-            thinking: index < 5,
-            pendingRequestsCount: index < 5 ? 1 : 0,
+            readState: index < 5 ? { readRevision: 0, manualUnread: true, version: 0 } : undefined,
             metadata: {
                 path: '/work/hapi',
                 name: `Task ${index + 1}`,

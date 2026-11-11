@@ -3876,19 +3876,23 @@ export function SessionList(props: {
                                             <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
                                         </div>
                                         {blockedCount > 0 ? (
-                                            <>
-                                                <BlockedJumpPill
-                                                    count={blockedCount}
-                                                    direction={blockedDirection}
-                                                    alerting={blockedAlerting}
-                                                    onJump={jumpToNextBlocked}
-                                                />
-                                                <BlockedLensToggle
-                                                    active={showBlockedOnly}
-                                                    count={blockedCount}
-                                                    onToggle={() => setShowBlockedOnly((value) => !value)}
-                                                />
-                                            </>
+                                            <BlockedJumpPill
+                                                count={blockedCount}
+                                                direction={blockedDirection}
+                                                alerting={blockedAlerting}
+                                                onJump={jumpToNextBlocked}
+                                            />
+                                        ) : null}
+                                        {/* Survives `blockedCount` reaching zero while the lens is
+                                            on. Dropping it there would leave the list filtered to
+                                            blocked-only with every row hidden and no control left
+                                            to turn it off. */}
+                                        {blockedCount > 0 || showBlockedOnly ? (
+                                            <BlockedLensToggle
+                                                active={showBlockedOnly}
+                                                count={blockedCount}
+                                                onToggle={() => setShowBlockedOnly((value) => !value)}
+                                            />
                                         ) : null}
                                         {visible.map((slot) => (
                                             <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
@@ -4121,6 +4125,15 @@ export function SessionList(props: {
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                             flashHighlight={s.id === flashBlockedSessionId}
+                                            // Blocked rows float out of their directory group during
+                                            // a content search too, so they need the same search
+                                            // payload as every other path — without it the match
+                                            // preview disappears and the click opens the
+                                            // conversation instead of the matching message.
+                                            contentSnippet={contentSnippetBySessionId.get(s.id)}
+                                            contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
+                                            targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
+                                            targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                         />
                                     ))}
                                 </div>

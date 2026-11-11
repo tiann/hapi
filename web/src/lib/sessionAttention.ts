@@ -108,28 +108,68 @@ export type SessionBlockedState = {
     stale: boolean
 }
 
-function getPendingBlockedReason(summary: SessionSummary): SessionBlockedReason | null {
+/**
+ * Blocked state from a live prompt the operator can clear in one click.
+ *
+ * Returns null when nothing is pending, or when every outstanding prompt
+ * predates the operator's acknowledgement.
+ */
+function getPendingBlockedState(
+    summary: SessionSummary,
+    ackAt: number | null,
+    now: number
+): SessionBlockedState | null {
     const kinds = Array.isArray(summary.pendingRequestKinds) ? summary.pendingRequestKinds : []
-    // A question outranks a permission: "answer me" is a heavier ask than
-    // "approve this tool", and it is the one the operator asked to be loud.
-    if (kinds.includes('input')) return 'question'
-    if (kinds.includes('permission')) return 'permission'
     // `pendingRequestsCount` is the authoritative total; a count without kinds
     // still parks the agent on a prompt, so do not drop it from the list.
-    return (summary.pendingRequestsCount ?? 0) > 0 ? 'permission' : null
+    const total = summary.pendingRequestsCount ?? 0
+    const all = summary.pendingRequests ?? []
+    if (kinds.length === 0 && total === 0) {
+        return null
+    }
+
+    // Acknowledged prompts drop out BEFORE the kind contest below. Picking the
+    // kind first and filtering second discards a newly arrived permission
+    // whenever an older, already-dismissed question still outranks it — the
+    // session would vanish from the count with a live prompt unanswered.
+    const unacked = ackAt === null ? all : all.filter(request => request.since > ackAt)
+
+    // `pendingRequests` is capped and keeps the OLDEST entries, so a slice that
+    // is entirely acknowledged says nothing about newer prompts the summary
+    // never carried. `pendingRequestsNewestAt` is computed uncapped for exactly
+    // this question; without it (older hub) fall back to what we can see.
+    const newestAt = summary.pendingRequestsNewestAt
+        ?? (all.length > 0 ? all[all.length - 1]!.since : 0)
+    const newerBeyondCap = total > all.length && newestAt > (ackAt ?? 0)
+    if (ackAt !== null && unacked.length === 0 && !newerBeyondCap) {
+        return null
+    }
+
+    // A question outranks a permission: "answer me" is a heavier ask than
+    // "approve this tool", and it is the one the operator asked to be loud.
+    // Contest only what still needs answering; fall back to the uncapped kind
+    // list when the capped slice carries none of it.
+    const unackedKinds = unacked.map(request => request.kind)
+    const contest = unackedKinds.length > 0 ? unackedKinds : kinds
+    const reason: SessionBlockedReason = contest.includes('input') ? 'question' : 'permission'
+
+    const wantedKind = reason === 'question' ? 'input' : 'permission'
+    // `unacked` is oldest-first, so the first match is the oldest of its kind.
+    const oldest = unacked.find(request => request.kind === wantedKind) ?? unacked[0] ?? null
+    const at = oldest?.since ?? (newestAt > 0 ? newestAt : summary.updatedAt)
+
+    return {
+        reason,
+        at,
+        note: oldest?.tool ?? null,
+        stale: now - at > BLOCKED_NOTIFY_STALE_MS
+    }
 }
 
 export function getSessionBlockedState(
     summary: SessionSummary,
     options: { now: number }
 ): SessionBlockedState | null {
-    // A working agent is not blocked. Matches `classifySessionAttention`, which
-    // also suppresses every attention kind while `thinking`, and covers the
-    // window before the hub's clear-on-new-turn patch lands.
-    if (summary.thinking) {
-        return null
-    }
-
     // Operator dismissed this by hand. A watermark, not a flag: a blocker
     // reported AFTER the acknowledgement is a genuinely new problem and must
     // come back, or "mark unblocked" would silently mute the session forever.
@@ -138,36 +178,24 @@ export function getSessionBlockedState(
     // but is exactly the kind of silent suppression this feature must not do.
     const ackAt = summary.blockedAck?.at ?? null
 
-    // A live prompt outranks a stored footer: it is the thing the operator can
-    // clear in one click. The two rarely coexist anyway — starting a new turn
-    // clears `lastNotify` hub-side.
-    const pendingReason = getPendingBlockedReason(summary)
-    if (pendingReason !== null) {
-        const wantedKind = pendingReason === 'question' ? 'input' : 'permission'
-        const all = summary.pendingRequests ?? []
-        const matching = all.filter(request => request.kind === wantedKind)
-        // `pendingRequests` is capped and oldest-first; fall back to the whole
-        // list when the summary dropped the matching kind.
-        const pool = matching.length > 0 ? matching : all
-        const unacked = ackAt === null ? pool : pool.filter(request => request.since > ackAt)
-        // Compare the ack against every known prompt, not just the oldest: a
-        // prompt raised AFTER the acknowledgement is a new ask and must block
-        // even while an older, already-dismissed prompt is still outstanding.
-        const oldestUnacked = unacked[0]
-        const at = oldestUnacked?.since
-            ?? (pool.length === 0 ? summary.updatedAt : null)
+    // Live prompts are read BEFORE the `thinking` guard below, deliberately. A
+    // remote Claude agent keeps `thinking` true while it waits on a permission
+    // or a question — the SDK only clears it on the turn's result, and the
+    // permission handler never touches it — so guarding first would hide the
+    // single most common blocker this feature exists to surface, for the whole
+    // duration of the wait. `classifySessionAttention` likewise reports a
+    // pending request regardless of `thinking`.
+    const pending = getPendingBlockedState(summary, ackAt, options.now)
+    if (pending !== null) {
+        return pending
+    }
 
-        // Deliberately falls through rather than returning null: the prompt
-        // being dismissed says nothing about a newer self-reported footer on
-        // the same session, and returning here would silently mute it.
-        if (at !== null && (ackAt === null || at > ackAt)) {
-            return {
-                reason: pendingReason,
-                at,
-                note: oldestUnacked?.tool ?? null,
-                stale: options.now - at > BLOCKED_NOTIFY_STALE_MS
-            }
-        }
+    // A working agent is not self-reporting blocked: the stored footer is a
+    // point-in-time claim from a turn that has since been superseded, and
+    // nothing is waiting on the operator. Also covers the window before the
+    // hub's clear-on-new-turn patch lands.
+    if (summary.thinking) {
+        return null
     }
 
     const notify = summary.lastNotify
