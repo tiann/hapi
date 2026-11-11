@@ -7,13 +7,24 @@ import { permissionFooterContent } from './PermissionFooter'
 import { I18nProvider } from '@/lib/i18n-context'
 
 const asyncInput = { isBlocking: false, questions: [{ id: 'q', question: 'Optional question', options: [] }] }
+const claudeInput = {
+    questions: [{
+        header: 'Database',
+        multiSelect: false,
+        options: [{ description: 'Local file', label: 'SQLite' }, { description: 'Server', label: 'Postgres' }],
+        question: 'Which database?'
+    }]
+}
 
-function question(status: ToolPermission['status'], reason?: string): ToolCallBlock {
+// A pending question keeps the 'running' tool state until its reply lands in
+// the transcript (reducerTools seeds running from the pending permission), so
+// the pending fixture models running with no completion time.
+function question(status: ToolPermission['status'], reason?: string, name: 'request_user_input' | 'AskUserQuestion' = 'request_user_input'): ToolCallBlock {
     return {
         kind: 'tool-call', id: 'q', localId: null, createdAt: 1_000,
         tool: {
-            id: 'q', name: 'request_user_input', state: status === 'pending' ? 'pending' : 'completed',
-            input: asyncInput,
+            id: 'q', name, state: status === 'pending' ? 'running' : 'completed',
+            input: name === 'request_user_input' ? asyncInput : claudeInput,
             createdAt: 1_000, startedAt: 1_000, completedAt: status === 'pending' ? null : 2_000,
             execStartedAt: null, execCompletedAt: null, description: null,
             permission: { id: 'request-q', status, ...(reason ? { reason } : {}) }
@@ -53,11 +64,38 @@ describe('async question transcript status', () => {
         expect(permissionFooterContent({ id: 'p', status: 'resolved' }, 'request_user_input', asyncInput)).toBe('status')
     })
 
-    it('shows Waiting for your reply instead of Started/Duration while a question is pending', () => {
+    it('shows the waiting sentence in the open answer area without timing labels', () => {
         render(card(question('pending')))
         expect(screen.getByText('Waiting for your reply')).toBeVisible()
         expect(screen.queryByText('Started')).toBeNull()
         expect(screen.queryByText('Duration')).toBeNull()
+    })
+
+    it('carries the waiting sentence in the open answer area, not the header', () => {
+        const { container } = render(card(question('pending')))
+        const waiting = screen.getByText('Waiting for your reply')
+        expect(waiting.closest('div[class*="rounded-lg"]')).not.toBeNull()
+        expect(waiting).toHaveClass('mb-2')
+        const cardRoot = waiting.closest('div[class*="rounded-[20px]"]')
+        expect(cardRoot).not.toBeNull()
+        expect(cardRoot!.firstElementChild!.contains(waiting)).toBe(false)
+    })
+
+    it('counts the elapsed waiting time in the status row while pending', () => {
+        const { container } = render(card(question('pending')))
+        const elapsed = container.querySelector('span[title*="Duration"]')
+        expect(elapsed).not.toBeNull()
+        expect(elapsed!.parentElement).toHaveClass('items-center')
+        expect(elapsed!.parentElement).toHaveClass('shrink-0')
+    })
+
+    it('does the same for Claude-shaped pending questions', () => {
+        const { container } = render(card(question('pending', undefined, 'AskUserQuestion')))
+        const waiting = screen.getByText('Waiting for your reply')
+        expect(waiting.closest('div[class*="rounded-2xl"]')).not.toBeNull()
+        const cardRoot = waiting.closest('div[class*="rounded-[20px]"]')
+        expect(cardRoot!.firstElementChild!.contains(waiting)).toBe(false)
+        expect(container.querySelector('span[title*="Duration"]')).not.toBeNull()
     })
 
     it('hides the question text from the header while pending; the open body shows it', () => {
@@ -72,6 +110,6 @@ describe('async question transcript status', () => {
 
     it('keeps the timing summary once the question settles', () => {
         render(card(question('resolved')))
-        expect(screen.queryByText('tool.waitingForReply')).toBeNull()
+        expect(screen.queryByText('Waiting for your reply')).toBeNull()
     })
 })
