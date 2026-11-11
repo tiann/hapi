@@ -38,6 +38,19 @@ export const LocalResumeTargetResponseSchema = z.object({
 
 export type LocalResumeTargetResponse = z.infer<typeof LocalResumeTargetResponseSchema>
 
+/**
+ * Lookup of the HAPI session that owns a native agent session id.
+ * `target: null` means no HAPI session owns it (start a fresh one).
+ * `historical: true` means the id matched an earlier, rotated-away native id;
+ * `target.agentSessionId` is then the owner's current native id.
+ */
+export const LocalResumeTargetByAgentResponseSchema = z.object({
+    target: LocalResumeTargetSchema.nullable(),
+    historical: z.boolean().optional()
+})
+
+export type LocalResumeTargetByAgentResponse = z.infer<typeof LocalResumeTargetByAgentResponseSchema>
+
 export const ResumableSessionsResponseSchema = z.object({
     sessions: z.array(ResumableSessionSchema)
 })

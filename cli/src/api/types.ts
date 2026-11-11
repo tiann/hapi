@@ -14,6 +14,7 @@ import {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
     ResumableSessionsResponseSchema,
     type ClearOpencodeSessionResponse,
     type ClearOpencodeSessionCallbackRequest,
@@ -57,6 +58,7 @@ export {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
     ResumableSessionsResponseSchema
 }
 

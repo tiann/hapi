@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -134,6 +134,10 @@ export type ReopenSessionResult =
 export type LocalResumeTargetResult =
     | { type: 'success'; target: LocalResumeTarget }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' }
+
+export type LocalResumeTargetByAgentResult =
+    | { type: 'success'; target: LocalResumeTarget | null; historical: boolean }
+    | { type: 'error'; message: string; code: 'resume_unavailable' }
 
 export type LocalHandoffResult =
     | { type: 'success' }
@@ -552,11 +556,17 @@ export class SyncEngine {
         return session
     }
 
+    /**
+     * Entry point for client-supplied ids (web/native routes, CLI REST): a
+     * merged-away id follows its durable redirect, so callers must continue
+     * with the returned `sessionId`. Internal paths use the strict
+     * `sessionCache.resolveSessionAccess`.
+     */
     resolveSessionAccess(
         sessionId: string,
         namespace: string
     ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
-        return this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        return this.sessionCache.resolveSessionAccessFollowingRedirects(sessionId, namespace)
     }
 
     /** Follow job-owner redirects after merge/dedup (tiann/hapi#1404 cold review). */
@@ -3789,6 +3799,43 @@ export class SyncEngine {
             })
             .filter((session) => !opts?.machineId || session.machineId === opts.machineId)
             .sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+
+    /**
+     * Find the HAPI session that owns a native Claude session id (current or
+     * rotated-away), so a terminal `hapi claude --resume <id>` reopens that
+     * session instead of minting a duplicate HAPI id. `target: null` means no
+     * HAPI session owns the id yet.
+     */
+    resolveLocalResumeTargetByAgentSessionId(
+        agentSessionId: string,
+        namespace: string,
+        opts?: { machineId?: string }
+    ): LocalResumeTargetByAgentResult {
+        const candidates: Array<{ session: Session; match: 'current' | 'historical' }> = []
+        for (const session of this.getSessionsByNamespace(namespace)) {
+            if (this.resolveFlavor(session) !== 'claude') continue
+            const metadata = session.metadata
+            if (opts?.machineId && metadata?.machineId && metadata.machineId !== opts.machineId) continue
+            const match = matchesClaudeSessionId(metadata, agentSessionId)
+            if (match) candidates.push({ session, match })
+        }
+        if (candidates.length === 0) {
+            return { type: 'success', target: null, historical: false }
+        }
+
+        // Current-id owners beat historical ones; then the live row; then recency.
+        candidates.sort((a, b) => {
+            if (a.match !== b.match) return a.match === 'current' ? -1 : 1
+            if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
+            return b.session.updatedAt - a.session.updatedAt
+        })
+        const best = candidates[0]!
+        const result = this.resolveLocalResumeTarget(best.session.id, namespace)
+        if (result.type === 'error') {
+            return { type: 'error', message: result.message, code: 'resume_unavailable' }
+        }
+        return { type: 'success', target: result.target, historical: best.match === 'historical' }
     }
 
     private resolveFirstUserMessage(sessionId: string): string | undefined {

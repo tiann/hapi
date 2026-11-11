@@ -4,12 +4,31 @@ const {
     initializeTokenMock,
     maybeAutoStartServerMock,
     authAndSetupMachineIfNeededMock,
-    runClaudeMock
+    runClaudeMock,
+    getLocalResumeTargetByAgentSessionIdMock,
+    listResumableSessionsMock,
+    getLocalResumeTargetMock,
+    handoffSessionToLocalMock
 } = vi.hoisted(() => ({
     initializeTokenMock: vi.fn(async () => {}),
     maybeAutoStartServerMock: vi.fn(async () => {}),
-    authAndSetupMachineIfNeededMock: vi.fn(async () => {}),
-    runClaudeMock: vi.fn(async () => {})
+    authAndSetupMachineIfNeededMock: vi.fn(async () => ({ token: 'token', machineId: 'machine-1' })),
+    runClaudeMock: vi.fn(async () => {}),
+    getLocalResumeTargetByAgentSessionIdMock: vi.fn(),
+    listResumableSessionsMock: vi.fn(async () => []),
+    getLocalResumeTargetMock: vi.fn(),
+    handoffSessionToLocalMock: vi.fn(async () => {})
+}))
+
+vi.mock('@/api/api', () => ({
+    ApiClient: {
+        create: async () => ({
+            getLocalResumeTargetByAgentSessionId: getLocalResumeTargetByAgentSessionIdMock,
+            listResumableSessions: listResumableSessionsMock,
+            getLocalResumeTarget: getLocalResumeTargetMock,
+            handoffSessionToLocal: handoffSessionToLocalMock
+        })
+    }
 }))
 
 vi.mock('@/ui/tokenInit', () => ({
@@ -47,6 +66,10 @@ describe('claudeCommand arguments', () => {
         maybeAutoStartServerMock.mockClear()
         authAndSetupMachineIfNeededMock.mockClear()
         runClaudeMock.mockClear()
+        getLocalResumeTargetByAgentSessionIdMock.mockReset()
+        listResumableSessionsMock.mockClear()
+        getLocalResumeTargetMock.mockReset()
+        handoffSessionToLocalMock.mockClear()
     })
 
     it('tracks --model as session state instead of an opaque Claude argument', async () => {
@@ -106,5 +129,106 @@ describe('claudeCommand arguments', () => {
         expect(runClaudeMock).toHaveBeenCalledWith({
             existingSessionId: 'fork-child-id',
         })
+    })
+})
+
+describe('claudeCommand resume identity', () => {
+    const claudeId = '7e6b91b1-d91e-4a32-9ac6-d16b2e354a4a'
+    const directory = process.cwd()
+
+    function owner(overrides: Record<string, unknown> = {}) {
+        return {
+            sessionId: 'hapi-owner',
+            flavor: 'claude',
+            directory,
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: claudeId,
+            model: 'opus',
+            effort: 'high',
+            permissionMode: 'bypassPermissions',
+            ...overrides
+        }
+    }
+
+    beforeEach(() => {
+        runClaudeMock.mockClear()
+        getLocalResumeTargetByAgentSessionIdMock.mockReset()
+        handoffSessionToLocalMock.mockClear()
+    })
+
+    it('reopens the owning HAPI session instead of creating a new one', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({ target: owner(), historical: false })
+        try {
+            await claudeCommand.run(createCommandContext(['--resume', claudeId, '--verbose']))
+        } finally {
+            logSpy.mockRestore()
+        }
+
+        expect(getLocalResumeTargetByAgentSessionIdMock).toHaveBeenCalledWith(claudeId, 'machine-1')
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runClaudeMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-owner',
+            resumeSessionId: claudeId,
+            workingDirectory: directory,
+            startingMode: 'local',
+            claudeArgs: ['--verbose'],
+            permissionMode: 'bypassPermissions',
+            model: 'opus',
+            effort: 'high'
+        })
+    })
+
+    it('takes control of a session that is running remotely before reopening it', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({ target: owner({ active: true }), historical: false })
+        try {
+            await claudeCommand.run(createCommandContext(['-r', claudeId, '--model', 'sonnet']))
+        } finally {
+            logSpy.mockRestore()
+        }
+
+        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-owner')
+        // An explicit CLI flag still wins over the session's stored model.
+        expect(runClaudeMock).toHaveBeenCalledWith(expect.objectContaining({ existingSessionId: 'hapi-owner', model: 'sonnet' }))
+    })
+
+    it('refuses to start a second terminal on a locally controlled session', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({
+            target: owner({ active: true, controlledByUser: true }),
+            historical: false
+        })
+        try {
+            await expect(claudeCommand.run(createCommandContext(['-r', claudeId]))).rejects.toThrow('process.exit:1')
+            expect(errorSpy).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('/sessions/hapi-owner'))
+            expect(runClaudeMock).not.toHaveBeenCalled()
+            expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        } finally {
+            errorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
+    })
+
+    it('keeps the original resume args when no HAPI session owns the conversation', async () => {
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({ target: null, historical: false })
+
+        await claudeCommand.run(createCommandContext(['-r', claudeId]))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({ claudeArgs: ['-r', claudeId] })
+    })
+
+    it('does not resolve identity for forks or runner spawns', async () => {
+        await claudeCommand.run(createCommandContext(['--resume', claudeId, '--fork-session']))
+        await claudeCommand.run(createCommandContext(['--started-by', 'runner', '--resume', claudeId]))
+
+        expect(getLocalResumeTargetByAgentSessionIdMock).not.toHaveBeenCalled()
+        expect(runClaudeMock).toHaveBeenNthCalledWith(1, { claudeArgs: ['--resume', claudeId, '--fork-session'] })
     })
 })

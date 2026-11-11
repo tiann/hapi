@@ -168,6 +168,28 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ sessions })
     })
 
+    // Registered before `/sessions/:id/*` so the literal segment wins.
+    app.get('/sessions/resume-target-by-agent', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const flavor = c.req.query('flavor')
+        const agentSessionId = c.req.query('agentSessionId')?.trim()
+        if (flavor !== 'claude' || !agentSessionId) {
+            return c.json({ error: 'Invalid query' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const machineId = c.req.query('machineId') || undefined
+        const result = engine.resolveLocalResumeTargetByAgentSessionId(agentSessionId, namespace, { machineId })
+        if (result.type === 'error') {
+            return c.json({ error: result.message, code: result.code }, 409)
+        }
+        return c.json({ target: result.target, historical: result.historical })
+    })
+
     app.get('/sessions/:id/resume-target', (c) => {
         const engine = getSyncEngine()
         if (!engine) {

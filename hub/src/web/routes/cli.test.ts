@@ -94,6 +94,51 @@ describe('cli resume routes', () => {
         })
     })
 
+    it('looks up the HAPI session that owns a Claude session id', async () => {
+        const calls: unknown[] = []
+        const app = createApp({
+            resolveLocalResumeTargetByAgentSessionId: (agentSessionId: string, namespace: string, opts?: { machineId?: string }) => {
+                calls.push({ agentSessionId, namespace, opts })
+                return {
+                    type: 'success',
+                    historical: true,
+                    target: {
+                        sessionId: 'session-1',
+                        flavor: 'claude',
+                        directory: '/tmp/project',
+                        machineId: 'machine-1',
+                        active: false,
+                        thinking: false,
+                        controlledByUser: false,
+                        agentSessionId: 'claude-current'
+                    }
+                }
+            }
+        } as never)
+
+        const response = await app.request(
+            '/cli/sessions/resume-target-by-agent?flavor=claude&agentSessionId=claude-old&machineId=machine-1',
+            { headers: authHeaders() }
+        )
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({
+            historical: true,
+            target: { sessionId: 'session-1', agentSessionId: 'claude-current' }
+        })
+        expect(calls).toEqual([{ agentSessionId: 'claude-old', namespace: 'default', opts: { machineId: 'machine-1' } }])
+    })
+
+    it('rejects by-agent lookups for unsupported flavors or a missing id', async () => {
+        const app = createApp({} as never)
+        for (const query of ['flavor=codex&agentSessionId=x', 'flavor=claude', 'agentSessionId=x']) {
+            const response = await app.request(`/cli/sessions/resume-target-by-agent?${query}`, {
+                headers: authHeaders()
+            })
+            expect(response.status).toBe(400)
+        }
+    })
+
     it('returns handoff errors with status codes', async () => {
         const app = createApp({
             handoffSessionToLocal: async () => ({
