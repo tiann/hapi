@@ -69,7 +69,6 @@ function createApp(session: Session, opts?: {
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
     listHermesModelsForSession?: SyncEngine['listHermesModelsForSession']
-    listBerryModelsForSession?: SyncEngine['listBerryModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
@@ -161,11 +160,6 @@ function createApp(session: Session, opts?: {
             models: []
         })),
         listHermesModelsForSession: opts?.listHermesModelsForSession ?? (async () => ({
-            success: true,
-            availableModels: [],
-            currentModelId: null
-        })),
-        listBerryModelsForSession: opts?.listBerryModelsForSession ?? (async () => ({
             success: true,
             availableModels: [],
             currentModelId: null
@@ -511,33 +505,19 @@ describe('sessions routes', () => {
         expect(rejected.status).toBe(400)
     })
 
-    it('serves Berry session model lists and rejects other flavors', async () => {
+    it('no longer serves Berry session model lists (runtime rail retired)', async () => {
+        // Berry exposes no ACP config-option or model-list face (its only
+        // model lever is the spawn-time BERRY_AGENT_MODEL env owned by the
+        // CLI agent), so the berry-models route was removed outright: any
+        // caller — berry sessions included — now gets a plain 404 instead of
+        // an RPC round-trip to a permanently dead handler.
         const session = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'berry' }
         })
-        const { app } = createApp(session, {
-            listBerryModelsForSession: async () => ({
-                success: true,
-                availableModels: [{ modelId: 'newapi/glm-5.3', name: 'GLM 5.3' }],
-                currentModelId: 'newapi/glm-5.3'
-            })
-        })
+        const { app } = createApp(session, {})
 
         const response = await app.request('/api/sessions/session-1/berry-models')
-        expect(response.status).toBe(200)
-        expect(await response.json()).toEqual({
-            success: true,
-            availableModels: [{ modelId: 'newapi/glm-5.3', name: 'GLM 5.3' }],
-            currentModelId: 'newapi/glm-5.3'
-        })
-
-        const other = createSession({
-            id: 'session-2',
-            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
-        })
-        const { app: otherApp } = createApp(other, {})
-        const rejected = await otherApp.request('/api/sessions/session-2/berry-models')
-        expect(rejected.status).toBe(400)
+        expect(response.status).toBe(404)
     })
 
     it('serves Pi session model lists through the engine cache wrapper', async () => {

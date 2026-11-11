@@ -141,6 +141,13 @@ export function getModelOptionsForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): ModelOption[] {
+    // Berry's runtime model rail is retired: berry exposes no ACP
+    // config-option or model-list face (spawn-time BERRY_AGENT_MODEL env is
+    // the only lever, owned by the CLI agent), so no customOptions may ever
+    // resurrect a picker for it — not even a stale catalog passed by mistake.
+    if (flavor === 'berry') {
+        return []
+    }
     if (flavor === 'agy') {
         return getAgyModelOptions(currentModel, customOptions)
     }
@@ -174,9 +181,11 @@ export function getModelOptionsForFlavor(
     if (flavor === 'dsh') {
         return []
     }
-    // Hermes and Berry are the same shape: catalogs arrive via the session's
-    // ACP config options (SessionChat's hermesModelOptions/berryModelOptions).
-    // An empty list must win over the Claude fallback for the same reason.
+    // Hermes is the same shape: its catalog arrives via the session's ACP
+    // config options (SessionChat's hermesModelOptions). An empty list must
+    // win over the Claude fallback for the same reason. Berry has no runtime
+    // model face at all (spawn-time BERRY_AGENT_MODEL env only), so it also
+    // stays empty and never falls through to Claude presets.
     if (flavor === 'hermes' || flavor === 'berry') {
         return []
     }
@@ -212,6 +221,13 @@ export function getNextModelForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): string | null {
+    // Berry: the runtime model rail is retired (spawn-time env lever only),
+    // so the Ctrl/Cmd+M cycler must keep the current model no matter what
+    // customOptions claim — even a stale catalog must not cycle ids the
+    // session can no longer apply.
+    if (flavor === 'berry') {
+        return normalizeCurrentModel(currentModel)
+    }
     if (flavor === 'agy') {
         const options = getAgyModelOptions(currentModel, customOptions)
         const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
@@ -252,8 +268,10 @@ export function getNextModelForFlavor(
     if (flavor === 'dsh') {
         return normalizeCurrentModel(currentModel)
     }
-    // Hermes/Berry: same guard — their catalogs arrive via the session's ACP
-    // config options; until then the shortcut keeps the current model.
+    // Hermes: same guard — its catalog arrives via the session's ACP config
+    // options; until then the shortcut keeps the current model. Berry has no
+    // runtime catalog to wait for (spawn-time env lever only), so its cycler
+    // keeps the current model permanently.
     if (flavor === 'hermes' || flavor === 'berry') {
         return normalizeCurrentModel(currentModel)
     }

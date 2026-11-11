@@ -39,8 +39,9 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
         { value: 'auto', label: 'Default' },
     ],
     dsh: [],
-    // Berry models are opaque runtime-discovered ids (ListBerryModels),
-    // so the static launch-time preset list is empty like DSH.
+    // Berry has no runtime model face at all (no config-option or model-list
+    // ACP method; the only lever is the spawn-time BERRY_AGENT_MODEL env,
+    // owned by the CLI agent), so the static launch-time list is empty.
     berry: [],
     // so the static launch-time preset list is empty like DSH.
     cursor: [],

@@ -396,6 +396,30 @@ describe('getNextModelForFlavor', () => {
         expect(getModelOptionsForFlavor('berry', null)).toEqual([])
     })
 
+    it('never offers berry runtime model options, even from a stale customOptions catalog (rail retired)', () => {
+        const staleCatalog = [
+            { value: 'newapi/glm-5.3', label: 'GLM 5.3' },
+            { value: 'newapi/deepseek-v4', label: 'DeepSeek V4' }
+        ]
+        // Berry's only model lever is the spawn-time BERRY_AGENT_MODEL env
+        // (CLI-owned); the runtime picker/ListBerryModels rail is retired.
+        expect(getModelOptionsForFlavor('berry', 'newapi/glm-5.3', staleCatalog)).toEqual([])
+        expect(getNextModelForFlavor('berry', 'newapi/glm-5.3', staleCatalog)).toBe('newapi/glm-5.3')
+        expect(getNextModelForFlavor('berry', null, staleCatalog)).toBeNull()
+    })
+
+    it('still offers hermes runtime model options from its ACP catalog (rail intact)', () => {
+        const catalog = [
+            { value: 'newapi:glm-5.3', label: 'GLM 5.3' },
+            { value: 'newapi:glm-5.4', label: 'GLM 5.4' }
+        ]
+        expect(getModelOptionsForFlavor('hermes', 'newapi:glm-5.3', catalog)).toEqual([
+            { value: 'newapi:glm-5.3', label: 'GLM 5.3' },
+            { value: 'newapi:glm-5.4', label: 'GLM 5.4' }
+        ])
+        expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3', catalog)).toBe('newapi:glm-5.4')
+    })
+
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
         const next = getNextModelForFlavor('cursor', 'composer-2.5')
         expect(next).toBe('composer-2.5')

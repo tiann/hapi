@@ -28,7 +28,6 @@ export type {
     DirectoryEntry,
     DshModelsResponse,
     HermesModelsResponse,
-    BerryModelsResponse,
     AcpCatalogModelSummary,
     DshModelSummary,
     FileReadResponse,

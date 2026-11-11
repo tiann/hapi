@@ -1945,31 +1945,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
-    app.get('/sessions/:id/berry-models', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-        if (sessionResult.session.metadata?.flavor !== 'berry') {
-            return c.json({ success: false, error: 'Berry models are only available for Berry Agent sessions' }, 400)
-        }
-        try {
-            return c.json(await engine.listBerryModelsForSession(sessionResult.sessionId))
-        } catch (error) {
-            if (error instanceof RpcTargetMissingError) {
-                return c.json({
-                    success: false,
-                    error: error.message,
-                    code: RPC_TARGET_MISSING_ERROR_CODE
-                }, 503)
-            }
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to list Berry models'
-            }, 500)
-        }
-    })
-
     app.get('/sessions/:id/grok-reasoning-effort-options', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) return engine
