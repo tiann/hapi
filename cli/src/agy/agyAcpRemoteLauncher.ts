@@ -1013,7 +1013,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     if (backgrounded) backgrounding.set(backgrounded.taskId, backgrounded.description);
                 }
             }
-            const racedAt = backlog.find((step) => step.kind === 'system' && parseAgyTaskCompletion(step.content) !== null);
+            // The turn's outstanding commands, by command text: a completion
+            // for one of them has not been delivered yet.
+            const outstandingDescriptions = new Set([...opts.bgIds].map((id) => (opts.taskDescriptions.get(id) ?? '').trim()));
+            const racedAt = backlog.find((step) => {
+                if (step.kind !== 'system') return false;
+                const completion = parseAgyTaskCompletion(step.content);
+                if (!completion) return false;
+                if (completion.taskId === null) return true; // no identity: keep the first-completion behavior
+                // A completion for a command that is no longer outstanding was
+                // already delivered over ACP; replaying from it would duplicate
+                // the frames the turn rendered live.
+                const description = backgrounding.get(completion.taskId);
+                return description === undefined || outstandingDescriptions.has(description.trim());
+            });
             if (racedAt) {
                 for (const step of backlog) {
                     if (step.idx < racedAt.idx) continue;

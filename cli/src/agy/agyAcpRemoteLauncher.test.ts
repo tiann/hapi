@@ -2731,6 +2731,54 @@ describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)',
         expect(sessionEvents(client)).toContainEqual({ type: 'ready' });
     });
 
+    it('does not replay an in-turn completion when another command is still open at end_turn', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const args1 = { CommandLine: 'sleep 30 && echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+        const args2 = { CommandLine: 'sleep 60 && echo SECOND-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('run two checks');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run first sample', input: args1, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args1 });
+            onUpdate({ type: 'tool_result', id: 'bg-1', status: 'completed', output: { output: 'Command exited with code 0.\n\nCommand output:\nFIRST-OUT', exit_code: 0 } });
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run second sample', input: args2, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: args2 });
+            onUpdate({ type: 'text', text: 'First check done; second still running.' });
+            // agy's transcript: backgrounding records for both commands, the
+            // in-turn completion of the first, and the turn's own answer — all
+            // already delivered over ACP.
+            source.push(
+                { ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', 'sleep 30 && echo FIRST-OUT')), status: 'running' },
+                { ...wakeStep(4, 'tool', BACKGROUNDING('sample/task-2', 'sleep 60 && echo SECOND-OUT')), status: 'running' },
+                wakeStep(5, 'system', COMPLETION('sample/task-1', 'FIRST-OUT')),
+                wakeStep(6, 'planner', 'First check done; second still running.')
+            );
+            source.latest = 6;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('run two checks', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // No raced replay of the delivered completion: the turn's answer renders once.
+        await vi.waitFor(() => expect(textRows(client).filter((text) => text === 'First check done; second still running.')).toHaveLength(1));
+
+        // The second command's completion and answer arrive during the window.
+        source.push(wakeStep(7, 'system', COMPLETION('sample/task-2', 'SECOND-OUT')));
+        source.latest = 7;
+        source.push(wakeStep(8, 'planner', 'Second check finished: SECOND-OUT.'));
+        source.latest = 8;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+
+        const second = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-2') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(second)).toContain('SECOND-OUT');
+        expect(textRows(client).filter((text) => text === 'First check done; second still running.')).toHaveLength(1);
+    });
+
     it('leaves an unrelated system message untouched instead of discarding a pending command', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
