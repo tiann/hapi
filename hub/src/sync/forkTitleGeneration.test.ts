@@ -267,3 +267,17 @@ describe('fork title generation', () => {
         } finally { engine.stop() }
     })
 })
+
+it('reconciles a stale CLI fork seed after an idle source rename before readiness claims generation', async () => {
+    const seed = { text: 'Fork: Old', updatedAt: 1 }
+    const f = fixture(true, { summary: seed, forkTitleSeed: seed })
+    try {
+        await f.engine.renameSession(f.source.id, 'New')
+        f.internal.titleSuggestionService = new TitleSuggestionService(f.store)
+        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+        await flush()
+        await f.engine.forkConversation(f.source.id, 'default')
+        await flush()
+        expect(f.engine.getSession(f.child!.id)?.metadata?.summary?.text).toBe('Fork: New')
+    } finally { f.close() }
+})

@@ -2564,8 +2564,18 @@ export class SyncEngine {
 
     /** Generate from the completed fork snapshot without delaying fork. */
     private async generateForkTitle(sessionId: string): Promise<void> {
-        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        let metadata = this.sessionCache.getSession(sessionId)?.metadata
         if (!metadata || metadata.name?.trim() || metadata.titleLocked === true) return
+        // A shared CLI can hold a source title from before a Hub rename.
+        // Reconcile the owned provisional seed before claiming generation.
+        if (metadata.forkTitleSeed && metadata.forkedFrom) {
+            const source = this.sessionCache.refreshSession(metadata.forkedFrom)
+            if (source && source.namespace === this.sessionCache.getSession(sessionId)?.namespace) {
+                await this.sessionCache.seedForkTitle(sessionId, buildForkSessionSummary(source.metadata))
+                metadata = this.sessionCache.getSession(sessionId)?.metadata
+                if (!metadata) return
+            }
+        }
         // A pre-bound shared child can become ready before the fork RPC returns.
         // If its source already had a title, wait for seedForkTitle instead of
         // consuming the one-shot generation claim with an undefined baseline.
