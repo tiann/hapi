@@ -27,10 +27,11 @@ describe('alive incremental events', () => {
         const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
         try {
             const session = engine.getOrCreateSession('attach-replay', { path: '/tmp/project', host: 'localhost' }, null, 'default')
-            store.messages.addMessage(session.id, { text: 'queued before attach' }, 'queued-before-attach')
-            const invoked = store.messages.addMessage(session.id, { text: 'already consumed' }, 'already-consumed')
+            const userText = (text: string) => ({ role: 'user' as const, content: { type: 'text' as const, text } })
+            store.messages.addMessage(session.id, userText('queued before attach'), 'queued-before-attach')
+            const invoked = store.messages.addMessage(session.id, userText('already consumed'), 'already-consumed')
             store.messages.markMessagesInvoked(session.id, ['already-consumed'], invoked.createdAt + 1)
-            store.messages.addMessage(session.id, { text: 'future scheduled' }, 'future-scheduled', Date.now() + 60_000)
+            store.messages.addMessage(session.id, userText('future scheduled'), 'future-scheduled', Date.now() + 60_000)
             expect(emitted).toEqual([])
 
             engine.handleSessionAlive({ sid: session.id, time: Date.now() })

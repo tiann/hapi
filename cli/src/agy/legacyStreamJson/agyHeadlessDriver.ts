@@ -5,16 +5,17 @@ import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { AgyPlannerAccumulator, parseAgyNdjsonLine } from './agyNdjsonParser';
 import type { AgySession } from '../session';
 import type { AgyMode, PermissionMode } from '../types';
-import type { AgyTranscriptEntry, AgyToolCall } from '../utils/agyTranscriptTypes';
+import type { AgyTranscriptEntry, AgyToolCall } from './agyTranscriptTypes';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason,
 } from '@/modules/common/remote/RemoteLauncherBase';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
-import { readAgyConversationTitle } from '../utils/agySessionTitle';
-import { resolveAgyTurnModels } from '../utils/agyConversationModel';
+import { readAgyConversationTitle } from './agySessionTitle';
+import { resolveAgyTurnModels } from './agyConversationModel';
 import { AgyStreamProcess } from './agyStreamProcess';
+import { sendAgyTranscriptEntry } from './agyTranscript';
 import { AGY_EFFORT_LEVELS, AGY_MODEL_LABELS, splitAgyModelSelection, type AgyEffortLevel } from '@hapi/protocol';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
@@ -110,7 +111,10 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         this.syncNativeTitle = createNativeSessionTitleMetadataSync(this.session.client);
         this.conversationId = this.session.sessionId;
         this.session.setKillHandler(() => this.abort());
-        this.session.cancelRetryDelivery = this.cancelRetryItem;
+        // A batch held in the retry backoff is outside MessageQueue2, so a
+        // Cancel checks it before the queue (true when removed there).
+        this.session.client.onCancelQueuedMessage((localId) =>
+            this.cancelRetryItem(localId) || this.session.queue.cancelByLocalId(localId));
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -376,6 +380,9 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             args = buildAgyHeadlessArgs({
                 model: sessionModel,
                 permissionMode: mode.permissionMode,
+                // A change restarts the process, like other launch settings.
+                mode: mode.permissionMode === 'acceptEdits' ? 'accept-edits'
+                    : mode.permissionMode === 'plan' ? 'plan' : undefined,
                 effort: (AGY_EFFORT_LEVELS as readonly unknown[]).includes(sessionEffort)
                     ? sessionEffort as AgyEffortLevel : undefined,
             });
@@ -470,14 +477,15 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                 // the web's per-turn attribution survives model switches and
                 // default-model turns still show the actual generation model.
                 const model = await resolveModel(entry);
-                await this.session.client.sendAgySessionMessage(
+                sendAgyTranscriptEntry(
+                    this.session.client,
                     model ? { ...entry, model } : entry,
                     this.conversationId ?? undefined,
                 );
             });
         };
         const sendTool = (entry: AgyTranscriptEntry, toolCall: AgyToolCall) => {
-            enqueueTranscript(() => this.session.client.sendAgySessionMessage(entry, this.conversationId ?? undefined, toolCall));
+            enqueueTranscript(() => sendAgyTranscriptEntry(this.session.client, entry, this.conversationId ?? undefined, toolCall));
         };
         const flushPlanner = async () => {
             for (const entry of planner.flushAll()) {

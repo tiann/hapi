@@ -3412,6 +3412,48 @@ describe('session model', () => {
         }
     })
 
+    it('fresh-spawns Cursor when the recorded thread never persisted a store', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-empty-store',
+                {
+                    path: '/tmp/project',
+                    host: 'cursor-host',
+                    machineId: 'cursor-machine',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-empty',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'cursor-machine',
+                { host: 'cursor-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'cursor-machine', time: Date.now() })
+
+            let resumeArg: unknown = 'unset'
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'empty' })
+            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+                resumeArg = args[8]
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(resumeArg).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('refuses Cursor resume before spawning when the recorded chat store is missing', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
