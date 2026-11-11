@@ -231,29 +231,6 @@ async function queryStepActivityCells(dbPath: string, sinceIdxExclusive: number)
 }
 
 /**
- * The first background-completion step (SYSTEM_MESSAGE) after the given
- * watermark: the structural start of the wake section, used as the
- * delivered-over-ACP boundary for the watcher skip baseline. SYSTEM_MESSAGE
- * rows carry step_type 101 and PLANNER_RESPONSE 15 — verified on agy 1.5.x
- * local databases by joining steps.idx with the brain transcript's
- * step_index/type. Database absence/locks/format drift never throw.
- */
-export async function readFirstSystemMessageIdx(afterIdxExclusive: number, dbPath: string): Promise<number | null> {
-    try {
-        const { Database } = await import('bun:sqlite')
-        const db = new Database(dbPath, { readonly: true })
-        try {
-            const row = db.query('SELECT MIN(idx) AS first FROM steps WHERE idx > ? AND step_type = 101').get(afterIdxExclusive) as { first?: unknown } | undefined
-            return typeof row?.first === 'number' && Number.isSafeInteger(row.first) ? row.first : null
-        } finally {
-            db.close()
-        }
-    } catch {
-        return null
-    }
-}
-
-/**
  * Plain-column activity probe over `conversations/<sessionId>.db` for the
  * late-continuation watcher (see `cli/src/agy/utils/agyLateContinuation.ts`,
  * workaround for google-antigravity/antigravity-cli#1461). The step CONTENT is

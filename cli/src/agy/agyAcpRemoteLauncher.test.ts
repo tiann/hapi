@@ -2267,11 +2267,6 @@ class FakeWakeSource implements AgyTranscriptSource {
         return this.plannerCount;
     }
 
-    completionIdx: number | null = null;
-
-    async firstCompletionIdx(): Promise<number | null> {
-        return this.completionIdx;
-    }
 }
 
 function wakeStep(idx: number, kind: AgyTranscriptStep['kind'], content = '', toolCalls: AgyTranscriptStep['toolCalls'] = []): AgyTranscriptStep {
@@ -3459,6 +3454,106 @@ describe('AgyAcpRemoteLauncher late continuation (delivered watermark)', () => {
         expect(agentRows(client).filter((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'))).toHaveLength(0);
         const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
         expect(JSON.stringify(result)).toContain('JTVH-OUT');
+    });
+});
+
+describe('AgyAcpRemoteLauncher late continuation (delivered completions)', () => {
+    it('waits for the still-open command when a mid-turn completion lags in the transcript', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        source.latest = 0;
+        const argsA = { CommandLine: 'sleep 10 && echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+        const argsB = { CommandLine: 'sleep 20 && echo SECOND-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('run two checks');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run first', input: argsA, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: argsA });
+            // The first command finishes during the live turn: its result goes
+            // over ACP here, so it is no longer open at end_turn.
+            onUpdate({ type: 'tool_result', id: 'bg-1', status: 'completed', output: { output: 'Command exited with code 0.\n\nCommand output:\nFIRST-OUT', exit_code: 0 } });
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run second', input: argsB, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: argsB });
+            onUpdate({ type: 'text', text: 'First done; second still running.' });
+            // The transcript: the turn's own steps and the mid-turn completion
+            // of the first command. The DB knows all six steps; the JSONL has
+            // parsed the first four when the window opens.
+            source.push(
+                wakeStep(1, 'planner', 'Running both checks.', [{ name: 'run_command', args: argsA }]),
+                wakeStep(2, 'planner', '', [{ name: 'run_command', args: argsB }]),
+                { ...wakeStep(3, 'tool', 'Tool is running as a background task with task id: sample/task-1\nTask Description: sleep 10 && echo FIRST-OUT'), status: 'running' },
+                { ...wakeStep(4, 'tool', 'Tool is running as a background task with task id: sample/task-2\nTask Description: sleep 20 && echo SECOND-OUT'), status: 'running' }
+            );
+            source.latest = 6;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('run two checks', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The transcript catches up with the mid-turn completion and the
+        // answer - both already went over ACP during the live turn.
+        source.push(
+            wakeStep(5, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nFIRST-OUT'),
+            wakeStep(6, 'planner', 'First done; second still running.')
+        );
+        source.latest = 6;
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(1));
+
+        // Ready must not fire while the second command still runs.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(sessionEvents(client)).not.toContainEqual({ type: 'ready' });
+
+        source.push(wakeStep(7, 'system', 'Task id "sample/task-2" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSECOND-OUT'));
+        source.latest = 7;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-2') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(result)).toContain('SECOND-OUT');
+        expect(textRows(client).filter((text) => text === 'First done; second still running.')).toHaveLength(1);
+    });
+
+    it('fails open when a duplicated command text makes the delivery ambiguous', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        source.latest = 0;
+        const dupArgs = { CommandLine: 'sleep 15 && echo DUP-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('run the check twice');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run check', input: dupArgs, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: dupArgs });
+            // The first twin finishes during the live turn and is delivered
+            // here; the second twin is still open at end_turn.
+            onUpdate({ type: 'tool_result', id: 'bg-1', status: 'completed', output: { output: 'Command exited with code 0.\n\nCommand output:\nDUP-OUT', exit_code: 0 } });
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run check again', input: dupArgs, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: dupArgs });
+            onUpdate({ type: 'text', text: 'First twin done; second twin running.' });
+            source.push(
+                wakeStep(1, 'planner', '', [{ name: 'run_command', args: dupArgs }]),
+                wakeStep(2, 'planner', '', [{ name: 'run_command', args: dupArgs }]),
+                { ...wakeStep(3, 'tool', 'Tool is running as a background task with task id: sample/task-1\nTask Description: sleep 15 && echo DUP-OUT'), status: 'running' },
+                { ...wakeStep(4, 'tool', 'Tool is running as a background task with task id: sample/task-2\nTask Description: sleep 15 && echo DUP-OUT'), status: 'running' }
+            );
+            source.latest = 5;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('run the check twice', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The delivered twin's completion arrives late with the same command
+        // text as the open twin's: the identity is ambiguous, so the window
+        // must fail open (surface it, release the slot) instead of holding
+        // ready to the safety cap.
+        source.push(wakeStep(5, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDUP-OUT'));
+        source.latest = 5;
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
     });
 });
 

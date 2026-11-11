@@ -427,9 +427,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             accountedIdx: this.accountedIdx,
                             turnBaseIdx: this.accountedIdx,
                             baselineIdx: this.accountedIdx,
-                            // Its baseline is already a surfaced watermark:
-                            // everything above it is wake work.
-                            wakeBaseIdx: null,
                             taskDescriptions: new Map()
                         });
                         this.continuationMode = close.reason === 'quiet' && close.surfacedFully ? 'drop' : 'label';
@@ -766,7 +763,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         signal: this.abortController.signal,
                         accountedIdx: this.accountedIdx ?? -1,
                         turnBaseIdx: turn.countBaseIdx ?? this.accountedIdx ?? -1,
-                        wakeBaseIdx: turn.countBaseIdx,
                         taskDescriptions: turn.bgTaskDescriptions
                     });
                 } finally {
@@ -1031,8 +1027,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turnBaseIdx: number;
         /** Overrides the baseline sample (the dequeue hold re-watches from its watermark). */
         baselineIdx?: number;
-        /** Pre-prompt DB watermark for the delivered-over-ACP boundary; null when unreadable. */
-        wakeBaseIdx?: number | null;
         /** ACP call id -> command text, for pairing completions with their calls. */
         taskDescriptions: Map<string, string>;
     }): Promise<WakeWatcherClose> {
@@ -1126,30 +1120,31 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.accountedIdx = Math.max(this.accountedIdx ?? -1, racedThroughIdx);
             }
 
-            // Reliable delivered-over-ACP watermark: the wake section starts
-            // at the first background-completion step after the pre-prompt
-            // watermark, and everything before it went over ACP live (or is a
-            // kind the watcher never surfaces). The DB stores the step type
-            // per row, so the boundary survives a transcript lag: a lagging
-            // turn step must not replay when its line catches up.
-            const wakeBoundary = opts.wakeBaseIdx != null && source.firstCompletionIdx
-                ? await source.firstCompletionIdx(opts.wakeBaseIdx).catch(() => null)
-                : null;
-            const deliveredFloor = wakeBoundary !== null
-                ? wakeBoundary - 1
-                : opts.wakeBaseIdx != null
-                    ? baseline
-                    : null;
-            const skipBaseline = deliveredFloor !== null
-                ? Math.min(baseline, Math.max(deliveredFloor, Math.min(baseline, transcriptCoverage)))
-                : Math.min(baseline, transcriptCoverage);
+            // A transcript line can lag the DB: a step the DB already knows
+            // may parse after the window opened. The live turn's own steps
+            // must not replay, but a background completion that never went
+            // over ACP must surface whenever its line lands, and the wake
+            // section behind it with it. The exemption classifies the
+            // completion against the commands the live turn delivered (every
+            // run_command call's text vs the ones still open at end_turn);
+            // only an unambiguous single match to a delivered call counts.
+            const lateWakeStart: { idx: number | null } = { idx: null };
+            const shouldSurfaceLateStep = (step: AgyTranscriptStep): boolean => {
+                if (lateWakeStart.idx !== null && step.idx > lateWakeStart.idx) return true;
+                if (step.kind !== 'system') return false;
+                const completion = parseAgyTaskCompletion(step.content);
+                if (!completion) return false;
+                if (completion.taskId !== null && gating.settledTaskIds.has(completion.taskId)) return false;
+                const description = completion.taskId !== null ? pairing.backgrounding.get(completion.taskId) : undefined;
+                if (this.completionDeliveryClass(pairing, description) === 'delivered') return false;
+                if (lateWakeStart.idx === null || step.idx < lateWakeStart.idx) lateWakeStart.idx = step.idx;
+                return true;
+            };
 
             const watcher = new AgyWakeWatcher({
                 source: windowSource,
-                // Never below the delivered watermark (the live turn's own
-                // steps must not replay), never above what lets a late-parsed
-                // wake step surface.
-                baselineIdx: skipBaseline,
+                baselineIdx: baseline,
+                shouldSurfaceLateStep,
                 pollMs: this.wakeTiming.pollMs,
                 maxPollMs: this.wakeTiming.maxPollMs,
                 quietMs: this.wakeTiming.quietMs,
@@ -1220,26 +1215,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // re-attempts the delivery below but decrements nothing.
             const duplicate = completion.taskId !== null && gating.settledTaskIds.has(completion.taskId);
             if (completion.taskId !== null && !duplicate) gating.settledTaskIds.add(completion.taskId);
+            const description = completion.taskId !== null ? pairing.backgrounding.get(completion.taskId) : undefined;
             if (!duplicate) {
                 // Gating counts identified ends: a native id the window saw
-                // backgrounded frees its surfaced call; any other completion
-                // (the turn's own command by native id even when the text
-                // match below fails — that card then fails open to the close
-                // placeholder — a legacy id-less one, or an id whose record
-                // HAPI never saw) releases one ACP command: uncertain
-                // identity fails open toward quiet, never toward the cap.
+                // backgrounded frees its surfaced call; a completion whose
+                // command the live turn already delivered over ACP was never
+                // counted here, so it releases nothing; any other completion
+                // (a legacy id-less one, or an id whose record HAPI never saw)
+                // releases one ACP command: uncertain identity fails open
+                // toward quiet, never toward the cap.
                 if (completion.taskId !== null && gating.openContinuation.delete(completion.taskId) && gating.surfacedOpenCalls > 0) {
                     // The id the window saw backgrounded frees one surfaced
                     // call; a count of zero means the record belonged to an
                     // ACP-turn command surfacing in-window, so the ACP arm
                     // takes it below.
                     gating.surfacedOpenCalls -= 1;
+                } else if (this.completionDeliveryClass(pairing, description) === 'delivered') {
+                    // Already delivered over ACP during the live turn.
                 } else {
                     gating.openAcpCommands = Math.max(0, gating.openAcpCommands - 1);
                 }
             }
             let bgId: string | undefined;
-            const description = completion.taskId !== null ? pairing.backgrounding.get(completion.taskId) : undefined;
             if (description === undefined) {
                 // No native task id on the completion, or no backgrounding
                 // record for it (older builds): launch-order pairing, as before.
@@ -1339,6 +1336,22 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 status: step.status === 'error' ? 'failed' : 'completed'
             });
         }
+    }
+
+    /**
+     * Delivered vs undelivered for a completion's command text: the live turn
+     * delivered a command when its result frame arrived, retiring it from the
+     * open set — a completion whose text matches exactly one such call was
+     * already delivered over ACP. Ambiguity fails open: the same command
+     * backgrounded twice (one delivered, one still open) matches two calls,
+     * and an ambiguous or unmatched identity counts as undelivered (surface
+     * it, release the slot) — never as delivered.
+     */
+    private completionDeliveryClass(pairing: WakeCardPairing, description: string | undefined): 'delivered' | 'undelivered' {
+        if (description === undefined) return 'undelivered';
+        const matches = [...pairing.taskDescriptions.keys()].filter((id) => sameCommandText(pairing.taskDescriptions.get(id) ?? '', description));
+        if (matches.length !== 1) return 'undelivered';
+        return pairing.bgIds.includes(matches[0]!) ? 'undelivered' : 'delivered';
     }
 
     private handleUserEcho(text: string): void {

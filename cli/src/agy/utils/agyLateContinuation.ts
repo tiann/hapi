@@ -24,7 +24,7 @@
 import { watch as nodeWatch } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { openAgyStepActivityReader, readAgyStepActivity, readFirstSystemMessageIdx, type AgyStepActivityReader } from '@/agy/legacyStreamJson/agyConversationModel';
+import { openAgyStepActivityReader, readAgyStepActivity, type AgyStepActivityReader } from '@/agy/legacyStreamJson/agyConversationModel';
 import { AgyTranscriptChunkReader, type AgyTranscriptStep } from '@/agy/legacyStreamJson/agyTranscript';
 
 export type { AgyTranscriptStep };
@@ -48,8 +48,6 @@ export type AgyTranscriptSource = {
     latestStepIdx(): Promise<number | null>
     /** PLANNER_RESPONSE count above the watermark (google-antigravity/antigravity-cli#1045 model-call count). */
     countPlannerSteps(sinceIdxExclusive: number): Promise<number | null>
-    /** First SYSTEM_MESSAGE (background completion) idx above the watermark: the wake section's start. */
-    firstCompletionIdx?(afterIdxExclusive: number): Promise<number | null>
 }
 
 const AGY_DIR = join(homedir(), '.gemini', 'antigravity-cli');
@@ -88,9 +86,6 @@ export function createAgyTranscriptSource(
         async countPlannerSteps(sinceIdxExclusive: number): Promise<number | null> {
             return (await readAgyStepActivity(sessionId, sinceIdxExclusive, join(conversationsDir, `${sessionId}.db`))).plannerCount;
         },
-        async firstCompletionIdx(afterIdxExclusive: number): Promise<number | null> {
-            return readFirstSystemMessageIdx(afterIdxExclusive, join(conversationsDir, `${sessionId}.db`));
-        }
     };
 }
 
@@ -180,6 +175,12 @@ export type WakeWatcherOptions = {
     onStep?: (step: AgyTranscriptStep) => void
     /** Fires once, when the first step is surfaced. */
     onActivity?: () => void
+    /**
+     * Consulted for a step the baseline would skip: return true to surface it
+     * anyway (a background completion that never went over ACP must surface
+     * whenever its transcript line lands). Unconsulted when absent.
+     */
+    shouldSurfaceLateStep?: (step: AgyTranscriptStep) => boolean
 }
 
 /**
@@ -206,6 +207,7 @@ export class AgyWakeWatcher {
     private readonly baselineIdx: number;
     private readonly onStep: (step: AgyTranscriptStep) => void;
     private readonly onActivity: () => void;
+    private readonly shouldSurfaceLateStep?: (step: AgyTranscriptStep) => boolean;
 
     private loop: Promise<void> | null = null;
     private stopped = false;
@@ -230,6 +232,7 @@ export class AgyWakeWatcher {
         this.hasOpenBackgroundCommands = opts.hasOpenBackgroundCommands ?? (() => false);
         this.onStep = opts.onStep ?? (() => {});
         this.onActivity = opts.onActivity ?? (() => {});
+        this.shouldSurfaceLateStep = opts.shouldSurfaceLateStep;
     }
 
     start(): void {
@@ -242,7 +245,7 @@ export class AgyWakeWatcher {
                     const steps = await this.source.readNewSteps();
                     let progressed = false;
                     for (const step of steps) {
-                        if (step.idx <= this.baselineIdx) continue;
+                        if (step.idx <= this.baselineIdx && !(this.shouldSurfaceLateStep?.(step) ?? false)) continue;
                         // Every post-baseline step counts as brain activity (it
                         // restarts the quiet timer), but only planner/tool/system
                         // steps are surfaced — user_input means agy already moved
