@@ -106,7 +106,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
-        root, native, rpc, send, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
+        session, root, native, rpc, send, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -700,4 +700,47 @@ it('closes a native child whose inherited prefix does not match the requested cu
     await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ latestCompleted: true })).rejects.toThrow('does not match');
     expect(end).toHaveBeenCalledWith(child);
     expect(f.state().steeringActive).toBe(true);
+});
+
+describe('completed fork capability snapshot races', () => {
+    it('ignores an in-progress snapshot returned after completion and the next turn start', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [{ id: 'one', status: 'inProgress', items: [] }];
+        await f.root.refresh();
+        const snapshot = structuredClone(f.native.thread);
+        let release!: () => void;
+        const read = vi.spyOn(f.root, 'readThread').mockImplementationOnce(async () => {
+            await new Promise<void>(resolve => { release = resolve; });
+            return snapshot;
+        });
+        const refresh = f.root.refresh();
+        await vi.waitFor(() => expect(release).toBeDefined());
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'one', status: 'completed' } });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'two', status: 'inProgress' } });
+        await f.drain();
+        expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
+        release(); await refresh; read.mockRestore();
+        expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
+        expect(f.state().steeringActive).toBe(true);
+    });
+    it('rechecks the revision when a queued snapshot metadata updater executes', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [{ id: 'one', status: 'completed', items: [] }];
+        await f.root.refresh();
+        f.native.thread.turns = [{ id: 'two', status: 'inProgress', items: [] }];
+        const original = f.session.updateMetadata.bind(f.session);
+        let delayed: Parameters<ApiSessionClient['updateMetadata']>[0] | undefined;
+        const update = vi.spyOn(f.session, 'updateMetadata').mockImplementation(fn => {
+            if (!delayed) { delayed = fn; return; }
+            return original(fn);
+        });
+        await f.root.refresh();
+        expect(delayed).toBeDefined();
+        update.mockRestore();
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'two', status: 'completed' } });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'three', status: 'inProgress' } });
+        await f.drain();
+        original(delayed!);
+        expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
+    });
 });

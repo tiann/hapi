@@ -391,9 +391,12 @@ export class SharedCodexRoot {
         }
         const canForkLatest = turns.some(turn => turn.status === 'completed')
             || (this.lazyHistory() && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted === true);
-        if (this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted !== canForkLatest) {
-            this.session.updateMetadata(metadata => ({ ...metadata, capabilities: { ...metadata.capabilities,
-                conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } } }));
+        if (revision === this.turnRevision
+            && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted !== canForkLatest) {
+            this.session.updateMetadata(metadata => revision !== this.turnRevision ? metadata : ({
+                ...metadata, capabilities: { ...metadata.capabilities,
+                    conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } }
+            }));
         }
         await this.projectHistory(this.projection, thread); await this.queue.reconcile(); this.alive();
     }
