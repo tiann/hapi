@@ -40,6 +40,11 @@ test.describe('session-list pin layout modes', () => {
         await expect(page.getByRole('button', { name: /Archived task 3/ })).toHaveCount(0)
 
         await page.screenshot({ path: testInfo.outputPath('combined-session-layout.png'), fullPage: true })
+        const jobsHeader = page.getByTitle('/work/jobs', { exact: true })
+        await jobsHeader.click()
+        await expect(page.getByRole('button', { name: /Detached running job/ })).toBeHidden()
+        await jobsHeader.click()
+        await expect(page.getByRole('button', { name: /Detached running job/ })).toBeVisible()
     })
 
     test('keeps working sessions pinned and quiet sessions in project folders in detailed mode', async ({ page }) => {

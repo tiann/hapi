@@ -2807,6 +2807,7 @@ export function SessionList(props: {
                     <>
                         {combinedActiveGroups.map((group) => renderDirectoryGroup(group, {
                             showAllSessions: true,
+                            expandedByDefault: true,
                             stateKey: `${group.key}::active`,
                         }))}
                         {combinedActiveGroups.length > 0 && combinedArchivedGroups.length > 0 ? (
