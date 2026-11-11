@@ -90,7 +90,7 @@ export class SessionStore {
         todos: unknown,
         source: SessionTodoSource,
         namespace: string,
-        options?: { touchUpdatedAt?: boolean }
+        options?: { touchUpdatedAt?: boolean; allowSameSource?: boolean }
     ): boolean {
         return setSessionTodos(this.db, id, todos, source, namespace, options)
     }

@@ -614,7 +614,7 @@ export function setSessionTodos(
     todos: unknown,
     source: SessionTodoSource,
     namespace: string,
-    options: { touchUpdatedAt?: boolean } = {}
+    options: { touchUpdatedAt?: boolean; allowSameSource?: boolean } = {}
 ): boolean {
     try {
         const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
@@ -642,6 +642,7 @@ export function setSessionTodos(
                   (todos_source_at IS NOT NULL AND (
                       todos_source_at < @source_at
                       OR (todos_source_at = @source_at AND COALESCE(todos_source_seq, -1) < @source_seq)
+                      OR (@allow_same_source = 1 AND todos_source_at = @source_at AND todos_source_seq = @source_seq)
                   ))
               )
         `).run({
@@ -650,6 +651,7 @@ export function setSessionTodos(
             now,
             source_at: source.at,
             source_seq: source.seq,
+            allow_same_source: options.allowSameSource === true ? 1 : 0,
             touch_updated_at: options.touchUpdatedAt === false ? 0 : 1,
             namespace
         })

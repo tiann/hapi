@@ -50,6 +50,11 @@ public protocol MessagesProviding: Sendable {
 
     /// `POST /api/sessions/:id/messages/queued-state`.
     func queuedState(sessionId: String, localIds: [String]) async throws -> QueuedStateResponse
+
+    /// `GET /api/sessions/:id/messages/:messageId/context` — the gap-recovery
+    /// sweep re-reads out-of-page merged rows through it (web
+    /// `getMessageContext`).
+    func messageContext(sessionId: String, messageId: String) async throws -> MessageContextResponse?
 }
 
 extension APIClient: MessagesProviding {
@@ -57,6 +62,7 @@ extension APIClient: MessagesProviding {
         try await messages(sessionId: sessionId, query: query.restQuery)
     }
 
-    // `queuedState(sessionId:localIds:)` from Endpoints/MessageEndpoints.swift
-    // already satisfies the second requirement.
+    // `queuedState(sessionId:localIds:)` and `messageContext(sessionId:
+    // messageId:)` from Endpoints/MessageEndpoints.swift already satisfy the
+    // remaining requirements.
 }

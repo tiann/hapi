@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
-import { SharedCodexRoot, type RootHost } from './root';
+import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
@@ -59,7 +61,7 @@ afterEach(async () => {
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
-    const directory = await mkdtemp('/tmp/hapi-shared-root-');
+    const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
@@ -635,4 +637,67 @@ describe('shared steering availability', () => {
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
     });
+});
+
+describe('latest completed list fork', () => {
+    it('uses an inclusive fixed cutoff while later source turns advance', async () => {
+        const initialSettings = vi.fn(async () => {});
+        const create = vi.fn<RootHost['create']>(async (_method, params) => {
+            expect(params).toMatchObject({ threadId: 'thread', lastTurnId: 'two' });
+            expect(params).not.toHaveProperty('beforeTurnId');
+            f.native.thread.turns.push({ id: 'later', status: 'inProgress', items: [] });
+            return { threadId: 'child', session: { sessionId: 'child-session' }, initialSettings,
+                readThread: async () => ({ turns: f.native.thread.turns.slice(0, 2) }) } as unknown as SharedCodexRoot;
+        });
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
+        const request = vi.spyOn(f.root.client, 'request');
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ latestCompleted: true })).resolves.toEqual({
+            nativeSessionId: 'child', sessionId: 'child-session', completedTurnId: 'two'
+        });
+        expect(create).toHaveBeenCalledTimes(1);
+        expect(f.state().steeringActive).toBe(true);
+        expect(request.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false);
+    });
+    it('refuses empty, unknown and mixed boundary requests before mutation', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create }); await f.root.activate();
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
+        await expect(fork({ latestCompleted: true })).rejects.toThrow('No completed');
+        f.native.thread.turns = [{ id: 'bad', status: 'unknown', items: [] }];
+        await expect(fork({ latestCompleted: true })).rejects.toThrow('prefix');
+        await expect(fork({ latestCompleted: true, messageLocalId: 'first' })).rejects.toThrow();
+        expect(create).not.toHaveBeenCalled();
+    });
+});
+
+describe('completed native prefix validation', () => {
+    it('rejects duplicate or unknown native turn identities and states', () => {
+        expect(() => latestCompletedForkCutoff([{ id: 'one', status: 'completed' }, { id: 'one', status: 'inProgress' }])).toThrow('ambiguous');
+        expect(() => latestCompletedForkCutoff([{ id: 'one', status: 'unknown' }, { id: 'two', status: 'completed' }])).toThrow('prefix');
+        expect(() => latestCompletedForkCutoff([{ status: 'completed' }])).toThrow('ambiguous');
+    });
+    it('uses the last completed turn and excludes a failed trailing turn', () => {
+        expect(latestCompletedForkCutoff([{ id: 'one', status: 'completed' }, { id: 'two', status: 'failed' }, { id: 'three', status: 'inProgress' }])).toBe('one');
+        expect(latestCompletedForkCutoff([{ id: 'one', status: 'completed' }, { id: 'two', status: 'completed' }])).toBe('two');
+    });
+});
+
+it('closes a native child whose inherited prefix does not match the requested cutoff', async () => {
+    const child = { threadId: 'wrong-child', session: { sessionId: 'wrong-session' },
+        readThread: async () => ({ turns: [{ id: 'one' }, { id: 'running' }] }) } as unknown as SharedCodexRoot;
+    const end = vi.fn(async () => {});
+    const create = vi.fn<RootHost['create']>(async () => child);
+    const f = await fixture({ create, end });
+    f.native.thread.turns = [{ id: 'one', status: 'completed', items: [] }, { id: 'running', status: 'inProgress', items: [] }];
+    await f.root.refresh(); await f.root.activate();
+    await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ latestCompleted: true })).rejects.toThrow('does not match');
+    expect(end).toHaveBeenCalledWith(child);
+    expect(f.state().steeringActive).toBe(true);
 });
