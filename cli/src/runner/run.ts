@@ -861,9 +861,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           cwd: spawnDirectory,
           detached: true,  // Sessions stay alive when runner stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
+          // Demote agent sessions so load storms cannot starve the runner's
+          // own heartbeats and handshakes. The runner's self-restart spawn
+          // intentionally does NOT set this — the runner stays high priority.
+          lowerPriority: true,
           env: {
             ...process.env,
-            ...extraEnv
+            ...extraEnv,
+            // Marks this child as runner-started. The session entry commands
+            // use it to leave stale-runner replacement to THIS runner's own
+            // heartbeat handoff: a replacement spawned from inside the
+            // demoted session would inherit its nice value, permanently
+            // demoting the new runner and recreating the contention the
+            // demotion exists to prevent (nice cannot be lowered back
+            // unprivileged).
+            HAPI_RUNNER_SPAWNED_SESSION: '1'
           }
         });
         happyProcess.once('exit', () => {

@@ -181,6 +181,25 @@ describe('runner intentional-stop marker cleanup', () => {
         )
     })
 
+    it('demotes runner-spawned sessions and marks them for the stale-runner policy', async () => {
+        // The session child must be demoted (lowerPriority) AND carry the
+        // HAPI_RUNNER_SPAWNED_SESSION marker so its entry command leaves a
+        // stale-runner replacement to the runner's own undemoted heartbeat
+        // handoff instead of inheriting the session's nice value.
+        const child = makeFakeChild(6300)
+        mocks.spawnHappyCLI.mockImplementation(() => child)
+        const spawnPromise = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'sess-demote' })
+        await confirmSpawn(spawnPromise, 'sess-demote', 6300)
+        await expect(spawnPromise).resolves.toEqual({ type: 'success', sessionId: 'sess-demote' })
+
+        const options = mocks.spawnHappyCLI.mock.calls.at(-1)![1] as {
+            lowerPriority?: boolean
+            env?: Record<string, string | undefined>
+        }
+        expect(options.lowerPriority).toBe(true)
+        expect(options.env?.HAPI_RUNNER_SPAWNED_SESSION).toBe('1')
+    })
+
     it('still suppresses the exit of a child the stop killed intentionally', async () => {
         const child = makeFakeChild(6100)
         mocks.spawnHappyCLI.mockImplementation(() => child)

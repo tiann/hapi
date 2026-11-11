@@ -135,7 +135,62 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
   };
 }
 
-export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): ChildProcess {
+/**
+ * Scheduling priority (nice) applied to agent children when the runner opts
+ * in via `lowerPriority`. Agent sessions can legitimately saturate every
+ * core (build loops, test matrices); without a demotion the runner itself
+ * gets starved enough to miss socket handshakes and heartbeats during load
+ * storms. `HAPI_AGENT_NICE` overrides the level; '0' disables the demotion.
+ */
+const AGENT_NICE_ENV = 'HAPI_AGENT_NICE';
+const DEFAULT_AGENT_NICE_LEVEL = 15;
+
+export function resolveAgentNiceLevel(
+  rawValue: string | undefined = process.env[AGENT_NICE_ENV]
+): number | null {
+  const raw = rawValue?.trim();
+  if (raw === undefined || raw === '') {
+    return DEFAULT_AGENT_NICE_LEVEL;
+  }
+  // Validate the complete string, not just a numeric prefix: parseInt would
+  // accept "0.5", "0abc" or "5x" as numbers, and a prefix-parsed zero would
+  // silently disable the scheduling protection on a malformed value.
+  if (!/^[+-]?\d+$/.test(raw)) {
+    return DEFAULT_AGENT_NICE_LEVEL;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (parsed === 0) {
+    return null;
+  }
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_AGENT_NICE_LEVEL;
+  }
+  return parsed;
+}
+
+function applyNiceDemotion(
+  command: string,
+  args: string[]
+): { command: string; args: string[] } {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    return { command, args };
+  }
+  const level = resolveAgentNiceLevel();
+  if (level === null) {
+    return { command, args };
+  }
+  return { command: '/usr/bin/nice', args: ['-n', String(level), command, ...args] };
+}
+
+export type HappyCliSpawnOptions = SpawnOptions & {
+  /**
+   * Demote the child's scheduling priority (see resolveAgentNiceLevel).
+   * Used for agent sessions so load storms cannot starve the runner.
+   */
+  lowerPriority?: boolean;
+};
+
+export function spawnHappyCLI(args: string[], options: HappyCliSpawnOptions = {}): ChildProcess {
 
   let directory: string | URL | undefined;
   if ('cwd' in options) {
@@ -170,7 +225,7 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   
   // On Windows, detached processes allocate a new console window by default.
   // windowsHide: true suppresses this to prevent cmd windows from accumulating.
-  const finalOptions: SpawnOptions = { ...options };
+  const finalOptions: HappyCliSpawnOptions = { ...options };
   const finalEnv = { ...process.env, ...options.env };
   let shouldSetEnv = false;
   if (compiledMode) {
@@ -198,5 +253,10 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   if (process.platform === 'win32' && options.detached) {
     finalOptions.windowsHide = true;
   }
-  return spawn(spawnCommand, spawnArgs, finalOptions);
+    // Agent children may opt into a scheduling demotion so load storms cannot
+  // starve the runner's own heartbeats. The runner's self-restart paths never
+  // set this — the runner itself always stays high priority.
+  const demoted = options.lowerPriority ? applyNiceDemotion(spawnCommand, spawnArgs) : { command: spawnCommand, args: spawnArgs };
+  const { lowerPriority: _ignored, ...spawnOptions } = finalOptions;
+  return spawn(demoted.command, demoted.args, spawnOptions);
 }
