@@ -1,24 +1,48 @@
-import { act, renderHook } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
-import { usePinInProgressSessions } from './usePinInProgressSessions'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+    DEFAULT_PIN_IN_PROGRESS_MODE,
+    PIN_IN_PROGRESS_STORAGE_KEY,
+    getInitialPinInProgressMode,
+    parsePinInProgressMode
+} from './usePinInProgressSessions'
 
-describe('usePinInProgressSessions', () => {
-    beforeEach(() => {
-        window.localStorage.clear()
+describe('parsePinInProgressMode', () => {
+    it('defaults unset to jobs (capability stand)', () => {
+        expect(parsePinInProgressMode(null)).toBe('jobs')
+        expect(parsePinInProgressMode('')).toBe('jobs')
+        expect(DEFAULT_PIN_IN_PROGRESS_MODE).toBe('jobs')
     })
 
-    it('synchronizes the setting between sidebar and settings instances', () => {
-        const sidebar = renderHook(() => usePinInProgressSessions())
-        const settings = renderHook(() => usePinInProgressSessions())
+    it('migrates legacy boolean strings', () => {
+        expect(parsePinInProgressMode('true')).toBe('all')
+        expect(parsePinInProgressMode('false')).toBe('off')
+    })
 
-        act(() => settings.result.current.setPinInProgressSessions(true))
+    it('accepts explicit tri-state values', () => {
+        expect(parsePinInProgressMode('off')).toBe('off')
+        expect(parsePinInProgressMode('jobs')).toBe('jobs')
+        expect(parsePinInProgressMode('all')).toBe('all')
+    })
 
-        expect(sidebar.result.current.pinInProgressSessions).toBe(true)
-        expect(window.localStorage.getItem('hapi-pin-in-progress-sessions')).toBe('true')
+    it('falls back to jobs on garbage', () => {
+        expect(parsePinInProgressMode('maybe')).toBe('jobs')
+    })
+})
 
-        act(() => sidebar.result.current.setPinInProgressSessions(false))
+describe('getInitialPinInProgressMode', () => {
+    afterEach(() => {
+        localStorage.removeItem(PIN_IN_PROGRESS_STORAGE_KEY)
+    })
 
-        expect(settings.result.current.pinInProgressSessions).toBe(false)
-        expect(window.localStorage.getItem('hapi-pin-in-progress-sessions')).toBeNull()
+    it('persists jobs default so later Off is distinct from unset', () => {
+        localStorage.removeItem(PIN_IN_PROGRESS_STORAGE_KEY)
+        expect(getInitialPinInProgressMode()).toBe('jobs')
+        expect(localStorage.getItem(PIN_IN_PROGRESS_STORAGE_KEY)).toBe('jobs')
+    })
+
+    it('rewrites legacy false to persisted off', () => {
+        localStorage.setItem(PIN_IN_PROGRESS_STORAGE_KEY, 'false')
+        expect(getInitialPinInProgressMode()).toBe('off')
+        expect(localStorage.getItem(PIN_IN_PROGRESS_STORAGE_KEY)).toBe('off')
     })
 })

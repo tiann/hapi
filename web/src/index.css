@@ -862,6 +862,50 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
   animation: bounce-in 0.3s ease-out;
 }
 
+/*
+ * Session-attached job: subtle indeterminate progress (no %).
+ * Inspired by the HTML5 <progress> indeterminate look
+ * (https://css-tricks.com/html5-progress-element/) — diagonal stripes that
+ * drift slowly. Quiet contrast + slow background-position, not a loud chunk
+ * marquee and not a frozen empty track.
+ */
+/*
+ * Seamless loop: shift must equal one background-size tile (was -12px on an
+ * 8px tile → visible jump every cycle). For -45° stripes, move both axes by
+ * one tile so the diagonal phase matches at the loop boundary.
+ */
+@keyframes attached-job-indeterminate-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 8px 8px;
+  }
+}
+
+.animate-attached-job-indeterminate {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* Soft base + faint cutout stripes (currentColor so it matches job chrome). */
+  background-color: color-mix(in srgb, currentColor 38%, transparent);
+  background-image: linear-gradient(
+    -45deg,
+    transparent 33%,
+    color-mix(in srgb, var(--app-bg) 45%, transparent) 33%,
+    color-mix(in srgb, var(--app-bg) 45%, transparent) 66%,
+    transparent 66%
+  );
+  background-size: 8px 8px;
+  animation: attached-job-indeterminate-stripes 5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-attached-job-indeterminate {
+    animation: none;
+  }
+}
+
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */
 .tsqd-open-btn-container {
   bottom: 50% !important;

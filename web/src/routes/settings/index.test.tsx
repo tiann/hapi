@@ -101,7 +101,7 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
-    usePinInProgressSessions: () => ({ pinInProgressSessions: pinSettingsState.enabled, setPinInProgressSessions: vi.fn() }),
+    usePinInProgressSessions: () => ({ pinInProgressMode: pinSettingsState.enabled ? 'all' : 'off', setPinInProgressMode: vi.fn(), pinInProgressSessions: pinSettingsState.enabled, setPinInProgressSessions: vi.fn() }),
 }))
 
 vi.mock('@/hooks/usePinInProgressSessionsMode', () => ({
@@ -304,7 +304,7 @@ describe('responsive settings pages', () => {
         expect(await screen.findByRole('heading', { name: 'Session status summaries' })).toBeInTheDocument()
         expect(screen.getByText('Choose whether supported agents emit status summaries and whether they appear in chat.')).toBeInTheDocument()
         expect(await screen.findByRole('checkbox', { name: 'Emit status summaries' })).toBeInTheDocument()
-        expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)')).toBeInTheDocument()
+        expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok, Cursor ACP; not yet supported: local Grok)')).toBeInTheDocument()
         expect(screen.queryByRole('heading', { name: 'Chat display', level: 3 })).not.toBeInTheDocument()
         expect(screen.getByText('Only affects display in chat and copied content; it does not affect summary generation, notifications, or background work records. When on, a status row is shown; when off, it is hidden. Stored messages remain unchanged.')).toBeInTheDocument()
 
@@ -338,7 +338,9 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+        // Fixed session order removed — SessionListView owns list order (#2263).
         expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Long-running jobs' })).toBeInTheDocument()
     })
 
     it('keeps the session status description visible with its choice group', () => {
@@ -360,9 +362,9 @@ describe('responsive settings pages', () => {
         const pinSettings = screen.getByTestId('pin-in-progress-settings')
         expect(screen.getByRole('radio', { name: 'Detailed' })).toHaveAttribute('aria-checked', 'true')
         expect(screen.getByRole('radio', { name: 'Combined' })).toHaveAttribute('aria-checked', 'false')
-        expect(screen.getByText('By default, Detailed keeps the “In progress” and “Active sessions” sections; Combined groups all active sessions by project directory.')).toBeInTheDocument()
+        expect(screen.getByText('Detailed keeps the In progress section and project folders; Combined groups connected sessions by project directory.')).toBeInTheDocument()
         expect(choices).toBeInTheDocument()
-        expect(within(pinSettings).getByRole('checkbox', { name: 'Pin in-progress sessions' })).toBeInTheDocument()
+        expect(screen.getByRole('radiogroup', { name: 'Pin in-progress sessions' })).toBeInTheDocument()
         expect(within(pinSettings).getAllByRole('radio').map((radio) => radio.textContent?.trim())).toEqual(['Combined', 'Detailed'])
 
         fireEvent.click(screen.getByRole('radio', { name: 'Combined' }))
