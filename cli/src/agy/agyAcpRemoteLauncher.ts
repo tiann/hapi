@@ -427,6 +427,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             accountedIdx: this.accountedIdx,
                             turnBaseIdx: this.accountedIdx,
                             baselineIdx: this.accountedIdx,
+                            // Its baseline is already a surfaced watermark:
+                            // everything above it is wake work.
+                            wakeBaseIdx: null,
                             taskDescriptions: new Map()
                         });
                         this.continuationMode = close.reason === 'quiet' && close.surfacedFully ? 'drop' : 'label';
@@ -763,6 +766,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         signal: this.abortController.signal,
                         accountedIdx: this.accountedIdx ?? -1,
                         turnBaseIdx: turn.countBaseIdx ?? this.accountedIdx ?? -1,
+                        wakeBaseIdx: turn.countBaseIdx,
                         taskDescriptions: turn.bgTaskDescriptions
                     });
                 } finally {
@@ -1027,6 +1031,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turnBaseIdx: number;
         /** Overrides the baseline sample (the dequeue hold re-watches from its watermark). */
         baselineIdx?: number;
+        /** Pre-prompt DB watermark for the delivered-over-ACP boundary; null when unreadable. */
+        wakeBaseIdx?: number | null;
         /** ACP call id -> command text, for pairing completions with their calls. */
         taskDescriptions: Map<string, string>;
     }): Promise<WakeWatcherClose> {
@@ -1120,13 +1126,30 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.accountedIdx = Math.max(this.accountedIdx ?? -1, racedThroughIdx);
             }
 
+            // Reliable delivered-over-ACP watermark: the wake section starts
+            // at the first background-completion step after the pre-prompt
+            // watermark, and everything before it went over ACP live (or is a
+            // kind the watcher never surfaces). The DB stores the step type
+            // per row, so the boundary survives a transcript lag: a lagging
+            // turn step must not replay when its line catches up.
+            const wakeBoundary = opts.wakeBaseIdx != null && source.firstCompletionIdx
+                ? await source.firstCompletionIdx(opts.wakeBaseIdx).catch(() => null)
+                : null;
+            const deliveredFloor = wakeBoundary !== null
+                ? wakeBoundary - 1
+                : opts.wakeBaseIdx != null
+                    ? baseline
+                    : null;
+            const skipBaseline = deliveredFloor !== null
+                ? Math.min(baseline, Math.max(deliveredFloor, Math.min(baseline, transcriptCoverage)))
+                : Math.min(baseline, transcriptCoverage);
+
             const watcher = new AgyWakeWatcher({
                 source: windowSource,
-                // Skip only what the transcript had already parsed at window
-                // start: a step between that coverage and the DB baseline must
-                // surface when its line catches up, not fall through both the
-                // scan and the live filter.
-                baselineIdx: transcriptCoverage >= 0 ? Math.min(baseline, transcriptCoverage) : baseline,
+                // Never below the delivered watermark (the live turn's own
+                // steps must not replay), never above what lets a late-parsed
+                // wake step surface.
+                baselineIdx: skipBaseline,
                 pollMs: this.wakeTiming.pollMs,
                 maxPollMs: this.wakeTiming.maxPollMs,
                 quietMs: this.wakeTiming.quietMs,

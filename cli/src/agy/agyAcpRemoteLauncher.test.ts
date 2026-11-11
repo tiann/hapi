@@ -2266,6 +2266,12 @@ class FakeWakeSource implements AgyTranscriptSource {
     async countPlannerSteps(): Promise<number | null> {
         return this.plannerCount;
     }
+
+    completionIdx: number | null = null;
+
+    async firstCompletionIdx(): Promise<number | null> {
+        return this.completionIdx;
+    }
 }
 
 function wakeStep(idx: number, kind: AgyTranscriptStep['kind'], content = '', toolCalls: AgyTranscriptStep['toolCalls'] = []): AgyTranscriptStep {
@@ -3404,6 +3410,55 @@ describe('AgyAcpRemoteLauncher synthetic continuation calls', () => {
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
         const call = toolMessages(client).find((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'));
         expect(call).toMatchObject({ name: 'Bash', input: { command: 'echo wake-normalized' } });
+    });
+});
+
+describe('AgyAcpRemoteLauncher late continuation (delivered watermark)', () => {
+    it('does not replay the live turn steps when the transcript lags the DB', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        source.latest = 0; // readable DB, nothing before this prompt
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            // The live turn's own transcript step; the JSONL has parsed only
+            // this one when the window opens (the DB already knows the rest).
+            source.push(wakeStep(1, 'planner', 'Checking the sample.'));
+            source.latest = 4;
+            onUpdate({ type: 'text', text: 'Checking the sample.' });
+            onUpdate({ type: 'text', text: 'Still working on it.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The transcript catches up with the turn's own steps - already
+        // delivered over ACP during the live turn.
+        source.push(
+            wakeStep(2, 'planner', 'Checking the sample.', [{ name: 'run_command', args: BG_ARGS }]),
+            { ...wakeStep(3, 'tool', 'Tool is running as a background task with task id: sample/task-1\nTask Description: run-sample-check'), status: 'running' },
+            wakeStep(4, 'planner', 'Still working on it.')
+        );
+        source.latest = 4;
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(1));
+        source.push(wakeStep(5, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nJTVH-OUT'));
+        source.latest = 5;
+
+        // The turn's own steps must not replay: their text appears once (the
+        // live frames), no synthetic card mirrors the delivered call, and the
+        // wake completion still surfaces and releases ready.
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        expect(textRows(client).filter((text) => text === 'Still working on it.')).toHaveLength(1);
+        expect(agentRows(client).filter((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'))).toHaveLength(0);
+        const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(result)).toContain('JTVH-OUT');
     });
 });
 

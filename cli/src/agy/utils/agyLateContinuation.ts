@@ -24,7 +24,7 @@
 import { watch as nodeWatch } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { openAgyStepActivityReader, readAgyStepActivity, type AgyStepActivityReader } from '@/agy/legacyStreamJson/agyConversationModel';
+import { openAgyStepActivityReader, readAgyStepActivity, readFirstSystemMessageIdx, type AgyStepActivityReader } from '@/agy/legacyStreamJson/agyConversationModel';
 import { AgyTranscriptChunkReader, type AgyTranscriptStep } from '@/agy/legacyStreamJson/agyTranscript';
 
 export type { AgyTranscriptStep };
@@ -48,6 +48,8 @@ export type AgyTranscriptSource = {
     latestStepIdx(): Promise<number | null>
     /** PLANNER_RESPONSE count above the watermark (google-antigravity/antigravity-cli#1045 model-call count). */
     countPlannerSteps(sinceIdxExclusive: number): Promise<number | null>
+    /** First SYSTEM_MESSAGE (background completion) idx above the watermark: the wake section's start. */
+    firstCompletionIdx?(afterIdxExclusive: number): Promise<number | null>
 }
 
 const AGY_DIR = join(homedir(), '.gemini', 'antigravity-cli');
@@ -85,6 +87,9 @@ export function createAgyTranscriptSource(
         },
         async countPlannerSteps(sinceIdxExclusive: number): Promise<number | null> {
             return (await readAgyStepActivity(sessionId, sinceIdxExclusive, join(conversationsDir, `${sessionId}.db`))).plannerCount;
+        },
+        async firstCompletionIdx(afterIdxExclusive: number): Promise<number | null> {
+            return readFirstSystemMessageIdx(afterIdxExclusive, join(conversationsDir, `${sessionId}.db`));
         }
     };
 }
