@@ -319,6 +319,20 @@ describe('provider throughput metadata', () => {
         expect(parts.at(-1)).toBe('Round: 14.9s · 28.0 tok/s')
     })
 
+    it('adds Claude tok/s to the Round line from the duration_api_ms pair', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: { 'claude-opus-5': { inputTokens: 4_422, outputTokens: 70, cacheReadInputTokens: 900, cacheCreationInputTokens: 100 } },
+                usage: { input_tokens: 4_422, output_tokens: 70, cache_read_input_tokens: 900, cache_creation_input_tokens: 100 },
+                numTurns: 3,
+                durationMs: 14_900,
+                generationMs: 2_500,
+                generationOutputTokens: 70
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 3 turns · 28.0 tok/s')
+    })
+
     it('omits the agy cache share without cache reads and shows partial usage as reported', () => {
         expect(buildMessageMetadataLabels({
             model: 'fallback-model',
