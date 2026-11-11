@@ -2,6 +2,8 @@ package app.hapi.data.store
 
 import app.hapi.data.api.MessagesApi
 import app.hapi.data.api.MessagesQuery
+import app.hapi.protocol.chat.AGENT_MESSAGE_PAYLOAD_TYPE
+import app.hapi.protocol.window.MessageMerge
 import app.hapi.protocol.window.MessagePosition
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageViewMode
@@ -10,13 +12,18 @@ import app.hapi.protocol.window.HISTORY_WINDOW_SIZE
 import app.hapi.protocol.window.MessageWindowState
 import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.INITIAL_PAGE_SIZE
+import app.hapi.protocol.window.OLDER_LOAD_WINDOW_SIZE
 import app.hapi.protocol.window.PAGE_SIZE
+import app.hapi.protocol.window.VISIBLE_WINDOW_SIZE
 import app.hapi.protocol.window.WindowMessage
 import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.SyncEvent
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -106,7 +113,7 @@ class MessageWindowStore(
     /** Bumped by [clear]/[seedFrom] so a finished run stops chaining trailing runs. */
     private var controllerEpoch = 0
 
-    private class TailRun(val prefersLatest: Boolean) {
+    private class TailRun(val prefersLatest: Boolean, val pendingRecovery: Boolean) {
         lateinit var job: Deferred<Unit>
     }
 
@@ -134,14 +141,23 @@ class MessageWindowStore(
         }
         val decision: SyncDecision = synchronized(controllerLock) {
             val current = running
+            val state = _state.value
             when {
                 current == null -> SyncDecision.Await(startTailSyncLocked())
-                _state.value.preferLatestOnActivation ->
-                    if (current.prefersLatest) {
-                        SyncDecision.Await(current.job)
-                    } else {
-                        trailingRequested = false
-                        SyncDecision.Await(startTailSyncLocked())
+                state.preferLatestOnActivation || state.pendingGapRecovery ->
+                    // A running sync snapshotted its mode at start; a newly
+                    // requested latest reconciliation (cached re-entry or gap
+                    // recovery) must not let that older run commit a plain
+                    // cursor merge or a full replacement over it.
+                    when {
+                        current.prefersLatest && !state.pendingGapRecovery ->
+                            SyncDecision.Await(current.job)
+                        current.pendingRecovery && state.pendingGapRecovery ->
+                            SyncDecision.Await(current.job)
+                        else -> {
+                            trailingRequested = false
+                            SyncDecision.Await(startTailSyncLocked())
+                        }
                     }
                 !ensureAfterCurrent -> SyncDecision.Await(current.job)
                 else -> {
@@ -158,7 +174,10 @@ class MessageWindowStore(
 
     private fun startTailSyncLocked(allowingHistoryReset: Boolean = false): Deferred<Unit> {
         val epoch = controllerEpoch
-        val run = TailRun(prefersLatest = _state.value.preferLatestOnActivation)
+        val run = TailRun(
+            prefersLatest = _state.value.preferLatestOnActivation,
+            pendingRecovery = _state.value.pendingGapRecovery,
+        )
         // UNDISPATCHED mirrors the web: `runTailSync` executes to its first true
         // suspension (normally the api call) before `startTailSync` returns, so
         // `beginTailSync`'s generation bump lands synchronously and an in-flight
@@ -200,14 +219,31 @@ class MessageWindowStore(
             val initial = _state.value
             val initialCursor = initial.newestPosition
             val preferLatestOnActivation = initial.preferLatestOnActivation
+            val pendingGapRecovery = initial.pendingGapRecovery
             val canIncrement = initialCursor != null
                 && initial.epoch != null
                 && !initial.requiresLatestReset
-                && !preferLatestOnActivation
+                // A pending gap recovery must run its cursor catch-up even
+                // when a cached activation asked for a direct latest page: the
+                // activation shortcut fetches only the newest rows and leaves
+                // the interval between the cached tail and the page
+                // unreachable below the advanced newest cursor.
+                && (!preferLatestOnActivation || pendingGapRecovery)
+
+            if (canIncrement && preferLatestOnActivation) {
+                // The recovery's catch-up + latest-page reconciliation
+                // subsumes the cached-activation refresh. Defer the activation
+                // shortcut for this run: left set, it would force-break the
+                // catch-up loop after its first chunk.
+                update { previous ->
+                    if (previous.syncGeneration != generation) return@update previous
+                    previous.copy(preferLatestOnActivation = false)
+                }
+            }
 
             if (!canIncrement) {
                 val requestBaseline = baseline()
-                val latestPageSize = if (initial.requiresLatestReset || initialCursor != null) {
+                val latestPageSize = if (initial.requiresLatestReset || pendingGapRecovery || initialCursor != null) {
                     PAGE_SIZE
                 } else {
                     INITIAL_PAGE_SIZE
@@ -227,10 +263,10 @@ class MessageWindowStore(
                         response.windowMessages(),
                         response.page,
                         replaceServerRows = initial.requiresLatestReset
-                            || preferLatestOnActivation
+                            || (preferLatestOnActivation && !pendingGapRecovery)
                             || response.page.reset,
                         requestBaseline = requestBaseline,
-                    ).copy(preferLatestOnActivation = false)
+                    ).copy(preferLatestOnActivation = false, pendingGapRecovery = false)
                 }
                 finishTailSync(generation, warning = null)
                 return
@@ -238,6 +274,7 @@ class MessageWindowStore(
 
             var after: MessagePosition = initialCursor!!
             var until: MessagePosition? = null
+            var catchUpReset = false
             while (true) {
                 val requestBaseline = baseline()
                 val response = api.getMessages(
@@ -262,7 +299,7 @@ class MessageWindowStore(
                             response.page,
                             replaceServerRows = true,
                             requestBaseline = requestBaseline,
-                        )
+                        ).copy(pendingGapRecovery = false, preferLatestOnActivation = false)
                     }
                     break
                 }
@@ -292,6 +329,110 @@ class MessageWindowStore(
                     throw IllegalStateException("Message tail cursor did not advance")
                 }
                 after = nextAfter
+            }
+
+            if (pendingGapRecovery) {
+                if (catchUpReset) {
+                    // A reset verdict already replaced the window
+                    // authoritatively under the server's epoch; there is
+                    // nothing left to refresh.
+                    update { previous ->
+                        if (previous.syncGeneration != generation) return@update previous
+                        previous.copy(pendingGapRecovery = false, preferLatestOnActivation = false)
+                    }
+                } else if (_state.value.requiresLatestReset) {
+                    // The catch-up overflowed the window's history budget:
+                    // the prepend trim dropped the newer caught-up rows and
+                    // marked the window for a reset. Reconciling the latest
+                    // page on top would strand the rows between the
+                    // reset-marked window and the page — unreachable from
+                    // either cursor — so leave the reset requirement and the
+                    // recovery flags intact: the next authoritative
+                    // replacement closes the hole and consumes the flags.
+                } else {
+                    // The cursor phase caught the window up without error.
+                    // Only now may the recovery advance to the latest page:
+                    // reconciling after a failed catch-up would strand the rows
+                    // between the cached tail and the page below the advanced
+                    // newest cursor. On a catch-up failure the catch above
+                    // skips this block, the original cursor and the flag
+                    // survive, and the next sync retries the whole recovery.
+                    val requestBaseline = baseline()
+                    val response = api.getMessages(sessionId, MessagesQuery.Latest(limit = PAGE_SIZE))
+                    if (!isCurrentTailSync(generation)) return
+                    update { previous ->
+                        if (previous.syncGeneration != generation) return@update previous
+                        // The trim honors the window's loaded history budget
+                        // (web `4d1d9e2025`): a no-news reconnect never evicts
+                        // rows the reader already had.
+                        val trimLimit = minOf(
+                            OLDER_LOAD_WINDOW_SIZE,
+                            maxOf(VISIBLE_WINDOW_SIZE, previous.messages.size),
+                        )
+                        MessageWindowLogic.applyLatestResponse(
+                            previous,
+                            response.windowMessages(),
+                            response.page,
+                            replaceServerRows = response.page.reset
+                                || (previous.epoch != null && response.page.epoch != previous.epoch),
+                            requestBaseline = requestBaseline,
+                            trimLimit = trimLimit,
+                        ).copy(pendingGapRecovery = false, preferLatestOnActivation = false)
+                    }
+
+                    // A tool-call row the client cached before the gap can be
+                    // enriched in place afterwards; when more than a latest
+                    // page of newer rows followed, neither the catch-up
+                    // (newer rows only) nor the page reaches it, and the
+                    // cached card keeps its stale input/status. Refresh those
+                    // retained non-terminal rows by id through the
+                    // message-context endpoint: bounded, newest first, and
+                    // skipped for rows the catch-up already delivered fresh
+                    // (at or after the recovery cursor).
+                    val pageOldest = MessageWindowLogic.pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
+                    if (pageOldest != null) {
+                        val refreshCandidates = _state.value.messages
+                            .filter { message ->
+                                val position = MessageWindowLogic.messagePosition(message)
+                                if (position == null || position >= pageOldest) return@filter false
+                                if (initialCursor != null && position > initialCursor) return@filter false
+                                isNonTerminalToolCallRow(message)
+                            }
+                            .sortedByDescending { MessageWindowLogic.messagePosition(it)!! }
+                            .take(GAP_ROW_REFRESH_LIMIT)
+                        for (candidate in refreshCandidates) {
+                            val context = api.getMessageContext(sessionId, candidate.id)
+                            if (!isCurrentTailSync(generation)) return
+                            val refreshed = context?.messages?.find { it.id == candidate.id }?.asWindowMessage()
+                            if (refreshed == null) {
+                                // The row is no longer reachable through the
+                                // context endpoint: leave it as is and finish
+                                // the run's bookkeeping — an early return here
+                                // would leave the window marked syncing.
+                                finishTailSync(generation, "Failed to refresh a merged tool call")
+                                return
+                            }
+                            if (context.page.epoch != _state.value.epoch) {
+                                // The refresh answered under a different
+                                // epoch: server rows may have been deleted
+                                // since the page was fetched. Mark the window
+                                // for the authoritative replacement instead
+                                // of reconciling against a stale snapshot,
+                                // and finish the run's bookkeeping.
+                                update { previous ->
+                                    if (previous.syncGeneration != generation) return@update previous
+                                    previous.copy(requiresLatestReset = true)
+                                }
+                                finishTailSync(generation, "Failed to refresh a merged tool call")
+                                return
+                            }
+                            update { previous ->
+                                if (previous.syncGeneration != generation) return@update previous
+                                MessageWindowLogic.mergeRefreshedRow(previous, refreshed)
+                            }
+                        }
+                    }
+                }
             }
 
             finishTailSync(generation, warning = null)
@@ -526,10 +667,38 @@ class MessageWindowStore(
     }
 
     /**
+     * One gap-recovery step for a session message window (web
+     * `recoverWindowAfterGapResume`).
+     *
+     * A resumed-with-gap connection (`resume: 'gap'`) cannot prove
+     * continuity, and in-place row updates (merged tool-call ticks) keep the
+     * row's original cursor position, so a plain cursor sync re-delivers new
+     * rows but never the merged content of rows the window already holds.
+     * Flag the window and let the next tail sync run the full recovery: the
+     * cursor catch-up pulls every row the window missed, then an
+     * authoritative latest page is applied as an upsert — rows present in the
+     * page are replaced by id while already-loaded rows older than the latest
+     * page and the hasMore/oldest cursor survive. A failed catch-up keeps the
+     * flag and the original cursor, so the next sync retries the whole
+     * recovery. Cold or structurally invalidated windows have nothing to
+     * preserve and keep the plain reset choreography.
+     */
+    suspend fun recoverAfterGapResume() {
+        val previous = _state.value
+        if (previous.requiresLatestReset || previous.newestPosition == null || previous.epoch == null) {
+            return syncTail()
+        }
+        update { it.copy(pendingGapRecovery = true) }
+        syncTail()
+    }
+
+    /**
      * Queued-state recovery after a `resume: 'gap'` reconnect (port of
      * `web/src/lib/queued-state-reconciliation.ts`): tail-sync to the drain,
      * collect candidates, ask the hub for the verdict in ≤1000-id batches,
      * stamp invoked rows like `messages-consumed`, drop deleted candidates.
+     * The window's gap recovery ([recoverAfterGapResume]) is a separate step
+     * the sync-target layer runs first (web wires the two the same way).
      */
     suspend fun reconcileQueuedState() {
         syncTail(ensureAfterCurrent = true)
@@ -646,5 +815,26 @@ class MessageWindowStore(
 
     private companion object {
         const val QUEUED_STATE_BATCH_SIZE = 1000
+
+        /** Gap recovery refreshes at most this many retained non-terminal
+         *  tool-call rows through the message-context endpoint (newest
+         *  first). Live calls are a handful; the bound keeps a pathological
+         *  window from fanning out requests. */
+        const val GAP_ROW_REFRESH_LIMIT = 20
+    }
+
+    /** A cached tool-call row that can still be enriched in place: its
+     *  payload is a live `tool-call` whose merged status has not reached a
+     *  terminal tier. Terminal rows are done; unknown or missing status
+     *  reads as pending. */
+    private fun isNonTerminalToolCallRow(message: WindowMessage): Boolean {
+        val envelope = message.wire.content as? JsonObject ?: return false
+        if ((envelope["role"] as? JsonPrimitive)?.contentOrNull != "agent") return false
+        val payload = envelope["content"] as? JsonObject ?: return false
+        if ((payload["type"] as? JsonPrimitive)?.contentOrNull != AGENT_MESSAGE_PAYLOAD_TYPE) return false
+        val data = payload["data"] as? JsonObject ?: return false
+        if ((data["type"] as? JsonPrimitive)?.contentOrNull != "tool-call") return false
+        val status = (data["status"] as? JsonPrimitive)?.contentOrNull
+        return status != "completed" && status != "failed"
     }
 }
