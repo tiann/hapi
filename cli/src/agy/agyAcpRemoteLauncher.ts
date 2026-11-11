@@ -177,6 +177,7 @@ type AgyTurn = {
     // Ambiguous `run_command` tool_calls held briefly until `tool_result`
     // output disambiguates multiple synthetic background candidates.
     deferredLiveCommandCalls: Map<string, Extract<AgentMessage, { type: 'tool_call' }>>;
+    corroboratedSyntheticMatches: number;
     turnStartStepIndex: number;
     // Settled non-live assistant text segments streamed during this turn, used
     // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
@@ -840,6 +841,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             commandCallIds: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
             deferredLiveCommandCalls: new Map(),
+            corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
             usage: null,
@@ -1266,6 +1268,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
         }
         this.reconcileRetainedAmbiguousCompletions(turn);
+        if (turn.corroboratedSyntheticMatches === 0 && this.retainedAmbiguousCompletions.length > 0) {
+            const uncorroborated = this.retainedAmbiguousCompletions.splice(0, this.retainedAmbiguousCompletions.length);
+            for (const item of uncorroborated) {
+                if (item.callMessage) {
+                    this.emitDeferredLiveCommandCall(turn, item.callMessage);
+                }
+                turn.generation.observe(item.resultMessage);
+                this.trackOpenCommand(turn, item.resultMessage, false);
+                this.forwardAgentMessage(this.showQuestionCard(item.resultMessage));
+            }
+        }
     }
 
     private reconcileRetainedAmbiguousCompletions(turn: AgyTurn | null): void {
@@ -1293,6 +1306,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.retainedAmbiguousCompletions.splice(idx, 1);
                     idx -= 1;
                     progressed = true;
+                    if (turn) turn.corroboratedSyntheticMatches += 1;
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     const effectiveResult: AgentMessage = { ...item.resultMessage, id: match.entry.callId };
                     if (turn) {
@@ -1351,9 +1365,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 acpSessionId,
                 this.backgroundCommands,
                 turn.turnStartStepIndex,
-                { liveCallId: message.id, nativeArgs }
+                { liveCallId: message.id, nativeArgs, callStatus: message.status }
             );
             if (match.kind === 'matched') {
+                turn.corroboratedSyntheticMatches += 1;
                 this.syntheticCallAliases.set(message.id, match.entry.callId);
                 return { message: { ...message, id: match.entry.callId }, suppressForward: true };
             }
@@ -1387,6 +1402,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 );
                 if (match.kind === 'matched') {
+                    turn.corroboratedSyntheticMatches += 1;
                     this.nativeToolNames.set(match.entry.callId, 'run_command');
                     return { message: { ...message, id: match.entry.callId }, suppressForward: false };
                 }

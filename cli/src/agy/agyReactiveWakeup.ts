@@ -72,6 +72,7 @@ export interface AgyLiveBackgroundCompletionLookup {
     liveCallId?: string;
     commandLine?: string;
     nativeArgs?: Record<string, unknown>;
+    callStatus?: 'pending' | 'in_progress' | 'completed' | 'failed';
     resultOutput?: unknown;
     resultStatus?: 'completed' | 'failed';
 }
@@ -789,8 +790,25 @@ export function inspectSyntheticBackgroundCommandMatch(
         : null;
     const hasResultSignal = liveResult !== null || lookup.resultStatus !== undefined;
 
-    if (compatible.length > 1 && !hasResultSignal) {
-        return { kind: 'ambiguous' };
+    const completedCandidates = compatible.filter(
+        (entry) => entry.taskId !== undefined && completedTasks.has(entry.taskId)
+    );
+    const unpersistedCompatible = compatible.filter(
+        (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
+    );
+
+    // Argument compatibility alone never establishes a synthetic alias:
+    // without `tool_result` evidence, defer only when persisted task completion
+    // or a terminal call status exists, and let `in_progress` calls start fresh.
+    if (!hasResultSignal) {
+        if (
+            completedCandidates.length > 0
+            || lookup.callStatus === 'completed'
+            || lookup.callStatus === 'failed'
+        ) {
+            return { kind: 'ambiguous' };
+        }
+        return { kind: 'none' };
     }
 
     const turnPlannedCompatibleCommand = recentSteps.some((step) => {
@@ -813,49 +831,37 @@ export function inspectSyntheticBackgroundCommandMatch(
         });
     });
 
-    const completedCandidates = compatible.filter(
-        (entry) => entry.taskId !== undefined && completedTasks.has(entry.taskId)
-    );
-    const unpersistedCompatible = compatible.filter(
-        (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
-    );
     if (completedCandidates.length > 0) {
-        const filteredByResult = hasResultSignal
-            ? completedCandidates.filter((entry) => {
-                const taskResult = completedTasks.get(entry.taskId!)!;
-                if (
-                    liveResult?.exitCode !== undefined
-                    && taskResult.exitCode !== undefined
-                    && liveResult.exitCode !== taskResult.exitCode
-                ) {
-                    return false;
-                }
-                if (lookup.resultStatus === 'failed' && taskResult.exitCode === 0) {
-                    return false;
-                }
-                if (
-                    lookup.resultStatus === 'completed'
-                    && taskResult.exitCode !== undefined
-                    && taskResult.exitCode !== 0
-                ) {
-                    return false;
-                }
-                if (liveResult?.stdout !== undefined && liveResult.stdout !== taskResult.stdout) {
-                    return false;
-                }
-                return true;
-            })
-            : completedCandidates;
+        const filteredByResult = completedCandidates.filter((entry) => {
+            const taskResult = completedTasks.get(entry.taskId!)!;
+            if (
+                liveResult?.exitCode !== undefined
+                && taskResult.exitCode !== undefined
+                && liveResult.exitCode !== taskResult.exitCode
+            ) {
+                return false;
+            }
+            if (lookup.resultStatus === 'failed' && taskResult.exitCode === 0) {
+                return false;
+            }
+            if (
+                lookup.resultStatus === 'completed'
+                && taskResult.exitCode !== undefined
+                && taskResult.exitCode !== 0
+            ) {
+                return false;
+            }
+            if (liveResult?.stdout !== undefined && liveResult.stdout !== taskResult.stdout) {
+                return false;
+            }
+            return true;
+        });
 
         if (filteredByResult.length === 1) {
-            if (unpersistedCompatible.length === 0) {
-                return { kind: 'matched', entry: filteredByResult[0]! };
-            }
             const established = completedTasks.get(filteredByResult[0]!.taskId!)!;
             if (
                 liveResult?.stdout !== undefined
-                && established.exitCode !== undefined
-                && (liveResult.exitCode !== undefined || lookup.resultStatus !== undefined)
+                && (unpersistedCompatible.length === 0 || established.exitCode !== undefined)
             ) {
                 return { kind: 'matched', entry: filteredByResult[0]! };
             }
@@ -874,14 +880,7 @@ export function inspectSyntheticBackgroundCommandMatch(
             }
             return { kind: 'ambiguous' };
         }
-        if (
-            !turnPlannedCompatibleCommand
-            && unpersistedCompatible.length === 1
-            && liveResult?.stdout !== undefined
-        ) {
-            return { kind: 'matched', entry: unpersistedCompatible[0]! };
-        }
-        if (unpersistedCompatible.length > 0) {
+        if (!turnPlannedCompatibleCommand && unpersistedCompatible.length > 0) {
             return { kind: 'ambiguous' };
         }
         return { kind: 'none' };
@@ -890,16 +889,9 @@ export function inspectSyntheticBackgroundCommandMatch(
     if (turnPlannedCompatibleCommand) {
         return { kind: 'none' };
     }
-
-    if (compatible.length === 1) {
-        if (liveCommandLine !== undefined || liveArgs !== undefined || candidates.length === 1) {
-            return { kind: 'matched', entry: compatible[0]! };
-        }
-    }
-    if (compatible.length > 1) {
+    if (unpersistedCompatible.length > 0) {
         return { kind: 'ambiguous' };
     }
-
     return { kind: 'none' };
 }
 

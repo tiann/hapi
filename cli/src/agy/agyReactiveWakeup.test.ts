@@ -2633,6 +2633,20 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 output: { output: 'Command exited with code 0.\n\nCommand output:\nSUITE_A_PASS', exit_code: 0 }
             });
 
+            // `task-62`'s SYSTEM_MESSAGE flushes after both ACP updates; the retained `live_unpersisted_b`
+            // completion now has corroborating completion evidence and reconciles onto `task-62`!
+            appendFileSync(
+                compactPath,
+                `${JSON.stringify({
+                    step_index: 8,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-62" finished with result:\nCommand exited with code 1.\n\nCommand output:\nSUITE_B_FAIL\n</SYSTEM_MESSAGE>`
+                })}\n`,
+                'utf8'
+            );
+
             onUpdate({ type: 'text', text: 'Reported partial-persistence completions.' });
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
         });
@@ -2723,6 +2737,201 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
             is_error: false,
             output: { stdout: 'SUITE_A_PASS', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('does not alias a newly started identical command onto an unfinished synthetic command before the new planner row is persisted', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Ready.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'init' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ]);
+        });
+
+        // Turn 2: synthetic `task-71` (`npm test`) is STILL RUNNING (no SYSTEM_MESSAGE),
+        // and a brand-new `npm test` (`call-new-npm`) starts (`in_progress`) and finishes
+        // BEFORE Turn 2's `PLANNER_RESPONSE` flushes to disk!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-new-npm',
+                name: 'npm test',
+                title: 'npm test',
+                status: 'in_progress',
+                input: { CommandLine: 'npm test' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm test' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call-new-npm',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nFRESH_TURN_NPM_OK', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Ran fresh npm test.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 6,
+                        source: 'USER_EXPLICIT',
+                        type: 'USER_INPUT',
+                        content: 'run npm test again'
+                    }),
+                    JSON.stringify({
+                        step_index: 7,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        tool_calls: [{ name: 'run_command', args: { CommandLine: '"npm test"' } }]
+                    }),
+                    JSON.stringify({
+                        step_index: 8,
+                        source: 'MODEL',
+                        type: 'GENERIC',
+                        status: 'DONE',
+                        content: 'Command exited with code 0.\n\nCommand output:\nFRESH_TURN_NPM_OK'
+                    }),
+                    JSON.stringify({
+                        step_index: 9,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Ran fresh npm test.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('init', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Wakeup 1 starts synthetic `npm test` (`task-71`), which stays running.
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Start long npm test</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"npm test"' } }]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-71`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Long npm test running in background.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Turn 2 runs a fresh `npm test` while `task-71` is still running: must emit `call-new-npm` card + result!
+        queue.push('run npm test again', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const turn2Messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(turn2Messages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            callId: 'call-new-npm',
+            name: 'Bash'
+        }));
+        expect(turn2Messages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-new-npm',
+            is_error: false,
+            output: { stdout: 'FRESH_TURN_NPM_OK', exit_code: 0 }
+        }));
+        expect(turn2Messages).not.toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`
+        }));
+
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Later `task-71` finally finishes autonomously and updates its own synthetic card!
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 10,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-71" finished with result:\nCommand exited with code 0.\n\nCommand output:\nLONG_BG_NPM_OK\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 11,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Background npm test finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const wakeupMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(wakeupMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+            is_error: false,
+            output: { stdout: 'LONG_BG_NPM_OK', exit_code: 0 }
         }));
 
         queue.close();
