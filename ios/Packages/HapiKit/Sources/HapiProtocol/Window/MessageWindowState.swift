@@ -21,6 +21,11 @@ public enum MessageWindowConstants {
     public static let agentRunWindowSize = 800
     /// Request size for ordinary latest/reset, forward, and older-page fetches.
     public static let pageSize = 200
+    /// Gap recovery refreshes at most this many retained non-terminal
+    /// tool-call rows through the message-context endpoint (newest first).
+    /// Live calls are a handful; the bound keeps a pathological window from
+    /// fanning out requests.
+    public static let gapRowRefreshLimit = 20
     /// Request size for a genuinely cold latest page, prioritizing first paint.
     public static let initialPageSize = 20
 }

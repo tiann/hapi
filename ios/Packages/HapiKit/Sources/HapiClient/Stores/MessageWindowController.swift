@@ -435,6 +435,71 @@ public actor MessageWindowController {
                         next.preferLatestOnActivation = false
                         return next
                     }
+
+                    // A tool-call row the client cached before the gap can be
+                    // enriched in place afterwards; when more than a latest
+                    // page of newer rows followed, neither the catch-up
+                    // (newer rows only) nor the page reaches it, and the
+                    // cached card keeps its stale input/status. Refresh those
+                    // retained non-terminal rows by id through the
+                    // message-context endpoint: bounded, newest first, and
+                    // skipped for rows the catch-up already delivered fresh
+                    // (at or after the recovery cursor).
+                    let pageOldest = MessageWindowLogic.pagePosition(
+                        at: response.page.nextBeforeAt,
+                        seq: response.page.nextBeforeSeq
+                    )
+                    if let pageOldest {
+                        let candidates = stateValue.messages.compactMap { message -> (position: MessagePosition, message: WindowMessage)? in
+                            guard let position = MessageWindowLogic.messagePosition(message) else { return nil }
+                            if position >= pageOldest { return nil }
+                            if let initialCursor, position > initialCursor { return nil }
+                            guard isNonTerminalToolCallRow(message) else { return nil }
+                            return (position, message)
+                        }
+                        .sorted { $0.position > $1.position }
+                        .prefix(MessageWindowConstants.gapRowRefreshLimit)
+                        for (_, candidate) in candidates {
+                            // A failed refresh propagates to the catch below
+                            // and surfaces the usual warning; the row stays
+                            // as is and the next sync retries the sweep.
+                            let context = try await provider.messageContext(
+                                sessionId: sessionId,
+                                messageId: candidate.id
+                            )
+                            guard isCurrentTailSync(generation) else { return }
+                            let refreshed = context?.messages.first(where: { $0.id == candidate.id })
+                            if refreshed == nil {
+                                // The row is no longer reachable through the
+                                // context endpoint: leave it as is and finish
+                                // the run's bookkeeping — an early return
+                                // here would leave the window marked
+                                // syncing.
+                                finishTailSync(generation: generation, warning: "Failed to refresh a merged tool call")
+                                return
+                            }
+                            if context!.page.epoch != stateValue.epoch {
+                                // The refresh answered under a different
+                                // epoch: server rows may have been deleted
+                                // since the page was fetched. Mark the window
+                                // for the authoritative replacement instead
+                                // of reconciling against a stale snapshot,
+                                // and finish the run's bookkeeping.
+                                update { previous in
+                                    guard previous.syncGeneration == generation else { return previous }
+                                    var next = previous
+                                    next.requiresLatestReset = true
+                                    return next
+                                }
+                                finishTailSync(generation: generation, warning: "Failed to refresh a merged tool call")
+                                return
+                            }
+                            update { previous in
+                                guard previous.syncGeneration == generation else { return previous }
+                                return MessageWindowLogic.mergeRefreshedRow(previous, WindowMessage(wire: refreshed!))
+                            }
+                        }
+                    }
                 }
             }
 
@@ -823,6 +888,22 @@ public actor MessageWindowController {
 
     private nonisolated func windowMessages(_ response: MessagesResponse) -> [WindowMessage] {
         response.messages.map { WindowMessage(wire: $0) }
+    }
+
+    /// A cached tool-call row that can still be enriched in place: its
+    /// payload is a live `tool-call` whose merged status has not reached a
+    /// terminal tier. Terminal rows are done; unknown or missing status
+    /// reads as pending.
+    private nonisolated func isNonTerminalToolCallRow(_ message: WindowMessage) -> Bool {
+        guard case .object(let envelope) = message.content else { return false }
+        guard case .string(let role) = envelope["role"] ?? .null, role == "agent" else { return false }
+        guard case .object(let payload) = envelope["content"] ?? .null else { return false }
+        guard case .string(let payloadType) = payload["type"] ?? .null,
+              payloadType == agentMessagePayloadType else { return false }
+        guard case .object(let data) = payload["data"] ?? .null else { return false }
+        guard case .string(let dataType) = data["type"] ?? .null, dataType == "tool-call" else { return false }
+        guard case .string(let status) = data["status"] ?? .null else { return true }
+        return status != "completed" && status != "failed"
     }
 
     private func persist() {
