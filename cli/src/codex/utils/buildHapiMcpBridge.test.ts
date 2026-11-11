@@ -92,9 +92,12 @@ describe('buildHapiMcpBridge skill lookup config', () => {
 
     it('prompts for link_pr so read-only mode still consults the permission handler', async () => {
         const bridge = await buildHapiMcpBridge(createClient())
+        const tools = bridge.mcpServers.hapi.tools
 
-        expect(bridge.mcpServers.hapi.tools.link_pr).toEqual({ approval_mode: 'prompt' })
-        expect(bridge.mcpServers.hapi.tools.change_title).toEqual({ approval_mode: 'approve' })
+        expect(tools).toMatchObject({
+            link_pr: { approval_mode: 'prompt' },
+            change_title: { approval_mode: 'approve' },
+        })
     })
 
     it('does not expose skill_lookup for native-skill bridge callers', async () => {
