@@ -305,6 +305,8 @@ export default {
   'session.action.copy': 'Копировать',
   'session.action.copyReference': 'Копировать ссылку',
   'session.action.fork': 'Форк сессии',
+  'session.action.forkNoCompleted': 'Нет завершённых ходов для создания ветки.',
+  'dialog.sessionFork.completedDescription': 'Создать ветку до последнего завершённого хода. Текущий ход исключён; исходная сессия продолжит работу.',
   'session.action.forkRunning': 'Дождитесь завершения текущего хода, прежде чем создавать форк.',
 
   // Диалоги

@@ -10,6 +10,7 @@ async function screenshot(page: Page, name: string) {
     await page.screenshot({ path: join(directory, name + '.png') })
 }
 async function open(page: Page, width: number, lang = 'en') {
+    await page.addInitScript(() => localStorage.setItem('hapi.fue.v1.session-list-view-menu', '1'))
     await page.setViewportSize({ width, height: width === 320 ? 568 : 844 })
     await page.goto('/e2e-fixtures/session-list-filter-fixture.html?lang=' + lang)
 }

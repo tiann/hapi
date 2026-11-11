@@ -546,6 +546,35 @@ describe('SessionList fork session action', () => {
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
+    it('forks a running capable session through the latest completed native turn', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'source-session',
+            active: true,
+            thinking: true,
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/work/source',
+                name: 'Source session',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
+
     it('keeps Fork session disabled while the source turn is running', () => {
         const session = makeSession({
             id: 'running-source',

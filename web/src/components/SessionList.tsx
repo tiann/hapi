@@ -1369,7 +1369,8 @@ const SessionItem = memo(function SessionItem(props: {
     const supportsArchivedFork = !s.active && s.metadata?.flavor === 'codex'
         && s.metadata?.lifecycleState === 'archived'
         && Boolean(s.metadata.agentSessionId && s.metadata.machineId)
-    const forkDisabledReason = supportsCurrentFork && s.thinking ? t('session.action.forkRunning') : undefined
+    const supportsCompletedFork = s.metadata?.conversationHistory?.forkLatestCompleted === true
+    const forkDisabledReason = supportsCurrentFork && s.thinking && !supportsCompletedFork ? t(s.metadata?.conversationHistory?.forkLatestCompleted === false ? 'session.action.forkNoCompleted' : 'session.action.forkRunning') : undefined
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -1461,7 +1462,7 @@ const SessionItem = memo(function SessionItem(props: {
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
                 onMarkUnread={() => markSessionUnread(s.id, s.readState)}
-                onForkSession={api && ((supportsCurrentFork && !s.thinking) || supportsArchivedFork)
+                onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
                     ? () => setForkOpen(true)
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
@@ -1478,7 +1479,7 @@ const SessionItem = memo(function SessionItem(props: {
                     isOpen={true}
                     onClose={() => { if (!forkPending) setForkOpen(false) }}
                     title={t('dialog.sessionFork.title')}
-                    description={t('dialog.sessionFork.description')}
+                    description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}
                     confirmingLabel={t('dialog.sessionFork.confirming')}
                     isPending={forkPending}
@@ -1488,7 +1489,9 @@ const SessionItem = memo(function SessionItem(props: {
                         if (!api) return
                         setForkPending(true)
                         try {
-                            const result = await api.forkConversation(s.id)
+                            const result = s.thinking && supportsCompletedFork
+                                ? await api.forkConversation(s.id, undefined, true)
+                                : await api.forkConversation(s.id)
                             onSelect(result.sessionId)
                         } finally {
                             setForkPending(false)
@@ -1751,14 +1754,8 @@ export function SessionList(props: {
     // derived from this set, so selecting a machine with no unread matches must
     // stay an empty intersection instead of falling back to another machine.
     const allSessions = useMemo(
-        () => {
-            // Jobs-aware status filter (#1404), then optional Unread-only (#2294).
-            const byStatus = filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId)
-            return listView.unreadOnly
-                ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
-                : byStatus
-        },
-        [sidebarSessions, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread]
+        () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
+        [sidebarSessions, selectedSessionId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),

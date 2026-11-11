@@ -118,8 +118,8 @@ for (const mobile of [false, true]) {
             expect(childHistory).toContain(retained)
             expect(childHistory).not.toContain(excluded)
             expect(childHistory).not.toContain(running)
-            await expect(page.getByText(retained, { exact: true })).toBeVisible()
-            await expect(page.getByText(excluded, { exact: true })).toHaveCount(0)
+            await expect(page.locator('[data-hapi-message-role="user"]').getByText(retained, { exact: true })).toBeVisible()
+            await expect(page.locator('[data-hapi-message-role="user"]').getByText(excluded, { exact: true })).toHaveCount(0)
             await api(`/sessions/${child}/messages`, { text: childProbe, localId: childProbe })
             await expect.poll(() => messages(child), { timeout: 30_000 }).toContain('CHILD_CONTEXT_OK')
             const childInput = modelInputs.find(input => input.includes(childProbe))!
