@@ -479,7 +479,7 @@ describe('session model', () => {
 
         await expect(
             cache.mergeSessions(oldSession.id, newSession.id, 'default')
-        ).rejects.toThrow('Session metadata changed concurrently during merge')
+        ).rejects.toThrow('Failed to preserve session metadata during merge')
 
         expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
         expect(store.messages.getMessages(oldSession.id).length).toBe(1)
@@ -529,7 +529,7 @@ describe('session model', () => {
 
         await expect(
             cache.mergeSessions(oldSession.id, newSession.id, 'default')
-        ).rejects.toThrow('Failed to merge session metadata')
+        ).rejects.toThrow('Failed to preserve session metadata during merge')
 
         expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
         expect(store.messages.getMessages(oldSession.id).length).toBe(1)
