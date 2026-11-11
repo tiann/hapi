@@ -861,6 +861,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           cwd: spawnDirectory,
           detached: true,  // Sessions stay alive when runner stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
+          // Demote agent sessions so load storms cannot starve the runner's
+          // own heartbeats and handshakes. The runner's self-restart spawn
+          // intentionally does NOT set this — the runner stays high priority.
+          lowerPriority: true,
           env: {
             ...process.env,
             ...extraEnv
