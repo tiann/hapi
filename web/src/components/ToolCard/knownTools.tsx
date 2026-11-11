@@ -128,6 +128,11 @@ type ToolOpts = {
     childrenCount: number
     description: string | null
     metadata: SessionMetadataSummary | null
+    // True while the tool's permission is still awaiting the user's reply.
+    // Question tools use it to keep the header minimal: the open card body
+    // already shows the question text, and it returns to the header once the
+    // card settles and collapses.
+    pending?: boolean
     t?: Translator
 }
 
@@ -612,6 +617,10 @@ export const knownTools: Record<string, {
             const question = isObject(first) && typeof first.question === 'string'
                 ? first.question.trim() : ''
 
+            // While the question awaits a reply the open card body already
+            // shows the question text, so the header must not repeat it.
+            if (opts.pending) return null
+
             if (count > 1 && question.length > 0) {
                 return truncate(question, 100) + ` (+${count - 1} more)`
             }
@@ -642,6 +651,10 @@ export const knownTools: Record<string, {
             const question = isObject(first) && typeof first.question === 'string'
                 ? first.question.trim() : ''
 
+            // While the question awaits a reply the open card body already
+            // shows the question text, so the header must not repeat it.
+            if (opts.pending) return null
+
             if (count > 1 && question.length > 0) {
                 return truncate(question, 100) + ` (+${count - 1} more)`
             }
@@ -658,24 +671,41 @@ export const knownTools: Record<string, {
             const first = questions[0] ?? null
             const header = isObject(first) && typeof first.header === 'string'
                 ? first.header.trim() : ''
+            const question = isObject(first) && typeof first.question === 'string'
+                ? first.question.trim() : ''
 
             if (count > 1) {
                 return `${count} Questions`
             }
-            return header.length > 0 ? header : 'Question'
+            // While pending, the open card body already shows the question
+            // text; the question-text title applies once the card settles and
+            // its body collapses.
+            if (opts.pending) return 'Question'
+            // Codex questions carry no header field; a settled card would
+            // otherwise always read "Question" and hide the question text.
+            // Mirror the AskUserQuestion title and let the subtitle go, so
+            // the question is readable on the collapsed card.
+            if (header.length > 0) return header
+            return question.length > 0 ? truncate(question, 120) : 'Question'
         },
         subtitle: (opts) => {
             const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
                 ? opts.input.questions : []
             const count = questions.length
             const first = questions[0] ?? null
+            const header = isObject(first) && typeof first.header === 'string'
+                ? first.header.trim() : ''
             const question = isObject(first) && typeof first.question === 'string'
                 ? first.question.trim() : ''
+
+            // While the question awaits a reply the open card body already
+            // shows the question text, so the header must not repeat it.
+            if (opts.pending) return null
 
             if (count > 1 && question.length > 0) {
                 return truncate(question, 100) + ` (+${count - 1} more)`
             }
-            return question.length > 0 ? truncate(question, 120) : null
+            return header.length > 0 && question.length > 0 ? truncate(question, 120) : null
         },
         minimal: true
     }

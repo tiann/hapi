@@ -60,6 +60,16 @@ describe('async question transcript status', () => {
         expect(screen.queryByText('Duration')).toBeNull()
     })
 
+    it('hides the question text from the header while pending; the open body shows it', () => {
+        render(card(question('pending')))
+        expect(screen.getAllByText('Optional question')).toHaveLength(1)
+    })
+
+    it('shows the question text in the header again once the question settles', () => {
+        render(card(question('resolved')))
+        expect(screen.getByText('Optional question')).toBeVisible()
+    })
+
     it('keeps the timing summary once the question settles', () => {
         render(card(question('resolved')))
         expect(screen.queryByText('tool.waitingForReply')).toBeNull()

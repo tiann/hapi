@@ -622,7 +622,127 @@ describe('getToolPresentation — request_user_input', () => {
             metadata: null,
         })
 
+        expect(presentation.title).toBe('Continue?')
+        expect(presentation.subtitle).toBeNull()
+    })
+
+    it('keeps the header as the title and the question as the subtitle when a header exists', () => {
+        const presentation = getToolPresentation({
+            toolName: 'request_user_input',
+            input: {
+                questions: [{
+                    header: 'Deploy',
+                    question: 'Deploy to staging now?'
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Deploy')
+        expect(presentation.subtitle).toBe('Deploy to staging now?')
+    })
+
+    it('keeps the counted title and question subtitle for multiple questions without a header', () => {
+        const presentation = getToolPresentation({
+            toolName: 'request_user_input',
+            input: {
+                questions: [
+                    { question: 'Deploy to staging now?' },
+                    { question: 'Run smoke tests after?' }
+                ]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('2 Questions')
+        expect(presentation.subtitle).toBe('Deploy to staging now? (+1 more)')
+    })
+
+    it('hides the question text from the header while the question is pending', () => {
+        const presentation = getToolPresentation({
+            toolName: 'request_user_input',
+            input: {
+                questions: [{ question: 'Deploy to staging now?' }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+            pending: true,
+        })
+
         expect(presentation.title).toBe('Question')
-        expect(presentation.subtitle).toBe('Continue?')
+        expect(presentation.subtitle).toBeNull()
+    })
+
+    it('keeps the counted title and drops the subtitle while pending', () => {
+        const presentation = getToolPresentation({
+            toolName: 'request_user_input',
+            input: {
+                questions: [
+                    { question: 'Deploy to staging now?' },
+                    { question: 'Run smoke tests after?' }
+                ]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+            pending: true,
+        })
+
+        expect(presentation.title).toBe('2 Questions')
+        expect(presentation.subtitle).toBeNull()
+    })
+})
+
+describe('getToolPresentation — AskUserQuestion pending header', () => {
+    it('keeps the header title but hides the question subtitle while pending', () => {
+        const presentation = getToolPresentation({
+            toolName: 'AskUserQuestion',
+            input: {
+                questions: [{
+                    header: 'Database',
+                    multiSelect: false,
+                    options: [{ description: 'Local file', label: 'SQLite' }],
+                    question: 'Which database?'
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+            pending: true,
+        })
+
+        expect(presentation.title).toBe('Database')
+        expect(presentation.subtitle).toBeNull()
+    })
+
+    it('shows the question subtitle again once the question settles', () => {
+        const presentation = getToolPresentation({
+            toolName: 'AskUserQuestion',
+            input: {
+                questions: [{
+                    header: 'Database',
+                    multiSelect: false,
+                    options: [{ description: 'Local file', label: 'SQLite' }],
+                    question: 'Which database?'
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Database')
+        expect(presentation.subtitle).toBe('Which database?')
     })
 })

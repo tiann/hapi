@@ -447,7 +447,8 @@ function ToolCardInner(props: ToolCardProps) {
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
         description: props.block.tool.nativeTitle ?? props.block.tool.description,
-        metadata: props.metadata
+        metadata: props.metadata,
+        pending: props.block.tool.permission?.status === 'pending'
     }, t), [
         props.block.tool.name,
         props.block.tool.input,
@@ -456,6 +457,7 @@ function ToolCardInner(props: ToolCardProps) {
         props.block.tool.nativeTitle,
         props.block.tool.description,
         props.metadata,
+        props.block.tool.permission?.status,
         t
     ])
 
