@@ -171,6 +171,9 @@ type AgyTurn = {
     // if an earlier command completes during a steer so call ordinals stay 1:1
     // with transcript `PLANNER_RESPONSE.tool_calls` entries.
     commandCallIds: string[];
+    // Original arrival order of current-turn `run_command` tool_calls (including
+    // provisionally deferred ones) so flushing deferred calls restores 1:1 ordinals.
+    commandArrivalOrder: string[];
     // Background command call IDs already tracked from earlier turns, excluded
     // from current-turn `commandCallIds` ordinals when their completion arrives.
     priorBackgroundCallIds: Set<string>;
@@ -839,6 +842,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             generation: new GenerationClock(),
             openCommands: new Set(),
             commandCallIds: [],
+            commandArrivalOrder: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
             deferredLiveCommandCalls: new Map(),
             corroboratedSyntheticMatches: 0,
@@ -1003,7 +1007,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private closeBackgroundCommands(turn: AgyTurn, turnStartStepIndex: number): void {
         if (turn.aborted || this.backendLost || turn.stopReason !== 'end_turn') return;
-        const openIds = [...turn.openCommands];
+        const openIds = [...turn.openCommands].sort((a, b) => {
+            const ordA = turn.commandCallIds.indexOf(a);
+            const ordB = turn.commandCallIds.indexOf(b);
+            return (ordA >= 0 ? ordA : Number.MAX_SAFE_INTEGER) - (ordB >= 0 ? ordB : Number.MAX_SAFE_INTEGER);
+        });
         const turnSteps = openIds.length > 0 && this.acpSessionId
             ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex)
             : [];
@@ -1357,6 +1365,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             && !turn.commandCallIds.includes(message.id)
             && !turn.priorBackgroundCallIds.has(message.id)
         ) {
+            if (!turn.commandArrivalOrder.includes(message.id)) {
+                turn.commandArrivalOrder.push(message.id);
+            }
             const nativeArgs = message.nativeArgs && typeof message.nativeArgs === 'object' && !Array.isArray(message.nativeArgs)
                 ? (message.nativeArgs as Record<string, unknown>)
                 : undefined;
@@ -1369,6 +1380,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             );
             if (match.kind === 'matched') {
                 turn.deferredLiveCommandCalls.delete(message.id);
+                turn.commandArrivalOrder = turn.commandArrivalOrder.filter((id) => id !== message.id);
                 turn.corroboratedSyntheticMatches += 1;
                 this.syntheticCallAliases.set(message.id, match.entry.callId);
                 return { message: { ...message, id: match.entry.callId }, suppressForward: true };
@@ -1506,8 +1518,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             && message.type === 'tool_call'
             && message.nativeName === 'run_command'
         ) {
+            if (!turn.commandArrivalOrder.includes(message.id)) {
+                turn.commandArrivalOrder.push(message.id);
+            }
             if (!turn.commandCallIds.includes(message.id)) {
                 turn.commandCallIds.push(message.id);
+                turn.commandCallIds.sort(
+                    (a, b) => turn.commandArrivalOrder.indexOf(a) - turn.commandArrivalOrder.indexOf(b)
+                );
             }
         }
         // Only a command agy reports as running counts: one still waiting

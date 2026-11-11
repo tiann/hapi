@@ -3070,4 +3070,209 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('preserves call-ordinal task-ID attribution when a deferred fresh command is followed by a non-deferred command and both background', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Ready.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'init' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ]);
+        });
+
+        // Turn 2: while synthetic `task-81` (`npm test`) is still running, the turn starts:
+        //   Command A (`call-deferred-npm`, `npm test`, deferred because it matches `task-81`)
+        //   Command B (`call-immediate-lint`, `npm run lint`, non-deferred)
+        // BEFORE Turn 2's `PLANNER_RESPONSE` flushes to disk, and both stay `in_progress` at `end_turn`!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-deferred-npm',
+                name: 'npm test',
+                title: 'npm test',
+                status: 'in_progress',
+                input: { CommandLine: 'npm test' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm test' }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-immediate-lint',
+                name: 'npm run lint',
+                title: 'npm run lint',
+                status: 'in_progress',
+                input: { CommandLine: 'npm run lint' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm run lint' }
+            });
+            onUpdate({ type: 'text', text: 'Started both background checks.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 6,
+                        source: 'USER_EXPLICIT',
+                        type: 'USER_INPUT',
+                        content: 'run test and lint in background'
+                    }),
+                    JSON.stringify({
+                        step_index: 7,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        tool_calls: [
+                            { name: 'run_command', args: { CommandLine: '"npm test"' } },
+                            { name: 'run_command', args: { CommandLine: '"npm run lint"' } }
+                        ]
+                    }),
+                    JSON.stringify({
+                        step_index: 8,
+                        source: 'MODEL',
+                        type: 'GENERIC',
+                        status: 'RUNNING',
+                        content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-82`
+                    }),
+                    JSON.stringify({
+                        step_index: 9,
+                        source: 'MODEL',
+                        type: 'GENERIC',
+                        status: 'RUNNING',
+                        content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-83`
+                    }),
+                    JSON.stringify({
+                        step_index: 10,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Started both background checks.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('init', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Wakeup 1 starts synthetic `npm test` (`task-81`), which stays running.
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Start initial npm test</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"npm test"' } }]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-81`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Initial npm test running in background.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Turn 2 starts `call-deferred-npm` (`task-82`) and `call-immediate-lint` (`task-83`)
+        queue.push('run test and lint in background', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Later `task-83` (lint) and `task-82` (npm test) complete in reverse order — each must update its own card!
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 11,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-83" finished with result:\nCommand exited with code 1.\n\nCommand output:\nLINT_B_FAILED\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 12,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-82" finished with result:\nCommand exited with code 0.\n\nCommand output:\nDEFERRED_NPM_A_PASSED\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 13,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Both Turn 2 background commands finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const wakeupMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(wakeupMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-deferred-npm',
+            is_error: false,
+            output: { stdout: 'DEFERRED_NPM_A_PASSED', exit_code: 0 }
+        }));
+        expect(wakeupMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-immediate-lint',
+            is_error: true,
+            output: { stdout: 'LINT_B_FAILED', exit_code: 1 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
 });
