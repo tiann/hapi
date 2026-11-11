@@ -1,16 +1,31 @@
 import type { AgentFlavor } from '@hapi/protocol';
-import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
+import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
-import { ACP_SESSION_UPDATE_TYPES } from './constants';
+import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
+
+/** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
+export type AgentActivitySource =
+    | 'state_update_running'
+    | 'state_update_idle'
+    | 'state_update_requires_action'
+    | 'permission'
+    | 'form_elicitation';
+
+export type AgentActivityListener = (thinking: boolean, source: AgentActivitySource) => void;
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
 import packageJson from '../../../../package.json';
 
 type PendingPermission = {
     resolve: (result: { outcome: { outcome: string; optionId?: string } }) => void;
+};
+
+type PendingElicitation = {
+    sessionId: string;
+    settle: (response: FormElicitationResponse) => void;
 };
 
 type AcpPromptUsage = {
@@ -50,21 +65,57 @@ export type AcpConfigOptionDescriptor = {
     options: Array<{ value: string; name?: string }>;
 };
 
+/**
+ * Normalize ACP config-option choices to a flat `{ value, name }` list.
+ * Most agents send flat `options: [{ value, name }]`, but Zed-style grouped
+ * selects nest the leaves one level deeper:
+ * `options: [{ group, name, options: [{ value, name }] }]`
+ * (DeepSeek Harness 0.2.x uses this shape for its model picker — the leaf
+ * values are opaque strings, there just JSON-encoded provider+model tuples).
+ * Grouped entries carry no `value` of their own; their nested options are the
+ * real choices, so they are flattened recursively. Non-objects and empty
+ * values are dropped.
+ */
+export function flattenConfigOptionChoices(rawOptions: unknown[]): Array<{ value: string; name?: string }> {
+    const choices: Array<{ value: string; name?: string }> = [];
+    for (const entry of rawOptions) {
+        if (!isObject(entry)) continue;
+        const value = asString(entry.value);
+        if (value) {
+            choices.push({ value, name: asString(entry.name) ?? undefined });
+            continue;
+        }
+        const nested = Array.isArray(entry.options) ? entry.options : [];
+        if (nested.length > 0) {
+            choices.push(...flattenConfigOptionChoices(nested));
+        }
+    }
+    return choices;
+}
+
 type AcpInitializeResult = {
     protocolVersion: number;
     authMethods?: Array<{ id: string; name?: string }>;
     agentCapabilities?: {
         loadSession?: boolean;
         promptCapabilities?: unknown;
-        sessionCapabilities?: unknown;
+        sessionCapabilities?: Record<string, unknown>;
     };
 };
+
+function userMessageChunkText(update: unknown): string | null {
+    if (!isObject(update) || update.sessionUpdate !== 'user_message_chunk') return null;
+    const content = update.content;
+    return isObject(content) && content.type === 'text' ? asString(content.text) : null;
+}
 
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
+    private formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
+    private readonly pendingElicitations = new Set<PendingElicitation>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private readonly sessionInfoRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -92,12 +143,24 @@ export class AcpSdkBackend implements AgentBackend {
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
+    private userMessageChunkListener: ((text: string) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
-    private agentActivityListener: ((thinking: boolean) => void) | null = null;
+    private agentActivityListener: AgentActivityListener | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
     private sessionUpdateQueue: Promise<void> = Promise.resolve();
+    /**
+     * Most recent prompt()'s onUpdate. Child handlers emit through it, and
+     * keep using it after the prompt ends so background subagent output is
+     * not dropped between turns.
+     */
+    private childEmitSink: ((msg: AgentMessage) => void) | null = null;
+    /** Per-child message handlers, created on first update and kept across parent prompt changes. */
+    private readonly childHandlers = new Map<string, {
+        handler: AcpMessageHandler;
+        timer: ReturnType<typeof setTimeout> | null;
+    }>();
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -136,6 +199,31 @@ export class AcpSdkBackend implements AgentBackend {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        /** Working directory passed to the spawned process (v2 `opencode acp` ignores `--cwd`). */
+        spawnCwd?: string;
+        /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
+        acpModelSwitchViaConfigOption?: boolean;
+        /**
+         * OpenCode v2: opt in to `opencode/session/child_update`. Without it a
+         * background subagent's output is never sent once the parent turn has
+         * ended (OpenCode suppresses ordinary updates while it follows the
+         * child in the background).
+         */
+        childSessionUpdates?: boolean;
+        /**
+         * Advertise `elicitation.form` so the agent may ask the user structured
+         * questions through `elicitation/create`. Opt-in because the handler
+         * for that request is flavor specific; without a handler the agent
+         * would wait on a request nobody answers.
+         */
+        elicitationForm?: boolean;
+        /**
+         * Refresh cached config options (model, thought_level, ...) from ACP
+         * `config_option_update` notifications. Opt-in for agents whose
+         * `session/set_model` response carries no options and which push the
+         * new model's options this way instead.
+         */
+        configOptionUpdates?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -161,7 +249,8 @@ export class AcpSdkBackend implements AgentBackend {
         const transport = await AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
-            env: this.options.env
+            env: this.options.env,
+            cwd: this.options.spawnCwd
         });
 
         if (this.transport) {
@@ -172,15 +261,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.transport = transport;
 
         this.transport.onNotification((method, params) => {
-            if (method === 'session/update') {
-                this.handleSessionUpdate(params);
-            } else if (
-                method === '_x.ai/settings/update'
-                && isObject(params)
-                && 'auto_permission_mode_enabled' in params
-            ) {
-                this.autoPermissionModeEnabled = params.auto_permission_mode_enabled === true;
-            }
+            this.handleNotification(method, params);
         });
 
         this.transport.onStderrError((error) => {
@@ -191,17 +272,25 @@ export class AcpSdkBackend implements AgentBackend {
             return await this.handlePermissionRequest(params, requestId);
         });
 
+        if (this.options.elicitationForm) {
+            this.transport.registerRequestHandler('elicitation/create', async (params) => {
+                return await this.handleElicitationRequest(params);
+            });
+        }
+
         const response = await withRetry(
             () => this.transport!.sendRequest('initialize', {
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: false, writeTextFile: false },
                     terminal: false,
+                    ...(this.options.elicitationForm ? { elicitation: { form: {} } } : {}),
                     _meta: {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
                         // `model` + `fast` config options only when the client advertises
                         // this capability. Agents that do not know this metadata ignore it.
-                        parameterizedModelPicker: true
+                        parameterizedModelPicker: true,
+                        ...(this.options.childSessionUpdates ? { [OPENCODE_CHILD_SESSION_UPDATES]: true } : {})
                     }
                 },
                 clientInfo: {
@@ -238,7 +327,9 @@ export class AcpSdkBackend implements AgentBackend {
                 ? {
                     loadSession: response.agentCapabilities.loadSession === true,
                     promptCapabilities: response.agentCapabilities.promptCapabilities,
-                    sessionCapabilities: response.agentCapabilities.sessionCapabilities
+                    sessionCapabilities: isObject(response.agentCapabilities.sessionCapabilities)
+                        ? response.agentCapabilities.sessionCapabilities
+                        : undefined
                 }
                 : undefined
         };
@@ -269,6 +360,12 @@ export class AcpSdkBackend implements AgentBackend {
 
     supportsLoadSession(): boolean {
         return this.initializeResult?.agentCapabilities?.loadSession === true;
+    }
+
+    /** DSH's current ACP profile exposes `session/resume` under this capability. */
+    supportsSessionResume(): boolean {
+        const capabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
+        return Boolean(capabilities && Object.prototype.hasOwnProperty.call(capabilities, 'resume'));
     }
 
     getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
@@ -374,6 +471,37 @@ export class AcpSdkBackend implements AgentBackend {
         return sessionId;
     }
 
+    /**
+     * Resume a persisted session through DSH's ACP extension. Unlike
+     * `session/load`, DSH returns config options without replaying history;
+     * HAPI's Hub remains the transcript source for the chat UI.
+     */
+    async resumeSession(config: AgentSessionConfig & { sessionId: string }): Promise<string> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        const response = await withRetry(
+            () => this.transport!.sendRequest('session/resume', {
+                sessionId: config.sessionId,
+                cwd: config.cwd,
+                mcpServers: config.mcpServers
+            }),
+            {
+                ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                onRetry: (error, attempt, nextDelayMs) => {
+                    logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
+                }
+            }
+        );
+
+        const resumedSessionId = isObject(response) ? asString(response.sessionId) : null;
+        const sessionId = resumedSessionId ?? config.sessionId;
+        this.activeSessionId = sessionId;
+        this.captureSessionMetadata(sessionId, response);
+        return sessionId;
+    }
+
     async setModel(
         sessionId: string,
         modelId: string,
@@ -386,6 +514,23 @@ export class AcpSdkBackend implements AgentBackend {
         // The launcher serializes setModel between turns, but defensively wait for any
         // in-flight prompt to drain so we never interleave a switch with a session/prompt.
         await this.waitForResponseComplete();
+
+        // opencode v2 removed `session/set_model` from the wire (verified
+        // 2026-10-15: "Method not found"); the replacement is
+        // `session/set_config_option` with the fixed configId "model". Only
+        // taken when the launcher opted in via `acpModelSwitchViaConfigOption`
+        // AND the session actually advertises a model config option —
+        // otherwise fall through to the legacy path below unchanged.
+        if (this.options.acpModelSwitchViaConfigOption === true) {
+            const modelOption = this.sessionConfigOptions.get(sessionId)?.find((option) => option.id === 'model');
+            if (modelOption) {
+                await this.setConfigOption(sessionId, 'model', modelId);
+                if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
+                    this.updateCurrentModelOptimistic(sessionId, modelId);
+                }
+                return;
+            }
+        }
 
         // ACP defines `session/set_model` ({ sessionId, modelId }) for inline model
         // switching — see ACP SDK schema `x-method: session/set_model`. OpenCode
@@ -518,13 +663,18 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionInfoUpdateListener = listener;
     }
 
+    /** Called in order with agent output: text buffered before an echo is flushed first. */
+    setUserMessageChunkListener(listener: ((text: string) => void) | null): void {
+        this.userMessageChunkListener = listener;
+    }
+
     /**
      * Called when ACP reports foreground state / permission for harness wake (#1470 / #1502).
      * `true` = sustained `running` (debounced), `requires_action`, or permission.
      * `false` = `state_update` idle (skipped while a HAPI prompt turn is still draining).
      * Launchers should ignore no-ops when session.thinking already matches.
      */
-    setAgentActivityListener(listener: ((thinking: boolean) => void) | null): void {
+    setAgentActivityListener(listener: AgentActivityListener | null): void {
         this.agentActivityListener = listener;
     }
 
@@ -582,7 +732,10 @@ export class AcpSdkBackend implements AgentBackend {
     async prompt(
         sessionId: string,
         content: PromptContent[],
-        onUpdate: (msg: AgentMessage) => void
+        onUpdate: (msg: AgentMessage) => void,
+        // prompt() waits for earlier output before it sends and for late output
+        // after the answer; callers timing the agent itself need both moments.
+        timing?: { onSent?: () => void; onAnswered?: () => void }
     ): Promise<void> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
@@ -612,6 +765,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.latestUsageUpdate = null;
         this.lastForwardedUsageUpdate = null;
         this.promptUsageCallback = onUpdate;
+        this.childEmitSink = onUpdate;
         let stopReason: string | null = null;
         let promptUsage: AcpPromptUsage | null = null;
 
@@ -621,17 +775,27 @@ export class AcpSdkBackend implements AgentBackend {
             this.promptRequestInFlight = true;
             let response: unknown;
             try {
-                response = await this.transport.sendRequest('session/prompt', {
+                const request = this.transport.sendRequest('session/prompt', {
                     sessionId,
                     prompt: content
                 }, { timeoutMs: Infinity });
+                timing?.onSent?.();
+                response = await request;
             } finally {
                 this.promptRequestInFlight = false;
+                timing?.onAnswered?.();
             }
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
         } finally {
+            // Cursor (#2267/#2268): drain any session updates already queued with
+            // the native response, then seal a done footer before the quiet
+            // window so finished-shell harness text cannot bury it in one flush.
+            await this.sessionUpdateQueue;
+            if (this.options.flavor === 'cursor') {
+                this.messageHandler?.sealDoneNotifySummaryIfPresent();
+            }
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
@@ -703,6 +867,9 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.transport.sendNotification('session/cancel', { sessionId });
+        // The agent keeps waiting on an unanswered form until its request is
+        // answered, so cancelling the prompt must settle the form too.
+        this.settlePendingElicitations(sessionId);
     }
 
     /**
@@ -740,9 +907,16 @@ export class AcpSdkBackend implements AgentBackend {
      * Separates transport dispatch from prompt completion so callers can commit
      * queue state only after stdin accepted the request without waiting for the turn.
      */
-    beginSoftSteerPrompt(sessionId: string, content: PromptContent[]): {
+    beginSoftSteerPrompt(sessionId: string, content: PromptContent[], options?: {
+        // Agents that answer each request with its own share (Antigravity)
+        // need every response's usage to total the turn.
+        onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+    }): {
         dispatched: Promise<void>;
-        completed: Promise<void>;
+        /** Settles when the agent answers, before late output is drained. */
+        answered: Promise<void>;
+        /** Resolves with the ACP stopReason (`cancelled` after session/cancel). */
+        completed: Promise<string | null>;
     } {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
@@ -759,7 +933,18 @@ export class AcpSdkBackend implements AgentBackend {
         }, { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 });
         const completed = (async () => {
             try {
-                await request.completed;
+                const response = await request.completed;
+                const usage = options?.onUsage ? this.extractPromptUsage(response) : null;
+                if (usage) {
+                    const context = this.readLatestUsageUpdate();
+                    options?.onUsage?.({
+                        type: 'usage',
+                        ...usage,
+                        contextTokens: context?.contextTokens,
+                        contextWindow: context?.contextWindow
+                    });
+                }
+                return isObject(response) ? asString(response.stopReason) : null;
             } finally {
                 try {
                     await this.waitForSessionUpdateQuiet(
@@ -776,10 +961,15 @@ export class AcpSdkBackend implements AgentBackend {
         })();
 
         void completed.catch((error) => {
-            logger.warn('[ACP] soft-steer session/prompt failed', error);
+            // An Error logs as `{}`.
+            logger.warn('[ACP] soft-steer session/prompt failed', {
+                message: error instanceof Error ? error.message : String(error),
+                code: (error as { code?: unknown } | null)?.code
+            });
         });
 
-        return { dispatched: request.dispatched, completed };
+        const answered = request.completed.then(() => {}, () => {});
+        return { dispatched: request.dispatched, answered, completed };
     }
 
     async respondToPermission(
@@ -810,6 +1000,55 @@ export class AcpSdkBackend implements AgentBackend {
 
     onPermissionRequest(handler: (request: PermissionRequest) => void): void {
         this.permissionHandler = handler;
+    }
+
+    onFormElicitation(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void {
+        this.formElicitationHandler = handler;
+    }
+
+    private settlePendingElicitations(sessionId?: string): void {
+        for (const pending of Array.from(this.pendingElicitations)) {
+            if (sessionId === undefined || pending.sessionId === sessionId) {
+                pending.settle({ action: 'cancel' });
+            }
+        }
+    }
+
+    private async handleElicitationRequest(params: unknown): Promise<FormElicitationResponse> {
+        const cancel: FormElicitationResponse = { action: 'cancel' };
+        if (!isObject(params) || params.mode !== 'form' || !this.formElicitationHandler) {
+            return cancel;
+        }
+        const sessionId = asString(params.sessionId);
+        if (!sessionId || !isObject(params.requestedSchema)) {
+            return cancel;
+        }
+
+        const request: FormElicitationRequest = {
+            sessionId,
+            ...(asString(params.toolCallId) ? { toolCallId: asString(params.toolCallId) as string } : {}),
+            message: asString(params.message) ?? '',
+            requestedSchema: params.requestedSchema
+        };
+
+        return await new Promise<FormElicitationResponse>((resolve) => {
+            const pending: PendingElicitation = {
+                sessionId,
+                settle: (response) => {
+                    this.pendingElicitations.delete(pending);
+                    resolve(response);
+                }
+            };
+            this.pendingElicitations.add(pending);
+            this.agentActivityListener?.(true, 'form_elicitation');
+            this.formElicitationHandler!(request).then(
+                (response) => pending.settle(response),
+                (error) => {
+                    logger.warn('[ACP] form elicitation handler failed; cancelling', error);
+                    pending.settle(cancel);
+                }
+            );
+        });
     }
 
     onStderrError(handler: (error: AcpStderrError) => void): void {
@@ -894,8 +1133,28 @@ export class AcpSdkBackend implements AgentBackend {
         return this.promptGeneration;
     }
 
+    isTransportAlive(): boolean {
+        return this.transport?.isAlive() ?? false;
+    }
+
+    /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
+    getProcessPid(): number | null {
+        return this.transport ? this.transport.getProcessPid() : null;
+    }
+
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
+    }
+
+    /**
+     * Drop buffered speech on the current message handler without emitting.
+     * Cursor post-done silence (#2267): call while the silence gate still
+     * applies, before opening the next HAPI prompt, so prompt()'s pre-swap
+     * drain cannot resurrect a suppressed harness-resume live snapshot.
+     */
+    async discardPendingMessageBuffers(): Promise<void> {
+        await this.sessionUpdateQueue;
+        this.messageHandler?.discardBuffers();
     }
 
     /**
@@ -921,6 +1180,12 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
         await this.sessionUpdateQueue;
+        for (const entry of this.childHandlers.values()) {
+            this.clearChildQuietTimer(entry);
+            entry.handler.drainBuffers();
+        }
+        this.childHandlers.clear();
+        this.childEmitSink = null;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -932,8 +1197,127 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionAvailableCommands.clear();
         this.autoPermissionModeEnabled = null;
         this.notifyResponseComplete();
+        this.settlePendingElicitations();
         await this.transport.close();
         this.transport = null;
+    }
+
+    private handleNotification(method: string, params: unknown): void {
+        if (method === 'session/update') {
+            this.handleSessionUpdate(params);
+        } else if (method === OPENCODE_CHILD_UPDATE_METHOD && this.options.childSessionUpdates) {
+            this.handleChildSessionUpdate(params);
+        } else if (
+            method === '_x.ai/settings/update'
+            && isObject(params)
+            && 'auto_permission_mode_enabled' in params
+        ) {
+            this.autoPermissionModeEnabled = params.auto_permission_mode_enabled === true;
+        }
+    }
+
+    /**
+     * OpenCode v2 child (background subagent) updates. Unlike ordinary
+     * session/update traffic, these never touch the parent's prompt-scoped
+     * `messageHandler`: OpenCode namespaces child tool call ids but not
+     * child text, so routing child text through the parent handler would
+     * merge it into the parent's (or another child's) text buffer, and the
+     * compact window's handler suppression would drop it. Each child gets
+     * its own handler keyed by `childSessionId`, kept across parent prompt
+     * changes, unaffected by `suppressUpdatesDuring` and by abort (OpenCode
+     * keeps children running after a cancelled turn). Emission goes through
+     * the most recent prompt()'s onUpdate; before any prompt has run there
+     * is no sink, so updates are dropped.
+     */
+    private handleChildSessionUpdate(params: unknown): void {
+        if (!isObject(params)) return;
+        // Same root-session guard handleSessionUpdate applies.
+        const rootSessionId = asString(params.rootSessionId);
+        if (this.activeSessionId && rootSessionId && rootSessionId !== this.activeSessionId) {
+            return;
+        }
+        const childSessionId = asString(params.childSessionId);
+        if (!childSessionId) return;
+
+        if (params.type === 'status') {
+            const status = asString(params.status);
+            if (status === 'completed' || status === 'failed' || status === 'interrupted') {
+                this.finishChildHandler(childSessionId);
+            }
+            // created/running have no handler to manage yet.
+            return;
+        }
+        if (params.type !== 'update' || !isObject(params.update)) return;
+
+        const entry = this.childHandlers.get(childSessionId) ?? this.createChildHandler(childSessionId);
+        if (!entry) return;
+        const update = params.update;
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(async () => {
+                await entry.handler.handleUpdate(update);
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] child session update failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
+        this.armChildQuietTimer(childSessionId, entry);
+    }
+
+    private createChildHandler(childSessionId: string): { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null } | null {
+        if (!this.childEmitSink) {
+            logger.debug('[AcpSdkBackend] dropping child update: no prompt has run yet');
+            return null;
+        }
+        const handler = new AcpMessageHandler((message) => {
+            this.childEmitSink?.(message);
+        }, {
+            textChunkMode: this.options.textChunkMode,
+            flavor: this.options.flavor,
+        });
+        const entry = { handler, timer: null };
+        this.childHandlers.set(childSessionId, entry);
+        return entry;
+    }
+
+    /** Per-child quiet timer: drains that child's buffers once its stream goes quiet. */
+    private armChildQuietTimer(
+        childSessionId: string,
+        entry: { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null }
+    ): void {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+        }
+        entry.timer = setTimeout(() => {
+            entry.timer = null;
+            void this.sessionUpdateQueue.then(() => entry.handler.drainBuffers());
+        }, AcpSdkBackend.LATE_FLUSH_QUIET_PERIOD_MS);
+    }
+
+    private clearChildQuietTimer(entry: { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null }): void {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+        }
+    }
+
+    /** Child turn ended: flush its buffers now and retire its handler and timer. */
+    private finishChildHandler(childSessionId: string): void {
+        const entry = this.childHandlers.get(childSessionId);
+        if (!entry) return;
+        this.childHandlers.delete(childSessionId);
+        this.clearChildQuietTimer(entry);
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(() => {
+                entry.handler.drainBuffers();
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] child flush failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
     }
 
     private handleSessionUpdate(params: unknown): void {
@@ -948,6 +1332,9 @@ export class AcpSdkBackend implements AgentBackend {
         // work is queued so async image registration preserves event order.
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
+            if (this.options.configOptionUpdates && isObject(update) && update.sessionUpdate === 'config_option_update') {
+                this.captureSessionConfigOptions(sessionId, update);
+            }
         }
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
@@ -957,9 +1344,14 @@ export class AcpSdkBackend implements AgentBackend {
         // update into the restored handler if earlier async image work kept
         // the queue busy past restore.
         const handler = this.messageHandler;
+        const echoedText = this.userMessageChunkListener ? userMessageChunkText(update) : null;
         this.sessionUpdateQueue = this.sessionUpdateQueue
             .then(async () => {
                 await handler?.handleUpdate(update);
+                if (echoedText !== null) {
+                    handler?.drainBuffers();
+                    this.userMessageChunkListener?.(echoedText);
+                }
             })
             .catch((error) => {
                 logger.debug(
@@ -988,7 +1380,7 @@ export class AcpSdkBackend implements AgentBackend {
             if (this.isProcessingMessage) {
                 return;
             }
-            this.agentActivityListener(false);
+            this.agentActivityListener(false, 'state_update_idle');
             return;
         }
 
@@ -999,13 +1391,17 @@ export class AcpSdkBackend implements AgentBackend {
             }
             this.runningThinkingTimer = setTimeout(() => {
                 this.runningThinkingTimer = null;
-                this.agentActivityListener?.(true);
+                this.agentActivityListener?.(true, 'state_update_running');
             }, AcpSdkBackend.RUNNING_THINKING_DEBOUNCE_MS);
             return;
         }
 
         this.clearRunningThinkingTimer();
-        this.agentActivityListener(true);
+        const source: AgentActivitySource = update.sessionUpdate === 'state_update'
+            && update.state === 'requires_action'
+            ? 'state_update_requires_action'
+            : 'state_update_running';
+        this.agentActivityListener(true, source);
     }
 
     private clearRunningThinkingTimer(): void {
@@ -1191,7 +1587,7 @@ export class AcpSdkBackend implements AgentBackend {
         if (this.permissionHandler) {
             try {
                 // Permission prompts imply the agent is awake (#1470).
-                this.agentActivityListener?.(true);
+                this.agentActivityListener?.(true, 'permission');
                 this.permissionHandler(request);
             } catch (error) {
                 this.pendingPermissions.delete(toolCallId);
@@ -1358,13 +1754,7 @@ export class AcpSdkBackend implements AgentBackend {
                     id,
                     category: asString(entry.category) ?? undefined,
                     currentValue: asString(entry.currentValue) ?? undefined,
-                    options: rawOptions
-                        .filter((option): option is Record<string, unknown> => isObject(option))
-                        .map((option) => ({
-                            value: asString(option.value) ?? '',
-                            name: asString(option.name) ?? undefined
-                        }))
-                        .filter((option) => option.value.length > 0)
+                    options: flattenConfigOptionChoices(rawOptions)
                 };
             })
             .filter((entry): entry is AcpConfigOptionDescriptor => entry !== null);
@@ -1502,12 +1892,10 @@ export class AcpSdkBackend implements AgentBackend {
 
         // Cursor often lists one wire id per family in `models` but every variant in
         // `configOptions` category=model — merge so metadata matches Zed-style pickers.
+        // Flatten handles both flat choices and Zed-style grouped ones (dsh).
         if (configModelOption) {
-            for (const entry of configModelOption.options) {
-                if (!isObject(entry)) continue;
-                const modelId = asString(entry.value) ?? asString(entry.modelId);
-                if (!modelId) continue;
-                addModel(modelId, asString(entry.name) ?? undefined);
+            for (const entry of flattenConfigOptionChoices(configModelOption.options)) {
+                addModel(entry.value, entry.name);
             }
         }
 

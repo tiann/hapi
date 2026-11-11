@@ -27,10 +27,11 @@ describe('alive incremental events', () => {
         const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
         try {
             const session = engine.getOrCreateSession('attach-replay', { path: '/tmp/project', host: 'localhost' }, null, 'default')
-            store.messages.addMessage(session.id, { text: 'queued before attach' }, 'queued-before-attach')
-            const invoked = store.messages.addMessage(session.id, { text: 'already consumed' }, 'already-consumed')
+            const userText = (text: string) => ({ role: 'user' as const, content: { type: 'text' as const, text } })
+            store.messages.addMessage(session.id, userText('queued before attach'), 'queued-before-attach')
+            const invoked = store.messages.addMessage(session.id, userText('already consumed'), 'already-consumed')
             store.messages.markMessagesInvoked(session.id, ['already-consumed'], invoked.createdAt + 1)
-            store.messages.addMessage(session.id, { text: 'future scheduled' }, 'future-scheduled', Date.now() + 60_000)
+            store.messages.addMessage(session.id, userText('future scheduled'), 'future-scheduled', Date.now() + 60_000)
             expect(emitted).toEqual([])
 
             engine.handleSessionAlive({ sid: session.id, time: Date.now() })
@@ -195,11 +196,20 @@ describe('alive incremental events', () => {
             }
             expect(engine.getSession(session.id)?.activeTurnStartedAt).toBe(received.message.createdAt)
 
+            // Prefer the incremental markMessageQueued patch. A full session
+            // snapshot (or a by-reference refreshSession emit later mutated in
+            // place) can also show thinking=true and includes activeAt as a
+            // snapshot field — that is not a claim that queued-thinking
+            // refreshed liveness (asserted via activeAtBeforeSend above).
             const update = events.find((event) => {
-                return event.type === 'session-updated'
-                    && typeof event.data === 'object'
-                    && event.data !== null
-                    && (event.data as { thinking?: unknown }).thinking === true
+                if (event.type !== 'session-updated' || typeof event.data !== 'object' || event.data === null) {
+                    return false
+                }
+                const data = event.data as Record<string, unknown>
+                return data.thinking === true
+                    && 'activeTurnStartedAt' in data
+                    && 'updatedAt' in data
+                    && !('id' in data)
             })
             expect(update).toBeDefined()
             if (!update || update.type !== 'session-updated') {
@@ -434,5 +444,40 @@ describe('alive incremental events', () => {
             return
         }
         expect(update.data).toEqual(expect.objectContaining({ thinking: false }))
+    })
+
+    it('judges liveness by hub receive time when the client clock lags (#1986)', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const machines = new MachineCache(store, createPublisher(events))
+        const sessions = new SessionCache(store, createPublisher(events))
+        const machine = machines.getOrCreateMachine(
+            'machine-clock-skew',
+            { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+            null,
+            'default'
+        )
+        const session = sessions.getOrCreateSession(
+            'session-clock-skew',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+        const heartbeatAt = Date.now() + 60_000
+        const laggingClientTime = heartbeatAt - 41_800
+
+        const originalNow = Date.now
+        Date.now = () => heartbeatAt
+        try {
+            machines.handleMachineAlive({ machineId: machine.id, time: laggingClientTime })
+            sessions.handleSessionAlive({ sid: session.id, time: laggingClientTime, thinking: false })
+        } finally {
+            Date.now = originalNow
+        }
+        machines.expireInactive(heartbeatAt + 5_000)
+        sessions.expireInactive(heartbeatAt + 5_000)
+
+        expect(machines.getMachine(machine.id)?.active).toBe(true)
+        expect(sessions.getSession(session.id)?.active).toBe(true)
     })
 })

@@ -3,12 +3,14 @@ import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
-import { sessionModelMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionModelMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
+import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { useScratchlistCount } from '@/lib/use-scratchlist-count'
 import { formatReopenError } from '@/lib/reopenError'
 import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexStatusLabels'
@@ -18,6 +20,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
+import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { useToast } from '@/lib/toast-context'
 import { queryKeys } from '@/lib/query-keys'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
@@ -100,6 +103,27 @@ function OutlineIcon(props: { className?: string }) {
     )
 }
 
+function ConciseViewIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            <path d="M8 9h8" />
+            <path d="M8 13h5" />
+        </svg>
+    )
+}
+
 function headerToggleClass(active: boolean): string {
     return `flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
         active
@@ -152,6 +176,8 @@ export function SessionHeader(props: {
     filesActive?: boolean
     onToggleOutline?: () => void
     outlineActive?: boolean
+    onToggleConciseView?: () => void
+    conciseViewActive?: boolean
     onToggleTerminal?: () => void
     terminalActive?: boolean
     api: ApiClient | null
@@ -167,6 +193,8 @@ export function SessionHeader(props: {
     const { addToast } = useToast()
     const { session, api, onSessionDeleted, onSessionReopened } = props
     const title = useMemo(() => getSessionTitle(session), [session])
+    const projectPath = getSessionProjectPath(session.metadata)
+    const projectLabel = projectPath ? getSessionProjectLabel(projectPath) : null
     const worktreeBranch = session.metadata?.worktree?.branch?.trim() || null
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
     const modelLabel = getSessionModelLabel(session)
@@ -210,6 +238,7 @@ export function SessionHeader(props: {
     )
     const ageAbsolute = ageLabel ? formatAbsoluteDateTime(lastActiveAt) : null
     const mobileSecondary = selectMobileSessionHeaderSecondary({
+        project: headerMetadata.project && projectLabel !== null,
         model: headerMetadata.model && modelLabel !== null,
         reasoning: headerMetadata.reasoning && reasoningLabel !== null,
         machine: headerMetadata.machine && machineLabel !== null,
@@ -251,11 +280,13 @@ export function SessionHeader(props: {
         }
     }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, prClockTick, t])
 
-    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, deleteSession, isPending: isActionPending } = useSessionActions(
         api,
         session.id,
         session.metadata?.flavor ?? null
     )
+    const isArchiving = useIsMutating({ mutationKey: sessionArchiveMutationKey(session.id), exact: true }) > 0
+    const isPending = isActionPending || isArchiving
     const [reopenError, setReopenError] = useState<string | null>(null)
 
     const handleSetPinMode = async (mode: 'none' | 'project' | 'global') => {
@@ -432,6 +463,7 @@ export function SessionHeader(props: {
                                         {agentLabel}
                                     </span>
                                 ) : null}
+                                {mobileSecondary === 'project' && projectLabel ? <span className="truncate" title={projectPath ?? undefined}>{headerMetadata.showLabels ? `${t('session.item.project')}: ` : ''}{projectLabel}</span> : null}
                                 {mobileSecondary === 'model' && modelLabel ? <span className="inline-flex truncate items-center gap-1.5">{headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}{isModelChanging ? <ModelChangingStatus /> : null}</span> : null}
                                 {mobileSecondary === 'reasoning' && reasoningLabel ? <span className="truncate">{reasoningLabel}</span> : null}
                                 {mobileSecondary === 'machine' && machineLabel ? <span className="truncate">{headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}{machineLabel}</span> : null}
@@ -447,6 +479,11 @@ export function SessionHeader(props: {
                                 <span className="inline-flex items-center gap-1">
                                     <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0 -translate-y-px" />
                                     {agentLabel}
+                                </span>
+                            ) : null}
+                            {headerMetadata.project && projectLabel ? (
+                                <span data-testid="session-header-project" className="max-w-[12rem] truncate" title={projectPath ?? undefined}>
+                                    {headerMetadata.showLabels ? `${t('session.item.project')}: ` : ''}{projectLabel}
                                 </span>
                             ) : null}
                             {headerMetadata.machine && machineLabel ? (
@@ -493,6 +530,19 @@ export function SessionHeader(props: {
                             aria-pressed={props.filesActive ?? false}
                         >
                             <FilesIcon />
+                        </button>
+                    ) : null}
+
+                    {props.onToggleConciseView ? (
+                        <button
+                            type="button"
+                            onClick={props.onToggleConciseView}
+                            className={headerToggleClass(props.conciseViewActive ?? false)}
+                            title={props.conciseViewActive ? t('session.conciseView.disable') : t('session.conciseView.enable')}
+                            aria-label={props.conciseViewActive ? t('session.conciseView.disable') : t('session.conciseView.enable')}
+                            aria-pressed={props.conciseViewActive ?? false}
+                        >
+                            <ConciseViewIcon />
                         </button>
                     ) : null}
 
@@ -549,7 +599,7 @@ export function SessionHeader(props: {
                 onRename={() => setRenameOpen(true)}
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
-                onMarkUnread={() => markSessionUnread(session.id, session.updatedAt)}
+                onMarkUnread={() => markSessionUnread(session.id, session.readState)}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId && !session.active ? handleSyncCodex : undefined}
@@ -581,6 +631,8 @@ export function SessionHeader(props: {
                 isOpen={renameOpen}
                 onClose={() => setRenameOpen(false)}
                 currentName={title}
+                currentTitleLocked={session.metadata?.titleLocked === true}
+                sessionId={session.id}
                 onRename={renameSession}
                 onSuggestTitle={api && props.titleSuggestionAvailable ? suggestSessionTitle : undefined}
                 onUpdateSummary={api && props.titleSuggestionAvailable ? updateSessionSummary : undefined}
@@ -603,23 +655,20 @@ export function SessionHeader(props: {
                 api={api}
             />
 
-            <ConfirmDialog
+            <ArchiveSessionDialog
                 isOpen={archiveOpen}
                 onClose={() => setArchiveOpen(false)}
-                title={t('dialog.archive.title')}
-                description={t('dialog.archive.description', { name: title })}
-                confirmLabel={t('dialog.archive.confirm')}
-                confirmingLabel={t('dialog.archive.confirming')}
+                sessionId={session.id}
+                sessionName={title}
+                active={session.active}
                 onConfirm={archiveSession}
                 isPending={isPending}
-                destructive
-                centerTitle
             />
 
-            <ConfirmDialog
+            <DeleteSessionDialog
                 isOpen={deleteOpen}
+                sessionId={session.id}
                 onClose={() => setDeleteOpen(false)}
-                title={t('dialog.delete.title')}
                 description={
                     scratchlistCount > 0
                         ? `${t('dialog.delete.description', { name: title })} ${t(
@@ -630,12 +679,8 @@ export function SessionHeader(props: {
                         )}`
                         : t('dialog.delete.description', { name: title })
                 }
-                confirmLabel={t('dialog.delete.confirm')}
-                confirmingLabel={t('dialog.delete.confirming')}
                 onConfirm={handleDelete}
                 isPending={isPending}
-                destructive
-                centerTitle
             />
         </>
     )

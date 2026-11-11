@@ -11,6 +11,7 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { MessageService } from './messageService'
 import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
@@ -388,6 +389,70 @@ describe('MessageService message pagination', () => {
         expect(older.page.hasMore).toBe(false)
         expect(second.id).toBeDefined()
         expect(third.id).toBeDefined()
+    })
+
+    it('returns a bounded context around a searched message without scanning the full transcript into the response', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-context')
+        const messages = Array.from({ length: 105 }, (_, index) => {
+            const message = store.messages.addMessage(session.id, `message-${index}`, `local-${index}`)
+            store.messages.markMessagesInvoked(session.id, [`local-${index}`], (index + 1) * 1_000)
+            return message
+        })
+        const target = messages[54]!
+
+        const context = makeService(store).getMessageContext(session.id, target.id)
+
+        expect(context?.targetMessageId).toBe(target.id)
+        expect(context?.messages).toHaveLength(41)
+        expect(context?.messages[0]?.id).toBe(messages[34]!.id)
+        expect(context?.messages.at(-1)?.id).toBe(messages[74]!.id)
+        expect(context?.messages.map((message) => message.id)).toContain(target.id)
+        expect(context?.page).toMatchObject({
+            epoch: 0,
+            nextBeforeAt: 35_000,
+            nextBeforeSeq: messages[34]!.seq,
+            snapshotHeadAt: 105_000,
+            snapshotHeadSeq: messages[104]!.seq,
+            hasMore: true
+        })
+
+        const otherSession = makeSession(store, 'page-context-other')
+        expect(makeService(store).getMessageContext(otherSession.id, target.id)).toBeNull()
+    })
+
+    it('includes pending local messages without changing the context pagination cursor', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-context-pending')
+        const messages = Array.from({ length: 105 }, (_, index) => {
+            const message = store.messages.addMessage(session.id, `message-${index}`, `local-${index}`)
+            store.messages.markMessagesInvoked(session.id, [`local-${index}`], (index + 1) * 1_000)
+            return message
+        })
+        const target = messages[54]!
+        const immediate = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'pending immediate' } },
+            'pending-immediate'
+        )
+        const scheduled = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'pending scheduled' } },
+            'pending-scheduled',
+            Date.now() + 60_000
+        )
+
+        const context = makeService(store).getMessageContext(session.id, target.id)
+
+        expect(context?.messages.map((message) => message.id)).toEqual(expect.arrayContaining([
+            immediate.id,
+            scheduled.id,
+            target.id
+        ]))
+        expect(context?.page).toMatchObject({
+            nextBeforeAt: 35_000,
+            nextBeforeSeq: messages[34]!.seq
+        })
     })
 
     it('breaks equal timestamp ties by seq', () => {
@@ -1078,6 +1143,38 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         // scheduledAt must be null in DB
         const msgs = store.messages.getMessages(session.id)
         expect(msgs[0].scheduledAt).toBeNull()
+    })
+
+    it('mints a localId for senders that omit one so the agent echo dedupes', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'no-local-id')
+        const publisher = makePublisher()
+
+        const cliEmitted: Array<{ body: { message: { localId: string | null } } }> = []
+        const io = {
+            of: (ns: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (ns === '/cli') cliEmitted.push(data as typeof cliEmitted[number])
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} })
+                }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server
+
+        const service = new MessageService(store, io, publisher as any)
+        await service.sendMessage(session.id, { text: 'peer ping' })
+        await service.sendMessage(session.id, { text: 'peer ping' })
+
+        const [first, second] = cliEmitted.map((update) => update.body.message.localId)
+        expect(first).toEqual(expect.any(String))
+        expect(second).toEqual(expect.any(String))
+        expect(second).not.toBe(first)
+
+        // Shared Codex echoes the user turn back under the id it received.
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'peer ping' }, meta: { sentFrom: 'cli' } }, first!)
+        expect(store.messages.getMessages(session.id)).toHaveLength(2)
     })
 
     it('past scheduledAt (already mature): emits to /cli immediately', async () => {
@@ -1789,6 +1886,116 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         expect(stillQueued.find((m) => m.localId === 'local-imm')).toBeUndefined()
     })
 
+    it('peer row (ping-peer- localId) is exempt: session-end cannot confirm an unconsumed peer message, replay preserves pending, real ACK confirms', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'peer-sweep-exempt')
+        const publisher = makePublisher()
+        const now = Date.now()
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'peer nudge' } },
+            'ping-peer-abc123'
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'ordinary' } },
+            'local-ordinary'
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+
+        // Ordinary row swept; peer row untouched — no synthetic confirmation.
+        expect(result?.localIds).toEqual(['local-ordinary'])
+        const consumed = publisher.events.filter(e => e.type === 'messages-consumed')
+        expect(consumed).toHaveLength(1)
+        expect((consumed[0] as { localIds: string[] }).localIds).toEqual(['local-ordinary'])
+
+        // Peer row stays pending (refresh/reconnect preserves it).
+        const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stillQueued.find((m) => m.localId === 'ping-peer-abc123')?.invokedAt).toBeNull()
+
+        // Re-attach replay still re-emits the unconsumed peer row.
+        const { io, cliEmitted } = makeTrackingIo()
+        const service2 = new MessageService(store, io, publisher as any)
+        expect(service2.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(1)
+
+        // A real runtime ACK confirms the peer row.
+        store.messages.markMessagesInvoked(session.id, ['ping-peer-abc123'], now + 1000)
+        expect(
+            store.messages.getUninvokedLocalMessages(session.id)
+                .find((m) => m.localId === 'ping-peer-abc123')
+        ).toBeUndefined()
+    })
+
+    it('job-wake row (hapi-job-wake: localId) is exempt: session-end cannot confirm an unconsumed wake, replay preserves pending (#1489)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'job-wake-sweep-exempt')
+        const publisher = makePublisher()
+        const now = Date.now()
+        const wakeLocalId = 'hapi-job-wake:batch:claim-abc'
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: '[hapi job] Attached job reached completed' } },
+            wakeLocalId
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'ordinary' } },
+            'local-ordinary'
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+
+        expect(result?.localIds).toEqual(['local-ordinary'])
+        const consumed = publisher.events.filter(e => e.type === 'messages-consumed')
+        expect(consumed).toHaveLength(1)
+        expect((consumed[0] as { localIds: string[] }).localIds).toEqual(['local-ordinary'])
+
+        const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stillQueued.find((m) => m.localId === wakeLocalId)?.invokedAt).toBeNull()
+
+        const { io, cliEmitted } = makeTrackingIo()
+        const service2 = new MessageService(store, io, publisher as any)
+        expect(service2.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(1)
+
+        store.messages.markMessagesInvoked(session.id, [wakeLocalId], now + 1000)
+        expect(
+            store.messages.getUninvokedLocalMessages(session.id)
+                .find((m) => m.localId === wakeLocalId)
+        ).toBeUndefined()
+    })
+
+    it('duplicate ACK on a peer row preserves the original consumption timestamp (first-write-wins)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'peer-dup-ack')
+        const now = Date.now()
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'peer nudge' } },
+            'ping-peer-dup1'
+        )
+
+        // Actual hub consumption: first ACK stamps invoked_at.
+        store.messages.markMessagesInvoked(session.id, ['ping-peer-dup1'], now)
+        const first = store.messages.getMessages(session.id)
+            .find((m) => m.localId === 'ping-peer-dup1')?.invokedAt
+        expect(first).toBe(now)
+
+        // Duplicate/late ACK must not move the timestamp.
+        store.messages.markMessagesInvoked(session.id, ['ping-peer-dup1'], now + 60_000)
+        expect(
+            store.messages.getMessages(session.id)
+                .find((m) => m.localId === 'ping-peer-dup1')?.invokedAt
+        ).toBe(now)
+    })
+
     it('future scheduled (scheduled_at > now) is also preserved by the sweep', () => {
         const store = makeStore()
         const session = makeSession(store, 'r4-future-sweep')
@@ -1810,5 +2017,156 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
 
         const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
         expect(stillQueued.find((m) => m.localId === 'local-future')?.invokedAt).toBeNull()
+    })
+
+    it('agent session events with a localId keep invoked_at NULL and their position across the sweep', () => {
+        // Session events (opencode compaction ":started") carry a stable localId but
+        // have no ack path, so they used to match the sweep's "immediate queued"
+        // selection and got force-invoked at every session end. That restamped their
+        // position_at (COALESCE(invoked_at, created_at)) to the reopen time, which
+        // resurfaced days-old events at the bottom of the thread as if new. The
+        // sweep's contract is queued USER prompts; agent event rows must keep their
+        // original invoked_at/position.
+        const store = makeStore()
+        const session = makeSession(store, 'r4-agent-event-sweep')
+        const publisher = makePublisher()
+        const now = Date.now()
+        const oldCreated = now - 2 * 24 * 60 * 60 * 1000
+
+        const localId = 'opencode:ses_x:compaction:msg_1b40439c:started'
+        store.messages.addMessage(
+            session.id,
+            { role: 'agent', content: { id: 'e1', type: 'event', data: { type: 'message', message: '📦 Compaction started' } } },
+            localId,
+            undefined,
+            oldCreated
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+        expect(result).toBeNull()
+        expect(publisher.events.filter(e => e.type === 'messages-consumed')).toHaveLength(0)
+
+        const row = store.messages.getMessages(session.id).find((m) => m.localId === localId)
+        expect(row?.invokedAt).toBeNull()
+        expect(row?.createdAt).toBe(oldCreated)
+    })
+
+    it('an enveloped user prompt with a lost ack is still swept and replayed', () => {
+        // Role detection must match the sibling delivery logic: some rows carry the
+        // role inside an envelope ({message: …}, {data:{message}}, {payload:{message}})
+        // rather than at the top level, and unwrapRoleWrappedRecordEnvelope is the
+        // one unwrapper both paths should agree on.
+        const store = makeStore()
+        const session = makeSession(store, 'r4-enveloped-sweep')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        const enveloped = { message: { role: 'user', content: { type: 'text', text: 'enveloped prompt' } } }
+        store.messages.addMessage(session.id, enveloped, 'enveloped-lost-ack')
+
+        // Replay delivers it to the CLI room like any queued prompt.
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(1)
+
+        // The session-end sweep force-invokes it once the CLI is gone.
+        const sweepAt = Date.now()
+        const swept = service.sweepImmediateQueuedOnSessionEnd(session.id, sweepAt)
+        expect(swept?.localIds).toEqual(['enveloped-lost-ack'])
+        expect(store.messages.getLocalMessageStates(session.id, ['enveloped-lost-ack'])[0]?.invokedAt).toBe(sweepAt)
+    })
+
+    it('attach-time replay skips agent session-event rows instead of re-delivering them', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'r4-enveloped-replay-excludes-events')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'agent', content: { id: 'e1', type: 'event', data: { type: 'message', message: '📦 Compaction started' } } },
+            'opencode:ses_x:compaction:msg_1:started'
+        )
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+        // The event row itself is untouched — still stored, still uninvoked.
+        const row = store.messages.getMessages(session.id).find((m) => m.localId === 'opencode:ses_x:compaction:msg_1:started')
+        expect(row?.invokedAt).toBeNull()
+    })
+})
+
+it('preserves live confirmation state when an idempotent send repeats the same durable input', async () => {
+    const store = makeStore()
+    const session = makeSession(store, 'duplicate-pending-input')
+    const events: SyncEvent[] = []
+    const service = new MessageService(store, {} as Server, { emit(event: SyncEvent) { events.push(event) } } as EventPublisher)
+    const message = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'correction' } }, 'same-local')
+    store.messages.setMessagesDeliveryState(session.id, ['same-local'], 'dispatching')
+    try {
+        await service.sendMessage(session.id, { text: 'correction', localId: 'same-local' })
+        const event = events.find(item => item.type === 'message-received')
+        if (!event || event.type !== 'message-received') throw new Error('missing message echo')
+        expect(event.message).toMatchObject({ id: message.id, localId: 'same-local', invokedAt: null, deliveryState: 'indeterminate', deliveryPending: true })
+        expect(store.messages.countMessages(session.id)).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('dispatching')
+    } finally { store.close() }
+})
+
+describe('observed read revision receipts', () => {
+    it('latest and completed catch-up receipt cover only their observed head', () => {
+        const store = makeStore()
+        try {
+            const { id } = makeSession(store, 'read-receipt')
+            const reply = (text: string) => ({ role: 'agent', content: { type: 'codex', data: { type: 'message', message: text } } })
+            store.messages.addMessage(id, reply('one'), 'one', null, 1)
+            const service = new MessageService(store, makeIo(() => {}), makePublisher() as unknown as EventPublisher)
+            const first = service.getMessagesPage(id, { limit: 1 })
+            expect(first.page.readThroughRevision).toBe(1)
+            const after = { at: first.page.snapshotHeadAt!, seq: first.page.snapshotHeadSeq! }
+            store.messages.addMessage(id, reply('two'), 'two', null, 2)
+            store.messages.addMessage(id, reply('three'), 'three', null, 3)
+            const partial = service.getMessagesPage(id, { limit: 1, after })
+            expect(partial.page.hasMore).toBe(true)
+            expect(partial.page.readThroughRevision).toBeUndefined()
+            const until = { at: partial.page.snapshotHeadAt!, seq: partial.page.snapshotHeadSeq! }
+            store.messages.addMessage(id, reply('concurrent'), 'four', null, 4)
+            const bounded = service.getMessagesPage(id, { limit: 20, after, until })
+            expect(bounded.page.readThroughRevision).toBeUndefined()
+            expect(service.getMessagesPage(id, { limit: 20, after }).page.readThroughRevision).toBe(4)
+            expect(service.getMessagesPage(id, { limit: 20, before: until }).page.readThroughRevision).toBeUndefined()
+            expect(first.page.readThroughRevision).toBe(1)
+        } finally { store.close() }
+    })
+})
+
+describe('tool-call upsert write skip', () => {
+    function toolCallContent(callId: string, fields: { input?: unknown; status?: string } = {}): unknown {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId,
+                    name: 'Bash',
+                    ...(fields.input !== undefined ? { input: fields.input } : {}),
+                    ...(fields.status !== undefined ? { status: fields.status } : {})
+                }
+            }
+        }
+    }
+
+    it('does not rewrite the row when a re-emitted tick changes nothing', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'toolcall-noop-tick')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { input: { command: 'ls' }, status: 'in_progress' }), 'call-1')
+        const repeat = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { input: { command: 'ls' }, status: 'in_progress' }), 'call-1')
+
+        expect(repeat.updated).toBe(true)
+        expect(repeat.message.id).toBe(first.message.id)
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        store.close()
     })
 })

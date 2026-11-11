@@ -39,6 +39,19 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
+### Optional (automatic session titles)
+
+When the configured OpenAI-compatible title provider is available, the Hub
+performs one best-effort automatic title suggestion after the first completed
+turn when the session has no manual name or existing summary. Automatic
+failures are silent and never block the agent conversation. The manual
+**Generate** action remains available.
+
+Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
+`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The attempt is persisted across restarts;
+manual or Agent titles arriving during generation are preserved. No automatic
+request is made without a configured provider.
+
 ### Optional
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
@@ -98,7 +111,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag.
+- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, then `lastUserMessageAt ?? createdAt` descending (creation time and ID break ties); `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.
@@ -108,6 +121,12 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
+  Runner-owned sessions wait for verified cleanup, including retries after an
+  early inactive/archived update. Concurrent requests join the same operation.
+  Cleanup confirmation has a 90-second budget; failure returns a structured
+  `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
+  `archive-cleanup-timeout` (504) error. A timeout does not cancel Runner cleanup
+  or prove the process is still alive; retry to verify the final result.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.
@@ -145,6 +164,10 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 - `GET /api/usage/summary` - Get cache-aware token usage for the owner namespace (`range=7d|30d|all`).
 
+### Activity (`src/web/routes/activity.ts`)
+
+- `GET /api/activity` - When agents in the caller's namespace were working (`since`/`until` epoch ms, default last 24 h, max 31 days): each session's turns from the `session_turns` table, plus the permission prompts and questions it waited on. Used by `hapi usage`.
+
 ### Storage (`src/web/routes/storage.ts`)
 
 - `GET /api/storage/sqlite` - SQLite database/WAL/SHM sizes for the owner namespace.
@@ -156,6 +179,11 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `GET /api/sessions/:id/git-diff-file` - File-specific diff.
 - `GET /api/sessions/:id/file` - Read file content.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
+
+For inactive sessions, including archived sessions, these read-only file and Git operations fall back to
+the matching online Runner when it advertises `workspace-file-access`. The
+Runner reads the current workspace under its configured roots; HAPI does not
+copy or snapshot files during archive.
 
 ### Events (`src/web/routes/events.ts`)
 

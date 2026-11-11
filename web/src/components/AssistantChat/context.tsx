@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { createContext, useContext, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import type { SessionMetadataSummary } from '@/types/api'
 
 export type OlderHistoryLoadResult = 'loaded' | 'transient-stop' | 'terminal-stop'
@@ -14,6 +14,7 @@ export type HappyChatContextValue = {
     /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */
     showSessionSummaryInChat: boolean
     disabled: boolean
+    allowInactiveFork?: boolean
     onRefresh: () => void
     codexPlanProposalId?: string | null
     onContinuePlan?: (planId: string) => void

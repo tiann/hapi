@@ -40,6 +40,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -90,6 +92,8 @@ describe('SessionList PR chip', () => {
             </QueryClientProvider>
         )
 
+        // Upstream now starts inactive project groups collapsed.
+        fireEvent.click(screen.getByTitle('/tmp/demo'))
         const chip = await screen.findByTestId('session-pr-chip')
         expect(chip.tagName).toBe('A')
         expect(chip).toHaveAttribute('href', 'https://github.com/tiann/hapi/pull/1163')

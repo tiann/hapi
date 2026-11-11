@@ -29,6 +29,8 @@ function makeSummary(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -155,13 +157,13 @@ describe('SessionAttentionIndicator tooltip', () => {
         expect(tooltip.textContent).not.toMatch(/\+\d+ more/)
     })
 
-    it('renders background task count', () => {
+    it('renders background task count behind a waiting spinner', () => {
         const summary = makeSummary({
             id: 's1',
             backgroundTaskCount: 3
         })
 
-        renderWithI18n(
+        const { container } = renderWithI18n(
             <SessionAttentionIndicator
                 attention={{ kind: 'background' }}
                 summary={summary}
@@ -173,6 +175,8 @@ describe('SessionAttentionIndicator tooltip', () => {
         const tooltip = screen.getByRole('tooltip', { hidden: true })
         expect(tooltip.textContent).toContain('Background tasks running')
         expect(tooltip.textContent).toContain('3 tasks running')
+        expect(container.querySelector('svg.animate-spin-slow.text-blue-400')).not.toBeNull()
+        expect(container.querySelector('.rounded-full')).toBeNull()
     })
 
     it('renders only the title for unread attention (relative time is already on the row)', () => {

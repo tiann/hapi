@@ -11,16 +11,12 @@ type LocalLaunchFailure = {
 };
 
 /**
- * Headless (print-mode) agy session. agy is spawned per user turn with
- * `-p <msg> --conversation <uuid> --output-format stream-json`; the driver
- * maps NDJSON events onto the existing transcript-entry channel
- * (sendAgySessionMessage), so hub/web rendering is unchanged.
+ * The remote launchers acknowledge a queued message once agy accepts it, so
+ * the queue does not acknowledge on dequeue.
  */
 export class AgySession extends AgentSessionBase<AgyMode> {
     readonly startedBy: 'runner' | 'terminal';
     localLaunchFailure: LocalLaunchFailure | null = null;
-    /** Set by the headless driver; lets the CLI cancel a batch held in retry backoff. */
-    cancelRetryDelivery: ((localId: string) => boolean) | null = null;
 
     constructor(opts: {
         api: ApiClient;

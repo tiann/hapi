@@ -1,5 +1,6 @@
 import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+import type { ReactNode } from 'react'
 import { formatTerminalCommandTitle, getToolPresentation } from '@/components/ToolCard/knownTools'
 
 describe('formatTerminalCommandTitle', () => {
@@ -60,7 +61,7 @@ describe('formatTerminalCommandTitle', () => {
 })
 
 describe('getToolPresentation — unknown tool semantic title + subtitle dedup', () => {
-    it('promotes semantic title "Run shell" when toolName equals input.command (Gemini ACP case)', () => {
+    it('routes shell-shaped unknown tools (Gemini ACP command-name card) to the terminal presentation', () => {
         const presentation = getToolPresentation({
             toolName: 'cat /tmp/hello.txt',
             input: { command: 'cat /tmp/hello.txt' },
@@ -70,7 +71,9 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
             metadata: null,
         })
 
-        expect(presentation.title).toBe('Run shell')
+        // Formatted like the canonical Bash card: title is the executable, the full
+        // command stays in the subtitle.
+        expect(presentation.title).toBe('cat')
         expect(presentation.subtitle).toBe('cat /tmp/hello.txt')
     })
 
@@ -165,7 +168,7 @@ describe('getToolPresentation — Codex agent tools', () => {
 
         expect(presentation.title).toBe('Agent: 检查 Hub Web README')
         expect(presentation.title).not.toContain('agent-1234567890')
-        expect(presentation.subtitle).toBe('reasoning medium · Reading file: README.md')
+        expect(presentation.subtitle).toBe('effort medium · Reading file: README.md')
         expect(presentation.minimal).toBe(true)
     })
 
@@ -183,7 +186,7 @@ describe('getToolPresentation — Codex agent tools', () => {
         })
 
         expect(presentation.title).toBe('Agent: Inspect package metadata')
-        expect(presentation.subtitle).toBe('reasoning low')
+        expect(presentation.subtitle).toBe('effort low')
     })
 
     it('does not present sub-operation completion as final agent completion while still running', () => {
@@ -201,7 +204,7 @@ describe('getToolPresentation — Codex agent tools', () => {
             metadata: null,
         })
 
-        expect(presentation.subtitle).toBe('reasoning low · Command finished: bun test')
+        expect(presentation.subtitle).toBe('effort low · Command finished: bun test')
     })
 
     it('falls back to prompt-derived CodexAgent titles without exposing agent id', () => {
@@ -371,6 +374,214 @@ describe('getToolPresentation — native titles', () => {
 
         expect(presentation.title).toBe('Run project tests')
         expect(presentation.subtitle).toBe('bun test')
+    })
+
+    it('keeps the exact-name Bash presentation unchanged (regression)', () => {
+        const presentation = getToolPresentation({
+            toolName: 'Bash',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('bun test')
+        // The formatted command already is the title; no duplicated subtitle.
+        expect(presentation.subtitle).toBeNull()
+    })
+
+    it('still resolves the v1 lowercase read alias to its own entry', () => {
+        const presentation = getToolPresentation({
+            toolName: 'read',
+            input: { filePath: 'src/a.ts' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('src/a.ts')
+    })
+})
+
+describe('getToolPresentation — OpenCode lowercase aliases', () => {
+    function expectNotGenericWrench(presentation: { icon: ReactNode }): void {
+        const icon = render(<>{presentation.icon}</>).container.querySelector('svg')
+        // The generic fallback renders a wrench with a translate-y-px nudge;
+        // resolved canonical cards use their own icons without it.
+        expect(icon).not.toBeNull()
+        expect(icon?.className).not.toContain('translate-y-px')
+    }
+
+    it('renders the OpenCode bash card like the canonical Bash card', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'ls -la /tmp', description: 'List files in /tmp' },
+            result: null,
+            childrenCount: 0,
+            // OpenCode v2 echoes the tool id as the ACP title (nativeTitle).
+            description: 'bash',
+            metadata: null,
+        })
+
+        // input.description wins over a description that merely repeats the tool name.
+        expect(presentation.title).toBe('List files in /tmp')
+        expect(presentation.subtitle).toBe('ls -la /tmp')
+        expect(presentation.minimal).toBe(true)
+        expectNotGenericWrench(presentation)
+    })
+
+    it('falls back to the command when the OpenCode bash call carries no description', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: 'bash',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('bun test')
+        expect(presentation.subtitle).toBeNull()
+    })
+
+    it('promotes a semantic title when the native title echoes an unformattable command', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'grep -rn "x" src | head -8' },
+            result: null,
+            childrenCount: 0,
+            // OpenCode running updates carry the raw command as the ACP title.
+            description: 'grep -rn "x" src | head -8',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Run shell')
+        expect(presentation.subtitle).toBe('grep -rn "x" src | head -8')
+    })
+
+    it('routes OpenCode command-name cards to the terminal presentation', () => {
+        // OpenCode v2 running updates title the call after the raw command, so
+        // the final card name is "ls", not "bash" — it never matches the alias
+        // table and must still get the Bash card treatment.
+        const presentation = getToolPresentation({
+            toolName: 'ls',
+            input: { command: 'ls', description: 'List demo files', cwd: '/workspace/demo-repo' },
+            result: null,
+            childrenCount: 0,
+            description: 'ls',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('List demo files')
+        expect(presentation.subtitle).toBe('ls')
+        expect(presentation.minimal).toBe(true)
+        expectNotGenericWrench(presentation)
+    })
+
+    it('drops the repeated native title from command-name cards without a description', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bun test',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: 'bun test',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('bun test')
+        expect(presentation.subtitle).toBeNull()
+    })
+
+    it('keeps a meaningful ACP title over the command formatting', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: 'Run project tests',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Run project tests')
+    })
+
+    it('maps webfetch to the WebFetch presentation', () => {
+        const presentation = getToolPresentation({
+            toolName: 'webfetch',
+            input: { url: 'https://example.com/docs' },
+            result: null,
+            childrenCount: 0,
+            description: 'webfetch',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('example.com')
+        expect(presentation.subtitle).toBe('https://example.com/docs')
+        expectNotGenericWrench(presentation)
+    })
+
+    it('maps glob, grep and list to their search presentations', () => {
+        const glob = getToolPresentation({
+            toolName: 'glob', input: { pattern: '*.ts' }, result: null, childrenCount: 0, description: 'glob', metadata: null,
+        })
+        const grep = getToolPresentation({
+            toolName: 'grep', input: { pattern: 'authToken' }, result: null, childrenCount: 0, description: 'grep', metadata: null,
+        })
+        const list = getToolPresentation({
+            toolName: 'list', input: { path: 'web/src' }, result: null, childrenCount: 0, description: 'list', metadata: null,
+        })
+
+        expect(glob.title).toBe('*.ts')
+        expect(grep.title).toBe('grep(pattern: authToken)')
+        expect(list.title).toBe('web/src')
+        expectNotGenericWrench(glob)
+        expectNotGenericWrench(grep)
+        expectNotGenericWrench(list)
+    })
+
+    it('maps write and edit to the file mutation presentations', () => {
+        const write = getToolPresentation({
+            toolName: 'write', input: { file_path: 'src/a.ts', content: 'export {}' }, result: null, childrenCount: 0, description: 'write', metadata: null,
+        })
+        const edit = getToolPresentation({
+            toolName: 'edit', input: { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' }, result: null, childrenCount: 0, description: 'edit', metadata: null,
+        })
+
+        expect(write.title).toBe('src/a.ts')
+        expect(write.subtitle).toBe('9 chars')
+        expect(edit.title).toBe('src/a.ts')
+        expectNotGenericWrench(write)
+        expectNotGenericWrench(edit)
+    })
+
+    it('maps task to the Task presentation', () => {
+        const presentation = getToolPresentation({
+            toolName: 'task',
+            input: { description: 'Explore', prompt: 'find null tool input' },
+            result: null,
+            childrenCount: 0,
+            description: 'task',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Explore')
+        expect(presentation.subtitle).toBe('find null tool input')
+        expectNotGenericWrench(presentation)
+    })
+
+    it('localizes the semantic run-shell fallback', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'grep -rn "x" src | head -8' },
+            result: null,
+            childrenCount: 0,
+            description: 'grep -rn "x" src | head -8',
+            metadata: null,
+        }, (key) => (key === 'tool.semanticTitle.runShell' ? '运行命令' : key))
+
+        expect(presentation.title).toBe('运行命令')
     })
 })
 

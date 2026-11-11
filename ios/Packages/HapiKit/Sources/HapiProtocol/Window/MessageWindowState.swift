@@ -21,6 +21,11 @@ public enum MessageWindowConstants {
     public static let agentRunWindowSize = 800
     /// Request size for ordinary latest/reset, forward, and older-page fetches.
     public static let pageSize = 200
+    /// Gap recovery refreshes at most this many retained non-terminal
+    /// tool-call rows through the message-context endpoint (newest first).
+    /// Live calls are a handful; the bound keeps a pathological window from
+    /// fanning out requests.
+    public static let gapRowRefreshLimit = 20
     /// Request size for a genuinely cold latest page, prioritizing first paint.
     public static let initialPageSize = 20
 }
@@ -73,6 +78,7 @@ public enum OlderLoadOutcome: Sendable {
 /// type) — deliberately mirroring the web's instance-based change detection,
 /// not deep equality.
 public struct MessageWindowState: Equatable, Sendable {
+    public var readThroughRevision: Int?
     public let sessionId: String
     /// Window rows in position order (queued rows re-merged after each trim).
     public var messages: [WindowMessage] = []
@@ -103,6 +109,11 @@ public struct MessageWindowState: Equatable, Sendable {
     public var requiresLatestReset: Bool = false
     /// Re-activation with persisted state: fetch the current tail first.
     public var preferLatestOnActivation: Bool = false
+    /// Gap-recovery pending: the next tail sync must catch up the missed
+    /// interval with a cursor sync and then reconcile an authoritative latest
+    /// page as an upsert (web `pendingGapRecovery`). Run-scoped — never
+    /// persisted.
+    public var pendingGapRecovery: Bool = false
     /// Invalidates in-flight tail syncs (compare-and-ignore).
     public var syncGeneration: Int = 0
     /// Invalidates in-flight older-page loads.

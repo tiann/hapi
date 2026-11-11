@@ -88,7 +88,6 @@ final class NotificationService: UNNotificationServiceExtension {
         let supportsActions = knownVersion && (
             (type == "permission-request" && !isBlank(fields["requestId"] ?? ""))
                 || type == "ready"
-                || type == "task-notification"
         )
         // input-request is tap-to-open only. Clear any inherited category so
         // a question (or unknown contract) can never offer Allow/Deny or Reply.

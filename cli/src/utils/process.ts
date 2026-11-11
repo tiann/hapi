@@ -1,5 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
+import { readFileSync } from 'node:fs';
+import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -71,10 +73,40 @@ export function windowsProcessMarkerCimCommand(pid: number): string {
   );
 }
 
+/** Linux boot and thread identity are independent of a potentially reused PID. */
+export function normalizeBootId(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())
+    ? value.trim().toLowerCase()
+    : null;
+}
+
+export function getSystemBootId(): string | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    return normalizeBootId(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export function getProcessThreadGroupId(pid: number): number | null {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+    const match = /^Tgid:[ \t]+([0-9]+)[ \t]*$/m.exec(status);
+    const tgid = match ? Number(match[1]) : 0;
+    return Number.isSafeInteger(tgid) && tgid > 0 ? tgid : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Stable marker for one OS PID generation; null means the platform probe failed. */
 export function getProcessStartMarker(pid: number): string | null {
-  if (!isProcessAlive(pid)) return null;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
   if (isWindows()) {
+    // CIM already answers whether this PID has a readable generation. A
+    // preceding tasklist adds a process launch without strengthening identity.
     // Same UTC ISO 'o' string as orphanReap listWindowsProcessesWithCommandLine.
     // Do not print raw DateTime or use WMIC DMTF (format mismatch skips reap).
     const powershell = spawn.sync('powershell', [
@@ -87,6 +119,7 @@ export function getProcessStartMarker(pid: number): string | null {
     }
     return null;
   }
+  if (!isProcessAlive(pid)) return null;
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'lstart='], {
     stdio: 'pipe',
     env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
@@ -94,6 +127,38 @@ export function getProcessStartMarker(pid: number): string | null {
   });
   if (result.error || result.status !== 0) return null;
   return result.stdout?.toString().trim() || null;
+}
+
+/** A fresh complete listing. Null means unavailable, never proof of absence. */
+export function readWindowsProcessStartMarkers(): ReadonlyMap<number, string | null> | null {
+  if (!isWindows()) return null;
+  try {
+    const command = [
+      "$ErrorActionPreference='Stop'",
+      'trap { exit 1 }',
+      'Get-CimInstance Win32_Process | Select-Object ProcessId,'
+        + `@{N='CreationDate';E={if ($_.CreationDate) { ${WINDOWS_CIM_CREATION_DATE_MARKER_EXPR} } else { $null }}}`
+        + ' | ConvertTo-Json -Compress',
+    ].join('\n');
+    const result = spawn.sync('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      encoding: 'utf8', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024
+    });
+    if (result.error || result.status !== 0) return null;
+    const parsed: unknown = JSON.parse(result.stdout?.toString() ?? '');
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    const markers = new Map<number, string | null>();
+    for (const value of rows) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+      const row = value as Record<string, unknown>;
+      if (typeof row.ProcessId !== 'number' || !Number.isInteger(row.ProcessId)
+        || row.ProcessId < 0 || markers.has(row.ProcessId)) return null;
+      markers.set(row.ProcessId, typeof row.CreationDate === 'string' && row.CreationDate.length > 0
+        ? row.CreationDate : null);
+    }
+    // This caller remains alive for the whole query. Missing it makes the
+    // listing unverifiable; do not infer that any other PID has exited.
+    return markers.has(process.pid) ? markers : null;
+  } catch { return null; }
 }
 
 // ponytail: ps -p is cheap and avoids PID-reuse false positives after OS upgrades/reboots
@@ -218,7 +283,17 @@ export function windowsProcessTreeCimCommand(pid: number): string {
   return [
     "$ErrorActionPreference='Stop'",
     'trap { exit 1 }',
-    `$root=${pid}`,
+    `$root=[long]${pid}`,
+    // One complete enumeration keeps cost independent of tree depth. Build
+    // parent links from the same observation, rather than querying each parent.
+    '$processes=@(Get-CimInstance Win32_Process)',
+    'if($processes.Count -eq 0 -or -not ($processes | Where-Object ProcessId -eq $PID)){ throw "Incomplete process snapshot" }',
+    '$children=@{}',
+    'foreach($process in $processes){',
+    '  $parent=[long]$process.ParentProcessId',
+    '  if(-not $children.ContainsKey($parent)){ $children[$parent]=[System.Collections.Generic.List[long]]::new() }',
+    '  $children[$parent].Add([long]$process.ProcessId)',
+    '}',
     '$seen=@{}',
     '$bfs=@()',
     '$queue=@($root)',
@@ -227,8 +302,7 @@ export function windowsProcessTreeCimCommand(pid: number): string {
     '  if($seen.ContainsKey($p)){continue}',
     '  $seen[$p]=$true',
     '  $bfs+=$p',
-    '  Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" |',
-    '    ForEach-Object { $queue+=,[int]$_.ProcessId }',
+    '  if($children.ContainsKey($p)){ foreach($child in $children[$p]){ $queue+=,$child } }',
     '}',
     // children-first: reverse BFS so root is last; OK: marks clean completion
     'if($bfs.Count -gt 0){ [array]::Reverse($bfs); Write-Output ("OK:" + ($bfs -join ",")) }',
@@ -351,15 +425,19 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * Signals are sent synchronously (children first) to work in exit handlers,
  * then waits asynchronously for processes to die.
  */
-async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
+async function killProcessTree(
+  pid: number,
+  force: boolean,
+  signal: NodeJS.Signals = 'SIGTERM'
+): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
-    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    const killSignal = force ? 'SIGKILL' : signal;
     try {
-      process.kill(pid, signal);
+      process.kill(pid, killSignal);
     } catch {
       // already gone
     }
@@ -367,11 +445,13 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
     return false;
   }
 
-  // Signal all processes synchronously (children first, then root)
-  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  // Signal all processes synchronously (children first, then root).
+  // Preserve the caller's signal when soft-killing so Ctrl-C stays SIGINT
+  // (exit 130) instead of always remapping to SIGTERM (exit 143).
+  const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
-      process.kill(p, signal);
+      process.kill(p, killSignal);
     } catch {
       // Process may have already exited
     }
@@ -386,38 +466,21 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 }
 
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
-export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
+export async function killProcessTreeByPid(
+  pid: number,
+  force: boolean = false,
+  // 3rd arg: soft POSIX signal (#1424 job Ctrl-C → exit 130) OR Windows stop report (#1911).
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  onReportMaybe?: (report: WindowsStopReport) => void
+): Promise<boolean> {
+  const signal: NodeJS.Signals = typeof signalOrReport === 'function' ? 'SIGTERM' : signalOrReport
+  const onReport = typeof signalOrReport === 'function' ? signalOrReport : onReportMaybe
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    // taskkill /T exit 0 means "signalled", not "every descendant is dead".
-    // Collect the tree + generation markers first, signal the root with /T,
-    // then individually signal any surviving pre-kill PIDs whose generation
-    // still matches (PID reuse must not be killed) (#1911 bot Major).
-    const treePids = collectWindowsProcessTree(n);
-    if (treePids === 'scan_failed') {
-      // Still signal the (known) root — scan failure must not mean zero kill —
-      // but never claim stopped without a full-tree verify (#1911 Opus Major).
-      await signalAndWaitWindowsRoot(n, force);
-      return false;
-    }
-    const markers = new Map<number, string | null>();
-    for (const candidate of treePids) {
-      markers.set(candidate, getProcessStartMarker(candidate));
-    }
-    await signalAndWaitWindowsRoot(n, force);
-    for (const survivor of treePids) {
-      if (survivor === n) continue;
-      if (!isProcessAlive(survivor)) continue;
-      const expected = markers.get(survivor);
-      const current = getProcessStartMarker(survivor);
-      // Unverifiable or reused PID — leave alone; final every() fails closed.
-      if (!expected || !current || current !== expected) continue;
-      await signalAndWaitWindowsRoot(survivor, true);
-    }
-    return treePids.every((candidate) => !isProcessAlive(candidate));
+    return stopWindowsProcessTree(n, force, onReport);
   }
-  return killProcessTree(n, force);
+  return killProcessTree(n, force, signal);
 }
 
 /**
@@ -429,11 +492,15 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
   // stop cannot burn the runner event loop for seconds (#1911 Overseer).
   const pollInterval = isWindows() ? 100 : 20;
-  let waited = 0;
+  let deadline = Date.now() + maxWait;
 
-  while (isProcessAlive(pid) && waited < maxWait) {
-    await new Promise(r => setTimeout(r, pollInterval));
-    waited += pollInterval;
+  // OS probes are synchronous on Windows. Count their time against the
+  // grace period too, otherwise twenty slow tasklist calls can turn two
+  // seconds of graceful shutdown into a much longer archive request.
+  while (Date.now() < deadline && isProcessAlive(pid)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise(r => setTimeout(r, Math.min(pollInterval, remaining)));
   }
 
   // Graceful kill didn't finish — escalate (same structure on both platforms).
@@ -447,23 +514,26 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
     } catch {
       return;
     }
-    waited = 0;
-    while (isProcessAlive(pid) && waited < 1000) {
-      await new Promise(r => setTimeout(r, pollInterval));
-      waited += pollInterval;
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline && isProcessAlive(pid)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise(r => setTimeout(r, Math.min(pollInterval, remaining)));
     }
   }
 }
 
 export async function killProcessByChildProcess(
   child: ChildProcess,
-  force: boolean = false
+  force: boolean = false,
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  onReportMaybe?: (report: WindowsStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
     return false;
   }
 
-  // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force);
+  // Soft signal forwarded on POSIX so job Ctrl-C stays exit 130 (#1424).
+  return killProcessTreeByPid(pid, force, signalOrReport, onReportMaybe);
 }

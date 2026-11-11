@@ -318,7 +318,7 @@ export function resolveCodexSlashCommand(
                 '- `/reasoning [level|default]` — show or set reasoning effort',
                 '- `/personality [friendly|pragmatic|none]` — show or set response style (sticky on thread)',
                 '- `/fast [on|off|status]` — toggle Fast mode (GPT-5.5 / GPT-5.4, ChatGPT login)',
-                '- `/permissions [default|read-only|safe-yolo|yolo]` — show or set permission mode',
+                '- `/permissions [default|read-only|autoReview|yolo]` — show or set permission mode',
                 '',
                 'Custom `/commands` from `.codex/prompts` are expanded before sending.'
             ].join('\n')

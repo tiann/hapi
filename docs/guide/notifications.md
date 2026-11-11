@@ -6,9 +6,9 @@ Web Push needs no provider configuration: [install the PWA](./pwa.md) and allow 
 
 ## Native app notifications
 
-See [Native apps](./native-apps.md) for build, pairing and platform requirements.
+See [Native apps](./native-apps.md) for install, pairing and platform requirements.
 
-For official Android and iOS apps, pair an updated hub and allow notifications.
+For the App Store and Google Play apps, pair an updated hub and allow notifications.
 No Firebase project or Apple developer account is needed. Notification content
 is end-to-end encrypted through the official push relay, which also works when
 you access the hub through Tailscale or your own HTTPS setup. Android requires
@@ -51,7 +51,7 @@ Related environment variables:
 
 ## ServerChan (Server酱) Setup
 
-Server酱 pushes notifications to WeChat and other channels. The hub sends ServerChan messages when a session is ready for input, requests a permission, a task fails, or a session completes.
+Server酱 pushes notifications to WeChat and other channels. The hub sends ServerChan messages when a session is ready for input, requests a permission, or a session completes.
 
 1. Get a SendKey from [sct.ftqq.com](https://sct.ftqq.com/)
 2. Set the SendKey and start the hub:

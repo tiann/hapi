@@ -60,6 +60,19 @@ class AttachmentPreparer(
 ) {
     private val appContext = context.applicationContext
 
+    /** Trusted, app-private shared payload. Preserve provider metadata, not the random disk name. */
+    suspend fun prepare(file: File, filename: String, mimeType: String, id: String): PrepareResult = withContext(ioDispatcher) {
+        try {
+            val read = file.inputStream().use { readUpTo(it, AttachmentPolicy.readCapFor(mimeType)) }
+            if (read.overflowed) PrepareResult.TooLarge(filename, file.length())
+            else prepareBytes(filename, mimeType, read.bytes, id)
+        } catch (_: Exception) {
+            PrepareResult.Unreadable(filename)
+        } catch (_: OutOfMemoryError) {
+            PrepareResult.Unreadable(filename)
+        }
+    }
+
     suspend fun prepare(uri: Uri): PrepareResult = withContext(ioDispatcher) {
         val resolver = appContext.contentResolver
 
@@ -123,8 +136,7 @@ class AttachmentPreparer(
     }
 
     /** Policy application over in-memory bytes (shared by every pick source). */
-    private fun prepareBytes(filename: String, mimeType: String, original: ByteArray): PrepareResult {
-        val id = "att-${UUID.randomUUID()}"
+    private fun prepareBytes(filename: String, mimeType: String, original: ByteArray, id: String = "att-${UUID.randomUUID()}"): PrepareResult {
         return when (AttachmentPolicy.planFor(mimeType, original.size.toLong())) {
             AttachmentPolicy.Plan.Reject -> PrepareResult.TooLarge(filename, original.size.toLong())
 

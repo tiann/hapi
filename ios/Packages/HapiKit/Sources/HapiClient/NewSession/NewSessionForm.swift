@@ -18,11 +18,11 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
     public var directory: String
     /// Flavor from ``AgentFlavor/creatableFlavors``.
     public var agent: AgentFlavor
-    /// `'auto'` = no explicit model (claude presets / codex catalog ids).
+    /// `'auto'` = no explicit model (claude presets, codex and discovered catalogs).
     public var model: String
-    /// Claude launch effort; `'auto'` = omit.
+    /// Claude/grok effort or pi thinking level; `'auto'` = omit.
     public var effort: String
-    /// Codex reasoning effort; `'default'` = omit.
+    /// Codex reasoning effort or opencode variant; `'default'` = omit.
     public var modelReasoningEffort: String
     /// Native permission mode for grok + codex-family flavors.
     public var permissionMode: PermissionMode
@@ -145,8 +145,11 @@ public enum NewSessionLogic {
 
     /// Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field
     /// port of the web `handleCreate` mapping:
-    /// - `model`/`effort` only for flavors whose picker exists in this v1
-    ///   (claude static list, codex machine catalog; others send no model);
+    /// - `model` for every flavor with a picker (claude presets, codex and the
+    ///   ``AgentModelCatalog`` flavors) unless `'auto'`; cursor always sends
+    ///   it (`'auto'` included, web `cursorSpawnModelId`);
+    /// - `effort` for claude, grok and pi; `modelReasoningEffort` for codex
+    ///   and opencode (variants); each omitted on its Default sentinel;
     /// - `yolo` only for flavors still on the YOLO toggle (not
     ///   `usesNativePermissionSelect`) — **including `false`**;
     /// - `permissionMode` for every `usesNativePermissionSelect` flavor —
@@ -166,19 +169,26 @@ public enum NewSessionLogic {
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
-        // v1 model pickers: claude (static presets) and codex (machine
-        // catalog). Other flavors' discovery endpoints are TODO(M4+), so
-        // their model is never sent.
-        let resolvedModel: String? = ((agent == .claude || agent == .codex) && form.model != "auto")
-            ? form.model
-            : nil
+        let hasModelPicker = agent == .claude || agent == .codex
+            || AgentModelCatalog.scope(for: agent) != nil
+        let trimmedModel = form.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel: String?
+        if agent == .cursor {
+            resolvedModel = trimmedModel.isEmpty ? "auto" : trimmedModel
+        } else {
+            resolvedModel = hasModelPicker && trimmedModel != "auto" && !trimmedModel.isEmpty
+                ? trimmedModel
+                : nil
+        }
+        let sendsEffort = agent == .claude || agent == .grok || agent == .pi
+        let sendsReasoningEffort = agent == .codex || agent == .opencode
         let trimmedWorktreeName = form.worktreeName.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpawnRequest(
             directory: form.trimmedDirectory,
             agent: agent,
             model: resolvedModel,
-            effort: (agent == .claude && form.effort != "auto") ? form.effort : nil,
-            modelReasoningEffort: (agent == .codex && form.modelReasoningEffort != "default")
+            effort: (sendsEffort && form.effort != "auto") ? form.effort : nil,
+            modelReasoningEffort: (sendsReasoningEffort && form.modelReasoningEffort != "default")
                 ? form.modelReasoningEffort
                 : nil,
             yolo: (agent == .dsh || usesNativePermissionSelect(agent)) ? nil : form.yolo,
@@ -194,6 +204,39 @@ public enum NewSessionLogic {
             copilotAgentMode: agent == .copilot ? form.copilotAgentMode : nil,
             startingMode: nil
         )
+    }
+
+    /// Restored selections the live catalog no longer offers fall back to
+    /// their Default sentinels (web validation effects): an unlisted model,
+    /// a grok/pi effort or an opencode variant the selected model lacks.
+    public static func reconcileAgentModelSelections(
+        _ form: NewSessionForm,
+        response: AgentModelsResponse,
+        variants: [String: [String]]?
+    ) -> NewSessionForm {
+        let agent = form.agent
+        guard AgentModelCatalog.scope(for: agent) != nil else { return form }
+        var next = form
+        let models = AgentModelCatalog.newSessionModelOptions(flavor: agent, response: response)
+        if !models.contains(where: { $0.value == next.model }) {
+            next.model = "auto"
+        }
+        let efforts: [NewSessionOption]?
+        switch agent {
+        case .grok: efforts = AgentModelCatalog.grokEffortOptions(response: response, model: next.model)
+        case .pi: efforts = AgentModelCatalog.piEffortOptions(response: response, model: next.model)
+        default: efforts = nil
+        }
+        if next.effort != "auto", efforts?.contains(where: { $0.value == next.effort }) != true {
+            next.effort = "auto"
+        }
+        if agent == .opencode, next.modelReasoningEffort != "default",
+           AgentModelCatalog.opencodeReasoningEffortOptions(
+               variants: variants, response: response, model: next.model
+           )?.contains(where: { $0.value == next.modelReasoningEffort }) != true {
+            next.modelReasoningEffort = "default"
+        }
+        return next
     }
 
     // MARK: - Directory autocomplete
@@ -416,7 +459,7 @@ public enum NewSessionLogic {
             sessionType: draft.sessionType,
             worktreeName: draft.worktreeName
         )
-        if !base.agent.launchPermissionModes.contains(base.permissionMode) {
+        if !base.agent.permissionModes.contains(base.permissionMode) {
             base.permissionMode = .default
         }
         return base

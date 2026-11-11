@@ -11,6 +11,7 @@ import {
     ComposerButtons,
     ComposerExpandButton,
     DictationButton,
+    addSelectedAttachments,
     getComposerToolbarJustifyContent,
     isComposerPrimaryFillHeight,
     isLargeEmptyVoicePrimary,
@@ -51,6 +52,53 @@ function renderInProviders(ui: ReactElement) {
 
 function getButton(label: RegExp | string): HTMLButtonElement {
     return screen.getByRole('button', { name: label }) as HTMLButtonElement
+}
+
+function stubViewport(matches: boolean) {
+    const mediaQueryList = {
+        matches,
+        media: '(max-width: 640px)',
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+    } as unknown as MediaQueryList
+    vi.spyOn(window, 'matchMedia').mockReturnValue(mediaQueryList)
+}
+
+function renderAttachmentToolbar(overrides: Partial<ComponentProps<typeof ComposerButtons>> = {}) {
+    const noop = () => {}
+    render(
+        <RuntimeProviders>
+            <ComposerButtons
+                canSend={false}
+                controlsDisabled={false}
+                showSettingsButton={false}
+                onSettingsToggle={noop}
+                expanded={false}
+                onExpandedToggle={noop}
+                showTerminalButton={false}
+                terminalDisabled={false}
+                terminalLabel="Terminal"
+                onTerminal={noop}
+                showAbortButton={false}
+                abortDisabled={false}
+                isAborting={false}
+                onAbort={noop}
+                showSwitchButton={false}
+                switchDisabled={false}
+                isSwitching={false}
+                onSwitch={noop}
+                voiceEnabled={false}
+                voiceStatus="disconnected"
+                onVoiceToggle={noop}
+                onSend={noop}
+                {...overrides}
+            />
+        </RuntimeProviders>,
+    )
 }
 
 describe('UnifiedButton — routesToScratchlist visual state', () => {
@@ -263,6 +311,122 @@ describe('UnifiedButton — fill-height primary (voice ↔ send)', () => {
     })
 })
 
+describe('UnifiedButton — active dictation send action', () => {
+    afterEach(cleanup)
+
+    it('exposes a Send button next to Stop while dictation is connected and routes it through onSend', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const sendButton = getButton('Send')
+        fireEvent.click(sendButton)
+        // onSend('default') lands in handleSend's dictation branch, which runs
+        // stopAndSend bound to the target session (survives navigation).
+        expect(onSend).toHaveBeenCalledWith('default')
+        expect(onVoiceToggle).not.toHaveBeenCalled()
+    })
+
+    it('retains the fill-height Stop control alongside direct dictation Send', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend
+                fillHeight
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        const stopButton = getButton('Stop')
+        expect(stopButton.getAttribute('data-size')).toBe('fill')
+        expect(stopButton.className).toContain('h-full')
+        fireEvent.click(getButton('Send'))
+        expect(onSend).toHaveBeenCalledWith('default')
+        expect(onVoiceToggle).not.toHaveBeenCalled()
+        fireEvent.click(stopButton)
+        expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).toHaveBeenCalledOnce()
+    })
+
+    it('hides the dictation Send button when direct send is not eligible', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend={false}
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        // Attachments / pending schedule / scratchlist mode make handleSend
+        // fall back to dictation.toggle(); a "Send" label would be misleading.
+        expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+        expect(getButton('Stop')).toBeDefined()
+    })
+
+    it('keeps Stop stop-only during connected dictation', () => {
+        const onSend = vi.fn()
+        const onVoiceToggle = vi.fn()
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connected"
+                voiceEnabled
+                dictationEnabled
+                dictationCanDirectSend
+                controlsDisabled={false}
+                onSend={onSend}
+                onVoiceToggle={onVoiceToggle}
+            />,
+        )
+
+        fireEvent.click(getButton('Stop'))
+        expect(onVoiceToggle).toHaveBeenCalledOnce()
+        expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('does not show the dictation Send button while connecting', () => {
+        renderInProviders(
+            <UnifiedButton
+                canSend
+                voiceStatus="connecting"
+                voiceEnabled
+                dictationEnabled
+                controlsDisabled={false}
+                onSend={() => {}}
+                onVoiceToggle={() => {}}
+            />,
+        )
+
+        expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+        expect(getButton(/Connecting/)).toBeDefined()
+    })
+})
+
 describe('DictationButton', () => {
     afterEach(cleanup)
 
@@ -414,5 +578,131 @@ describe('ComposerButtons responsive toolbar', () => {
         expect(getComposerToolbarJustifyContent('right')).toBe('safe end')
         expect(getComposerToolbarJustifyContent('left')).toBe('flex-start')
         expect(getComposerToolbarJustifyContent('split')).toBe('flex-start')
+    })
+})
+
+describe('ComposerButtons attachment entrypoint', () => {
+    afterEach(() => {
+        cleanup()
+        vi.restoreAllMocks()
+    })
+
+    it('keeps the original assistant-ui attachment trigger on wide viewports', () => {
+        stubViewport(false)
+        renderAttachmentToolbar()
+
+        expect(getButton('Attach file')).toBeInTheDocument()
+        expect(screen.queryByTestId('composer-attachment-picker-trigger')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('composer-attachment-picker')).not.toBeInTheDocument()
+    })
+
+    it('uses the HAPI source panel on narrow viewports', () => {
+        stubViewport(true)
+        renderAttachmentToolbar()
+
+        expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Add attachment' })).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByTestId('composer-attachment-picker-trigger'))
+
+        expect(screen.getByRole('dialog', { name: 'Add attachment' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Photos' })).toBeInTheDocument()
+    })
+
+    it('disables the mobile entry when the session has no attachment adapter', () => {
+        stubViewport(true)
+        renderAttachmentToolbar({ attachmentsEnabled: false })
+
+        expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeDisabled()
+    })
+
+    it('starts all selected attachments before the first handoff resolves', async () => {
+        const first = new File(['first'], 'first.txt', { type: 'text/plain' })
+        const second = new File(['second'], 'second.txt', { type: 'text/plain' })
+        const started: string[] = []
+        let resolveFirst!: () => void
+        const firstPending = new Promise<void>((resolve) => {
+            resolveFirst = resolve
+        })
+        const addAttachment = vi.fn((file: File) => {
+            started.push(file.name)
+            return file === first ? firstPending : Promise.resolve()
+        })
+
+        const pending = addSelectedAttachments(addAttachment, [first, second])
+
+        expect(started).toEqual(['first.txt', 'second.txt'])
+        resolveFirst()
+        await pending
+        expect(addAttachment).toHaveBeenCalledTimes(2)
+    })
+})
+
+describe('ComposerButtons terminal To agent FUE', () => {
+    afterEach(() => {
+        cleanup()
+        window.localStorage.removeItem('hapi.fue.v1.composer-terminal-to-agent')
+    })
+
+    function renderTerminalToolbar(onTerminal: () => void) {
+        const noop = () => {}
+        return render(
+            <RuntimeProviders>
+                <ComposerButtons
+                    canSend
+                    controlsDisabled={false}
+                    showSettingsButton={false}
+                    onSettingsToggle={noop}
+                    expanded={false}
+                    onExpandedToggle={noop}
+                    showTerminalButton
+                    terminalDisabled={false}
+                    terminalLabel="Terminal"
+                    onTerminal={onTerminal}
+                    showAbortButton={false}
+                    abortDisabled
+                    isAborting={false}
+                    onAbort={noop}
+                    showSwitchButton={false}
+                    switchDisabled
+                    isSwitching={false}
+                    onSwitch={noop}
+                    voiceEnabled={false}
+                    dictationEnabled={false}
+                    voiceStatus="disconnected"
+                    onVoiceToggle={noop}
+                    onSend={noop}
+                />
+            </RuntimeProviders>,
+        )
+    }
+
+    it('shows a pulsing FUE dot until acknowledged', () => {
+        renderTerminalToolbar(() => {})
+        const terminal = screen.getByRole('button', { name: 'Terminal' })
+        expect(within(terminal).getByRole('status', { name: 'New feature available' })).toBeInTheDocument()
+    })
+
+    it('opens the To agent explainer on first click without navigating', () => {
+        const onTerminal = vi.fn()
+        renderTerminalToolbar(onTerminal)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
+
+        expect(onTerminal).not.toHaveBeenCalled()
+        expect(screen.getByRole('dialog', { name: 'Send terminal to agent' })).toBeInTheDocument()
+        expect(screen.getByText(/Selection to agent/i)).toBeInTheDocument()
+    })
+
+    it('navigates after Got it and persists acknowledgement', () => {
+        const onTerminal = vi.fn()
+        renderTerminalToolbar(onTerminal)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Got it' }))
+
+        expect(onTerminal).toHaveBeenCalledOnce()
+        expect(window.localStorage.getItem('hapi.fue.v1.composer-terminal-to-agent')).toBe('1')
+        expect(screen.queryByRole('dialog', { name: 'Send terminal to agent' })).not.toBeInTheDocument()
     })
 })
