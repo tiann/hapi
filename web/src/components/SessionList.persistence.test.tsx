@@ -14,7 +14,7 @@ function session(id: string, path = '/work/project', machineId = 'machine-a'): S
     return {
         id, active: false, thinking: false, activeAt: 0, updatedAt: 100,
         metadataVersion: 0, agentStateVersion: 0, todosUpdatedAt: 0,
-        todoProgress: null, pendingRequestsCount: 0, pendingRequestKinds: [],
+        attachedJob: null, attachedJobUpdatedAt: 0, todoProgress: null, pendingRequestsCount: 0, pendingRequestKinds: [],
         pendingRequests: [], backgroundTaskCount: 0, futureScheduledMessageCount: 0,
         nextScheduledAt: null, model: null, effort: null,
         metadata: { path, machineId, name: id, flavor: 'codex' },

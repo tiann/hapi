@@ -22,6 +22,8 @@ interface CopilotLoopOptions {
     resumeSessionId?: string;
     onSessionReady?: (session: CopilotSession) => void;
     onModelRollback?: (model: string | null) => void;
+    onEffortRollback?: (effort: string | null) => void;
+    getQueuedModel?: () => string | null;
 }
 
 export async function copilotLoop(opts: CopilotLoopOptions): Promise<void> {
@@ -59,7 +61,9 @@ export async function copilotLoop(opts: CopilotLoopOptions): Promise<void> {
         }),
         runRemote: (instance) => copilotRemoteLauncher(instance, {
             model: getCurrentModel(),
-            onModelRollback: opts.onModelRollback
+            onModelRollback: opts.onModelRollback,
+            onEffortRollback: opts.onEffortRollback,
+            getQueuedModel: opts.getQueuedModel
         }),
         onSessionReady: opts.onSessionReady
     });
