@@ -243,6 +243,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // The turn whose wake window is still running after answerMain: agy keeps
     // generating the wakeup, so Stop must still reach it (session/cancel).
     private continuationTurn: AgyTurn | null = null;
+    // The most recent turn whose wake window watched a live continuation: the
+    // dequeue hold observes the same generation and owns its cancellation.
+    private lastContinuationTurn: AgyTurn | null = null;
     private backendLost = false;
     // Transcript source for the late-continuation watcher; null when agy's
     // records cannot be read (workaround for google-antigravity/antigravity-cli#1461, deleted with it).
@@ -365,15 +368,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         type: 'message',
                         message: 'Antigravity continued working on its own; showing that before running the new message.'
                     });
-                    const close = await this.runWakeWindow({
-                        bgIds: [],
-                        signal,
-                        accountedIdx: this.accountedIdx,
-                        turnBaseIdx: this.accountedIdx,
-                        baselineIdx: this.accountedIdx,
-                        taskDescriptions: new Map()
-                    });
-                    this.continuationMode = close.reason === 'quiet' && close.surfacedFully ? 'drop' : 'label';
+                    // The unseen work is agy still generating the last
+                    // continuation: Stop must reach it, and thinking must not
+                    // outlive the hold.
+                    this.continuationTurn = this.lastContinuationTurn;
+                    try {
+                        const close = await this.runWakeWindow({
+                            bgIds: [],
+                            signal,
+                            accountedIdx: this.accountedIdx,
+                            turnBaseIdx: this.accountedIdx,
+                            baselineIdx: this.accountedIdx,
+                            taskDescriptions: new Map()
+                        });
+                        this.continuationMode = close.reason === 'quiet' && close.surfacedFully ? 'drop' : 'label';
+                    } finally {
+                        this.continuationTurn = null;
+                        this.session.onThinkingChange(false);
+                    }
                 }
             }
             // Stop or exit during the hold: the captured signal no longer
@@ -683,6 +695,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (watcherEligible && this.wakeSource) {
                 // agy is still generating the wakeup; keep it cancellable while
                 // the window observes, so Stop reaches it via session/cancel.
+                this.lastContinuationTurn = turn;
                 this.continuationTurn = turn;
                 try {
                     watcherClose = await this.runWakeWindow({

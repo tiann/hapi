@@ -2533,6 +2533,11 @@ describe('AgyAcpRemoteLauncher Stop during the dequeue hold', () => {
         expect(backend.prompts).toHaveLength(1);
         expect(sessionEvents(client)).toContainEqual({ type: 'abort-restore', text: 'next message' });
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['b']);
+        // Stop also cancels the continuation agy is still generating, and the
+        // hold's activity does not leave thinking on.
+        expect(backend.cancelCalls).toContainEqual('agy-conv-new');
+        const thinking = thinkingValues(client);
+        expect(thinking[thinking.length - 1]).toBe(false);
     });
 });
 
