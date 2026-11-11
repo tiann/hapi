@@ -2684,6 +2684,48 @@ describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)',
         expect(resultRow).toBeDefined();
     });
 
+    it('completes a continuation-launched background command on its synthetic card', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The original command completes; the continuation then launches a
+        // follow-up command and backgrounds it (agy records the backgrounding
+        // with its native task id).
+        source.push(
+            wakeStep(3, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nFIRST-ROUND-OK'),
+            wakeStep(4, 'planner', '', [{ name: 'run_command', args: { CommandLine: 'echo follow-up-analysis', WaitMsBeforeAsync: 5000 } }]),
+            { ...wakeStep(5, 'tool', BACKGROUNDING('sample/task-2', 'echo follow-up-analysis')), status: 'running' },
+            wakeStep(6, 'system', COMPLETION('sample/task-2', 'FOLLOW-UP-OUT')),
+            wakeStep(7, 'planner', 'All wrapped up.')
+        );
+        source.latest = 7;
+
+        // The synthetic wake card completes with the continuation command's
+        // own completion, and the window settles instead of riding the cap.
+        await vi.waitFor(() => {
+            const result = agentRows(client).find((row) => row.type === 'tool-call-result' && String(row.callId).startsWith('agy-wake-'));
+            expect(JSON.stringify(result)).toContain('FOLLOW-UP-OUT');
+        });
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(sessionEvents(client)).toContainEqual({ type: 'ready' });
+    });
+
     it('leaves an unrelated system message untouched instead of discarding a pending command', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();

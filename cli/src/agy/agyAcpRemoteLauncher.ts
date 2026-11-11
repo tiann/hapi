@@ -964,8 +964,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const pendingWakeCalls: string[] = [];
         const backgrounding = new Map<string, string>();
         const openContinuation = new Set<string>();
+        const wakeCommands = new Map<string, string>();
+        const wakeCallByTask = new Map<string, string>();
         const surface = (step: AgyTranscriptStep): void =>
-            this.surfaceWakeStep(step, { bgIds: opts.bgIds, pendingWakeCalls, backgrounding, taskDescriptions: opts.taskDescriptions, openContinuation });
+            this.surfaceWakeStep(step, { bgIds: opts.bgIds, pendingWakeCalls, backgrounding, taskDescriptions: opts.taskDescriptions, openContinuation, wakeCommands, wakeCallByTask });
         // Window-scoped lease: one persistent readonly DB connection for fast
         // progress probes plus the fs.watch event wait; closed with the window.
         const lease = this.acpSessionId ? this.createWakeLease(this.acpSessionId) : null;
@@ -1075,6 +1077,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             taskDescriptions: Map<string, string>;
             /** Native task ids backgrounded during this window, not yet completed. */
             openContinuation: Set<string>;
+            /** Synthetic wake-call id -> command text, for backgrounding records. */
+            wakeCommands: Map<string, string>;
+            /** Native task id -> the synthetic wake call that launched it. */
+            wakeCallByTask: Map<string, string>;
         }
     ): void {
         if (step.kind === 'system') {
@@ -1106,6 +1112,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     status: completion.exitCode === 0 ? 'completed' : 'failed'
                 });
                 this.noteBackgroundTaskSettled(bgId);
+            } else if (completion.taskId !== null) {
+                // A command the continuation backgrounded itself has no ACP
+                // call: settle its synthetic wake card and free the pending
+                // entry so the window does not ride the cap after the answer.
+                const wakeId = state.wakeCallByTask.get(completion.taskId);
+                if (wakeId !== undefined) {
+                    const at = state.pendingWakeCalls.indexOf(wakeId);
+                    if (at >= 0) state.pendingWakeCalls.splice(at, 1);
+                    this.forwardAgentMessage({
+                        type: 'tool_result',
+                        id: wakeId,
+                        output: {
+                            output: `Command exited with code ${completion.exitCode}.\n\nCommand output:\n${completion.output}`.trim(),
+                            exit_code: completion.exitCode
+                        },
+                        status: completion.exitCode === 0 ? 'completed' : 'failed'
+                    });
+                }
             }
             return;
         }
@@ -1124,6 +1148,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     nativeName: call.name
                 });
                 state.pendingWakeCalls.push(id);
+                const command = call.args && typeof call.args === 'object' && !Array.isArray(call.args)
+                    ? (call.args as { CommandLine?: unknown }).CommandLine
+                    : undefined;
+                if (typeof command === 'string' && command.trim().length > 0) state.wakeCommands.set(id, command);
             }
             return;
         }
@@ -1135,6 +1163,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (backgrounded) {
                     state.backgrounding.set(backgrounded.taskId, backgrounded.description);
                     state.openContinuation.add(backgrounded.taskId);
+                    // The synthetic card this command launched under completes
+                    // when the task does.
+                    const wakeId = state.pendingWakeCalls.find((id) => (state.wakeCommands.get(id) ?? '').trim() === backgrounded.description);
+                    if (wakeId !== undefined) state.wakeCallByTask.set(backgrounded.taskId, wakeId);
                 }
                 return; // the ACP card already shows the backgrounded command
             }
