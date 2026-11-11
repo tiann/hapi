@@ -83,3 +83,14 @@ jobs:
           script: |
             const { publishReview } = require('./.github/scripts/pr-review.cjs');
             await publishReview({ github, context, core });
+
+      # Cancelled runs are superseded by a newer run, which owns the label.
+      - name: Mark a failed review
+        if: failure() && steps.prepare.outputs.should_review == 'true'
+        uses: actions/github-script@v7
+        env:
+          REVIEW_CONTEXT_PATH: ${{ steps.prepare.outputs.context_path }}
+        with:
+          script: |
+            const { markReviewError } = require('./.github/scripts/pr-review.cjs');
+            await markReviewError({ github, context, core });

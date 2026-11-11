@@ -42,6 +42,15 @@ describe('getPermissionModesForFlavor', () => {
         ])
     })
 
+    test('returns the agy ACP session modes plus HAPI auto-approval', () => {
+        expect(getPermissionModesForFlavor('agy')).toEqual([
+            'request-review',
+            'acceptEdits',
+            'plan',
+            'always-proceed'
+        ])
+    })
+
     test("returns no HAPI mode selector for DSH's server-owned permission policy", () => {
         expect(getPermissionModesForFlavor('dsh')).toEqual([])
     })
@@ -147,7 +156,8 @@ describe('claude auto permission mode', () => {
 })
 
 describe('isSteeringSupportedForFlavor', () => {
-    it('supports claude, codex, cursor, opencode and pi', () => {
+    it('supports agy, claude, codex, cursor, opencode and pi', () => {
+        expect(isSteeringSupportedForFlavor('agy')).toBe(true)
         expect(isSteeringSupportedForFlavor('codex')).toBe(true)
         expect(isSteeringSupportedForFlavor('cursor')).toBe(true)
         expect(isSteeringSupportedForFlavor('opencode')).toBe(true)
@@ -160,7 +170,8 @@ describe('isSteeringSupportedForFlavor', () => {
 })
 
 describe('isSteeringSupportedForSession', () => {
-    it('supports claude, codex, opencode and pi sessions', () => {
+    it('supports agy, claude, codex, opencode and pi sessions', () => {
+        expect(isSteeringSupportedForSession({ flavor: 'agy', agyProtocol: 'acp' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'codex' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'opencode' })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'pi' })).toBe(true)
@@ -174,6 +185,12 @@ describe('isSteeringSupportedForSession', () => {
             cursorSessionId: 'sess-1',
         })).toBe(true)
         expect(isSteeringSupportedForSession({ flavor: 'cursor' })).toBe(true)
+    })
+
+    it('steers agy sessions only while they run on agy acp', () => {
+        expect(isSteeringSupportedForSession({ flavor: 'agy', agyProtocol: 'acp' })).toBe(true)
+        expect(isSteeringSupportedForSession({ flavor: 'agy' })).toBe(false)
+        expect(isSteeringSupportedForSession({ flavor: 'agy', agyProtocol: null })).toBe(false)
     })
 
     it('rejects legacy Cursor stream-json sessions', () => {
@@ -203,6 +220,13 @@ describe('hasActiveSteeringTurn', () => {
         expect(hasActiveSteeringTurn({ metadata: { flavor }, thinking: true })).toBe(false)
     })
 
+    it('uses steeringActive for agy acp sessions and ignores stream-json ones', () => {
+        const acp = { flavor: 'agy', agyProtocol: 'acp' as const }
+        expect(hasActiveSteeringTurn({ metadata: acp, thinking: false, agentState: { steeringActive: true } })).toBe(true)
+        expect(hasActiveSteeringTurn({ metadata: acp, thinking: true, agentState: { steeringActive: false } })).toBe(false)
+        expect(hasActiveSteeringTurn({ metadata: { flavor: 'agy' }, thinking: true, agentState: { steeringActive: true } })).toBe(false)
+    })
+
     it('uses the Pi runtime thinking signal', () => {
         expect(hasActiveSteeringTurn({ metadata: { flavor: 'pi' }, thinking: true,
             agentState: { steeringActive: false } })).toBe(true)
@@ -227,10 +251,11 @@ describe('hasActiveSteeringTurn', () => {
 
 describe('steering support table', () => {
     // The pre-table branching, kept as the reference the table must match.
-    type Metadata = { flavor?: string | null; cursorSessionId?: string | null; cursorSessionProtocol?: 'acp' | 'stream-json' | null }
+    type Metadata = { flavor?: string | null; cursorSessionId?: string | null; cursorSessionProtocol?: 'acp' | 'stream-json' | null; agyProtocol?: 'acp' | null }
     function referenceSupportsSession(metadata?: Metadata | null): boolean {
         if (metadata?.flavor === 'claude' || metadata?.flavor === 'codex'
             || metadata?.flavor === 'opencode' || metadata?.flavor === 'pi') return true
+        if (metadata?.flavor === 'agy') return metadata.agyProtocol === 'acp'
         if (metadata?.flavor !== 'cursor') return false
         if (metadata.cursorSessionProtocol === 'stream-json') return false
         if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) return false
@@ -241,7 +266,8 @@ describe('steering support table', () => {
         'claude', 'codex', 'cursor', 'opencode', 'pi', 'gemini', 'agy', 'unknown', '',
         '__proto__', 'constructor', 'toString', null, undefined,
     ]
-    const cursorShapes: Array<Pick<Metadata, 'cursorSessionId' | 'cursorSessionProtocol'>> = [
+    const cursorShapes: Array<Pick<Metadata, 'cursorSessionId' | 'cursorSessionProtocol' | 'agyProtocol'>> = [
+        { agyProtocol: 'acp' }, { agyProtocol: null }, { cursorSessionProtocol: 'acp', agyProtocol: 'acp' },
         {}, { cursorSessionId: 'id' }, { cursorSessionId: null }, { cursorSessionProtocol: 'acp' },
         { cursorSessionProtocol: 'stream-json' }, { cursorSessionProtocol: null },
         { cursorSessionId: 'id', cursorSessionProtocol: 'acp' },
