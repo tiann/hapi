@@ -329,12 +329,20 @@ export function SessionRowSummary(props: {
                             className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${jobStale ? '' : 'animate-pulse'}`}
                             aria-hidden="true"
                         />
-                        <span className="min-w-0 truncate font-medium">
-                            {attachedJob.label}
-                            {jobStale ? (
-                                <span className="font-semibold"> · {t('session.item.attachedJob.stale')}</span>
-                            ) : null}
-                            <span className="font-normal opacity-80"> · {jobProgressLabel}</span>
+                        {/* The label gives way first: progress, elapsed time and the stale
+                            marker are the parts that change, so a long label must not hide them.
+                            The label starts at zero and grows into what the status leaves free
+                            (up to its full width); the status truncates only once the label is at its minimum. */}
+                        <span className="flex min-w-0 items-center gap-1">
+                            <span className="min-w-8 max-w-max flex-1 truncate font-medium">
+                                {attachedJob.label}
+                            </span>
+                            <span data-testid="attached-job-status" className="min-w-0 truncate">
+                                {jobStale ? (
+                                    <span className="font-semibold">· {t('session.item.attachedJob.stale')}</span>
+                                ) : null}
+                                <span className="font-normal opacity-80">{jobStale ? ' · ' : '· '}{jobProgressLabel}</span>
+                            </span>
                         </span>
                         {jobFraction !== null ? (
                             <span

@@ -387,6 +387,39 @@ describe('SessionRowSummary attached job progress', () => {
         expect(bar).not.toHaveAttribute('aria-valuenow')
     })
 
+    it('keeps job progress and the stale marker out of the truncating label', () => {
+        vi.setSystemTime(1_000_000 + 20 * 60_000)
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'reencode',
+                            label: 'Re-encode every portfolio film at the higher quality setting',
+                            status: 'running',
+                            done: 6,
+                            total: 39,
+                            unit: 'films',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 60_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        // A long label shrinks first; the changing status has its own span so it
+        // is not the part an ellipsis removes.
+        const label = screen.getByText('Re-encode every portfolio film at the higher quality setting')
+        expect(label).toHaveClass('truncate')
+        const status = screen.getByTestId('attached-job-status')
+        expect(label.contains(status)).toBe(false)
+        expect(status).toHaveTextContent(/^· stale · 15% · 6\/39 films · 21m · no heartbeat · 20m$/)
+    })
+
     it('renders a real fill only when total yields a fraction', () => {
         const { container } = render(
             <I18nProvider>
