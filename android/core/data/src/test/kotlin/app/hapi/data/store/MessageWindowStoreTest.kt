@@ -615,4 +615,27 @@ class MessageWindowStoreTest {
         assertNull(replaced.warning)
     }
 
+    @Test
+    fun `no-news recovery keeps the loaded older cursor`() = runTest {
+        val held = (1L..800L).map { agentRow("r-$it", it, it * 1000) }
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("gap-cursor", api, backgroundScope, initialState = MessageWindowState(
+            sessionId = "gap-cursor", epoch = 1, hasMore = true,
+            oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(800_000, 800),
+            messages = held.map { it.asWindowMessage() },
+        ))
+        api.release(afterPage(emptyList(), epoch = 1, nextAfter = 800_000L to 800L, hasMore = false))
+        val page = (601L..800L).map { agentRow("r-$it", it, it * 1000) }
+        api.release(latestPage(page, epoch = 1, hasMore = true))
+
+        store.recoverAfterGapResume()
+
+        // The latest page excludes the held rows 1-600: the older-paging
+        // cursor must stay at the window edge (row 1) instead of jumping to
+        // the page's own bound (row 600), like the web keeps it.
+        val state = store.state.value
+        assertEquals(800, state.messages.size)
+        assertEquals(1L, state.oldestPosition!!.seq)
+        assertTrue(state.hasMore)
+    }
 }

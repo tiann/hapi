@@ -292,7 +292,13 @@ object MessageWindowLogic {
         val oldest = when {
             dropped.isNotEmpty() -> derivePosition(kept, PositionEnd.Oldest)
             replaceServerRows -> responseOldest
-            else -> responseOldest ?: previous.oldestPosition
+            responseOldest == null -> previous.oldestPosition
+            previous.oldestPosition == null -> responseOldest
+            // An upsert keeps rows older than the response page, so the
+            // older-paging cursor must stay on whichever side is older
+            // instead of jumping to the response page's own bound.
+            responseOldest <= previous.oldestPosition!! -> responseOldest
+            else -> previous.oldestPosition
         }
         return previous.withMessages(kept).copy(
             readThroughRevision = maxOf(previous.readThroughRevision ?: 0, page.readThroughRevision ?: 0, kept.maxOfOrNull { it.wire.contentRevision ?: 0 } ?: 0),
