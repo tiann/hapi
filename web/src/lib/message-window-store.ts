@@ -1,4 +1,5 @@
-import { getReasoningStreamId } from '@hapi/protocol/messages'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { getReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
@@ -51,6 +52,9 @@ export type MessageWindowState = {
     // cursor is invalid. Consumers must treat that window as provisional
     // until the next tail reconciliation completes.
     requiresLatestReset: boolean
+    // Gap-recovery pending: the next tail sync must catch up the missed
+    // interval and then reconcile an authoritative latest page as an upsert.
+    pendingGapRecovery: boolean
     /**
      * A search/context window stops short of the session head. True while
      * newer messages exist between the loaded window and that head, so the
@@ -71,6 +75,10 @@ const PAGE_SIZE = 200
 const CACHED_REENTRY_PAGE_SIZE = 20
 // ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
 const INITIAL_CONTEXT_WAIT_MS = 500
+// Gap recovery refreshes at most this many retained non-terminal tool-call
+// rows through the message-context endpoint (newest first). Live calls are a
+// handful; the bound keeps a pathological window from fanning out requests.
+const GAP_ROW_REFRESH_LIMIT = 20
 
 type MessagePosition = {
     at: number
@@ -89,6 +97,11 @@ type InternalState = MessageWindowState & {
     contextNewestSeq: number | null
     requiresLatestReset: boolean
     preferLatestOnActivation: boolean
+    // A gap resume asked for an authoritative latest page applied as an
+    // upsert: rows the window holds are replaced by id, but already-loaded
+    // history outside the latest page and the oldest cursor survive the
+    // reconciliation.
+    pendingGapRecovery: boolean
     syncGeneration: number
     olderGeneration: number
 }
@@ -111,6 +124,7 @@ type TailSyncController = {
     running: Promise<void> | null
     trailingRequested: boolean
     runningPrefersLatest: boolean
+    runningPendingRecovery: boolean
 }
 
 const states = new Map<string, InternalState>()
@@ -287,6 +301,7 @@ function createState(sessionId: string): InternalState {
         hasMoreNewer: false,
         requiresLatestReset: false,
         preferLatestOnActivation: false,
+        pendingGapRecovery: false,
         syncGeneration: 0,
         olderGeneration: 0
     }
@@ -462,6 +477,7 @@ function buildState(
         | 'hasMoreNewer'
         | 'requiresLatestReset'
         | 'preferLatestOnActivation'
+        | 'pendingGapRecovery'
         | 'syncGeneration'
         | 'olderGeneration'
         | 'historyVersion'
@@ -717,6 +733,7 @@ function applyLatestResponse(
     options: {
         replaceServerRows: boolean
         requestBaseline: Map<string, DecryptedMessage>
+        trimLimit?: number
     }
 ): InternalState {
     const dismissedIds = new Set(
@@ -745,7 +762,7 @@ function applyLatestResponse(
         : previous.messages
     const authoritative = mergeMessages(preserved, retainedResponseMessages)
     const incoming = mergeMessages(authoritative, concurrentServerRows)
-    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(incoming, VISIBLE_WINDOW_SIZE, 'append')
+    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(incoming, options.trimLimit ?? VISIBLE_WINDOW_SIZE, 'append')
     const snapshotHead = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
         ?? derivePosition(response.messages, 'newest')
     const newestKept = derivePosition(kept, 'newest')
@@ -758,7 +775,12 @@ function applyLatestResponse(
         ? oldestKept
         : options.replaceServerRows
             ? responseOldest
-            : responseOldest ?? previousOldest
+            // An upsert keeps rows older than the response page, so the
+            // older-paging cursor must stay on whichever side is older
+            // instead of jumping to the response page's own bound.
+            : (responseOldest && previousOldest
+                ? (comparePosition(responseOldest, previousOldest) <= 0 ? responseOldest : previousOldest)
+                : responseOldest ?? previousOldest)
     return buildState(previous, {
         messages: kept,
         readThroughRevision: Math.max(previous.readThroughRevision ?? 0, response.page.readThroughRevision ?? 0,
@@ -814,6 +836,23 @@ function finishTailSync(sessionId: string, generation: number, warning: string |
     })
 }
 
+/** A cached tool-call row that can still be enriched in place: its payload is
+ *  a live `tool-call` whose merged status has not reached a terminal tier.
+ *  Terminal rows are done; unknown or missing status reads as pending. */
+function isNonTerminalToolCallRow(message: DecryptedMessage): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(message.content)
+    if (record?.role !== 'agent') return false
+    const content = record.content
+    if (!content || typeof content !== 'object') return false
+    const payload = content as { type?: unknown; data?: unknown }
+    if (payload.type !== AGENT_MESSAGE_PAYLOAD_TYPE || !payload.data || typeof payload.data !== 'object') {
+        return false
+    }
+    const data = payload.data as { type?: unknown; status?: unknown }
+    if (data.type !== 'tool-call') return false
+    return data.status !== 'completed' && data.status !== 'failed'
+}
+
 function isToolOnlyPage(messages: DecryptedMessage[]): boolean {
     const normalized: NormalizedMessage[] = []
     for (const message of messages) {
@@ -865,10 +904,27 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
         const initial = getState(sessionId)
         const initialCursor = getNewestCursor(initial)
         const preferLatestOnActivation = initial.preferLatestOnActivation
+        const pendingGapRecovery = initial.pendingGapRecovery
         const canIncrement = initialCursor !== null
             && initial.epoch !== null
             && !initial.requiresLatestReset
-            && !preferLatestOnActivation
+            // A pending gap recovery must run its cursor catch-up even when a
+            // cached activation asked for a direct latest page: the activation
+            // shortcut fetches only the newest rows and leaves the interval
+            // between the cached tail and the page unreachable below the
+            // advanced newest cursor.
+            && (!preferLatestOnActivation || pendingGapRecovery)
+
+        if (canIncrement && preferLatestOnActivation) {
+            // The recovery's catch-up + latest-page reconciliation subsumes
+            // the cached-activation refresh. Defer the activation shortcut for
+            // this run: left set, it would force-break the catch-up loop after
+            // its first chunk.
+            updateState(sessionId, (previous) => {
+                if (previous.syncGeneration !== generation) return previous
+                return buildState(previous, { preferLatestOnActivation: false })
+            })
+        }
 
         if (!canIncrement) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
@@ -879,7 +935,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             const isColdWindow = !initial.requiresLatestReset
                 && !preferLatestOnActivation
                 && initialCursor === null
-            const latestPageSize = initial.requiresLatestReset
+            const latestPageSize = initial.requiresLatestReset || pendingGapRecovery
                 ? PAGE_SIZE
                 : preferLatestOnActivation
                     ? CACHED_REENTRY_PAGE_SIZE
@@ -895,16 +951,23 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
                 const next = applyLatestResponse(previous, response, {
+                    // Gap recovery reconciles by id so already-loaded history
+                    // outside the latest page survives; only a structural
+                    // reset, a server reset verdict, or an epoch change (a
+                    // remote rewind whose messages-invalidated event was
+                    // missed can have deleted held rows) may replace rows.
                     replaceServerRows: initial.requiresLatestReset
-                        || preferLatestOnActivation
-                        || response.page.reset,
+                        || response.page.reset
+                        || (initial.epoch !== null && response.page.epoch !== initial.epoch)
+                        || (preferLatestOnActivation && !pendingGapRecovery),
                     requestBaseline
                 })
                 if (!context) {
-                    return buildState(next, { preferLatestOnActivation: false })
+                    return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: false })
                 }
                 return buildState(mergeIntoWindow(next, context.messages, { mode: 'prepend' }), {
                     preferLatestOnActivation: false,
+                    pendingGapRecovery: false,
                     hasMore: context.page.hasMore,
                     oldestPositionAt: context.page.nextBeforeAt,
                     oldestPositionSeq: context.page.nextBeforeSeq
@@ -916,6 +979,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 
         let after = initialCursor
         let until: MessagePosition | null = null
+        let catchUpReset = false
         while (true) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
             const response = await api.getMessages(sessionId, {
@@ -936,6 +1000,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         requestBaseline
                     })
                 })
+                catchUpReset = true
                 break
             }
 
@@ -985,6 +1050,113 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             after = nextAfter
         }
 
+        if (pendingGapRecovery) {
+            if (catchUpReset) {
+                // A reset verdict already replaced the window authoritatively
+                // under the server's epoch; there is nothing left to refresh.
+                updateState(sessionId, (previous) => {
+                    if (previous.syncGeneration !== generation) return previous
+                    return buildState(previous, {
+                        pendingGapRecovery: false,
+                        preferLatestOnActivation: false
+                    })
+                })
+            } else if (getState(sessionId).requiresLatestReset) {
+                // The catch-up overflowed the window's history budget:
+                // history-mode trimming dropped the newer caught-up rows and
+                // marked the window for a reset. Reconciling the latest page
+                // on top would strand the rows between the reset-marked
+                // window and the page — unreachable from either cursor — so
+                // leave the reset requirement and the recovery flags intact:
+                // the next sync's authoritative replacement closes the hole
+                // and consumes the flags.
+            } else {
+                // The cursor phase caught the window up without error. Only
+                // now may the recovery advance to the latest page: reconciling
+                // after a failed catch-up would strand the rows between the
+                // cached tail and the page below the advanced newest cursor.
+                // On a catch-up failure the catch above skips this block, the
+                // original cursor and the flag survive, and the next sync
+                // retries the whole recovery.
+                const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
+                const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+                if (!isCurrentTailSync(sessionId, generation)) return
+                updateState(sessionId, (previous) => {
+                    if (previous.syncGeneration !== generation) return previous
+                    const trimLimit = Math.min(OLDER_LOAD_WINDOW_SIZE, Math.max(VISIBLE_WINDOW_SIZE, previous.messages.length))
+                    const next = applyLatestResponse(previous, response, {
+                        replaceServerRows: response.page.reset
+                            || (previous.epoch !== null && response.page.epoch !== previous.epoch),
+                        requestBaseline,
+                        trimLimit
+                    })
+                    return buildState(next, {
+                        pendingGapRecovery: false,
+                        preferLatestOnActivation: false
+                    })
+                })
+
+                // A tool-call row the client cached before the gap can be
+                // enriched in place afterwards; when more than a latest page of
+                // newer rows followed, neither the catch-up (newer rows only)
+                // nor the page reaches it, and the cached card keeps its stale
+                // input/status. Refresh those retained non-terminal rows by id
+                // through the existing message-context endpoint: bounded,
+                // newest first, best-effort, and skipped for rows the catch-up
+                // already delivered fresh (at or after the recovery cursor).
+                const pageOldest = pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
+                if (pageOldest) {
+                    const refreshCandidates = getState(sessionId).messages
+                        .filter((message) => {
+                            const position = messagePosition(message)
+                            if (!position || comparePosition(position, pageOldest) >= 0) return false
+                            if (initialCursor && comparePosition(position, initialCursor) > 0) return false
+                            return isNonTerminalToolCallRow(message)
+                        })
+                        .sort((left, right) => comparePosition(
+                            messagePosition(right) as MessagePosition,
+                            messagePosition(left) as MessagePosition
+                        ))
+                        .slice(0, GAP_ROW_REFRESH_LIMIT)
+                    for (const candidate of refreshCandidates) {
+                        // A failed refresh propagates to runTailSync's catch and
+                        // surfaces the usual warning; the row stays as is, the
+                        // recovery flags were already consumed, and the next
+                        // sync retries the sweep from the surviving rows.
+                        const context = await api.getMessageContext(sessionId, candidate.id)
+                        if (!isCurrentTailSync(sessionId, generation)) return
+                        const refreshed = context?.messages.find((message) => message.id === candidate.id)
+                        if (!refreshed) {
+                            // The row is no longer reachable through the
+                            // context endpoint: leave it as is and finish the
+                            // run's bookkeeping — an early return here would
+                            // leave the window marked syncing.
+                            finishTailSync(sessionId, generation, 'Failed to refresh a merged tool call')
+                            return
+                        }
+                        if (context!.page.epoch !== getState(sessionId).epoch) {
+                            // The refresh answered under a different epoch:
+                            // server rows may have been deleted since the
+                            // page was fetched. Mark the window for the
+                            // authoritative replacement instead of
+                            // reconciling against a stale snapshot, and
+                            // finish the run's bookkeeping.
+                            updateState(sessionId, (previous) => {
+                                if (previous.syncGeneration !== generation) return previous
+                                return buildState(previous, { requiresLatestReset: true })
+                            })
+                            finishTailSync(sessionId, generation, 'Failed to refresh a merged tool call')
+                            return
+                        }
+                        updateState(sessionId, (previous) => {
+                            if (previous.syncGeneration !== generation) return previous
+                            return buildState(previous, { messages: mergeMessages(previous.messages, [refreshed]) })
+                        })
+                    }
+                }
+            }
+        }
+
         finishTailSync(sessionId, generation, null)
     } catch (error) {
         if (!isCurrentTailSync(sessionId, generation)) return
@@ -998,15 +1170,18 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 
 function startTailSync(sessionId: string, controller: TailSyncController): Promise<void> {
     const runningPrefersLatest = getState(sessionId).preferLatestOnActivation
+    const runningPendingRecovery = getState(sessionId).pendingGapRecovery
     const running = runTailSync(controller.api, sessionId)
     controller.running = running
     controller.runningPrefersLatest = runningPrefersLatest
+    controller.runningPendingRecovery = runningPendingRecovery
     const finish = () => {
         if (tailSyncControllers.get(sessionId) !== controller || controller.running !== running) {
             return
         }
         controller.running = null
         controller.runningPrefersLatest = false
+        controller.runningPendingRecovery = false
         if (!controller.trailingRequested) {
             return
         }
@@ -1122,7 +1297,8 @@ export function syncTailMessages(
             api,
             running: null,
             trailingRequested: false,
-            runningPrefersLatest: false
+            runningPrefersLatest: false,
+            runningPendingRecovery: false
         }
         tailSyncControllers.set(sessionId, controller)
     }
@@ -1130,8 +1306,16 @@ export function syncTailMessages(
     if (!controller.running) {
         return startTailSync(sessionId, controller)
     }
-    if (getState(sessionId).preferLatestOnActivation) {
-        if (controller.runningPrefersLatest) {
+    const state = getState(sessionId)
+    if (state.preferLatestOnActivation || state.pendingGapRecovery) {
+        // A running sync snapshotted its mode at start; a newly requested
+        // latest reconciliation (cached re-entry or gap recovery) must not
+        // let that older run commit a plain cursor merge or a full
+        // replacement over it.
+        if (controller.runningPrefersLatest && !state.pendingGapRecovery) {
+            return controller.running
+        }
+        if (controller.runningPendingRecovery && state.pendingGapRecovery) {
             return controller.running
         }
         controller.trailingRequested = false
@@ -1143,6 +1327,49 @@ export function syncTailMessages(
     }
     controller.trailingRequested = true
     return waitForTailSyncDrain(sessionId, controller, observed)
+}
+
+/**
+ * One gap-recovery step for a session message window.
+ *
+ * A resumed-with-gap connection (`resume: 'gap'`) cannot prove continuity,
+ * and in-place row updates (merged tool-call ticks) keep the row's original
+ * cursor position, so a plain cursor sync re-delivers new rows but never the
+ * merged content of rows the window already holds. Force an authoritative
+ * latest page and apply it as an upsert instead of replacing the window: rows
+ * present in the response are replaced by id, while already-loaded rows older
+ * than the latest page and the hasMore/oldest cursor and context survive. An
+ * older load caught in flight is invalidated like on every tail sync (the
+ * generation bump) and is simply re-requested by the user's scroll. Rows
+ * older than the latest page are not re-fetched — a live tool-call tick
+ * always updates a row inside the newest page, so in-place updates are
+ * recovered without discarding scrolled-back history. A failed recovery
+ * fetch leaves the flag set, so the next sync retries the latest page. Cold
+ * or structurally invalidated windows have nothing to preserve and keep the
+ * plain reset choreography.
+ *
+ * The latest page only covers the newest rows, so a warm window whose cached
+ * tail sits below the page's oldest row would keep a permanent hole between
+ * the two (the advanced newest cursor never fills it). The catch-up therefore
+ * runs first: a plain cursor sync pulls every row the window missed, then the
+ * upsert refreshes in-place merged rows. Cost: one extra round trip on
+ * reconnect.
+ */
+export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): Promise<void> {
+    if (messageWindowTargetLocks.has(sessionId)) {
+        return Promise.resolve()
+    }
+    const previous = states.get(sessionId)
+    if (
+        !previous
+        || previous.requiresLatestReset
+        || getNewestCursor(previous) === null
+        || previous.epoch === null
+    ) {
+        return syncTailMessages(api, sessionId)
+    }
+    updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
+    return syncTailMessages(api, sessionId)
 }
 
 /**

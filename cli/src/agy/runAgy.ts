@@ -114,17 +114,11 @@ export async function runAgy(opts: {
         };
 
         session.onCancelQueuedMessage((localId) => {
-            // A batch held in the driver's retry backoff is outside MessageQueue2;
-            // the driver-owned cancel handles it (returns true when removed).
-            const retryRemoved = sessionWrapperRef.current?.cancelRetryDelivery?.(localId) ?? false;
-            if (retryRemoved) {
-                logger.debug(`[agy] cancelByLocalId(${localId}): removed from retry backoff`);
-                return true;
-            }
             const removed = messageQueue.cancelByLocalId(localId);
             logger.debug(`[agy] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found'}`);
             return removed;
         });
+        session.onRetryQueuedMessage((localId) => messageQueue.releaseIndeterminateReservation(localId));
 
         registerSessionConfigRpc<PermissionMode>({
             rpcHandlerManager: session.rpcHandlerManager,

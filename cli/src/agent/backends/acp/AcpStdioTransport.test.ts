@@ -187,6 +187,16 @@ describe('AcpStdioTransport plain-text stdout', () => {
         spawnState.stdoutDataHandlers = [];
     });
 
+    test('reports itself dead once the agent process exits', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agy', args: ['acp'] });
+        expect(transport.isAlive()).toBe(true);
+
+        for (const handler of spawnState.exitHandlers) handler(null, 'SIGKILL');
+
+        expect(transport.isAlive()).toBe(false);
+        await transport.close();
+    });
+
     test('ignores Cursor worktree banner and keeps JSON-RPC session alive', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const notifications: Array<{ method: string; params: unknown }> = [];
@@ -217,6 +227,23 @@ describe('AcpStdioTransport plain-text stdout', () => {
             params: { sessionUpdate: 'agent_message_chunk' }
         }]);
 
+        await transport.close();
+    });
+
+    test('keeps the JSON-RPC error code on a rejected request', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agy', args: ['acp'] });
+        const pending = transport.sendRequest('session/prompt');
+
+        emitStdout(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            error: { code: -32603, message: 'the running prompt is waiting for a permission or question answer' }
+        })}\n`);
+
+        await expect(pending).rejects.toMatchObject({
+            message: 'the running prompt is waiting for a permission or question answer',
+            code: -32603
+        });
         await transport.close();
     });
 

@@ -1,0 +1,49 @@
+/**
+ * Always-on steer for session-attached long-running jobs (tiann/hapi#1404).
+ *
+ * Injected into flavors that have a HAPI system / developer-instructions seam
+ * today: Claude, Codex, OpenCode, Grok. Cursor/Kimi/Copilot/Pi get the same
+ * MCP tool (`session_job`) via the HAPI MCP bridge — catalog discovery, not
+ * this prompt block. Estate skill remains a Cursor backup.
+ */
+
+/** Canonical one-block contract. Keep short — every session's prompt budget. */
+export const SESSION_JOB_INSTRUCTION = [
+    'Session-attached jobs (outliving work):',
+    'When you start work that will keep running after this agent goes idle',
+    '(batch imports, long scripts, external daemons), attach a session job so',
+    'the session list shows progress while you are idle — same class of HAPI',
+    'tooling as ping_peer / inspect_peer.',
+    'REQUIRED for process-shaped work (idle agents cannot heartbeat):',
+    'Shell → hapi job run <session-id> <job-key> --label <text>',
+    '--progress unknown|fraction|until … -- <cmd>…',
+    '(--progress is required: unknown=indeterminate stripes; fraction=remaining+total',
+    'or done+total; until=--until <ISO|epoch> for known deadlines — heartbeats re-stamp remaining).',
+    'Fraction without a continuous updater freezes — keep job update feeder from t=0.',
+    'FORBIDDEN: --progress fraction --done 0 --total N with no count writer (frozen 0/N).',
+    'Known wall-clock windows MUST use --progress until, not unknown.',
+    'Numeric sleep N requires --progress until --until <ISO> (CLI refuses otherwise).',
+
+    'Use "$HAPI_SESSION_ID" only when it matches the operator chat URL uuid;',
+    'remote Cursor runner may export a worker-row id — pass /sessions/<id> explicitly.',
+    '(auto-heartbeats + completed/failed on exit code). Wrap the real cmd — never a sleep',
+    'stub while work runs elsewhere (SSH/wget/nohup), except intentional --progress until countdowns.',
+    'Exit≠semantic failure: nonzero exit stamps failed even if the batch mostly',
+    'succeeded — prefer exit 0 when the run finished; put item errors in detail/logs.',
+    'Non-JSONL children need an adapter or --progress unknown — do not invent a percent.',
+    'HYGIENE: MCP session_job action=list on start/resume AND before done/archive.',
+    'Clear or fail zombie running meters (dead process) yourself — never ask the operator.',
+    'Leave live jobs with fresh heartbeats alone.',
+    'Do NOT use MCP session_job action=set (refused) or bare set+nohup — that freezes the bar.',
+    'MCP session_job is only update / clear / list after job run created the meter.',
+    'remaining=0 does not finish the job — pass --status completed or job clear when done.',
+    'Never invent a fake percent. Full contract: hapi job --help; docs/guide/session-jobs.md.'
+].join(' ')
+
+/** Append instruction to an existing prompt block (blank line separator). */
+export function withSessionJobInstruction(base: string): string {
+    const trimmed = base.trimEnd()
+    return trimmed.length > 0
+        ? `${trimmed}\n\n${SESSION_JOB_INSTRUCTION}`
+        : SESSION_JOB_INSTRUCTION
+}

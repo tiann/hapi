@@ -14,11 +14,22 @@ export function useSelectedSessionSeen(
     const version = useRef(stateVersion)
     version.current = stateVersion
     const followsTail = visible && renderedRevision !== undefined
-    // New output is acknowledged below as it renders; do not flash its dot meanwhile.
+    // Suppress transient unread dots only while the user is actually at the tail.
     useEffect(() => {
         if (!followsTail || !sessionId) return
-        return followSessionTail(sessionId)
-    }, [followsTail, sessionId])
+        const viewport = viewportRef.current
+        if (!viewport) return
+        let stopFollowing: (() => void) | undefined
+        const update = () => {
+            const atTail = viewport.clientHeight > 0
+                && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 2
+            if (atTail && !stopFollowing) stopFollowing = followSessionTail(sessionId)
+            else if (!atTail && stopFollowing) { stopFollowing(); stopFollowing = undefined }
+        }
+        viewport.addEventListener('scroll', update, { passive: true })
+        update()
+        return () => { viewport.removeEventListener('scroll', update); stopFollowing?.() }
+    }, [followsTail, sessionId, viewportRef])
     useEffect(() => {
         if (!visible || !sessionId || renderedRevision === undefined) return
         const viewport = viewportRef.current

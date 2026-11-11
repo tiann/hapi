@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import { logger } from '@/ui/logger';
 import { AsyncLock } from '@/utils/lock';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
@@ -11,6 +12,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
+import { isSessionSummaryContractEnabled } from '@/modules/common/sessionSummaryInstruction';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { CursorSession } from './session';
 import type { PermissionMode } from './loop';
@@ -37,13 +39,17 @@ import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsShared
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     cursorHapiMcpServerId,
     installCursorMcpOverlay,
     type CursorMcpOverlayHandle,
 } from './utils/cursorMcpOverlay';
+import {
+    installCursorNotifyRuleOverlay,
+    type CursorNotifyRuleOverlay
+} from './utils/cursorNotifyRuleOverlay';
 import {
     resolveCursorSpawnModel,
     tryRemapCursorSpawnModelFromConnectError
@@ -66,6 +72,7 @@ const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
+    private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
     private acpSessionId: string | null = null;
     private permissionAdapter: PermissionAdapter | null = null;
@@ -96,6 +103,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
     private autoReviewSlashQueued = false;
     private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
+    /** Transient workspace `.cursor/rules` overlay when emit status summaries is on. */
+    private notifyRuleOverlay: CursorNotifyRuleOverlay | null = null;
     private pendingRetryableError: string | null = null;
     private pendingRetryableFromStderr = false;
     private pendingInlineRetryableError = false;
@@ -110,6 +119,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
+        this.titleSync = createAcpSessionTitleSync(session.client);
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -128,11 +138,24 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
         session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
 
+        const titleSync = this.titleSync;
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
         });
         this.happyServer = happyServer;
+
+        // Install the workspace session-summary rule before the backend spawns
+        // cursor-agent, so the `.cursor/rules` file is on disk when it reads
+        // workspace rules. Gated on the same emit setting as other flavors.
+        // Restored/removed in cleanup().
+        if (isSessionSummaryContractEnabled()) {
+            this.notifyRuleOverlay = installCursorNotifyRuleOverlay({
+                cwd: session.path,
+                project: basename(session.path) || null,
+                agentId: session.client.sessionId || null
+            });
+        }
 
         const hapiBridge = mcpServers.hapi;
         if (hapiBridge) {
@@ -179,7 +202,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 addDirs: session.cursorAddDirs
             });
             this.backend = backend;
-            registerAcpSessionTitleSync(backend, session.client);
+            registerAcpSessionTitleSync(backend, session.client, titleSync);
             this.recordCursorNativeWorktreeMetadata();
 
             backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
@@ -295,7 +318,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             addDirs: session.cursorAddDirs
                         });
                         this.backend = backend;
-                        registerAcpSessionTitleSync(backend, session.client);
+                        registerAcpSessionTitleSync(backend, session.client, titleSync);
                         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
                         this.wireAgentActivityThinking(backend, session);
                         recentStderrHint = null;
@@ -356,7 +379,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             addDirs: session.cursorAddDirs
                         });
                         this.backend = backend;
-                        registerAcpSessionTitleSync(backend, session.client);
+                        registerAcpSessionTitleSync(backend, session.client, titleSync);
                         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
                         this.wireAgentActivityThinking(backend, session);
                         recentStderrHint = null;
@@ -866,10 +889,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
-        // Capture overlay before awaited teardown so a reject from
-        // cancelAll/disconnect cannot leave a dead hapi-* entry in ~/.cursor/mcp.json.
+        // Capture overlays before awaited teardown so a reject from
+        // cancelAll/disconnect cannot leave a dead hapi-* MCP entry or a
+        // leftover session-summary rule on disk.
         const overlay = this.cursorMcpOverlay;
         this.cursorMcpOverlay = null;
+        const notifyOverlay = this.notifyRuleOverlay;
+        this.notifyRuleOverlay = null;
         this.sessionTeardownStarted = true;
 
         try {
@@ -909,6 +935,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
         } finally {
             overlay?.cleanup();
+            notifyOverlay?.cleanup();
             setCursorAcpModelsSnapshot(null);
         }
     }
@@ -979,15 +1006,21 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * #1470 / #1502: ACP foreground state → hub thinking via keepalive.
-     * Background tool/content updates are ignored; running is debounced in the backend.
+     * #1470 / #1502 / #1553: ACP foreground state → hub thinking via keepalive.
+     * Ignore ambient Cursor `state_update_running` when no HAPI prompt is in
+     * flight — that chatter otherwise floats quiet sessions into Working and
+     * hides an attached job from the Jobs bucket. Prompt-owned running,
+     * permission, and requires_action still bump thinking.
      */
     private softSteerOutstanding(): boolean {
         return this.softSteerWaiters.length > 0;
     }
 
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
-        backend.setAgentActivityListener((thinking) => {
+        backend.setAgentActivityListener((thinking, source) => {
+            if (source === 'state_update_running' && !this.promptInFlight) {
+                return;
+            }
             if (shouldSuppressPostCloseHarnessThinking(this.postCloseHarnessGate, {
                 promptInFlight: this.promptInFlight,
                 softSteerOutstanding: this.softSteerOutstanding(),
@@ -1370,7 +1403,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
         // Publish this.backend only after initialize + session/load so the
         // message loop cannot prompt against a half-ready process.
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, this.titleSync);
         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
         this.wireAgentActivityThinking(backend, session);
         this.wireStderrErrorListener(backend, (hint) => {
