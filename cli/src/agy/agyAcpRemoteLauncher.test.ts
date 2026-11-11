@@ -3407,7 +3407,7 @@ describe('AgyAcpRemoteLauncher dequeue hold', () => {
         queue.push('next message', REVIEW, 'b');
 
         await vi.waitFor(() => expect(eventTexts(client).some((text) => text.includes('continued working on its own'))));
-        await vi.waitFor(() => expect(agentRows(client).some((row) => row.type === 'text' && (row as { text: string }).text === 'Second wakeup progress.')));
+        await vi.waitFor(() => expect(textRows(client)).toContain('Second wakeup progress.'));
         await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
         queue.close();
         await run;
