@@ -81,17 +81,31 @@ describe('SessionRowSummary background status', () => {
         expect(idleBadge).not.toHaveClass('bg-[var(--app-badge-success-text)]')
     })
 
-    it('does not dim disconnected rows and gives them a stopped badge instead of nothing', () => {
+    it('dims disconnected rows and gives them a stopped badge instead of nothing', () => {
         const { container } = render(
             <I18nProvider>
                 <SessionRowSummary session={makeSummary({ active: false, backgroundTaskCount: 0 })} />
             </I18nProvider>
         )
-        expect(container.querySelector('.opacity-50')).toBeNull()
+        // Two scales of the same fact: the badge names the state on inspection,
+        // the row fade makes it legible while scanning a long list.
+        const faded = container.querySelector('.opacity-50')
+        expect(faded).not.toBeNull()
         const badge = container.querySelector('[data-testid="session-presence"]')
         expect(badge).toHaveAttribute('data-presence', 'stopped')
         expect(badge).not.toHaveClass('animate-pulse')
         expect(badge?.querySelector('svg')).not.toBeNull()
+        // The mark must not be dimmed along with the title line.
+        expect(faded!.contains(badge)).toBe(false)
+    })
+
+    it('keeps resident rows at full strength', () => {
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ active: true, backgroundTaskCount: 0 })} />
+            </I18nProvider>
+        )
+        expect(container.querySelector('.opacity-50')).toBeNull()
     })
 
     it('shows a detailed background tooltip on the agent icon in Extended mode', () => {
@@ -271,7 +285,7 @@ describe('SessionRowSummary attached job progress', () => {
         vi.useRealTimers()
     })
 
-    it('keeps a pulsing working badge for a running attached job after the agent stops', () => {
+    it('fades the row but keeps a pulsing working badge and job meter after the agent stops', () => {
         const { container } = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -282,6 +296,9 @@ describe('SessionRowSummary attached job progress', () => {
                             key: 'import',
                             label: 'beets import',
                             status: 'running',
+                            remaining: 3_600,
+                            total: 172_800,
+                            unit: 's',
                             heartbeatAt: 1_000_000,
                             startedAt: 1_000_000 - 60_000,
                             updatedAt: 1_000_000,
@@ -292,9 +309,20 @@ describe('SessionRowSummary attached job progress', () => {
             </I18nProvider>
         )
 
+        // A job outliving its agent is the case where the two signals must say
+        // different things at once: nothing holds this session in memory, and
+        // the work is still running.
         const badge = container.querySelector('[data-testid="session-presence"]')
         expect(badge).toHaveAttribute('data-presence', 'working')
         expect(badge).toHaveClass('animate-pulse')
+
+        const faded = container.querySelector('.opacity-50')
+        expect(faded).not.toBeNull()
+        // The job's own affordances stay outside the faded subtree.
+        const jobLabel = screen.getByText('beets import')
+        expect(faded!.contains(jobLabel)).toBe(false)
+        expect(screen.getByTestId('attached-job-progress-bar')).toBeInTheDocument()
+        expect(faded!.contains(badge)).toBe(false)
     })
 
     it('renders a subtle indeterminate striped bar (no %) when fraction is unknown', () => {
