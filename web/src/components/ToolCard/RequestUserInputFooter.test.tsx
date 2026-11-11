@@ -147,6 +147,20 @@ describe('RequestUserInputFooter', () => {
         expect(screen.getByRole('checkbox', { name: /Beta/ })).toHaveAttribute('aria-checked', 'true')
     })
 
+    it('renders option labels and descriptions as Markdown', () => {
+        const { container } = renderFooter({
+            questions: [{
+                id: 'md',
+                question: 'Pick a target',
+                isOther: true,
+                options: [{ label: 'Deploy to **staging**', description: 'Runs `bun test` first' }]
+            }]
+        })
+        expect(container.querySelector('strong')).not.toBeNull()
+        expect(container.querySelector('code')).not.toBeNull()
+        expect(screen.queryByText('Deploy to **staging**')).toBeNull()
+    })
+
     it('retains the answer on failure and removes controls when resolved elsewhere', async () => {
         const { props, rerender, approvePermission } = renderFooter()
         approvePermission.mockRejectedValueOnce(new Error('try again'))

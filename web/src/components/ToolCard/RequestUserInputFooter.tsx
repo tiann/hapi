@@ -217,6 +217,7 @@ export function RequestUserInputFooter(props: {
                                             disabled={props.disabled || loading}
                                             title={opt.isOther ? t('tool.requestUserInput.otherLabel') : opt.label}
                                             description={opt.isOther ? t('tool.requestUserInput.otherDescription') : opt.description}
+                                            markdown
                                             onClick={() => selectOption(currentQuestion, opt)}
                                         />
                                     )

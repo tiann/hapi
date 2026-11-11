@@ -1,6 +1,11 @@
 import { cn } from '@/lib/utils'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 
 export type AskUserQuestionChoiceMode = 'single' | 'multi'
+
+// Tightens the markdown block elements so a Markdown-rendered option row keeps
+// the same compact spacing and inherited colors as the plain-text rows.
+const askUserQuestionOptionMarkdownClassName = '[&_.aui-md]:text-inherit [&_.aui-md-p]:my-0 [&_.aui-md-p]:leading-6'
 
 export const askUserQuestionOptionTitleClassName = 'tracking-tight min-w-0 text-sm font-medium leading-tight break-words text-[var(--app-fg)]'
 export const askUserQuestionOptionDescriptionClassName = 'mt-1 font-mono text-xs break-all text-[var(--app-tool-card-subtitle)]'
@@ -23,6 +28,7 @@ export function AskUserQuestionOptionRow(props: {
     title: string
     description?: string | null
     onClick: () => void
+    markdown?: boolean
 }) {
     return (
         <button
@@ -42,6 +48,7 @@ export function AskUserQuestionOptionRow(props: {
                 title={props.title}
                 description={props.description}
                 interactive
+                markdown={props.markdown}
             />
         </button>
     )
@@ -104,6 +111,7 @@ export function AskUserQuestionOptionBody(props: {
     customLabel?: string | null
     interactive?: boolean
     showControl?: boolean
+    markdown?: boolean
 }) {
     const showControl = props.showControl ?? true
 
@@ -122,15 +130,16 @@ export function AskUserQuestionOptionBody(props: {
                 <span className={cn(
                     'block',
                     askUserQuestionOptionTitleClassName,
+                    props.markdown ? askUserQuestionOptionMarkdownClassName : null,
                     props.checked
                         ? 'text-[var(--app-fg)]'
                         : 'text-[var(--app-tool-card-subtitle)]'
                 )}>
-                    {props.title}
+                    {props.markdown ? <MarkdownRenderer content={props.title} /> : props.title}
                 </span>
                 {props.description ? (
-                    <span className={cn('block', askUserQuestionOptionDescriptionClassName)}>
-                        {props.description}
+                    <span className={cn('block', askUserQuestionOptionDescriptionClassName, props.markdown ? askUserQuestionOptionMarkdownClassName : null)}>
+                        {props.markdown ? <MarkdownRenderer content={props.description} /> : props.description}
                     </span>
                 ) : null}
                 {props.customLabel ? (
