@@ -1091,9 +1091,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     if (backgrounded) pairing.backgrounding.set(backgrounded.taskId, backgrounded.description);
                 }
             }
-            // The turn's outstanding commands, by command text: a completion
-            // for one of them has not been delivered yet.
-            const outstandingDescriptions = new Set([...opts.bgIds].map((id) => (opts.taskDescriptions.get(id) ?? '').trim()));
+            // The turn's outstanding commands: a completion for one of them
+            // has not been delivered yet. Text compared whitespace-normalized,
+            // like the live pairing.
+            const isOutstandingCommand = (description: string): boolean =>
+                opts.bgIds.some((id) => sameCommandText(opts.taskDescriptions.get(id) ?? '', description));
             const racedAt = backlog.find((step) => {
                 if (step.kind !== 'system') return false;
                 const completion = parseAgyTaskCompletion(step.content);
@@ -1103,7 +1105,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // already delivered over ACP; replaying from it would duplicate
                 // the frames the turn rendered live.
                 const description = pairing.backgrounding.get(completion.taskId);
-                return description === undefined || outstandingDescriptions.has(description.trim());
+                return description === undefined || isOutstandingCommand(description);
             });
             if (racedAt) {
                 for (const step of backlog) {

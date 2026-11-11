@@ -2993,6 +2993,11 @@ describe('AgyAcpRemoteLauncher late continuation (multiline command records)', (
 });
 
 describe('AgyAcpRemoteLauncher late continuation (raced completion keeps watching)', () => {
+    const BACKGROUNDING = (taskId: string, description: string): string =>
+        `Created At: 2026-11-10T14:00:07+09:00\nTool is running as a background task with task id: ${taskId}\nTask Description: ${description}`;
+    const COMPLETION = (taskId: string, output: string): string =>
+        `Task id "${taskId}" finished with result:\nCommand exited with code 0.\n\nCommand output:\n${output}`;
+
     it('surfaces the raced backlog and keeps watching for steps that land after it', async () => {
         const { session, queue, client } = makeSession();
         const backend = new FakeAgyBackend();
@@ -3045,6 +3050,41 @@ describe('AgyAcpRemoteLauncher late continuation (raced completion keeps watchin
         expect(eventTexts(client).slice(labelsBefore).some((text) => text.includes('finished work from the previous turn'))).toBe(false);
         const turn2Texts = textRows(client).slice(textRows(client).length - 1);
         expect(turn2Texts).toEqual(['Working on the next thing.']);
+    });
+
+    it('replays a raced completion whose record text drifted from the ACP args', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const driftedArgs = { CommandLine: 'sleep 30  &&  echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: driftedArgs, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: driftedArgs });
+            // The wakeup raced the drain window: the record, its completion,
+            // and the answer are already in the transcript — with agy's own
+            // spacing in the record, which differs from the ACP call's args.
+            source.push(
+                { ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', 'sleep 30 && echo FIRST-OUT')), status: 'running' },
+                wakeStep(4, 'system', COMPLETION('sample/task-1', 'RACED-DRIFT-OUT')),
+                wakeStep(5, 'planner', 'The sample check finished: RACED-DRIFT-OUT.')
+            );
+            source.latest = 5;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        // The raced replay must start at the completion: the card closes with
+        // the real result, the answer surfaces once, and ready fires.
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        const result = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(result)).toContain('RACED-DRIFT-OUT');
+        expect(textRows(client).filter((text) => text === 'The sample check finished: RACED-DRIFT-OUT.')).toHaveLength(1);
     });
 });
 
