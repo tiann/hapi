@@ -298,6 +298,16 @@ function loadImageTool(fileSystem: unknown = fs) {
 }
 
 describe('hapi_display_image execution', () => {
+    it('honors image delivery preferences while retaining Pi model-image semantics', () => {
+        const tool = loadExtension().registerTool.mock.calls.find(([tool]) => tool.name === 'hapi_display_image')![0]
+        expect(tool.description).toContain('explicit user or workspace preference')
+        expect(tool.description).toContain('10 MiB (10,485,760 bytes)')
+        expect(tool.description).toContain('hapi_display_image')
+        expect(tool.description).toContain('up to 25 MiB')
+        expect(tool.description).toContain('also enters the model context')
+        expect(tool.description).not.toContain('does not provide image input')
+    });
+
     const png = Buffer.from('89504e470d0a1a0a', 'hex');
     const limit = 25 * 1024 * 1024;
 
