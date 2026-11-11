@@ -341,6 +341,7 @@ describe('SessionList machine filter', () => {
             'Archivedonly',
             'Unreadonly',
             'Updateddate',
+            'Workingonly',
             'Withdraftsonly',
             'All(2)',
             'Mint(1)',
@@ -353,7 +354,7 @@ describe('SessionList machine filter', () => {
 })
 
 describe('SessionList session filter menu', () => {
-    it('lists unread, date, and scratchlist and closes when clicking outside', () => {
+    it('lists unread, date, working, and scratchlist and closes when clicking outside', () => {
         renderSessionList([
             makeSession({ id: 'session-1', metadata: { path: '/work/hapi', name: 'Session one' } })
         ])
@@ -370,6 +371,7 @@ describe('SessionList session filter menu', () => {
             'Archived only',
             'Unread only',
             'Updated date',
+            'Working only',
             'With drafts only'
         ])
 
@@ -492,6 +494,21 @@ describe('SessionList session filter menu', () => {
             expect(screen.queryByTitle('/work/draft-seen')).toBeNull()
             expect(screen.queryByTitle('/work/plain-unread')).toBeNull()
         })
+    })
+
+    it('filters to thinking or background-task sessions with Working only (#2002)', () => {
+        renderSessionList([
+            makeSession({ id: 'working-thinking', thinking: true, metadata: { path: '/work/thinking', name: 'Thinking session' } }),
+            makeSession({ id: 'working-job', backgroundTaskCount: 1, metadata: { path: '/work/job', name: 'Background job session' } }),
+            makeSession({ id: 'idle-session', metadata: { path: '/work/idle', name: 'Idle session' } })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Working only' }))
+
+        expect(screen.getByTitle('/work/thinking')).toBeTruthy()
+        expect(screen.getByTitle('/work/job')).toBeTruthy()
+        expect(screen.queryByTitle('/work/idle')).toBeNull()
     })
 
     it('keeps the existing unread filter behavior behind the unified menu', () => {

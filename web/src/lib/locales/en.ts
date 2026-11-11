@@ -116,6 +116,7 @@ export default {
   'sessions.view.status.active': 'Active only',
   'sessions.view.status.archived': 'Archived only',
   'sessions.view.unreadOnly': 'Unread only',
+  'sessions.view.working': 'Working only',
   'sessions.view.reset': 'Reset to default',
   'sessions.view.fueTitle': 'New: sort & filter',
   'sessions.view.fueBody': 'Change the sort order, filter by status, or show active/unread sessions first. Your choices are remembered.',

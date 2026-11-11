@@ -471,6 +471,21 @@ export function filterUnreadSessionsOnly<T extends Pick<SessionSummary, 'id'>>(
     return sessions.filter(session => session.id === selectedSessionId || isUnread(session))
 }
 
+// "Working only" view (#2002): same predicate as the running-sessions
+// "working" bucket — mid-turn or driving a background task, not merely
+// connected. The selected session stays visible, same rule as the other
+// ephemeral lenses.
+export function filterWorkingSessionsOnly(
+    sessions: SessionSummary[],
+    selectedSessionId?: string | null
+): SessionSummary[] {
+    return sessions.filter(session =>
+        session.id === selectedSessionId
+        || session.thinking
+        || (session.backgroundTaskCount ?? 0) > 0
+    )
+}
+
 // Keep the open session visible while filtering so changing the lens never
 // removes the conversation currently shown in the main pane.
 export function filterScratchlistSessionsOnly(
@@ -1630,8 +1645,10 @@ export function SessionList(props: {
     const listComparator = useMemo(() => createSessionComparator(listView), [listView])
     const lastSeenVersion = useSessionLastSeenVersion()
 
-    // Date and scratchlist are transient; unread uses the upstream view store.
+    // Date, scratchlist, and working are transient; unread uses the upstream
+    // view store.
     const [showScratchlistOnly, setShowScratchlistOnly] = useState(false)
+    const [showWorkingOnly, setShowWorkingOnly] = useState(false)
     const {
         sessionIds: scratchlistSessionIds,
         isLoading: isScratchlistStatusLoading,
@@ -1721,7 +1738,7 @@ export function SessionList(props: {
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
-    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly
+    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showWorkingOnly
 
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
@@ -1889,6 +1906,9 @@ export function SessionList(props: {
                 selectedSessionId
             )
         }
+        if (showWorkingOnly) {
+            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+        }
         if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) return []
             filtered = filterScratchlistSessionsOnly(filtered, selectedSessionId, scratchlistSessionIds)
@@ -1907,6 +1927,7 @@ export function SessionList(props: {
         scratchlistStatusError,
         selectedSessionId,
         showScratchlistOnly,
+        showWorkingOnly,
         listView.unreadOnly,
         timeRange?.start,
         timeRange?.end
@@ -1974,6 +1995,11 @@ export function SessionList(props: {
         let filtered = listView.unreadOnly
             ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
             : visibleSessions
+        // Working is AND-composed with the other lenses (#2002); Active is
+        // handled upstream via listView.status (allSessions), not here.
+        if (showWorkingOnly) {
+            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+        }
         if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) {
                 return []
@@ -1992,6 +2018,7 @@ export function SessionList(props: {
         scratchlistStatusError,
         selectedSessionId,
         showScratchlistOnly,
+        showWorkingOnly,
         listView.unreadOnly,
         visibleSessions
     ])
@@ -2738,12 +2765,15 @@ export function SessionList(props: {
                                             onReset={() => {
                                                 setListView(DEFAULT_SESSION_LIST_VIEW)
                                                 setShowScratchlistOnly(false)
+                                                setShowWorkingOnly(false)
                                                 setCustomStart('')
                                                 setCustomEnd('')
                                                 setMachineFilter(null)
                                             }}
                                             scratchlistOnly={showScratchlistOnly}
                                             onScratchlistChange={setShowScratchlistOnly}
+                                            workingOnly={showWorkingOnly}
+                                            onWorkingChange={setShowWorkingOnly}
                                             customStart={customStart}
                                             customEnd={customEnd}
                                             sessionActivityDates={sessionActivityDates}

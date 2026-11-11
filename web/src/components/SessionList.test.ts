@@ -9,6 +9,7 @@ import {
     filterActiveSessionsOnly,
     filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
+    filterWorkingSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
     filterSessionsForListStatus,
@@ -708,6 +709,28 @@ describe('filterScratchlistSessionsOnly', () => {
 
         expect(filterScratchlistSessionsOnly(sessions, 'selected-quiet', new Set(['with-draft'])).map(s => s.id))
             .toEqual(['with-draft', 'selected-quiet'])
+    })
+})
+describe('filterWorkingSessionsOnly', () => {
+    it('keeps thinking sessions and sessions with a running background task', () => {
+        const sessions = [
+            makeSession({ id: 'thinking', thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'background-job', backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'idle', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions).map(s => s.id).sort())
+            .toEqual(['background-job', 'thinking'])
+    })
+
+    it('keeps the selected session visible even when idle', () => {
+        const sessions = [
+            makeSession({ id: 'thinking', thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-idle', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions, 'selected-idle').map(s => s.id).sort())
+            .toEqual(['selected-idle', 'thinking'])
     })
 })
 describe('getNextSessionVisibleCount', () => {

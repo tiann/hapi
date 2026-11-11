@@ -116,6 +116,7 @@ export default {
   'sessions.view.status.active': '活跃',
   'sessions.view.status.archived': '归档',
   'sessions.view.unreadOnly': '未读',
+  'sessions.view.working': '工作中',
   'sessions.view.reset': '恢复默认',
   'sessions.view.fueTitle': '新功能：排序与筛选',
   'sessions.view.fueBody': '在这里调整排序方式、按状态筛选，或让活跃/未读会话优先显示。你的选择会被记住。',
