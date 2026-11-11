@@ -2284,7 +2284,8 @@ export class SyncEngine {
     async forkConversation(
         sessionId: string,
         namespace: string,
-        messageLocalId?: string
+        messageLocalId?: string,
+        latestCompleted = false
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
         if (candidate?.metadata?.codexResumePending) {
@@ -2298,7 +2299,7 @@ export class SyncEngine {
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId)
+            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId, latestCompleted)
         } finally {
             this.historyActionsInFlight.delete(sessionId)
         }
@@ -2307,16 +2308,21 @@ export class SyncEngine {
     private async forkConversationUnlocked(
         sessionId: string,
         namespace: string,
-        messageLocalId?: string
+        messageLocalId?: string,
+        latestCompleted = false
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
         }
         let source = access.session
+        if (latestCompleted && (messageLocalId || !source.active || this.resolveFlavor(source) !== 'codex'
+            || source.metadata?.capabilities?.conversationHistory?.forkLatestCompleted !== true)) {
+            return { type: 'error', message: 'No verified completed turn is available for this session' }
+        }
         if (!source.active) return this.forkArchivedCodexSession(source, namespace, messageLocalId)
         try {
-            this.assertConversationHistoryIdle(source, Boolean(messageLocalId) && this.resolveFlavor(source) === 'codex')
+            this.assertConversationHistoryIdle(source, (Boolean(messageLocalId) || latestCompleted) && this.resolveFlavor(source) === 'codex')
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -2345,7 +2351,7 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.forkConversation(
                 sessionId,
-                messageLocalId ? { messageLocalId } : {}
+                latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {}
             )
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
@@ -2368,6 +2374,9 @@ export class SyncEngine {
             !rpcResult.nativeSessionId
         ) {
             return { type: 'error', message: 'Native fork did not return a session id' }
+        }
+        if (latestCompleted && (!rpcResult.sessionId || !rpcResult.completedTurnId)) {
+            return { type: 'error', message: 'Runner did not verify the completed-turn fork boundary' }
         }
         if (rpcResult.sessionId) {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
