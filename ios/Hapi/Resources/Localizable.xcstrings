@@ -1,6 +1,40 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "— Canceled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "— Отменено"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "— 已取消"
+          }
+        }
+      }
+    },
+    "(empty)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "(пусто)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "（空）"
+          }
+        }
+      }
+    },
     "%@\n\nOpen a session chat to browse its files." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14,6 +48,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@\n\n打开会话聊天即可浏览其文件。"
+          }
+        }
+      }
+    },
+    "%@ · %@ requests" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@ requests"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %@ запросов"
+          }
+        }
+      }
+    },
+    "%@ · %lld requests" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · запросы: %lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %lld 项"
           }
         }
       }
@@ -69,6 +137,9 @@
         }
       }
     },
+    "%@ attachments" : {
+      "extractionState" : "manual"
+    },
     "%@ is over the 50 MB upload limit" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -82,6 +153,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ 超过 50 MB 上传上限"
+          }
+        }
+      }
+    },
+    "%@ left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "осталось %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %@"
           }
         }
       }
@@ -137,40 +225,6 @@
         }
       }
     },
-    "%@ · %@ requests" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@ · %2$@ requests"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ · %@ запросов"
-          }
-        }
-      }
-    },
-    "%@ · %lld requests" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ · запросы: %lld"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ · %lld 项"
-          }
-        }
-      }
-    },
     "%@, %lld sessions" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -195,12 +249,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%@, %lld сессия"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -211,6 +259,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%@, %lld сессий"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%@, %lld сессия"
                 }
               },
               "other" : {
@@ -230,35 +284,12 @@
         }
       }
     },
-    "%lld Questions" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Вопросы: %lld"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld 个问题"
-          }
-        }
-      }
-    },
     "%lld agent steps" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld шаг агента"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -269,6 +300,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld шагов агента"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld шаг агента"
                 }
               },
               "other" : {
@@ -312,12 +349,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld вложение"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -328,6 +359,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld вложений"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld вложение"
                 }
               },
               "other" : {
@@ -370,12 +407,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld команда"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -386,6 +417,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld команд"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld команда"
                 }
               },
               "other" : {
@@ -479,12 +516,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld новое сообщение ↓"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -495,6 +526,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld новых сообщений ↓"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld новое сообщение ↓"
                 }
               },
               "other" : {
@@ -548,6 +585,23 @@
         }
       }
     },
+    "%lld Questions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вопросы: %lld"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个问题"
+          }
+        }
+      }
+    },
     "%lld queued messages" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -571,12 +625,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld чтение"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -587,6 +635,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld чтений"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld чтение"
                 }
               },
               "other" : {
@@ -629,12 +683,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld поиск"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -645,6 +693,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld поисков"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld поиск"
                 }
               },
               "other" : {
@@ -688,12 +742,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld сессия"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -704,6 +752,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "%lld сессий"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld сессия"
                 }
               },
               "other" : {
@@ -791,19 +845,53 @@
         }
       }
     },
-    "(empty)" : {
+    "● Recording…  %@" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "(пусто)"
+            "value" : "● Запись…  %@"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "（空）"
+            "value" : "● 录音中…  %@"
+          }
+        }
+      }
+    },
+    "✓ Approved" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "✓ Одобрено"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "✓ 已批准"
+          }
+        }
+      }
+    },
+    "✕ Denied" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "✕ Отклонено"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "✕ 已拒绝"
           }
         }
       }
@@ -1046,23 +1134,6 @@
         }
       }
     },
-    "30 days" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "30 дней"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "近 30 天"
-          }
-        }
-      }
-    },
     "7 days" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1076,6 +1147,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "近 7 天"
+          }
+        }
+      }
+    },
+    "30 days" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 дней"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "近 30 天"
           }
         }
       }
@@ -1182,6 +1270,57 @@
         }
       }
     },
+    "Active First" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала активные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活跃会话优先"
+          }
+        }
+      }
+    },
+    "Active only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только активные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅活跃"
+          }
+        }
+      }
+    },
+    "Active Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только активные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅活跃"
+          }
+        }
+      }
+    },
     "Active sessions can't be deleted — archive first" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1195,40 +1334,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "活跃会话无法删除 — 请先归档"
-          }
-        }
-      }
-    },
-    "Add Hub" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Добавить хаб"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加 Hub"
-          }
-        }
-      }
-    },
-    "Add Hub…" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Добавить хаб…"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "添加 Hub…"
           }
         }
       }
@@ -1280,6 +1385,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "添加附件"
+          }
+        }
+      }
+    },
+    "Add Hub" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить хаб"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 Hub"
+          }
+        }
+      }
+    },
+    "Add Hub…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить хаб…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加 Hub…"
           }
         }
       }
@@ -1433,6 +1572,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "所有机器"
+          }
+        }
+      }
+    },
+    "All Sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部会话"
           }
         }
       }
@@ -1828,6 +1984,40 @@
         }
       }
     },
+    "Archived only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только архивные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅已归档"
+          }
+        }
+      }
+    },
+    "Archived Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только архивные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅已归档"
+          }
+        }
+      }
+    },
     "Attach" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1981,6 +2171,23 @@
         }
       }
     },
+    "Background tasks running" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выполняются фоновые задачи"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "后台任务运行中"
+          }
+        }
+      }
+    },
     "Before" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2015,23 +2222,6 @@
         }
       }
     },
-    "Binary file not shown" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Двоичный файл не показан"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "二进制文件未显示"
-          }
-        }
-      }
-    },
     "Binary file — no preview available" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2045,6 +2235,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "二进制文件 — 无法预览"
+          }
+        }
+      }
+    },
+    "Binary file not shown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Двоичный файл не показан"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "二进制文件未显示"
           }
         }
       }
@@ -2664,16 +2871,16 @@
     "Conversation exported" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "对话已导出"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Разговор экспортирован"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话已导出"
           }
         }
       }
@@ -2681,16 +2888,16 @@
     "Conversation History" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "对话历史"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "История разговора"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话历史"
           }
         }
       }
@@ -2729,23 +2936,6 @@
         }
       }
     },
-    "Copy Path" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Копировать путь"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "复制路径"
-          }
-        }
-      }
-    },
     "Copy full content" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2776,6 +2966,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制输入"
+          }
+        }
+      }
+    },
+    "Copy Path" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Копировать путь"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制路径"
           }
         }
       }
@@ -3205,40 +3412,6 @@
         }
       }
     },
-    "Create a new session from this point? The current session will not be changed." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "从此处创建新会话？当前会话不会被修改。"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Создать новую сессию с этого места? Текущая сессия не изменится."
-          }
-        }
-      }
-    },
-    "Create Team" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Создать команду"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "创建团队"
-          }
-        }
-      }
-    },
     "Create a new git worktree next to the repo" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3256,6 +3429,23 @@
         }
       }
     },
+    "Create a new session from this point? The current session will not be changed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать новую сессию с этого места? Текущая сессия не изменится."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此处创建新会话？当前会话不会被修改。"
+          }
+        }
+      }
+    },
     "Create and Make Directory" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3269,6 +3459,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "创建并新建目录"
+          }
+        }
+      }
+    },
+    "Create Team" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать команду"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建团队"
           }
         }
       }
@@ -3375,6 +3582,23 @@
         }
       }
     },
+    "Date Created" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дате создания"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建时间"
+          }
+        }
+      }
+    },
     "Default" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3405,6 +3629,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "删除"
+          }
+        }
+      }
+    },
+    "Delete “%@”? This can't be undone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить «%@»? Это действие необратимо."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确定删除“%@”吗？此操作无法撤销。"
           }
         }
       }
@@ -3473,23 +3714,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "删除这条草稿？"
-          }
-        }
-      }
-    },
-    "Delete “%@”? This can't be undone." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Удалить «%@»? Это действие необратимо."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "确定删除“%@”吗？此操作无法撤销。"
           }
         }
       }
@@ -4106,6 +4330,23 @@
         }
       }
     },
+    "Enter a valid hub domain or IP address, with an optional port." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите корректный домен или IP-адрес хаба, при необходимости с портом."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入有效的 Hub 域名或 IP 地址，可包含端口。"
+          }
+        }
+      }
+    },
     "Enter Hub Details" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4140,23 +4381,6 @@
         }
       }
     },
-    "Enter a valid hub domain or IP address, with an optional port." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Введите корректный домен или IP-адрес хаба, при необходимости с портом."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "请输入有效的 Hub 域名或 IP 地址，可包含端口。"
-          }
-        }
-      }
-    },
     "Enter the access token printed by your hub." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4187,6 +4411,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "输入 Hub 地址，无需填写协议；也可粘贴完整地址或配对链接。"
+          }
+        }
+      }
+    },
+    "error" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ошибка"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "错误"
           }
         }
       }
@@ -4228,16 +4469,16 @@
     "Export Anyway" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "仍然导出"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Всё равно экспортировать"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍然导出"
           }
         }
       }
@@ -4245,16 +4486,16 @@
     "Export Conversation…" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "导出对话…"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Экспортировать разговор…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出对话…"
           }
         }
       }
@@ -4262,16 +4503,33 @@
     "Export Too Large" : {
       "extractionState" : "manual",
       "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспорт слишком велик"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "导出内容过大"
           }
-        },
+        }
+      }
+    },
+    "Failed — tap to retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Экспорт слишком велик"
+            "value" : "Ошибка — нажмите, чтобы повторить"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "失败 — 点按重试"
           }
         }
       }
@@ -4398,16 +4656,16 @@
     "Failed to export conversation" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "导出对话失败"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось экспортировать разговор"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出对话失败"
           }
         }
       }
@@ -4415,16 +4673,16 @@
     "Failed to fork conversation" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "分叉对话失败"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось ответвить разговор"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉对话失败"
           }
         }
       }
@@ -4585,16 +4843,16 @@
     "Failed to rewind conversation" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "回退对话失败"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось откатить разговор"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退对话失败"
           }
         }
       }
@@ -4667,23 +4925,6 @@
         }
       }
     },
-    "Failed — tap to retry" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ошибка — нажмите, чтобы повторить"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "失败 — 点按重试"
-          }
-        }
-      }
-    },
     "Fast" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4714,6 +4955,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "快速模式"
+          }
+        }
+      }
+    },
+    "feature-x (optional)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "feature-x (необязательно)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "feature-x（可选）"
           }
         }
       }
@@ -4786,23 +5044,6 @@
         }
       }
     },
-    "Filters" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Фильтры"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "筛选"
-          }
-        }
-      }
-    },
     "Follow system" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4823,16 +5064,16 @@
     "Fork" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "分叉"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ответвить"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉"
           }
         }
       }
@@ -4857,16 +5098,16 @@
     "Fork from Here" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "从此处分叉"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ответвить отсюда"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此处分叉"
           }
         }
       }
@@ -4874,16 +5115,16 @@
     "Fork Here" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "在此处分叉"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ответвить здесь"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此处分叉"
           }
         }
       }
@@ -4942,16 +5183,33 @@
     "HAPI did not change this session because its native Codex boundary is ambiguous. Create a new session before this point instead? The current session will not be changed." : {
       "extractionState" : "manual",
       "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAPI не изменил эту сессию: нативная граница Codex неоднозначна. Создать вместо этого новую сессию до этого места? Текущая сессия не изменится."
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "由于 Codex 原生对话边界存在歧义，HAPI 没有修改当前会话。是否改为在此处创建新会话？当前会话不会被修改。"
           }
-        },
+        }
+      }
+    },
+    "HAPI Guide" : {
+      "extractionState" : "manual",
+      "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "HAPI не изменил эту сессию: нативная граница Codex неоднозначна. Создать вместо этого новую сессию до этого места? Текущая сессия не изменится."
+            "value" : "Руководство HAPI"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAPI 使用指南"
           }
         }
       }
@@ -4973,36 +5231,19 @@
         }
       }
     },
-    "History actions" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "历史操作"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Действия с историей"
-          }
-        }
-      }
-    },
-    "HTTP is unencrypted and may be restricted by iOS. HTTPS is recommended." : {
+    "HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub, then enter its URL and access token, or paste the pairing link it prints." : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "HTTP не шифруется и может блокироваться iOS. Рекомендуется HTTPS."
+            "value" : "HAPI размещается самостоятельно: ваши сессии агентов работают на вашей машине за хабом, которым управляете вы. Запустите хаб, затем введите его URL и токен доступа или вставьте ссылку сопряжения, которую он печатает."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "HTTP 不加密，且可能受 iOS 网络策略限制。建议使用 HTTPS。"
+            "value" : "HAPI 是自托管的：你的智能体会话运行在你自己的机器上，由你自己运营的 Hub 提供服务。先启动 Hub，然后输入它的地址和访问令牌，或粘贴它打印的配对链接。"
           }
         }
       }
@@ -5058,6 +5299,40 @@
         }
       }
     },
+    "History actions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Действия с историей"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "历史操作"
+          }
+        }
+      }
+    },
+    "HTTP is unencrypted and may be restricted by iOS. HTTPS is recommended." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HTTP не шифруется и может блокироваться iOS. Рекомендуется HTTPS."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HTTP 不加密，且可能受 iOS 网络策略限制。建议使用 HTTPS。"
+          }
+        }
+      }
+    },
     "Hub" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5071,23 +5346,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hub"
-          }
-        }
-      }
-    },
-    "Hub URL" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "URL хаба"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hub 地址"
           }
         }
       }
@@ -5173,6 +5431,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法连接 Hub — 点按重试。"
+          }
+        }
+      }
+    },
+    "Hub URL" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "URL хаба"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hub 地址"
           }
         }
       }
@@ -5435,16 +5710,33 @@
     "Large Export" : {
       "extractionState" : "manual",
       "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Большой экспорт"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "导出内容较大"
           }
-        },
+        }
+      }
+    },
+    "Last Message" : {
+      "extractionState" : "manual",
+      "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Большой экспорт"
+            "value" : "Последнему сообщению"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最后消息时间"
           }
         }
       }
@@ -6163,23 +6455,6 @@
         }
       }
     },
-    "New Session" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Новая сессия"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "新建会话"
-          }
-        }
-      }
-    },
     "New note" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -6193,6 +6468,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "新建笔记"
+          }
+        }
+      }
+    },
+    "New Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новая сессия"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新建会话"
           }
         }
       }
@@ -6231,6 +6523,23 @@
         }
       }
     },
+    "Next Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Следующая сессия"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一个会话"
+          }
+        }
+      }
+    },
     "Next tool" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -6244,23 +6553,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下一个工具"
-          }
-        }
-      }
-    },
-    "No HAPI hub answered at this address. Check that the hub is running and that this device can reach it (same network, or the relay tunnel is up)." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "По этому адресу не ответил ни один хаб HAPI. Проверьте, что хаб запущен и это устройство может до него добраться (та же сеть или активный туннель реле)."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "该地址没有 HAPI Hub 应答。请确认 Hub 正在运行，且本设备能够访问它（处于同一网络，或中继隧道已开启）。"
           }
         }
       }
@@ -6384,19 +6676,53 @@
         }
       }
     },
-    "No History Points" : {
+    "No HAPI hub answered at this address. Check that the hub is running and that this device can reach it (same network, or the relay tunnel is up)." : {
       "extractionState" : "manual",
       "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По этому адресу не ответил ни один хаб HAPI. Проверьте, что хаб запущен и это устройство может до него добраться (та же сеть или активный туннель реле)."
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "没有历史点"
+            "value" : "该地址没有 HAPI Hub 应答。请确认 Hub 正在运行，且本设备能够访问它（处于同一网络，或中继隧道已开启）。"
+          }
+        }
+      }
+    },
+    "no heartbeat %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "нет heartbeat %@"
           }
         },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无心跳 %@"
+          }
+        }
+      }
+    },
+    "No History Points" : {
+      "extractionState" : "manual",
+      "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Нет точек истории"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有历史点"
           }
         }
       }
@@ -6775,6 +7101,74 @@
         }
       }
     },
+    "now" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "сейчас"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刚刚"
+          }
+        }
+      }
+    },
+    "Offline" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Офлайн"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "离线"
+          }
+        }
+      }
+    },
+    "Offline — showing cached sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Офлайн — показаны кешированные сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "离线 — 显示缓存的会话"
+          }
+        }
+      }
+    },
+    "Offline · updated %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Офлайн · обновлено %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "离线 · %@更新"
+          }
+        }
+      }
+    },
     "OK" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -6809,70 +7203,19 @@
         }
       }
     },
-    "Offline" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Офлайн"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "离线"
-          }
-        }
-      }
-    },
-    "Offline · updated %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Офлайн · обновлено %@"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "离线 · %@更新"
-          }
-        }
-      }
-    },
-    "Offline — showing cached sessions" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Офлайн — показаны кешированные сессии"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "离线 — 显示缓存的会话"
-          }
-        }
-      }
-    },
     "Only messages with a native history point are listed. Load older messages in the conversation to reach earlier ones." : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "仅列出带原生历史点的消息。在对话中加载更早的消息可看到更早的历史点。"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Показаны только сообщения с нативной точкой истории. Загрузите более ранние сообщения в разговоре, чтобы увидеть предыдущие."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅列出带原生历史点的消息。在对话中加载更早的消息可看到更早的历史点。"
           }
         }
       }
@@ -6890,6 +7233,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开"
+          }
+        }
+      }
+    },
+    "Open link?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть ссылку?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开此链接？"
           }
         }
       }
@@ -6924,23 +7284,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开链接"
-          }
-        }
-      }
-    },
-    "Open link?" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Открыть ссылку?"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "打开此链接？"
           }
         }
       }
@@ -7234,7 +7577,24 @@
         }
       }
     },
-    "Permission Mode" : {
+    "pending" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ожидает"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待中"
+          }
+        }
+      }
+    },
+    "Permission mode" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
@@ -7251,7 +7611,7 @@
         }
       }
     },
-    "Permission mode" : {
+    "Permission Mode" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
@@ -7353,23 +7713,6 @@
         }
       }
     },
-    "Pin Globally" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Закрепить глобально"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "全局置顶"
-          }
-        }
-      }
-    },
     "Pin failed: %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7383,6 +7726,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "置顶操作失败：%@"
+          }
+        }
+      }
+    },
+    "Pin Globally" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрепить глобально"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全局置顶"
           }
         }
       }
@@ -7553,6 +7913,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "上一题"
+          }
+        }
+      }
+    },
+    "Previous Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущая сессия"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上一个会话"
           }
         }
       }
@@ -8308,16 +8685,16 @@
     "Rewind" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "回退"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Откатить"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退"
           }
         }
       }
@@ -8325,16 +8702,16 @@
     "Rewind Conversation" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "回退对话"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Откатить разговор"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退对话"
           }
         }
       }
@@ -8342,16 +8719,16 @@
     "Rewind or Fork…" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "回退或分叉…"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Откатить или ответвить…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退或分叉…"
           }
         }
       }
@@ -8359,16 +8736,16 @@
     "Rewind this session to this point? Later conversation history will be permanently removed. Files will not be changed." : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "将此会话回退到此处？之后的对话历史将永久移除。文件不会被修改。"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Откатить сессию к этому месту? Последующая история разговора будет удалена навсегда. Файлы не изменятся."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此会话回退到此处？之后的对话历史将永久移除。文件不会被修改。"
           }
         }
       }
@@ -8376,16 +8753,16 @@
     "Rewind to Here" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "回退到此处"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Откатить сюда"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退到此处"
           }
         }
       }
@@ -8393,16 +8770,16 @@
     "Rewind Unavailable" : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "暂时无法回退"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Откат недоступен"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法回退"
           }
         }
       }
@@ -8471,159 +8848,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "运行中"
-          }
-        }
-      }
-    },
-    "Schedule" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Запланировать"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "定时"
-          }
-        }
-      }
-    },
-    "Schedule send" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Отложенная отправка"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "定时发送"
-          }
-        }
-      }
-    },
-    "Scheduled messages can't include attachments — remove them or send now" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Отложенные сообщения не могут содержать вложения — удалите их или отправьте сейчас"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "定时消息不能包含附件 — 请移除附件或立即发送"
-          }
-        }
-      }
-    },
-    "Scheduled sends can be at most 7 days ahead" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Отправку можно запланировать не более чем на 7 дней вперёд"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "最多只能定时 7 天"
-          }
-        }
-      }
-    },
-    "Scheduled time must be in the future" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Время отправки должно быть в будущем"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "发送时间必须在未来"
-          }
-        }
-      }
-    },
-    "Search sessions" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Поиск сессий"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "搜索会话"
-          }
-        }
-      }
-    },
-    "Send at" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Время отправки"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "发送时间"
-          }
-        }
-      }
-    },
-    "Session name" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Название сессии"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "会话名称"
-          }
-        }
-      }
-    },
-    "SQLite files" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Файлы SQLite"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "SQLite 文件"
           }
         }
       }
@@ -8764,6 +8988,40 @@
         }
       }
     },
+    "Schedule" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запланировать"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时"
+          }
+        }
+      }
+    },
+    "Schedule send" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отложенная отправка"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时发送"
+          }
+        }
+      }
+    },
     "Scheduled · %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -8777,6 +9035,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "定时发送 · %@"
+          }
+        }
+      }
+    },
+    "Scheduled messages can't include attachments — remove them or send now" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отложенные сообщения не могут содержать вложения — удалите их или отправьте сейчас"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时消息不能包含附件 — 请移除附件或立即发送"
+          }
+        }
+      }
+    },
+    "Scheduled sends can be at most 7 days ahead" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправку можно запланировать не более чем на 7 дней вперёд"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多只能定时 7 天"
+          }
+        }
+      }
+    },
+    "Scheduled time must be in the future" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Время отправки должно быть в будущем"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送时间必须在未来"
           }
         }
       }
@@ -8934,6 +9243,23 @@
         }
       }
     },
+    "Search sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поиск сессий"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索会话"
+          }
+        }
+      }
+    },
     "Searching directories…" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9087,6 +9413,23 @@
         }
       }
     },
+    "Send — long-press to steer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить — долгое нажатие, чтобы направить"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送 — 长按可插入当前回合"
+          }
+        }
+      }
+    },
     "Send & steer into current turn" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9104,19 +9447,19 @@
         }
       }
     },
-    "Send — long-press to steer" : {
+    "Send at" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Отправить — долгое нажатие, чтобы направить"
+            "value" : "Время отправки"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "发送 — 长按可插入当前回合"
+            "value" : "发送时间"
           }
         }
       }
@@ -9138,41 +9481,24 @@
         }
       }
     },
-    "Session Settings" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Настройки сессии"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "会话设置"
-          }
-        }
-      }
-    },
-    "Session Type" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Тип сессии"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "会话类型"
-          }
-        }
-      }
-    },
     "Session files" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Файлы сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话文件"
+          }
+        }
+      }
+    },
+    "Session Files" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
@@ -9240,6 +9566,23 @@
         }
       }
     },
+    "Session name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话名称"
+          }
+        }
+      }
+    },
     "Session not found on any paired hub." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9274,7 +9617,58 @@
         }
       }
     },
+    "Session Settings" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройки сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话设置"
+          }
+        }
+      }
+    },
+    "Session Settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройки сессии…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话设置…"
+          }
+        }
+      }
+    },
     "Session type" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тип сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话类型"
+          }
+        }
+      }
+    },
+    "Session Type" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
@@ -9342,6 +9736,23 @@
         }
       }
     },
+    "Settings…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройки…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设置…"
+          }
+        }
+      }
+    },
     "Setup guide" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9393,19 +9804,19 @@
         }
       }
     },
-    "Show Hidden" : {
+    "Show" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Показывать скрытые"
+            "value" : "Показывать"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示隐藏目录"
+            "value" : "显示"
           }
         }
       }
@@ -9423,6 +9834,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "显示全部 %lld 行"
+          }
+        }
+      }
+    },
+    "Show Hidden" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывать скрытые"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示隐藏目录"
           }
         }
       }
@@ -9580,23 +10008,6 @@
         }
       }
     },
-    "Sign Out…" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Выйти…"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "退出登录…"
-          }
-        }
-      }
-    },
     "Sign out of %@?" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9610,6 +10021,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "退出 %@ 的登录？"
+          }
+        }
+      }
+    },
+    "Sign Out…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выйти…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "退出登录…"
           }
         }
       }
@@ -9648,6 +10076,40 @@
         }
       }
     },
+    "Sort & Filter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сортировка и фильтр"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排序与筛选"
+          }
+        }
+      }
+    },
+    "Sort By" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сортировать по"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排序方式"
+          }
+        }
+      }
+    },
     "Source" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9678,6 +10140,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "创建代理"
+          }
+        }
+      }
+    },
+    "SQLite files" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Файлы SQLite"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "SQLite 文件"
           }
         }
       }
@@ -9784,6 +10263,23 @@
         }
       }
     },
+    "Stop" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановить"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停止"
+          }
+        }
+      }
+    },
     "Stop dictation" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9814,6 +10310,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "停止当前回合"
+          }
+        }
+      }
+    },
+    "Stopped" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановлена"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已停止"
           }
         }
       }
@@ -10073,6 +10586,23 @@
         }
       }
     },
+    "the dropped item" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "перетащенный элемент"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拖入的项目"
+          }
+        }
+      }
+    },
     "The hub answered unexpectedly (HTTP %lld). Try again in a moment." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10263,16 +10793,16 @@
     "This export contains %lld messages (about %@), above the recommended %lld." : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "此导出包含 %1$lld 条消息（约 %2$@），超过建议的 %3$lld 条。"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Экспорт содержит сообщений: %1$lld (около %2$@), больше рекомендуемых %3$lld."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此导出包含 %1$lld 条消息（约 %2$@），超过建议的 %3$lld 条。"
           }
         }
       }
@@ -10280,16 +10810,16 @@
     "This export is too large to prepare safely (%lld messages, %@; maximum %@)." : {
       "extractionState" : "manual",
       "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "导出内容过大，无法安全准备（%1$lld 条消息，%2$@；上限 %3$@）。"
-          }
-        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Экспорт слишком велик для безопасной подготовки (сообщений: %1$lld, %2$@; максимум %3$@)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出内容过大，无法安全准备（%1$lld 条消息，%2$@；上限 %3$@）。"
           }
         }
       }
@@ -10426,6 +10956,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "任务清单"
+          }
+        }
+      }
+    },
+    "Toggle Sidebar" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать/скрыть боковую панель"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示/隐藏边栏"
           }
         }
       }
@@ -10685,7 +11232,7 @@
         }
       }
     },
-    "Unread Only" : {
+    "Unread only" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
@@ -10702,7 +11249,7 @@
         }
       }
     },
-    "Unread only" : {
+    "Unread Only" : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
@@ -11031,12 +11578,6 @@
         "ru" : {
           "variations" : {
             "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "Показать процесс · %lld шаг"
-                }
-              },
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
@@ -11047,6 +11588,12 @@
                 "stringUnit" : {
                   "state" : "translated",
                   "value" : "Показать процесс · %lld шагов"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Показать процесс · %lld шаг"
                 }
               },
               "other" : {
@@ -11202,23 +11749,6 @@
         }
       }
     },
-    "Workspace Roots" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Корни рабочего пространства"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "工作区根目录"
-          }
-        }
-      }
-    },
     "Workspace file" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -11232,6 +11762,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "工作区文件"
+          }
+        }
+      }
+    },
+    "Workspace Roots" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Корни рабочего пространства"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作区根目录"
           }
         }
       }
@@ -11368,142 +11915,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "输入内容已发生变化，请检查后重试"
-          }
-        }
-      }
-    },
-    "error" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ошибка"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "错误"
-          }
-        }
-      }
-    },
-    "feature-x (optional)" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "feature-x (необязательно)"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "feature-x（可选）"
-          }
-        }
-      }
-    },
-    "now" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "сейчас"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "刚刚"
-          }
-        }
-      }
-    },
-    "pending" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ожидает"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "等待中"
-          }
-        }
-      }
-    },
-    "— Canceled" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "— Отменено"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "— 已取消"
-          }
-        }
-      }
-    },
-    "● Recording…  %@" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "● Запись…  %@"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "● 录音中…  %@"
-          }
-        }
-      }
-    },
-    "✓ Approved" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "✓ Одобрено"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "✓ 已批准"
-          }
-        }
-      }
-    },
-    "✕ Denied" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "✕ Отклонено"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "✕ 已拒绝"
           }
         }
       }

@@ -34,6 +34,8 @@ export type {
     CopilotModelsResponse,
     CopilotModelSummary,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortOption,
     ListDirectoryResponse,
     MachineDirectoryEntry,
@@ -43,6 +45,7 @@ export type {
     ClaudeModelSummary,
     ClaudeModelsResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
@@ -54,8 +57,11 @@ export type {
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,
+    SessionContentMatch,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
     SessionsResponse,
+    SessionContentSearchResponse,
     SpawnResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'

@@ -25,7 +25,8 @@ struct HomeView: View {
     private let connectionRevealDelay: Duration = .seconds(2)
 
     private var usesSplitNavigation: Bool {
-        UIDevice.current.userInterfaceIdiom == .pad || FoldableDevice.shared.hasHinge
+        let idiom = UIDevice.current.userInterfaceIdiom
+        return idiom == .pad || idiom == .mac || FoldableDevice.shared.hasHinge
     }
 
     /// The sidebar is visible next to the chat (not collapsed into a stack).
@@ -89,6 +90,7 @@ struct HomeView: View {
         }
         .sheet(isPresented: $model.showAddHub) {
             PairingFlowView(context: .addHub)
+                .macSheetSizing()
         }
         .sheet(isPresented: $showNewSession) {
             NewSessionView(session: session) { sessionId in
@@ -96,10 +98,36 @@ struct HomeView: View {
                 showNewSession = false
                 openSession(sessionId)
             }
+            .macSheetSizing()
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(session: session)
+                .macSheetSizing()
         }
+        .focusedSceneValue(\.homeCommands, HomeCommandActions(
+            newSession: { showNewSession = true },
+            openSettings: { showSettings = true },
+            toggleSidebar: usesSplitNavigation ? toggleSidebar : nil,
+            selectAdjacentSession: usesSplitNavigation ? selectAdjacentSession : nil
+        ))
+    }
+
+    private func toggleSidebar() {
+        tabletNavigation.columnVisibility = tabletNavigation.columnVisibility == .detailOnly ? .all : .detailOnly
+    }
+
+    /// Steps through the list as shown (filters and search applied).
+    private func selectAdjacentSession(_ offset: Int) {
+        let ids = listModel.rows.map(\.id)
+        guard !ids.isEmpty else { return }
+        let target: Int
+        if let current = tabletNavigation.selectedSessionId, let index = ids.firstIndex(of: current) {
+            target = index + offset
+        } else {
+            target = offset > 0 ? 0 : ids.count - 1
+        }
+        guard ids.indices.contains(target) else { return }
+        openSession(ids[target])
     }
 
     private var sessionList: some View {
@@ -176,7 +204,7 @@ struct HomeView: View {
     private var newSessionButton: some View {
         Button { showNewSession = true } label: {
             Label("New Session", systemImage: "plus")
-                .frame(minWidth: 44, minHeight: 44)
+                .modifier(TouchTarget())
         }
         .accessibilityIdentifier("home.new-session")
     }
@@ -184,7 +212,7 @@ struct HomeView: View {
     private var settingsButton: some View {
         Button { showSettings = true } label: {
             Label("Settings", systemImage: "gearshape")
-                .frame(minWidth: 44, minHeight: 44)
+                .modifier(TouchTarget())
         }
         .accessibilityIdentifier("home.settings")
     }
@@ -372,5 +400,16 @@ private struct ConnectionSubtitle: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// 44pt touch slots; Mac toolbar buttons use the system's pointer sizing.
+private struct TouchTarget: ViewModifier {
+    func body(content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        content
+        #else
+        content.frame(minWidth: 44, minHeight: 44)
+        #endif
     }
 }

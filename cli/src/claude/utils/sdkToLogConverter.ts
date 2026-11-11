@@ -464,7 +464,8 @@ export class SDKToLogConverter {
                         modelUsage: resultMsg.modelUsage,
                         total_cost_usd: resultMsg.total_cost_usd,
                         num_turns: resultMsg.num_turns,
-                        duration_ms: resultMsg.duration_ms
+                        duration_ms: resultMsg.duration_ms,
+                        ...claudeGenerationFields(resultMsg)
                     }
                 }
                 break
@@ -617,4 +618,21 @@ export function convertSDKToLog(
 ): RawJSONLines | null {
     const converter = new SDKToLogConverter(context, responses)
     return converter.convert(sdkMessage)
+}
+
+/**
+ * tok/s fields straight from the result: `duration_api_ms` is Claude Code's
+ * own API-active time (tool execution and permission waits are already
+ * outside it), and the round's output tokens. Errored rounds and manual
+ * compaction turns have no meaningful generation rate, so they emit nothing
+ * rather than a wrong one.
+ */
+function claudeGenerationFields(resultMsg: SDKResultMessage): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
+    if (resultMsg.is_error || resultMsg.hapi_compact_turn === true) return {}
+    const generationMs = resultMsg.duration_api_ms
+    const outputTokens = resultMsg.usage?.output_tokens
+    const measurable = (value: unknown): value is number =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    if (!measurable(generationMs) || !measurable(outputTokens)) return {}
+    return { generation_ms: generationMs, generation_output_tokens: outputTokens }
 }

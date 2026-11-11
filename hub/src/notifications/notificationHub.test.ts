@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, TaskNotification } from './notificationTypes'
+import type { NotificationChannel } from './notificationTypes'
 import { NotificationHub } from './notificationHub'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -33,7 +33,6 @@ class FakeSyncEngine {
 class StubChannel implements NotificationChannel {
     readonly readySessions: Session[] = []
     readonly permissionSessions: Session[] = []
-    readonly taskNotifications: Array<{ session: Session; notification: TaskNotification }> = []
     readonly sessionCompletions: Session[] = []
 
     async sendReady(session: Session): Promise<void> {
@@ -42,10 +41,6 @@ class StubChannel implements NotificationChannel {
 
     async sendPermissionRequest(session: Session): Promise<void> {
         this.permissionSessions.push(session)
-    }
-
-    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
-        this.taskNotifications.push({ session, notification })
     }
 
     async sendSessionCompletion(session: Session): Promise<void> {
@@ -169,48 +164,52 @@ describe('NotificationHub', () => {
         hub.stop()
     })
 
-    it('sends task notifications for task_notification system messages', async () => {
+    it('does not notify for agent-internal background task notifications', async () => {
         const engine = new FakeSyncEngine()
         const channel = new StubChannel()
         const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
             permissionDebounceMs: 1,
-            readyCooldownMs: 20
+            readyCooldownMs: 1
         })
 
         const session = createSession()
         engine.setSession(session)
 
-        const taskEvent: SyncEvent = {
+        const outputEvent = (seq: number, data: Record<string, unknown>): SyncEvent => ({
             type: 'message-received',
             sessionId: session.id,
             message: {
-                id: 'message-task',
-                seq: 2,
+                id: `message-${seq}`,
+                seq,
                 localId: null,
                 createdAt: 0,
                 content: {
                     role: 'agent',
-                    content: {
-                        type: 'output',
-                        data: {
-                            type: 'system',
-                            subtype: 'task_notification',
-                            status: 'completed',
-                            summary: 'Commit T4 finished'
-                        }
-                    }
+                    content: { type: 'output', data }
                 }
             }
-        }
+        })
 
-        engine.emit(taskEvent)
+        // Claude Code feeds background task completion back to the model;
+        // it is not a user-facing turn boundary.
+        engine.emit(outputEvent(2, {
+            type: 'system',
+            subtype: 'task_notification',
+            status: 'failed',
+            summary: 'Background command failed'
+        }))
+        engine.emit(outputEvent(3, {
+            type: 'user',
+            message: {
+                role: 'user',
+                content: '<task-notification> <summary>Done</summary> <status>completed</status> </task-notification>'
+            }
+        }))
         await sleep(5)
 
-        expect(channel.taskNotifications).toHaveLength(1)
-        expect(channel.taskNotifications[0]?.notification).toEqual({
-            status: 'completed',
-            summary: 'Commit T4 finished'
-        })
+        expect(channel.readySessions).toHaveLength(0)
+        expect(channel.permissionSessions).toHaveLength(0)
+        expect(channel.sessionCompletions).toHaveLength(0)
 
         hub.stop()
     })

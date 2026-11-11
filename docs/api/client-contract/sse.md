@@ -74,7 +74,7 @@ Live broadcasts that occur while the replay is being written are queued server-s
 | `resume` verdict | Meaning | Client action |
 |---|---|---|
 | `ok` | The replay that follows contains **every** event missed since the cursor. | Skip the REST resync entirely. |
-| `gap` (or field absent — older hubs) | The hub cannot prove continuity. | Full refetch: session list, session detail(s), message tail sync, and queued-state reconcile for the open session (see [pagination](./pagination.md#queued-state-recovery)). |
+| `gap` (or field absent — older hubs) | The hub cannot prove continuity. | Full refetch: session list, session detail(s), message tail sync **catching up the cursor first, then the latest page applied by id** (rows updated in place keep their cursor position, so a cursor sync alone never re-delivers them; the applied page must not discard already-loaded history, and an epoch change falls back to a full replacement), and queued-state reconcile for the open session (see [pagination](./pagination.md#queued-state-recovery)). |
 
 `gap` is returned whenever: no cursor was sent, the cursor is malformed, `epoch` differs (hub restarted), `nsTag` differs (cursor issued under a different namespace — e.g. after a token swap on the same hub), `seq` is out of range, or events between the cursor and the ring's oldest entry were evicted.
 
@@ -180,6 +180,7 @@ Patch application, field by field:
   Strictly greater, because the two SSE connections have **no shared ordering** — the same version can arrive twice and an older version can arrive after a newer one. Applying a stale `agentState` would resurrect resolved permission requests; a stale `metadata` would regress the resume/session-id state. (The web session-*list* path tolerates `>=` because re-deriving its summary from an equal version is idempotent; for a single-cache native client, strict `>` is the rule.)
 - **Never wholesale-spread the wrapper.** `session.metadata` must become `wrapper.value` — assigning `{version, value}` itself into the session is a classic porting bug.
 - **`scratchlistUpdatedAt`** — a bare refetch trigger: the patch carries no entries; its presence means "refetch `GET /api/sessions/:id/scratchlist`". Nothing else to apply.
+- **`attachedJob`** — `{version, value: AttachedJob | null}` for the session list row only (`SessionSummary.attachedJob` / `attachedJobUpdatedAt`, [session jobs](../../guide/session-jobs.md)); the detail `Session` has no such field. Apply when `version` is strictly greater than the row's `attachedJobUpdatedAt` (missing = 0), so a lagged heartbeat cannot resurrect a cleared job. A full-session payload cannot carry the job; keep the row's existing job and watermark when one replaces the summary.
 
 ### Keep-alive noise
 

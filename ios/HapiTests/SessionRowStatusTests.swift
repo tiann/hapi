@@ -25,21 +25,71 @@ final class SessionRowStatusTests: XCTestCase {
         }
     }
 
-    func testPendingWinsOverThinkingAndSurvivesDisconnection() {
+    func testPendingSurvivesDisconnectionAndActivityStaysOnTheBadge() {
         var summary = HomeFilterTestData.summary("a", machine: nil)
         summary.thinking = true
-        XCTAssertEqual(SessionRowStatus(summary: summary), .running)
+        XCTAssertNil(SessionRowStatus(summary: summary), "Work is the presence badge, not an attention symbol")
+        XCTAssertEqual(SessionPresence(summary: summary), .working)
         summary.pendingRequestsCount = 1
         summary.pendingRequestKinds = [.input]
         XCTAssertEqual(SessionRowStatus(summary: summary), .needsReply(1))
+        XCTAssertEqual(SessionPresence(summary: summary), .working, "A request does not hide the working badge")
         summary.active = false
         XCTAssertEqual(SessionRowStatus(summary: summary), .needsReply(1))
+        XCTAssertEqual(SessionPresence(summary: summary), .stopped, "Stale thinking does not imply activity")
         summary.pendingRequestsCount = 0
-        XCTAssertNil(SessionRowStatus(summary: summary), "Stale kinds and thinking do not imply pending/connected activity")
-        summary.active = true
-        XCTAssertEqual(SessionRowStatus(summary: summary), .running)
+        XCTAssertNil(SessionRowStatus(summary: summary), "Stale kinds do not imply a pending request")
+    }
+
+    /// Web #2296: every state has its own mark, none is an absent badge.
+    func testPresenceGivesEveryStateItsOwnMark() {
+        var summary = HomeFilterTestData.summary("a", machine: nil)
+        XCTAssertEqual(SessionPresence(summary: summary), .waiting)
+        summary.backgroundTaskCount = 2
+        XCTAssertEqual(SessionPresence(summary: summary), .background)
+        summary.thinking = true
+        XCTAssertEqual(SessionPresence(summary: summary), .working, "A turn outranks background tasks")
+        summary.active = false
+        XCTAssertEqual(SessionPresence(summary: summary), .stopped)
         summary.thinking = false
-        XCTAssertNil(SessionRowStatus(summary: summary))
+        XCTAssertEqual(SessionPresence(summary: summary), .stopped, "Background counts need a connected CLI")
+        XCTAssertEqual([SessionPresence.working, .background, .waiting, .stopped].map(\.pulses),
+                       [true, true, false, false])
+    }
+
+    /// Work that outlives the agent keeps the row live (web #1404 / #2296).
+    func testRunningAttachedJobIsWorkEvenWhenTheAgentIsGone() {
+        var summary = HomeFilterTestData.summary("a", machine: nil)
+        summary.active = false
+        summary.attachedJob = AttachedJob(key: "k", label: "Import", heartbeatAt: 0, startedAt: 0, updatedAt: 0)
+        XCTAssertEqual(SessionPresence(summary: summary), .working)
+        summary.active = true
+        XCTAssertEqual(SessionPresence(summary: summary), .working)
+        summary.backgroundTaskCount = 1
+        XCTAssertEqual(SessionPresence(summary: summary), .background, "Same precedence as web")
+        summary.backgroundTaskCount = 0
+        summary.active = false
+        summary.attachedJob?.status = .completed
+        XCTAssertEqual(SessionPresence(summary: summary), .stopped, "A finished job is not work")
+    }
+
+    func testAttachedJobLineSaysProgressAndElapsedAndAdmitsStaleness() {
+        let minute = 60_000
+        var job = AttachedJob(key: "k", label: "Import", done: 12, total: 30, unit: "files",
+                              heartbeatAt: 0, startedAt: 0, updatedAt: 0)
+        job.heartbeatAt = 184 * minute
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 185 * minute),
+                       "Import · 40% · 12/30 files · 3h 5m")
+        job.remaining = 18
+        job.heartbeatAt = 5 * minute
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 5 * minute), "Import · 18 files left · 5m",
+                       "Remaining wins, as on web")
+        job.remaining = nil
+        job.total = nil
+        job.heartbeatAt = 0
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 0), "Import · <1m")
+        XCTAssertEqual(AttachedJobLine.text(job, nowMs: 20 * minute), "Import · no heartbeat 20m",
+                       "A frozen job is not passed off as live")
     }
 
     func testReadingDoesNotResolveAttentionAndResolutionKeepsTheProject() async throws {
@@ -64,7 +114,8 @@ final class SessionRowStatusTests: XCTestCase {
         XCTAssertNil(model.rows[0].status)
         XCTAssertEqual(model.rows[0].project, "hapi")
         sessions.sessions[0].thinking = true
-        XCTAssertEqual(model.rows[0].status, .running)
+        XCTAssertNil(model.rows[0].status)
+        XCTAssertEqual(model.rows[0].presence, .working)
         sessions.sessions[0].updatedAt += 1
         XCTAssertFalse(model.rows[0].unread, "Metadata changes do not create unread output")
     }
@@ -94,7 +145,9 @@ final class SessionRowStatusTests: XCTestCase {
         XCTAssertEqual(SessionRowStatus.needsReply(1).titleKey, "Needs reply")
         XCTAssertEqual(SessionRowStatus.needsApproval(2).titleKey, "Needs approval")
         XCTAssertEqual(SessionRowStatus.needsAttention(7).titleKey, "Needs attention")
-        XCTAssertEqual(SessionRowStatus.running.titleKey, "Running")
-        XCTAssertNil(SessionRowStatus.running.count)
+        XCTAssertEqual(SessionPresence.working.titleKey, "Running")
+        XCTAssertEqual(SessionPresence.background.titleKey, "Background tasks running")
+        XCTAssertEqual(SessionPresence.waiting.titleKey, "Connected")
+        XCTAssertEqual(SessionPresence.stopped.titleKey, "Stopped")
     }
 }

@@ -46,6 +46,9 @@
     --app-link-muted: rgba(17, 24, 39, 0.18);
     --app-scrollbar-thumb: rgba(107, 114, 128, 0.34);
     --app-scrollbar-thumb-hover: rgba(107, 114, 128, 0.5);
+    --app-search-match-bg: #fef3c7;
+    --app-search-match-fg: #78350f;
+    --app-search-match-outline: #d97706;
 
     /* Theme-aware colors (light mode defaults) */
     --app-border: rgba(15, 23, 42, 0.08);
@@ -129,6 +132,9 @@
     --app-link-muted: rgba(255, 255, 255, 0.2);
     --app-scrollbar-thumb: rgba(196, 203, 214, 0.28);
     --app-scrollbar-thumb-hover: rgba(196, 203, 214, 0.42);
+    --app-search-match-bg: rgba(250, 204, 21, 0.3);
+    --app-search-match-fg: #fef08a;
+    --app-search-match-outline: #facc15;
 
     --app-border: rgba(255, 255, 255, 0.08);
     --app-divider: rgba(255, 255, 255, 0.08);
@@ -210,6 +216,9 @@
     --app-link-muted: rgba(255, 255, 255, 0.22);
     --app-scrollbar-thumb: rgba(196, 203, 214, 0.24);
     --app-scrollbar-thumb-hover: rgba(196, 203, 214, 0.4);
+    --app-search-match-bg: rgba(250, 204, 21, 0.28);
+    --app-search-match-fg: #fef08a;
+    --app-search-match-outline: #facc15;
 
     --app-border: rgba(255, 255, 255, 0.12);
     --app-divider: rgba(255, 255, 255, 0.1);
@@ -460,8 +469,32 @@ html:has(.chat-scroll-y) #root {
 
 @media (hover: hover) and (pointer: fine) {
     .session-list-item:hover,
+    .session-list-row:hover > .session-list-item,
     .session-list-new-button:hover {
         background-color: var(--app-subtle-bg);
+    }
+}
+
+/* Row quick action (archive): replaces the time/progress cluster on hover,
+   and on keyboard focus (not a click or tap) so it stays reachable without a
+   mouse. Touch devices keep the long-press menu instead. */
+.session-row-quick-action {
+    display: none;
+}
+.session-list-row:has(:focus-visible) .session-row-quick-action,
+.session-list-row[data-quick-action-pending] .session-row-quick-action {
+    display: flex;
+}
+.session-list-row:has(:focus-visible) .session-row-trailing,
+.session-list-row[data-quick-action-pending] .session-row-trailing {
+    visibility: hidden;
+}
+@media (hover: hover) and (pointer: fine) {
+    .session-list-row:hover .session-row-quick-action {
+        display: flex;
+    }
+    .session-list-row:hover .session-row-trailing {
+        visibility: hidden;
     }
 }
 
@@ -583,6 +616,23 @@ html:has(.chat-scroll-y) #root {
  */
 .happy-thread-messages > * {
     overflow-anchor: none;
+}
+
+/* Keep the message selected from a session-content search result identifiable
+ * until the in-chat search navigation is dismissed or another match is chosen. */
+.hapi-message-search-target {
+    background-color: var(--app-chat-user-chip-bg);
+    border-radius: 0.35rem;
+}
+
+mark.hapi-message-search-target {
+    color: var(--app-search-match-fg);
+    background-color: var(--app-search-match-bg);
+    border-radius: 0.2em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    box-shadow: none;
+    animation: none;
 }
 
 /* Markdown styles */
@@ -810,6 +860,50 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
 
 .animate-bounce-in {
   animation: bounce-in 0.3s ease-out;
+}
+
+/*
+ * Session-attached job: subtle indeterminate progress (no %).
+ * Inspired by the HTML5 <progress> indeterminate look
+ * (https://css-tricks.com/html5-progress-element/) — diagonal stripes that
+ * drift slowly. Quiet contrast + slow background-position, not a loud chunk
+ * marquee and not a frozen empty track.
+ */
+/*
+ * Seamless loop: shift must equal one background-size tile (was -12px on an
+ * 8px tile → visible jump every cycle). For -45° stripes, move both axes by
+ * one tile so the diagonal phase matches at the loop boundary.
+ */
+@keyframes attached-job-indeterminate-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 8px 8px;
+  }
+}
+
+.animate-attached-job-indeterminate {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* Soft base + faint cutout stripes (currentColor so it matches job chrome). */
+  background-color: color-mix(in srgb, currentColor 38%, transparent);
+  background-image: linear-gradient(
+    -45deg,
+    transparent 33%,
+    color-mix(in srgb, var(--app-bg) 45%, transparent) 33%,
+    color-mix(in srgb, var(--app-bg) 45%, transparent) 66%,
+    transparent 66%
+  );
+  background-size: 8px 8px;
+  animation: attached-job-indeterminate-stripes 5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-attached-job-indeterminate {
+    animation: none;
+  }
 }
 
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */

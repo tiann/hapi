@@ -59,3 +59,21 @@ test('forks an archived Codex session directly from the mobile list menu', async
     await expect(page.getByTestId('selected-session')).toHaveText('fork-child')
     await expect(page.locator('body')).toHaveAttribute('data-fork-source', 'archived-source')
 })
+
+test('forks the latest completed prefix from a running list row and disables an empty first turn', async ({ page }) => {
+    await page.setViewportSize({ width: 393, height: 844 })
+    await page.goto('/e2e-fixtures/session-list-fork-menu-fixture.html?lang=zh-CN')
+    await page.getByRole('button', { name: /运行中已有历史/ }).click({ button: 'right' })
+    const action = page.getByRole('menuitem', { name: '分叉会话', exact: true })
+    await expect(action).not.toHaveAttribute('aria-disabled', 'true')
+    const runtime = process.env.HAPI_TASK_RUNTIME
+    if (runtime) { await mkdir(join(runtime, 'screenshots'), { recursive: true }); await page.screenshot({ path: join(runtime, 'screenshots', 'running-fork-menu.png') }) }
+    await action.click()
+    await expect(page.getByRole('dialog')).toContainText('最后一个已完成轮次')
+    if (runtime) await page.screenshot({ path: join(runtime, 'screenshots', 'running-fork-confirm.png') })
+    await page.getByRole('dialog').getByRole('button', { name: '确定', exact: true }).click()
+    await expect(page.locator('body')).toHaveAttribute('data-latest-completed', 'true')
+    await page.getByRole('button', { name: /首轮运行中/ }).click({ button: 'right' })
+    await expect(page.getByRole('menuitem', { name: '分叉会话', exact: true })).toHaveAttribute('aria-disabled', 'true')
+    await expect(page.getByText('暂无已完成轮次可分叉。', { exact: true })).toBeAttached()
+})

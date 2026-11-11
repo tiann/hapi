@@ -25,6 +25,54 @@ describe('AcpMessageHandler', () => {
         vi.restoreAllMocks();
     });
 
+    it('carries the agent\'s own tool name and args on tool calls and their updates', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const args = { CommandLine: 'ls -la', toolSummary: 'List files' };
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-n',
+            name: 'run_command',
+            args,
+            title: 'ls -la',
+            kind: 'execute',
+            rawInput: args,
+            status: 'in_progress'
+        });
+        // A later update that omits the name keeps the stored one.
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-n',
+            title: 'ls -la',
+            kind: 'execute',
+            rawInput: args,
+            status: 'in_progress'
+        });
+
+        const calls = messages.filter((m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call');
+        expect(calls).toHaveLength(2);
+        for (const call of calls) {
+            expect(call).toMatchObject({ nativeName: 'run_command', nativeArgs: args });
+        }
+    });
+
+    it('leaves nativeName off tool calls from agents that do not send a name', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-o',
+            title: 'Read',
+            rawInput: { path: 'README.md' },
+            status: 'in_progress'
+        });
+
+        expect(messages[0]).not.toHaveProperty('nativeName');
+        expect(messages[0]).not.toHaveProperty('nativeArgs');
+    });
+
     it('does not synthesize {status} output when tool completes without payload', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
@@ -1653,6 +1701,92 @@ describe('AcpMessageHandler', () => {
         ]);
     });
 
+    it('discardBuffers drops pending speech without emitting (#2267)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'harness briefly-inform prose' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'thought' }
+        });
+
+        handler.discardBuffers();
+        handler.drainBuffers();
+
+        expect(messages).toEqual([]);
+    });
+
+    it('sealDoneNotifySummaryIfPresent flushes a done footer before quiet-drain coalescing (#2268)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: `Finished.\n\n${doneFooter}` }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(true);
+        expect(messages).toEqual([
+            { type: 'text', text: `Finished.\n\n${doneFooter}` }
+        ]);
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'Shell finished; here is a redundant summary.' }
+        });
+        handler.drainBuffers();
+
+        expect(messages).toEqual([
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'text', text: 'Shell finished; here is a redundant summary.' }
+        ]);
+    });
+
+    it('sealDoneNotifySummaryIfPresent does not truncate coalesced steer/harness text (launcher owns that)', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+            }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(false);
+        handler.drainBuffers();
+        expect(messages).toEqual([
+            {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+            }
+        ]);
+    });
+
+    it('sealDoneNotifySummaryIfPresent is a no-op without an end-anchored done footer', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: 'still working' }
+        });
+
+        expect(handler.sealDoneNotifySummaryIfPresent()).toBe(false);
+        expect(messages).toEqual([]);
+        handler.drainBuffers();
+        expect(messages).toEqual([{ type: 'text', text: 'still working' }]);
+    });
+
     it('silently drops agent_thought_chunk with empty text', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
@@ -1798,6 +1932,122 @@ describe('AcpMessageHandler', () => {
             const result = getToolResult(messages, 'reg-1');
             expect(result.status).toBe('completed');
             expect(result.output).toEqual({ stdout: 'file.txt\n' });
+        });
+
+        describe('rawOutput carrying only metadata', () => {
+            function runUpdate(toolCallId: string, update: Record<string, unknown>): AgentMessage[] {
+                const messages: AgentMessage[] = [];
+                const handler = new AcpMessageHandler((message) => messages.push(message));
+                handler.handleUpdate({
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                    toolCallId,
+                    title: 'bash',
+                    rawInput: { command: 'echo ok' },
+                    status: 'in_progress'
+                });
+                handler.handleUpdate({
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                    toolCallId,
+                    ...update
+                });
+                return messages;
+            }
+
+            it('uses normalized content text as output and keeps metadata', () => {
+                const metadata = { status: 'completed', truncated: false, exit: 0 };
+                const messages = runUpdate('meta-1', {
+                    status: 'completed',
+                    content: [{ type: 'content', content: { type: 'text', text: 'ok' } }],
+                    rawOutput: { metadata }
+                });
+
+                const result = getToolResult(messages, 'meta-1');
+                expect(result.status).toBe('completed');
+                expect(result.output).toEqual({ output: 'ok', metadata });
+            });
+
+            it('keeps metadata and an empty output when content is an empty array', () => {
+                const metadata = { truncated: false };
+                const messages = runUpdate('meta-2', {
+                    status: 'completed',
+                    content: [],
+                    rawOutput: { metadata }
+                });
+
+                expect(getToolResult(messages, 'meta-2').output).toEqual({ output: '', metadata });
+            });
+
+            it('merges a single diff block with metadata', () => {
+                const metadata = { truncated: false };
+                const messages = runUpdate('meta-3', {
+                    status: 'completed',
+                    content: [{ type: 'diff', path: 'a.ts', oldText: 'a', newText: 'b', _meta: { kind: 'modify' } }],
+                    rawOutput: { metadata }
+                });
+
+                expect(getToolResult(messages, 'meta-3').output).toEqual({
+                    path: 'a.ts',
+                    oldText: 'a',
+                    newText: 'b',
+                    kind: 'modify',
+                    metadata
+                });
+            });
+
+            it('keeps rawOutput unchanged when content cannot be normalized', () => {
+                const rawOutput = { metadata: { truncated: false } };
+                const messages = runUpdate('meta-4', {
+                    status: 'completed',
+                    content: [{ type: 'image', url: 'https://example.com/a.png' }],
+                    rawOutput
+                });
+
+                expect(getToolResult(messages, 'meta-4').output).toEqual(rawOutput);
+            });
+
+            it('keeps rawOutput unchanged when it carries output next to metadata', () => {
+                const rawOutput = { stdout: 'file.txt\n', metadata: { exit: 0 } };
+                const messages = runUpdate('meta-5', {
+                    status: 'completed',
+                    content: [{ type: 'content', content: { type: 'text', text: 'should be ignored' } }],
+                    rawOutput
+                });
+
+                expect(getToolResult(messages, 'meta-5').output).toEqual(rawOutput);
+            });
+
+            it('keeps rawOutput unchanged when content is absent', () => {
+                const rawOutput = { metadata: { truncated: false } };
+                const messages = runUpdate('meta-6', { status: 'completed', rawOutput });
+
+                expect(getToolResult(messages, 'meta-6').output).toEqual(rawOutput);
+            });
+
+            it('reports failed status with the content text and metadata', () => {
+                const metadata = { status: 'error', exit: 1 };
+                const messages = runUpdate('meta-7', {
+                    status: 'failed',
+                    content: [{ type: 'content', content: { type: 'text', text: 'command not found' } }],
+                    rawOutput: { metadata }
+                });
+
+                const result = getToolResult(messages, 'meta-7');
+                expect(result.status).toBe('failed');
+                expect(result.output).toEqual({ output: 'command not found', metadata });
+            });
+
+            it('keeps an error rawOutput unchanged on failure', () => {
+                const rawOutput = { error: 'boom' };
+                const messages = runUpdate('meta-8', {
+                    status: 'failed',
+                    content: [{ type: 'content', content: { type: 'text', text: 'ignored' } }],
+                    rawOutput
+                });
+
+                const result = getToolResult(messages, 'meta-8');
+                expect(result.status).toBe('failed');
+                expect(result.output).toEqual(rawOutput);
+            });
         });
 
         it('passes through non-array content value unchanged when rawOutput is absent', () => {
