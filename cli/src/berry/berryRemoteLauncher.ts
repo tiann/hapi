@@ -1,5 +1,4 @@
 import React from 'react'
-import { RPC_METHODS } from '@hapi/protocol'
 import type { PermissionMode } from '@hapi/protocol/types'
 import { logger } from '@/ui/logger'
 import { convertAgentMessage } from '@/agent/messageConverter'
@@ -20,28 +19,23 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createBerryBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
+    /** The session's model, seeded from the spawn-time lever
+     * (BERRY_AGENT_MODEL). Berry has no runtime model surface, so this never
+     * changes after launch — it exists so the host can be told what the
+     * session runs on. */
     private currentBackendModel: string | null = null
-    /** Server default captured at session creation, before any override. */
-    private initialBackendModel: string | null = null
     private displayPermissionMode: PermissionMode | undefined
     /** Isolated berry dataDir (sessions.db + sticky tool-policy.json) keyed
      * by the HAPI row id — stable across respawns and runner restarts. */
     private readonly dataDir: string
-    /** Live ACP session id — mirrors the loop variable so the once-registered
-     * catalog RPC handler can follow a mid-session backend respawn. */
-    private acpSessionId: string | null = null
-    /** Backend the catalog RPC answers from. Separate from this.backend
-     * because cleanup() nulls that at teardown while the handler may still
-     * be mounted; updated at startup and on every respawn. */
-    private catalogBackend: ReturnType<typeof createBerryBackend> | null = null
 
     constructor(
         private readonly session: BerrySession,
         private readonly opts: {
             /** Spawn-time model override (`provider/model-id`; passed to the
-             * child as BERRY_AGENT_MODEL — berry's only model lever). */
+             * child as BERRY_AGENT_MODEL — berry's only model lever, read at
+             * process start; there is no runtime switch to apply). */
             model?: string
-            onModelRollback?: (model: string | null) => void
             onConfigDiscovered?: (model: string | null) => void
         } = {}
     ) {
@@ -112,80 +106,25 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         // without a native rename tool. Mirroring a native title into
         // metadata.summary would suppress the Hub's own title generation.
 
-        // Register the catalog RPC before initialization: a client that opens
-        // the model picker while initialize/session/new is still pending
-        // would otherwise hit an unregistered-method rejection, and the
-        // picker has no retry path — it would stay empty until remounted.
-        // The handler parks on readiness and answers once the session exists
-        // and model discovery has settled.
-        let markReady!: (acpSessionId: string) => void
-        let markFailed!: (error: unknown) => void
-        const ready = new Promise<string>((resolve, reject) => {
-            markReady = resolve
-            markFailed = reject
-        })
-        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListBerryModels, async () => {
-            try {
-                await ready
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error)
-                return { success: false, error: `Berry session is not available: ${message}` }
-            }
-            // Read live state, not the startup closure: a mid-session respawn
-            // swaps the backend and ACP session id while this handler (registered
-            // exactly once) stays mounted.
-            const backend = this.catalogBackend
-            const acpSessionId = this.acpSessionId
-            if (!backend || !acpSessionId) {
-                return { success: false, error: 'Berry session is not available' }
-            }
-            const metadata = backend.getSessionModelsMetadata(acpSessionId)
-            if (!metadata) {
-                return { success: false, error: 'Berry model metadata is not available' }
-            }
-            return {
-                success: true,
-                availableModels: metadata.availableModels,
-                currentModelId: this.currentBackendModel ?? metadata.currentModelId
-            }
-        })
+        // No ListBerryModels catalog RPC: the hub route is retired and berry
+        // exposes no model config-option surface to read one from (the rail
+        // was a phantom — BERRY_AGENT_MODEL at spawn is the only lever).
 
-        let acpSessionId: string
-        try {
-            await backend.initialize()
-            acpSessionId = await this.establishAcpSession(backend)
-            this.session.onSessionFound(acpSessionId)
-            this.acpSessionId = acpSessionId
-            this.catalogBackend = backend
-        } catch (error) {
-            markFailed(error)
-            throw error
-        }
+        await backend.initialize()
+        let acpSessionId = await this.establishAcpSession(backend)
+        this.session.onSessionFound(acpSessionId)
 
-        const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
-        // Capture the server default BEFORE applying any override: an explicit
-        // "Default" reset later in the session (queued as model: null) switches
-        // back to this value; without it the reset would silently keep the
-        // last explicitly-applied model.
-        this.initialBackendModel = modelOption?.currentValue
-            ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
-            ?? null
-        if (this.opts.model && modelOption) {
-            this.currentBackendModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
-        }
-        if (!this.currentBackendModel) {
-            this.currentBackendModel = this.initialBackendModel
-        }
-        // Null means "berry reported no catalog/default", NOT an explicit
-        // "Default" reset: the host (runBerry) maps it to the unset
-        // preference and must leave the session model untouched — collapsing
-        // it into setModel(null) would push model:null over the keepalive
-        // runtime and wipe the stored --model off the hub row.
+        // Berry's ONLY model lever is spawn-time: BERRY_AGENT_MODEL is read
+        // once at process start (spawnBackend above) and the agent has no
+        // runtime model RPC — so there is nothing to discover or switch, and
+        // queued mode.model fields are ignored rather than answered with a
+        // 'Cannot switch model' failure. Seed the tracked model from the
+        // spawn lever so the host still learns what the session runs on.
+        this.currentBackendModel = this.opts.model ?? null
         this.opts.onConfigDiscovered?.(this.currentBackendModel)
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
         }
-        markReady(acpSessionId)
 
         // Auto-approval consults the LIVE session mode through the getter:
         // a mid-turn switch to yolo starts auto-approving request_permission
@@ -230,41 +169,10 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             // turn.
             this.applyDisplayMode(batch.mode.permissionMode)
 
-            const requestedModel = batch.mode.model
-            if (requestedModel === null) {
-                // Explicit "Default": switch back to the server default captured
-                // at session creation. The web picker resets the session model
-                // to null and the next queued turn carries it here.
-                if (this.initialBackendModel && this.initialBackendModel !== this.currentBackendModel) {
-                    const applied = await this.applyModelSwitch(backend, acpSessionId, this.initialBackendModel)
-                    if (applied) {
-                        batch.mode.model = applied
-                    } else {
-                        batch.mode.model = this.currentBackendModel ?? undefined
-                        this.opts.onModelRollback?.(this.currentBackendModel)
-                    }
-                } else if (!this.initialBackendModel) {
-                    // Nothing captured to go back to — keep the running model and
-                    // report it back so the picker does not claim "Default".
-                    batch.mode.model = this.currentBackendModel ?? undefined
-                    this.opts.onModelRollback?.(this.currentBackendModel)
-                    this.session.sendSessionEvent({
-                        type: 'message',
-                        message: 'Cannot reset the Berry model: the agent did not report a default model.'
-                    })
-                } else {
-                    // Already running the default.
-                    batch.mode.model = this.currentBackendModel ?? undefined
-                }
-            } else if (requestedModel && requestedModel !== this.currentBackendModel) {
-                const applied = await this.applyModelSwitch(backend, acpSessionId, requestedModel)
-                if (applied) {
-                    batch.mode.model = applied
-                } else {
-                    batch.mode.model = this.currentBackendModel ?? undefined
-                    this.opts.onModelRollback?.(this.currentBackendModel)
-                }
-            }
+            // No per-turn model handling: berry has no runtime model surface
+            // (BERRY_AGENT_MODEL is spawn-time only), so a queued mode.model
+            // — including the picker's null "Default" — is ignored instead of
+            // being answered with a 'Cannot switch model' failure every turn.
 
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
@@ -432,21 +340,11 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             this.backend = backend
             await backend.initialize()
             const acpSessionId = await this.establishAcpSession(backend)
-            this.acpSessionId = acpSessionId
-            this.catalogBackend = backend
             this.session.onSessionFound(acpSessionId)
 
-            // Model state: a restored session usually resumes the model it
-            // died with (the spawn-time BERRY_AGENT_MODEL lever re-applies it
-            // too), but re-capture the server default and re-assert the live
-            // override so the picker cannot drift from the backend.
-            const modelOption = backend.getConfigOptionByCategory(acpSessionId, 'model')
-            this.initialBackendModel = modelOption?.currentValue
-                ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
-                ?? this.initialBackendModel
-            if (modelOption && this.currentBackendModel && this.currentBackendModel !== modelOption.currentValue) {
-                await this.applyModelSwitch(backend, acpSessionId, this.currentBackendModel)
-            }
+            // No model state to rebind: the spawn-time BERRY_AGENT_MODEL lever
+            // rides spawnBackend itself (the fresh child re-applies it), and
+            // berry has no runtime model RPC to re-assert.
 
             this.permissionHandler = new AcpPermissionHandler(
                 this.session.client,
@@ -515,43 +413,6 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         if (permissionMode && permissionMode !== this.displayPermissionMode) {
             this.displayPermissionMode = permissionMode
             this.messageBuffer.addMessage(`[MODE:${permissionMode}]`, 'system')
-        }
-    }
-
-    /**
-     * Switch the Berry model through `session/set_config_option` — Berry
-     * surfaces its model catalog as a config option of category `model`.
-     * Model ids are opaque `provider/model` strings sent back verbatim;
-     * unknown ids fail loud with -32602. Returns the applied model, or null
-     * when the switch failed (caller keeps the previous model).
-     */
-    private async applyModelSwitch(
-        backend: ReturnType<typeof createBerryBackend>,
-        acpSessionId: string,
-        model: string
-    ): Promise<string | null> {
-        const option = backend.getConfigOptionByCategory(acpSessionId, 'model')
-        if (!option) {
-            logger.warn('[berry-acp] Cannot switch model: agent exposes no model config option')
-            this.session.sendSessionEvent({
-                type: 'message',
-                message: 'Cannot switch model: the Berry agent exposes no model config option.'
-            })
-            return null
-        }
-        try {
-            await backend.setConfigOption(acpSessionId, option.id, model)
-            this.currentBackendModel = model
-            this.messageBuffer.addMessage(`[MODEL:${model}]`, 'system')
-            return model
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            logger.warn('[berry-acp] model switch failed', { message })
-            this.session.sendSessionEvent({
-                type: 'message',
-                message: `Failed to switch Berry model: ${message}`
-            })
-            return null
         }
     }
 

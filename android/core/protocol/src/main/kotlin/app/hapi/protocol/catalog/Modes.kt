@@ -77,9 +77,11 @@ object PermissionModes {
         PermissionMode.Default, PermissionMode.SafeYolo, PermissionMode.Yolo,
     )
 
-    // `BERRY_PERMISSION_MODES`:Berry 把模式映射到其原生沙箱轴
-    // (read-only / workspace-write / danger);与 Hermes 不同,Berry 有原生
-    // read-only 沙箱,故提供保守模式(shared/src/modes.ts)。
+    // `BERRY_PERMISSION_MODES`:Berry 没有代理侧模式 RPC(无
+    // session/set_mode——berry-agent 未实现);HAPI 权限桥是唯一执行层,
+    // 按活态模式裁决每条 session/request_permission(read-only 由分类器
+    // 拒绝写请求,yolo 自动放行)。四种模式全提供,因为实现 read-only 的
+    // 是桥而非代理(shared/src/modes.ts)。
     val BERRY = listOf(
         PermissionMode.Default, PermissionMode.ReadOnly,
         PermissionMode.SafeYolo, PermissionMode.Yolo,

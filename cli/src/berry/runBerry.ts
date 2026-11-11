@@ -140,10 +140,6 @@ export async function runBerry(opts: {
     })
     const launcher = new BerryRemoteLauncher(berrySession, {
         model: opts.model,
-        onModelRollback: (model) => {
-            currentModel = model ?? undefined
-            syncSessionMode()
-        },
         onConfigDiscovered: (model) => {
             // Discovery reporting no model leaves the preference unset — an
             // ordinary turn must not turn into a "Default" reset request.

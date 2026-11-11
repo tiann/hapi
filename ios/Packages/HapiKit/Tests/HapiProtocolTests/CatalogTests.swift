@@ -200,10 +200,13 @@ struct CatalogTests {
     }
 
     @Test func modelChangeIsSupportedByEveryModelConfigFlavor() {
-        for flavor in AgentFlavor.knownFlavors where flavor != .dsh {
+        // Berry is pinned off like dsh: its only model lever is the
+        // spawn-time BERRY_AGENT_MODEL env (no runtime switching surface).
+        for flavor in AgentFlavor.knownFlavors where flavor != .dsh && flavor != .berry {
             #expect(flavor.supportsModelChange, "\(flavor.rawValue) should support model change")
         }
         #expect(!AgentFlavor.dsh.supportsModelChange)
+        #expect(!AgentFlavor.berry.supportsModelChange)
         #expect(!AgentFlavor.other("x").supportsModelChange)
         #expect(!supportsModelChange(forFlavor: nil))
     }

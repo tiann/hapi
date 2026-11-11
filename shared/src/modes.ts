@@ -37,10 +37,13 @@ export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 
-// Berry maps HAPI modes onto its sandbox axis (read-only / workspace-write /
-// danger); tool approvals always arrive as session/request_permission, which
-// the shared HAPI permission bridge decides per mode. Berry has a native
-// read-only sandbox, so the conservative mode is offered.
+// Berry has NO agent-side mode RPC (no session/set_mode — berry-agent does
+// not implement it): the HAPI permission bridge is the only enforcement,
+// deciding every session/request_permission by the live mode (read-only
+// denies writes via the classifier, yolo auto-approves). Berry also has no
+// session/resume — its restore path is session/load (agentCapabilities.
+// loadSession). All four modes are offered because the bridge, not the
+// agent, realizes read-only.
 export const BERRY_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type BerryPermissionMode = typeof BERRY_PERMISSION_MODES[number]
 
@@ -153,10 +156,10 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         // permission bridge auto-approves per the selected mode.
     }
     if (flavor === 'berry') {
-        // Berry maps the modes onto its native sandbox axis (read-only /
-        // workspace-write / danger) via `session/set_mode`; tool approvals
-        // always surface as session/request_permission, which HAPI's
-        // permission bridge auto-approves per the selected mode.
+        // Berry has no agent-side mode RPC (no session/set_mode): nothing is
+        // pushed to the agent. The HAPI permission bridge is the only
+        // enforcement — read-only turns are still sent and writes are denied
+        // by the classifier, yolo auto-approves.
         return BERRY_PERMISSION_MODES
     }
     if (flavor === 'copilot') {

@@ -94,9 +94,10 @@ extension AgentFlavor {
         case .gemini, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .berry:
-            // Berry maps the modes onto its native sandbox axis; tool
-            // approvals arrive as request_permission and the HAPI bridge
-            // decides, so the full four-mode set is offered.
+            // Berry has no agent-side mode RPC (no session/set_mode); the
+            // HAPI permission bridge is the only enforcement, deciding every
+            // request_permission by the live mode, so the full four-mode set
+            // is offered.
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]

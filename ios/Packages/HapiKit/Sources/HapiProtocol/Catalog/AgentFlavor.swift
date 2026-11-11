@@ -115,7 +115,7 @@ extension AgentFlavor {
     /// model selection and unknown flavors.
     public var supportsModelChange: Bool {
         switch self {
-        case .dsh, .other: return false
+        case .dsh, .berry, .other: return false
         default: return true
         }
     }

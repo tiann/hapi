@@ -32,7 +32,6 @@ const harness = vi.hoisted(() => ({
         currentModelId: string | null
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
-    configOptionError: null as Error | null,
     // Mirrors the backend's advertised promptCapabilities.image gate.
     supportsImages: false,
     // Recorded by the buildBerryPromptContent mock.
@@ -43,9 +42,6 @@ const harness = vi.hoisted(() => ({
     }>,
     // Captured constructor args of AcpPermissionHandler.
     permissionHandlerArgs: [] as unknown[][],
-    // When set, newSession() parks on this promise — lets tests query the
-    // catalog RPC while session/new is still pending.
-    newSessionBlocker: null as null | Promise<void>,
     // Backend-death simulation: when set, the (n+1)-th prompt on a backend
     // marks THAT backend's transport dead and throws the transport-death
     // error. The counter is per-backend, so a respawned backend starts
@@ -79,9 +75,6 @@ vi.mock('./utils/berryBackend', () => ({
             }),
             newSession: vi.fn(async (config: unknown) => {
                 harness.newSessionConfig = config
-                if (harness.newSessionBlocker) {
-                    await harness.newSessionBlocker
-                }
                 return 'berry-session-1'
             }),
             loadSession: vi.fn(async (config: { sessionId: string }) => {
@@ -120,7 +113,6 @@ vi.mock('./utils/berryBackend', () => ({
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
                 harness.setConfigOptionCalls.push({ sessionId, configId, value })
-                if (harness.configOptionError) throw harness.configOptionError
                 return {}
             }),
             onStderrError: vi.fn(),
@@ -239,11 +231,9 @@ describe('BerryRemoteLauncher', () => {
         harness.modelOption = null
         harness.modelsMetadata = null
         harness.setConfigOptionCalls = []
-        harness.configOptionError = null
         harness.supportsImages = false
         harness.promptContentInputs = []
         harness.permissionHandlerArgs = []
-        harness.newSessionBlocker = null
         harness.dieAfterPrompts = null
         harness.promptError = null
         harness.promptBlocker = null
@@ -401,139 +391,53 @@ describe('BerryRemoteLauncher', () => {
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
     })
 
-    it('discovers the current model from the model config option', async () => {
+    it('reports the spawn-time model lever without touching any config-option surface', async () => {
+        // BERRY_AGENT_MODEL at spawn is berry's only model lever; the
+        // config-option discovery/switch path was a phantom rail (berry
+        // exposes no model config option at all) and is retired.
         harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
         const onConfigDiscovered = vi.fn()
         const session = createSession()
-        const launcher = new BerryRemoteLauncher(session as never, { onConfigDiscovered })
-
-        await launcher.launch()
-
-        // No override → no set_config_option call, only discovery.
-        expect(harness.setConfigOptionCalls).toEqual([])
-        expect(onConfigDiscovered).toHaveBeenCalledWith(GLM)
-    })
-
-    it('applies a spawn model override through session/set_config_option', async () => {
-        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
-        const onConfigDiscovered = vi.fn()
-        const session = createSession({ model: GLM_FLASH })
         const launcher = new BerryRemoteLauncher(session as never, { model: GLM_FLASH, onConfigDiscovered })
 
         await launcher.launch()
 
-        expect(harness.setConfigOptionCalls).toEqual([{
-            sessionId: 'berry-session-1',
-            configId: 'model',
-            value: GLM_FLASH
-        }])
+        // No probe of the (nonexistent) option face, no switch call — the
+        // host is simply told which model the spawn lever set.
+        expect(harness.backend?.getConfigOptionByCategory).not.toHaveBeenCalled()
+        expect(harness.setConfigOptionCalls).toEqual([])
         expect(onConfigDiscovered).toHaveBeenCalledWith(GLM_FLASH)
     })
 
-    it('switches the model per-turn when the queued mode requests a different one', async () => {
-        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
-        const session = createSession({ model: GLM_FLASH })
+    it('does not attempt a model switch for a queued mode.model (no catalog, no rail)', async () => {
+        // No model option and no metadata on the wire — with the rail gone a
+        // queued mode.model must be ignored: no set_config_option probe, no
+        // 'Cannot switch model' event, and the turn still runs.
+        harness.modelOption = null
+        harness.modelsMetadata = null
+        const session = createSessionWithBatches([['first', { model: GLM_FLASH }]])
         const launcher = new BerryRemoteLauncher(session as never)
 
         await launcher.launch()
 
-        expect(harness.setConfigOptionCalls).toEqual([{
-            sessionId: 'berry-session-1',
-            configId: 'model',
-            value: GLM_FLASH
-        }])
-        // The prompt still ran after the switch.
+        expect(harness.setConfigOptionCalls).toEqual([])
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const switchFailures = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '').includes('switch model'))
+        expect(switchFailures).toEqual([])
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
     })
 
-    it('resets to the server default when Default is requested after a spawn-time override', async () => {
-        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
-        const onConfigDiscovered = vi.fn()
-        // Production sequence: spawn with an override, user later picks
-        // "Default" in the picker, next message carries model: null.
+    it('ignores an explicit Default (model: null) request — no reset attempt, no event', async () => {
+        harness.modelOption = null
+        harness.modelsMetadata = null
         const session = createSessionWithBatches([['first', { model: null }]])
-        const launcher = new BerryRemoteLauncher(session as never, { model: GLM_FLASH, onConfigDiscovered })
-
-        await launcher.launch()
-
-        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([GLM_FLASH, GLM])
-        expect(onConfigDiscovered).toHaveBeenCalledWith(GLM_FLASH)
-        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
-    })
-
-    it('resets to the server default when Default is requested after a per-turn switch', async () => {
-        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
-        const session = createSessionWithBatches([
-            ['first', { model: GLM_FLASH }],
-            ['second', { model: null }]
-        ])
         const launcher = new BerryRemoteLauncher(session as never)
-
-        await launcher.launch()
-
-        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([GLM_FLASH, GLM])
-        expect(harness.prompts).toEqual([
-            [{ type: 'text', text: 'first' }],
-            [{ type: 'text', text: 'second' }]
-        ])
-    })
-
-    it('keeps the running model and reports back when Default is requested but no default was discovered', async () => {
-        // No model config option and no metadata: the server never reported a
-        // default to reset to.
-        harness.modelOption = null
-        harness.modelsMetadata = null
-        const onModelRollback = vi.fn()
-        const session = createSessionWithBatches([
-            ['first', { model: GLM_FLASH }],
-            ['second', { model: null }]
-        ])
-        const launcher = new BerryRemoteLauncher(session as never, { onModelRollback })
 
         await launcher.launch()
 
         expect(harness.setConfigOptionCalls).toEqual([])
-        expect(session.sendSessionEvent).toHaveBeenCalledWith({
-            type: 'message',
-            message: 'Cannot reset the Berry model: the agent did not report a default model.'
-        })
-        // Both prompts still ran.
-        expect(harness.prompts).toEqual([
-            [{ type: 'text', text: 'first' }],
-            [{ type: 'text', text: 'second' }]
-        ])
-    })
-
-    it('keeps the previous model and rolls back when a per-turn switch fails', async () => {
-        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
-        harness.configOptionError = new Error('unknown model option')
-        const onModelRollback = vi.fn()
-        const session = createSession({ model: GLM_FLASH })
-        const launcher = new BerryRemoteLauncher(session as never, { onModelRollback })
-
-        await launcher.launch()
-
-        expect(harness.setConfigOptionCalls).toHaveLength(1)
-        expect(session.sendSessionEvent).toHaveBeenCalledWith({
-            type: 'message',
-            message: 'Failed to switch Berry model: unknown model option'
-        })
-        expect(onModelRollback).toHaveBeenCalledWith(GLM)
-        // The prompt still ran with the unchanged model.
-        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
-    })
-
-    it('does not treat an ordinary turn without model metadata as a reset request', async () => {
-        // No model option and no metadata: the server never reported a model,
-        // so a preference-less turn (mode {}) must run as an ordinary prompt
-        // without emitting the reset-failure event.
-        harness.modelOption = null
-        harness.modelsMetadata = null
-        const session = createSession()
-        const launcher = new BerryRemoteLauncher(session as never)
-
-        await launcher.launch()
-
         const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
         const resetFailures = events.filter((call) =>
             String((call[0] as { message?: string } | undefined)?.message ?? '').includes('Cannot reset'))
@@ -579,47 +483,14 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 
-    it('answers ListBerryModels once a delayed session/new completes', async () => {
+    it('does not register the ListBerryModels catalog RPC (model rail retired)', async () => {
+        // The hub route is deleted and berry has nothing to serve a catalog
+        // from: the RPC must not be registered at all, so a stale client
+        // query gets a clean unregistered-method answer instead of a phantom
+        // catalog (or a parked handler that can never resolve).
         harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
         harness.modelsMetadata = {
             availableModels: [{ modelId: GLM, name: 'GLM-5.3' }],
-            currentModelId: GLM
-        }
-        // Park session/new: the picker's catalog query arrives while the ACP
-        // session is still being created.
-        let releaseNewSession!: () => void
-        harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
-        const session = createSession()
-        const launcher = new BerryRemoteLauncher(session as never)
-
-        const done = launcher.launch()
-        const registered = await vi.waitFor(() => {
-            const call = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
-                .find((c) => c[0] === 'listBerryModels')
-            expect(call).toBeTruthy()
-            return call!
-        })
-
-        // The handler is registered before initialization; invoking it while
-        // session/new is pending must park on readiness, not fail.
-        const pending = (registered[1] as () => Promise<unknown>)()
-        releaseNewSession()
-        await done
-
-        await expect(pending).resolves.toEqual({
-            success: true,
-            availableModels: [{ modelId: GLM, name: 'GLM-5.3' }],
-            currentModelId: GLM
-        })
-    })
-
-    it('serves ListBerryModels with the live current model', async () => {
-        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
-        harness.modelsMetadata = {
-            availableModels: [
-                { modelId: GLM, name: 'GLM-5.3' },
-                { modelId: GLM_FLASH, name: 'GLM-5.3 Flash' }
-            ],
             currentModelId: GLM
         }
         const session = createSession()
@@ -628,17 +499,10 @@ describe('BerryRemoteLauncher', () => {
         await launcher.launch()
 
         const registered = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
-            .find((call) => call[0] === 'listBerryModels')
-        expect(registered).toBeTruthy()
-        const handler = registered![1] as () => Promise<unknown>
-        await expect(handler()).resolves.toEqual({
-            success: true,
-            availableModels: [
-                { modelId: GLM, name: 'GLM-5.3' },
-                { modelId: GLM_FLASH, name: 'GLM-5.3 Flash' }
-            ],
-            currentModelId: GLM
-        })
+            .map((call) => call[0])
+        expect(registered).not.toContain('listBerryModels')
+        // No metadata read either — nothing consumes the (phantom) catalog.
+        expect(harness.backends[0].getSessionModelsMetadata).not.toHaveBeenCalled()
     })
 
     it('respawns the backend and retries the prompt when the ACP process dies mid-session', async () => {
@@ -720,7 +584,7 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }], [{ type: 'text', text: 'second' }]])
     })
 
-    it('rebinds the model override onto the respawned backend', async () => {
+    it('respawns with the same spawn-time model lever and zero model-switch traffic', async () => {
         harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
         harness.dieAfterPrompts = 1
         const session = createSessionWithBatches([
@@ -731,11 +595,14 @@ describe('BerryRemoteLauncher', () => {
 
         await launcher.launch()
 
-        // The live model override is re-asserted on the fresh backend: the
-        // spawn-time switch on the first backend (BERRY_AGENT_MODEL +
-        // set_config_option) and the respawn re-assert on the second. There
-        // is no sandbox-mode axis to rebind — the bridge reads the live mode.
-        expect(harness.setConfigOptionCalls.map((call) => call.value)).toEqual([GLM_FLASH, GLM_FLASH])
+        // The fresh child re-applies the model through BERRY_AGENT_MODEL at
+        // spawn (both create calls carry the lever); no config-option switch
+        // is issued on either backend, and the session-scoped permission
+        // grants ride both bridges. There is no sandbox-mode axis or model
+        // rail to rebind — the bridge reads the live mode.
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.createCalls.map((call) => call.opts?.model)).toEqual([GLM_FLASH, GLM_FLASH])
+        expect(harness.setConfigOptionCalls).toEqual([])
         expect(harness.permissionHandlerArgs).toHaveLength(2)
         for (const args of harness.permissionHandlerArgs) {
             expect(args[3]).toEqual({ sessionScopedPermissionGrants: true })

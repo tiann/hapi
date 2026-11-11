@@ -196,10 +196,12 @@ class CatalogTest {
         assertTrue(Flavors.supportsEffort("pi"))
         assertFalse(Flavors.supportsEffort("codex"))
         assertFalse(Flavors.supportsEffort(null))
-        assertTrue(AgentFlavor.KNOWN.filter { it != AgentFlavor.Dsh }.all { Flavors.supportsModelChange(it.id) })
+        // 已知 flavor 都支持运行时换模型,berry 除外——它唯一的模型杠杆是
+        // spawn 期的 BERRY_AGENT_MODEL env,不提供运行时切换。
+        assertTrue(AgentFlavor.KNOWN.filter { it != AgentFlavor.Dsh && it != AgentFlavor.Berry }.all { Flavors.supportsModelChange(it.id) })
         assertFalse(Flavors.supportsModelChange("dsh"))
         assertFalse(Flavors.supportsModelChange("unknown"))
-        assertTrue(Flavors.supportsModelChange("berry"))
+        assertFalse(Flavors.supportsModelChange("berry"))
         assertTrue(Flavors.supportsModelChange("hermes"))
         assertEquals("Antigravity", Flavors.label("agy"))
         assertEquals("Grok Build", Flavors.label("grok"))

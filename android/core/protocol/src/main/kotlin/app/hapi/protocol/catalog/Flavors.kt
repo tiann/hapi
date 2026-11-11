@@ -74,7 +74,9 @@ object Flavors {
         "codex" to setOf(FlavorCapability.ModelChange),
         "dsh" to emptySet(),
         "hermes" to setOf(FlavorCapability.ModelChange),
-        "berry" to setOf(FlavorCapability.ModelChange),
+        // Berry has no runtime model switching: the only lever is the
+        // spawn-time BERRY_AGENT_MODEL env (no session/config-option surface).
+        "berry" to emptySet(),
         "cursor" to setOf(FlavorCapability.ModelChange),
         "opencode" to setOf(FlavorCapability.ModelChange),
         "pi" to setOf(FlavorCapability.ModelChange, FlavorCapability.Effort),
