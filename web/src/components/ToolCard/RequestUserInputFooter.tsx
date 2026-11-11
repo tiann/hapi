@@ -21,48 +21,7 @@ import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
 import { useTranslation } from '@/lib/use-translation'
-
-function SelectionMark(props: { checked: boolean }) {
-    const mark = props.checked ? '●' : '○'
-    return (
-        <span className="mt-0.5 w-4 shrink-0 text-center text-[var(--app-hint)]">
-            {mark}
-        </span>
-    )
-}
-
-function OptionRow(props: {
-    checked: boolean
-    disabled: boolean
-    title: string
-    description?: string | null
-    onClick: () => void
-}) {
-    return (
-        <button
-            type="button"
-            className={cn(
-                'flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-[var(--app-subtle-bg)] disabled:pointer-events-none disabled:opacity-50',
-                props.checked ? 'bg-[var(--app-subtle-bg)]' : null
-            )}
-            disabled={props.disabled}
-            aria-pressed={props.checked}
-            onClick={props.onClick}
-        >
-            <SelectionMark checked={props.checked} />
-            <span className="min-w-0 flex-1">
-                <div className="[&_.aui-md]:font-medium [&_.aui-md]:text-sm [&_.aui-md]:text-[var(--app-fg)]">
-                    <MarkdownRenderer content={props.title} />
-                </div>
-                {props.description ? (
-                    <div className="mt-0.5 [&_.aui-md]:text-xs [&_.aui-md]:text-[var(--app-hint)]">
-                        <MarkdownRenderer content={props.description} />
-                    </div>
-                ) : null}
-            </span>
-        </button>
-    )
-}
+import { AskUserQuestionOptionRow, askUserQuestionNavButtonClassName } from '@/components/ToolCard/askUserQuestionOptionCard'
 
 type QuestionState = {
     selected: string[]
@@ -251,8 +210,9 @@ export function RequestUserInputFooter(props: {
                                 {requestUserInputOptions(currentQuestion).map((opt, optIdx) => {
                                     const isSelected = currentState?.selected.includes(opt.label) ?? false
                                     return (
-                                        <OptionRow
+                                        <AskUserQuestionOptionRow
                                             key={optIdx}
+                                            mode={currentQuestion.multiple ? 'multi' : 'single'}
                                             checked={isSelected}
                                             disabled={props.disabled || loading}
                                             title={opt.isOther ? t('tool.requestUserInput.otherLabel') : opt.label}
@@ -283,7 +243,7 @@ export function RequestUserInputFooter(props: {
                 </div>
             ) : null}
 
-            <div className="mt-3 flex items-center justify-between gap-2">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3">
                 <div className="flex items-center gap-2">
                     {isAsync ? (
                         <Button
@@ -293,6 +253,7 @@ export function RequestUserInputFooter(props: {
                             disabled={props.disabled || loading}
                             onClick={dismiss}
                             title={t('tool.requestUserInput.dismissHint')}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('button.dismiss')}
                         </Button>
@@ -304,6 +265,7 @@ export function RequestUserInputFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading || clampedStep === 0}
                             onClick={prev}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('tool.prev')}
                         </Button>
@@ -314,26 +276,27 @@ export function RequestUserInputFooter(props: {
                     {questions.length > 1 && clampedStep < questions.length - 1 ? (
                         <Button
                             type="button"
-                            variant="default"
+                            variant="outline"
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={next}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('tool.next')}
                         </Button>
                     ) : (
                         <Button
                             type="button"
-                            variant="default"
+                            variant="outline"
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={submit}
                             aria-busy={loading}
-                            className="gap-2"
+                            className={cn(askUserQuestionNavButtonClassName, 'gap-2')}
                         >
                             {loading ? (
                                 <>
-                                    <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                    <Spinner size="sm" label={null} className="text-[var(--app-fg)]" />
                                     {t('tool.submitting')}
                                 </>
                             ) : (
