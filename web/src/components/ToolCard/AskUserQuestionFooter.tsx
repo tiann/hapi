@@ -7,9 +7,9 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuestionQuestion } from '@/components/ToolCard/askUserQuestion'
 import { isCursorAskQuestionToolName, parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import {
-    AskUserQuestionOptionBody,
+    AskUserQuestionOptionRow,
+    askUserQuestionNavButtonClassName,
     askUserQuestionQuoteClassName,
-    getAskUserQuestionOptionFrameClassName,
     type AskUserQuestionChoiceMode
 } from '@/components/ToolCard/askUserQuestionOptionCard'
 import {
@@ -22,39 +22,6 @@ import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
 import { useTranslation } from '@/lib/use-translation'
-
-const questionNavButtonClassName = 'h-8 rounded-full border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3.5 text-[var(--app-fg)] hover:border-[var(--app-md-quote-border)] hover:bg-[var(--app-subtle-bg)]'
-
-function OptionRow(props: {
-    checked: boolean
-    mode: AskUserQuestionChoiceMode
-    disabled: boolean
-    title: string
-    description?: string | null
-    onClick: () => void
-}) {
-    return (
-        <button
-            type="button"
-            role={props.mode === 'multi' ? 'checkbox' : 'radio'}
-            aria-checked={props.checked}
-            className={getAskUserQuestionOptionFrameClassName(
-                props.checked,
-                'w-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:pointer-events-none disabled:opacity-50'
-            )}
-            disabled={props.disabled}
-            onClick={props.onClick}
-        >
-            <AskUserQuestionOptionBody
-                checked={props.checked}
-                mode={props.mode}
-                title={props.title}
-                description={props.description}
-                interactive
-            />
-        </button>
-    )
-}
 
 function computeAnswersForQuestion(
     question: AskUserQuestionQuestion,
@@ -389,7 +356,7 @@ export function AskUserQuestionFooter(props: {
                 <div className="mt-3">
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                            {questions[clampedStep]?.header ? (
+                            {questions.length > 1 && questions[clampedStep]?.header ? (
                                 <div className="flex items-center gap-2">
                                     <Badge variant="default">
                                         {questions[clampedStep].header}
@@ -411,7 +378,7 @@ export function AskUserQuestionFooter(props: {
                         {questions[clampedStep].options.map((opt, optIdx) => {
                             const selected = (selectedByQuestion[clampedStep] ?? []).includes(optIdx)
                             return (
-                                <OptionRow
+                                <AskUserQuestionOptionRow
                                     key={optIdx}
                                     checked={selected}
                                     mode={mode}
@@ -424,7 +391,7 @@ export function AskUserQuestionFooter(props: {
                         })}
 
                         {questions[clampedStep].allowFreeText ? (
-                            <OptionRow
+                            <AskUserQuestionOptionRow
                                 checked={otherSelectedByQuestion[clampedStep] ?? false}
                                 mode={mode}
                                 disabled={props.disabled || loading}
@@ -456,7 +423,7 @@ export function AskUserQuestionFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading || clampedStep === 0}
                             onClick={prev}
-                            className={questionNavButtonClassName}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('tool.prev')}
                         </Button>
@@ -470,7 +437,7 @@ export function AskUserQuestionFooter(props: {
                         size="sm"
                         disabled={props.disabled || loading}
                         onClick={skip}
-                        className={questionNavButtonClassName}
+                        className={askUserQuestionNavButtonClassName}
                     >
                         {t('tool.skip')}
                     </Button>
@@ -481,7 +448,7 @@ export function AskUserQuestionFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={next}
-                            className={questionNavButtonClassName}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('tool.next')}
                         </Button>
@@ -493,7 +460,7 @@ export function AskUserQuestionFooter(props: {
                             disabled={props.disabled || loading}
                             onClick={submit}
                             aria-busy={loading}
-                            className={cn(questionNavButtonClassName, 'gap-2')}
+                            className={cn(askUserQuestionNavButtonClassName, 'gap-2')}
                         >
                             {loading ? (
                                 <>

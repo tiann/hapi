@@ -52,4 +52,26 @@ describe('async question transcript status', () => {
         expect(permissionFooterContent({ id: 'p', status: 'canceled', reason: 'Aborted' }, 'Bash', {})).toBe('reason')
         expect(permissionFooterContent({ id: 'p', status: 'resolved' }, 'request_user_input', asyncInput)).toBe('status')
     })
+
+    it('shows Waiting for your reply instead of Started/Duration while a question is pending', () => {
+        render(card(question('pending')))
+        expect(screen.getByText('Waiting for your reply')).toBeVisible()
+        expect(screen.queryByText('Started')).toBeNull()
+        expect(screen.queryByText('Duration')).toBeNull()
+    })
+
+    it('hides the question text from the header while pending; the open body shows it', () => {
+        render(card(question('pending')))
+        expect(screen.getAllByText('Optional question')).toHaveLength(1)
+    })
+
+    it('shows the question text in the header again once the question settles', () => {
+        render(card(question('resolved')))
+        expect(screen.getByText('Optional question')).toBeVisible()
+    })
+
+    it('keeps the timing summary once the question settles', () => {
+        render(card(question('resolved')))
+        expect(screen.queryByText('tool.waitingForReply')).toBeNull()
+    })
 })
