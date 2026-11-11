@@ -3,7 +3,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
+import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
 import agySteeredTurn from '@/agent/backends/acp/__fixtures__/agy-steered-turn.json';
@@ -13,10 +13,10 @@ import {
     AgyAcpRemoteLauncher,
     addAgyUsage,
     agyAcpModeForPermission,
-    agyGenerationMs,
     agyRoundSummary,
     resolveAgyAcpModelId
 } from './agyAcpRemoteLauncher';
+import { generationTimeMs } from '@/agent/generationClock';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
@@ -165,6 +165,15 @@ class FakeAgyBackend {
         this.echo = listener;
     }
     onStderrError(): void {}
+    formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
+    onFormElicitation(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void {
+        this.formElicitationHandler = handler;
+    }
+    /** agy's `elicitation/create`, as the ACP backend hands it to the handler. */
+    elicit(params: { sessionId: string; toolCallId?: string; message: string; requestedSchema: unknown }): Promise<FormElicitationResponse> {
+        const { sessionId, toolCallId, message, requestedSchema } = params;
+        return this.formElicitationHandler!({ sessionId, ...(toolCallId ? { toolCallId } : {}), message, requestedSchema });
+    }
     permissionHandler: ((request: PermissionRequest) => void) | null = null;
     readonly permissionResponses: unknown[] = [];
     onPermissionRequest(handler: (request: PermissionRequest) => void): void {
@@ -1470,7 +1479,7 @@ describe('AgyAcpRemoteLauncher permissions', () => {
         // agy rejects a prompt while an approval is open (-32603).
         expect(await steer({ localId: 'steer-1' })).toEqual({
             steered: false,
-            error: 'Antigravity is waiting for an approval; answer it, then steer'
+            error: 'Antigravity is waiting for your approval or answer; respond to it, then steer'
         });
         expect(backend.steerPrompts).toEqual([]);
         expect(client.setSteerDeliveryState).not.toHaveBeenCalled();
@@ -1511,6 +1520,120 @@ describe('AgyAcpRemoteLauncher questions', () => {
     });
 });
 
+describe('AgyAcpRemoteLauncher tool cards', () => {
+    const toolMessages = (client: ReturnType<typeof makeClient>) => client.sendAgentMessage.mock.calls
+        .map(([message]) => message as Record<string, unknown>)
+        .filter((message) => message.type === 'tool-call' || message.type === 'tool-call-result');
+
+    it('shows agy tools as their canonical cards and cleans the command result', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            const args = { CommandLine: 'ls', WaitMsBeforeAsync: 5000, toolSummary: 'List files' };
+            onUpdate({
+                type: 'tool_call', id: 'c1', name: 'ls', input: args, status: 'in_progress',
+                title: 'ls', kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({
+                type: 'tool_result', id: 'c1', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\na\r\nb\r\n', exit_code: 0 }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('go', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        expect(toolMessages(client)).toMatchObject([
+            { type: 'tool-call', callId: 'c1', name: 'Bash', input: { command: 'ls', description: 'List files' } },
+            { type: 'tool-call-result', callId: 'c1', output: { stdout: 'a\nb', exit_code: 0 } }
+        ]);
+    });
+
+    it('closes a command agy moved to the background at the end of the turn, and the real result replaces it', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const args = { CommandLine: 'sleep 30', WaitMsBeforeAsync: 5000 };
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call', id: 'bg', name: 'sleep 30', input: args, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        backend.promptScripts.push(async (onUpdate) => {
+            // agy reports the completion inside the next prompt's stream.
+            onUpdate({
+                type: 'tool_call', id: 'bg', name: 'sleep 30', input: args, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({
+                type: 'tool_result', id: 'bg', status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\ndone', exit_code: 0 }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('start it', REVIEW, 'a');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(toolMessages(client).filter((m) => m.type === 'tool-call-result')).toMatchObject([
+            { callId: 'bg', output: { stdout: expect.stringContaining('background') }, is_error: false }
+        ]);
+
+        queue.push('next', REVIEW, 'b');
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(2));
+        queue.close();
+        await run;
+
+        const results = toolMessages(client).filter((m) => m.type === 'tool-call-result');
+        expect(results).toHaveLength(2);
+        expect(results[1]).toMatchObject({ callId: 'bg', output: { stdout: 'done', exit_code: 0 } });
+    });
+
+    it('does not call a command that never started a background command', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            const args = { CommandLine: 'rm -rf x' };
+            onUpdate({
+                type: 'tool_call', id: 'd', name: 'rm -rf x', input: args, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            // Waiting for approval; the user denies and agy ends the turn.
+            onUpdate({
+                type: 'tool_call', id: 'd', name: 'rm -rf x', input: args, status: 'pending',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: args
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+        queue.push('go', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        expect(toolMessages(client).filter((m) => m.type === 'tool-call-result')).toEqual([]);
+    });
+
+    it('does not close a command that finished or a turn that was cancelled', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call', id: 'x', name: 'x', input: {}, status: 'in_progress',
+                kind: 'execute', nativeName: 'run_command', nativeArgs: { CommandLine: 'x' }
+            });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('go', REVIEW, 'a');
+        queue.close();
+
+        await launch(session, [backend]).run;
+
+        expect(toolMessages(client).filter((m) => m.type === 'tool-call-result')).toEqual([]);
+    });
+});
+
 describe('agy ACP helpers', () => {
     it('maps HAPI permission modes to agy ACP modes', () => {
         expect(agyAcpModeForPermission('request-review')).toBe('default');
@@ -1531,18 +1654,18 @@ describe('agy ACP helpers', () => {
 
     it('takes tool runs and waits for the user out of the generation time', () => {
         // A tool run and, separately, a wait for an approval.
-        expect(agyGenerationMs(0, 10_000, [{ start: 1_000, end: 4_000 }, { start: 6_000, end: 7_000 }])).toBe(6_000);
+        expect(generationTimeMs(0, 10_000, [{ start: 1_000, end: 4_000 }, { start: 6_000, end: 7_000 }])).toBe(6_000);
         // A steered turn: windows from both requests, in any order.
-        expect(agyGenerationMs(0, 20_000, [{ start: 12_000, end: 15_000 }, { start: 2_000, end: 8_000 }])).toBe(11_000);
+        expect(generationTimeMs(0, 20_000, [{ start: 12_000, end: 15_000 }, { start: 2_000, end: 8_000 }])).toBe(11_000);
         // An approval wait inside a tool's span counts once.
-        expect(agyGenerationMs(0, 10_000, [{ start: 1_000, end: 6_000 }, { start: 2_000, end: 3_000 }, { start: 5_000, end: 8_000 }])).toBe(3_000);
+        expect(generationTimeMs(0, 10_000, [{ start: 1_000, end: 6_000 }, { start: 2_000, end: 3_000 }, { start: 5_000, end: 8_000 }])).toBe(3_000);
         // Cancelled mid-tool: the open window ends with the round; spans
         // outside the round do not count.
-        expect(agyGenerationMs(1_000, 5_000, [{ start: 0, end: 2_000 }, { start: 3_000, end: null }])).toBe(1_000);
+        expect(generationTimeMs(1_000, 5_000, [{ start: 0, end: 2_000 }, { start: 3_000, end: null }])).toBe(1_000);
         // No answer, or nothing left but tools.
-        expect(agyGenerationMs(0, null, [])).toBeNull();
-        expect(agyGenerationMs(null, 5_000, [])).toBeNull();
-        expect(agyGenerationMs(0, 5_000, [{ start: 0, end: 5_000 }])).toBe(0);
+        expect(generationTimeMs(0, null, [])).toBeNull();
+        expect(generationTimeMs(null, 5_000, [])).toBeNull();
+        expect(generationTimeMs(0, 5_000, [{ start: 0, end: 5_000 }])).toBe(0);
     });
 
     it('reports generation tokens, thinking included, only with a positive generation time', () => {
@@ -1897,6 +2020,197 @@ describe('AgyAcpRemoteLauncher steer state matrix', () => {
         // Settled before kill() returns, since the runner ends the session then.
         expect(client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer-1']);
         expect(consumedSteer(client, 'steer-1')).toBe(false);
+        queue.close();
+        await run;
+    });
+});
+
+describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
+    type Handlers = Map<string, (payload?: unknown) => Promise<unknown>>;
+    // Recorded from agy 1.5.3 with form elicitation advertised.
+    const questionCall = {
+        type: 'tool_call' as const, id: 'call_q', name: 'Run ask_question', kind: 'other', status: 'pending' as const, title: 'Run ask_question',
+        input: { questions: [{ is_multi_select: false, options: ['(Recommended) RED', 'BLUE'], question: 'Do you prefer RED or BLUE?' }] }
+    };
+    const elicitation = {
+        sessionId: 'agy-conv-new', toolCallId: 'call_q', mode: 'form', message: 'The agent has a question.',
+        requestedSchema: { type: 'object', properties: {
+            q1: { type: 'string', title: 'Do you prefer RED or BLUE?', oneOf: [{ const: '1', title: '(Recommended) RED' }, { const: '2', title: 'BLUE' }] },
+            q1_other: { type: 'string', title: 'Other', description: 'Optional free-form answer to: Do you prefer RED or BLUE?' }
+        } }
+    };
+    const card = {
+        questions: [{
+            question: 'Do you prefer RED or BLUE?', header: null, multiSelect: false,
+            options: [{ label: '(Recommended) RED', description: null }, { label: 'BLUE', description: null }]
+        }]
+    };
+
+    async function askedTurn(permissionMode: AgyMode['permissionMode'] = 'request-review') {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let answer!: Promise<unknown>;
+        let finish!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate(questionCall);
+            answer = backend.elicit(elicitation);
+            await new Promise<void>((resolve) => { finish = resolve; });
+        });
+        queue.push('ask me', { permissionMode }, 'first');
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(Object.keys(agentState(client).requests ?? {})).toEqual(['call_q']));
+        const rpc = (method: string) => (client.rpcHandlerManager.handlers as Handlers).get(method)!;
+        return { session, queue, client, backend, run, rpc, answer: () => answer, finish: () => finish() };
+    }
+
+    it('shows agy\'s question as the question card on its own tool call', async () => {
+        const { queue, client, run, finish } = await askedTurn();
+        expect(agentState(client).requests).toMatchObject({ call_q: { tool: 'AskUserQuestion', arguments: card } });
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'tool-call', callId: 'call_q', name: 'AskUserQuestion', input: card
+        }));
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('answers agy with the chosen option only', async () => {
+        const { queue, run, rpc, answer, finish } = await askedTurn();
+        await rpc(RPC_METHODS.Permission)({ id: 'call_q', approved: true, answers: { '0': ['BLUE'] } });
+        await expect(answer()).resolves.toEqual({ action: 'accept', content: { q1: '2' } });
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('declines when the user denies the question', async () => {
+        const { queue, run, rpc, answer, finish } = await askedTurn();
+        await rpc(RPC_METHODS.Permission)({ id: 'call_q', approved: false, decision: 'denied' });
+        await expect(answer()).resolves.toEqual({ action: 'decline' });
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it.each(['always-proceed', 'acceptEdits', 'plan'] as const)('waits for the user even in %s', async (mode) => {
+        const { queue, run, answer, finish } = await askedTurn(mode);
+        let settled = false;
+        void answer().then(() => { settled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(settled).toBe(false);
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('refuses a steer while the question is open', async () => {
+        const { queue, run, rpc, finish } = await askedTurn();
+        queue.push('also lint', REVIEW, 'steer-1');
+        expect(await rpc(RPC_METHODS.SteerQueuedMessage)({ localId: 'steer-1' })).toEqual({
+            steered: false,
+            error: 'Antigravity is waiting for your approval or answer; respond to it, then steer'
+        });
+        expect(queue.size()).toBe(1);
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('cancels the question on Stop', async () => {
+        const { queue, run, rpc, answer, backend, finish } = await askedTurn();
+        backend.onCancel = () => finish();
+        await rpc(RPC_METHODS.Abort)();
+        await expect(answer()).resolves.toEqual({ action: 'cancel' });
+        queue.close();
+        await run;
+    });
+
+    it('cancels the question when the session ends', async () => {
+        const { session, queue, client, run, answer, backend, finish } = await askedTurn();
+        backend.onDisconnect = () => finish();
+        await session.kill();
+        await expect(answer()).resolves.toEqual({ action: 'cancel' });
+        // A question the stopped process still sends is not shown.
+        await expect(backend.elicit({ ...elicitation, toolCallId: 'call_late' })).resolves.toEqual({ action: 'cancel' });
+        expect(agentState(client).requests ?? {}).toEqual({});
+        queue.close();
+        await run;
+    });
+
+    it('declines rather than sending an empty answer when an approval carries none', async () => {
+        const { queue, run, rpc, answer, finish } = await askedTurn();
+        await rpc(RPC_METHODS.Permission)({ id: 'call_q', approved: true });
+        await expect(answer()).resolves.toEqual({ action: 'decline' });
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('asks under a fresh id when agy\'s tool call id is already waiting for the user', async () => {
+        const { client, queue, run, rpc, backend, answer, finish } = await askedTurn();
+        const second = backend.elicit(elicitation);
+        await vi.waitFor(() => expect(Object.keys(agentState(client).requests ?? {})).toHaveLength(2));
+        const freshId = Object.keys(agentState(client).requests ?? {}).find((id) => id !== 'call_q')!;
+        await rpc(RPC_METHODS.Permission)({ id: freshId, approved: true, answers: { '0': ['BLUE'] } });
+        await expect(second).resolves.toEqual({ action: 'accept', content: { q1: '2' } });
+        await rpc(RPC_METHODS.Permission)({ id: 'call_q', approved: true, answers: { '0': ['(Recommended) RED'] } });
+        await expect(answer()).resolves.toEqual({ action: 'accept', content: { q1: '1' } });
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('asks under a fresh id when agy\'s tool call id was already answered', async () => {
+        const { client, queue, run, rpc, backend, answer, finish } = await askedTurn();
+        await rpc(RPC_METHODS.Permission)({ id: 'call_q', approved: true, answers: { '0': ['BLUE'] } });
+        await expect(answer()).resolves.toEqual({ action: 'accept', content: { q1: '2' } });
+
+        const again = backend.elicit(elicitation);
+        await vi.waitFor(() => expect(Object.keys(agentState(client).requests ?? {})).toHaveLength(1));
+        const id = Object.keys(agentState(client).requests ?? {})[0]!;
+        // Clients hide a pending request whose id is already completed.
+        expect(id).not.toBe('call_q');
+        await rpc(RPC_METHODS.Permission)({ id, approved: true, answers: { '0': ['(Recommended) RED'] } });
+        await expect(again).resolves.toEqual({ action: 'accept', content: { q1: '1' } });
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('cancels a question that arrives after Stop', async () => {
+        const { queue, run, rpc, answer, backend, finish } = await askedTurn();
+        backend.onCancel = () => {};
+        await rpc(RPC_METHODS.Abort)();
+        await expect(answer()).resolves.toEqual({ action: 'cancel' });
+        // At once, not when agy is restarted after the hard-stop timeout.
+        const late = backend.elicit({ ...elicitation, toolCallId: 'call_late' });
+        await expect(Promise.race([late, new Promise((resolve) => setTimeout(() => resolve('still open'), 200))]))
+            .resolves.toEqual({ action: 'cancel' });
+        finish();
+        queue.close();
+        await run;
+    });
+
+    it('cancels a question that arrives after the stopped turn has finished', async () => {
+        const { client, queue, run, rpc, answer, backend, finish } = await askedTurn();
+        backend.onCancel = () => finish();
+        await rpc(RPC_METHODS.Abort)();
+        await expect(answer()).resolves.toEqual({ action: 'cancel' });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const late = backend.elicit({ ...elicitation, toolCallId: 'call_late2' });
+        await expect(Promise.race([late, new Promise((resolve) => setTimeout(() => resolve('still open'), 300))]))
+            .resolves.toEqual({ action: 'cancel' });
+        expect(Object.keys(agentState(client).requests ?? {})).not.toContain('call_late2');
+        queue.close();
+        await run;
+    });
+
+    it('cancels a form that is not a question', async () => {
+        const { queue, run, backend, finish } = await askedTurn();
+        await expect(backend.elicit({
+            sessionId: 'agy-conv-new', message: 'Sign in', requestedSchema: { type: 'object', properties: { name: { type: 'string' } } }
+        })).resolves.toEqual({ action: 'cancel' });
+        finish();
         queue.close();
         await run;
     });

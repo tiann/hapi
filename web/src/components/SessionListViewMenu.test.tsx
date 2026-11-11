@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { DEFAULT_SESSION_LIST_VIEW, type SessionListView } from '@/hooks/useSessionListView'
@@ -40,5 +40,34 @@ describe('SessionListViewMenu', () => {
         const { onReset } = renderMenu({ ...DEFAULT_SESSION_LIST_VIEW, status: 'active' })
         fireEvent.click(screen.getByRole('menuitem', { name: 'Reset to default' }))
         expect(onReset).toHaveBeenCalledOnce()
+    })
+})
+
+describe('SessionListViewMenu FUE', () => {
+    afterEach(() => {
+        window.localStorage.removeItem('hapi.fue.v1.session-list-view-menu')
+    })
+
+    it('shows a pulsing FUE dot on the trigger until acknowledged', () => {
+        render(
+            <I18nProvider>
+                <SessionListViewMenu view={DEFAULT_SESSION_LIST_VIEW} onChange={vi.fn()} onReset={vi.fn()} />
+            </I18nProvider>
+        )
+        const trigger = screen.getByRole('button', { name: 'Sort and filter' })
+        expect(within(trigger).getByRole('status', { name: 'New feature available' })).toBeInTheDocument()
+    })
+
+    it('opens the menu and shows the explainer on first click', () => {
+        renderMenu()
+        expect(screen.getByRole('menu')).toBeInTheDocument()
+        expect(screen.getByRole('dialog', { name: 'New: sort & filter' })).toBeInTheDocument()
+    })
+
+    it('dismisses and persists acknowledgement on Got it', () => {
+        renderMenu()
+        fireEvent.click(screen.getByRole('button', { name: 'Got it' }))
+        expect(window.localStorage.getItem('hapi.fue.v1.session-list-view-menu')).toBe('1')
+        expect(screen.queryByRole('dialog', { name: 'New: sort & filter' })).not.toBeInTheDocument()
     })
 })

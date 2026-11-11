@@ -1,16 +1,31 @@
 import type { AgentFlavor } from '@hapi/protocol';
-import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
+import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
+
+/** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
+export type AgentActivitySource =
+    | 'state_update_running'
+    | 'state_update_idle'
+    | 'state_update_requires_action'
+    | 'permission'
+    | 'form_elicitation';
+
+export type AgentActivityListener = (thinking: boolean, source: AgentActivitySource) => void;
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
 import packageJson from '../../../../package.json';
 
 type PendingPermission = {
     resolve: (result: { outcome: { outcome: string; optionId?: string } }) => void;
+};
+
+type PendingElicitation = {
+    sessionId: string;
+    settle: (response: FormElicitationResponse) => void;
 };
 
 type AcpPromptUsage = {
@@ -99,6 +114,8 @@ export class AcpSdkBackend implements AgentBackend {
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
+    private formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
+    private readonly pendingElicitations = new Set<PendingElicitation>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private readonly sessionInfoRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -128,7 +145,7 @@ export class AcpSdkBackend implements AgentBackend {
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
     private userMessageChunkListener: ((text: string) => void) | null = null;
     /** Fired on foreground ACP state / permission so launchers can bump hub thinking (#1470). */
-    private agentActivityListener: ((thinking: boolean) => void) | null = null;
+    private agentActivityListener: AgentActivityListener | null = null;
     /** Debounce timer for state_update running → thinking (#1502 chatter). */
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
@@ -193,6 +210,20 @@ export class AcpSdkBackend implements AgentBackend {
          * child in the background).
          */
         childSessionUpdates?: boolean;
+        /**
+         * Advertise `elicitation.form` so the agent may ask the user structured
+         * questions through `elicitation/create`. Opt-in because the handler
+         * for that request is flavor specific; without a handler the agent
+         * would wait on a request nobody answers.
+         */
+        elicitationForm?: boolean;
+        /**
+         * Refresh cached config options (model, thought_level, ...) from ACP
+         * `config_option_update` notifications. Opt-in for agents whose
+         * `session/set_model` response carries no options and which push the
+         * new model's options this way instead.
+         */
+        configOptionUpdates?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -241,12 +272,19 @@ export class AcpSdkBackend implements AgentBackend {
             return await this.handlePermissionRequest(params, requestId);
         });
 
+        if (this.options.elicitationForm) {
+            this.transport.registerRequestHandler('elicitation/create', async (params) => {
+                return await this.handleElicitationRequest(params);
+            });
+        }
+
         const response = await withRetry(
             () => this.transport!.sendRequest('initialize', {
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: false, writeTextFile: false },
                     terminal: false,
+                    ...(this.options.elicitationForm ? { elicitation: { form: {} } } : {}),
                     _meta: {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
                         // `model` + `fast` config options only when the client advertises
@@ -636,7 +674,7 @@ export class AcpSdkBackend implements AgentBackend {
      * `false` = `state_update` idle (skipped while a HAPI prompt turn is still draining).
      * Launchers should ignore no-ops when session.thinking already matches.
      */
-    setAgentActivityListener(listener: ((thinking: boolean) => void) | null): void {
+    setAgentActivityListener(listener: AgentActivityListener | null): void {
         this.agentActivityListener = listener;
     }
 
@@ -829,6 +867,9 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.transport.sendNotification('session/cancel', { sessionId });
+        // The agent keeps waiting on an unanswered form until its request is
+        // answered, so cancelling the prompt must settle the form too.
+        this.settlePendingElicitations(sessionId);
     }
 
     /**
@@ -959,6 +1000,55 @@ export class AcpSdkBackend implements AgentBackend {
 
     onPermissionRequest(handler: (request: PermissionRequest) => void): void {
         this.permissionHandler = handler;
+    }
+
+    onFormElicitation(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void {
+        this.formElicitationHandler = handler;
+    }
+
+    private settlePendingElicitations(sessionId?: string): void {
+        for (const pending of Array.from(this.pendingElicitations)) {
+            if (sessionId === undefined || pending.sessionId === sessionId) {
+                pending.settle({ action: 'cancel' });
+            }
+        }
+    }
+
+    private async handleElicitationRequest(params: unknown): Promise<FormElicitationResponse> {
+        const cancel: FormElicitationResponse = { action: 'cancel' };
+        if (!isObject(params) || params.mode !== 'form' || !this.formElicitationHandler) {
+            return cancel;
+        }
+        const sessionId = asString(params.sessionId);
+        if (!sessionId || !isObject(params.requestedSchema)) {
+            return cancel;
+        }
+
+        const request: FormElicitationRequest = {
+            sessionId,
+            ...(asString(params.toolCallId) ? { toolCallId: asString(params.toolCallId) as string } : {}),
+            message: asString(params.message) ?? '',
+            requestedSchema: params.requestedSchema
+        };
+
+        return await new Promise<FormElicitationResponse>((resolve) => {
+            const pending: PendingElicitation = {
+                sessionId,
+                settle: (response) => {
+                    this.pendingElicitations.delete(pending);
+                    resolve(response);
+                }
+            };
+            this.pendingElicitations.add(pending);
+            this.agentActivityListener?.(true, 'form_elicitation');
+            this.formElicitationHandler!(request).then(
+                (response) => pending.settle(response),
+                (error) => {
+                    logger.warn('[ACP] form elicitation handler failed; cancelling', error);
+                    pending.settle(cancel);
+                }
+            );
+        });
     }
 
     onStderrError(handler: (error: AcpStderrError) => void): void {
@@ -1107,6 +1197,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionAvailableCommands.clear();
         this.autoPermissionModeEnabled = null;
         this.notifyResponseComplete();
+        this.settlePendingElicitations();
         await this.transport.close();
         this.transport = null;
     }
@@ -1241,6 +1332,9 @@ export class AcpSdkBackend implements AgentBackend {
         // work is queued so async image registration preserves event order.
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
+            if (this.options.configOptionUpdates && isObject(update) && update.sessionUpdate === 'config_option_update') {
+                this.captureSessionConfigOptions(sessionId, update);
+            }
         }
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
@@ -1286,7 +1380,7 @@ export class AcpSdkBackend implements AgentBackend {
             if (this.isProcessingMessage) {
                 return;
             }
-            this.agentActivityListener(false);
+            this.agentActivityListener(false, 'state_update_idle');
             return;
         }
 
@@ -1297,13 +1391,17 @@ export class AcpSdkBackend implements AgentBackend {
             }
             this.runningThinkingTimer = setTimeout(() => {
                 this.runningThinkingTimer = null;
-                this.agentActivityListener?.(true);
+                this.agentActivityListener?.(true, 'state_update_running');
             }, AcpSdkBackend.RUNNING_THINKING_DEBOUNCE_MS);
             return;
         }
 
         this.clearRunningThinkingTimer();
-        this.agentActivityListener(true);
+        const source: AgentActivitySource = update.sessionUpdate === 'state_update'
+            && update.state === 'requires_action'
+            ? 'state_update_requires_action'
+            : 'state_update_running';
+        this.agentActivityListener(true, source);
     }
 
     private clearRunningThinkingTimer(): void {
@@ -1489,7 +1587,7 @@ export class AcpSdkBackend implements AgentBackend {
         if (this.permissionHandler) {
             try {
                 // Permission prompts imply the agent is awake (#1470).
-                this.agentActivityListener?.(true);
+                this.agentActivityListener?.(true, 'permission');
                 this.permissionHandler(request);
             } catch (error) {
                 this.pendingPermissions.delete(toolCallId);

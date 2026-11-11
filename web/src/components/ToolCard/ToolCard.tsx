@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
+import { PermissionFooter, permissionFooterContent } from '@/components/ToolCard/PermissionFooter'
 import { CodexPlanFooter } from '@/components/ToolCard/CodexPlanFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
@@ -463,10 +463,7 @@ function ToolCardInner(props: ToolCardProps) {
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
-    const showsPermissionFooter = Boolean(permission && (
-        permission.status === 'resolved' || permission.status === 'pending'
-        || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
-    ))
+    const showsPermissionFooter = permissionFooterContent(permission, toolName, props.block.tool.input) !== null
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
     // Header/content padding already supplies 12-16px below timing; add only
     // the remainder needed to match the detail dialog's 16px section gap.

@@ -605,6 +605,27 @@ export class ApiMachineClient {
         })
     }
 
+    /**
+     * Tell the hub a runner-owned child died without the CLI's normal
+     * session-end handshake. Best effort: the hub also has the child socket
+     * and its keep-alive expiry as a backstop if this frame is lost.
+     */
+    reportSessionChildExited(payload: {
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time?: number
+    }): void {
+        if (!this.socket) return
+        this.socket.emit('session-child-exited', {
+            machineId: this.machine.id,
+            sid: payload.sid,
+            pid: payload.pid,
+            ...(payload.processStartMarker ? { processStartMarker: payload.processStartMarker } : {}),
+            time: payload.time ?? Date.now()
+        })
+    }
+
     connect(): void {
         this.socket = io(`${configuration.apiUrl}/cli`, {
             transports: ['websocket'],

@@ -1,10 +1,12 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
+import { GenerationClock } from '@/agent/generationClock';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
-import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
+import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
@@ -15,8 +17,16 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgySession } from './session';
+import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import {
+    QUESTION_TOOL_NAME,
+    agyQuestionContent,
+    parseAgyQuestionForm,
+    questionCardInput,
+    questionCardInputFromToolCall
+} from './agyQuestion';
 
 type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
 
@@ -80,28 +90,10 @@ export function addAgyUsage(total: UsageMessage | null, next: UsageMessage): Usa
     };
 }
 
-type TimeWindow = { start: number; end: number | null };
-
-/**
- * agy reports no per-step timing, so generation time is the round minus the
- * spans spent running tools or waiting for the user. Spans are clipped to the
- * round and merged, so overlaps count once; an open span ends with the round.
- */
-export function agyGenerationMs(sentAt: number | null, answeredAt: number | null, windows: TimeWindow[]): number | null {
-    if (sentAt === null || answeredAt === null || answeredAt <= sentAt) return null;
-    const clipped = windows
-        .map(({ start, end }) => ({ start: Math.max(start, sentAt), end: Math.min(end ?? answeredAt, answeredAt) }))
-        .filter(({ start, end }) => end > start)
-        .sort((a, b) => a.start - b.start);
-    let excluded = 0;
-    let coveredUntil = sentAt;
-    for (const { start, end } of clipped) {
-        const from = Math.max(start, coveredUntil);
-        if (end > from) excluded += end - from;
-        coveredUntil = Math.max(coveredUntil, end);
-    }
-    return answeredAt - sentAt - excluded;
-}
+// agy reports no per-step timing, so generation time is the round minus the
+// spans spent running tools or waiting for the user: the shared GenerationClock
+// (cli/src/agent/generationClock.ts) is fed the same session updates and
+// permission waits it always was.
 
 /** The turn's response-footer record; the web reads `provider: 'agy'` summaries. */
 export function agyRoundSummary(
@@ -143,6 +135,17 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
 }
 
+/** agy's ask_question tool call (titled "Run ask_question"), as the question card. */
+function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLabels: string[][] | null } {
+    if (message.type !== 'tool_call' || !/\bask_question\b/.test(message.name)) return { message, shownLabels: null };
+    const input = questionCardInputFromToolCall(message.input);
+    if (!input) return { message, shownLabels: null };
+    return {
+        message: { ...message, name: QUESTION_TOOL_NAME, input },
+        shownLabels: input.questions.map((question) => question.options.map((option) => option.label))
+    };
+}
+
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
@@ -152,9 +155,12 @@ type AgyTurn = {
     stopReason: string | null;
     sentAt: number | null;
     answeredAt: number | null;
-    // Tool runs and waits for the user, which are not generation time.
-    idleWindows: TimeWindow[];
-    toolWindows: Map<string, TimeWindow>;
+    // Generation timing: tool runs and waits for the user become idle windows
+    // the shared clock subtracts from the round.
+    generation: GenerationClock;
+    // Commands agy has not reported an end for; one still open at end_turn was
+    // moved to the background.
+    openCommands: Set<string>;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -187,8 +193,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly cancelHardStopMs: number;
     private readonly killSettleMs: number;
     private turnSettled: Promise<void> | null = null;
+    // Option labels each question card showed, by agy tool call id.
+    private readonly questionLabels = new Map<string, string[][]>();
     private backend: AcpSdkBackend | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
+    // agy's own tool name by call id, to map results of the calls it started.
+    private readonly nativeToolNames = new Map<string, string>();
     private acpSessionId: string | null = null;
     private abortController = new AbortController();
     /** agy's own model at session start; the target of the "Default" selection. */
@@ -337,12 +347,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     onUserWait: () => {
                         const turn = this.turn;
                         if (!turn) return () => {};
-                        const window: TimeWindow = { start: Date.now(), end: null };
-                        turn.idleWindows.push(window);
-                        return () => { window.end ??= Date.now(); };
+                        return turn.generation.beginUserWait();
                     }
                 }
             );
+            backend.onFormElicitation((request) => this.handleQuestion(request));
             void backend.refreshSessionInfo(acpSessionId, session.path);
         } catch (error) {
             // A half-started process must not serve later turns; the next turn
@@ -366,6 +375,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         backend.onPermissionRequest((request) => {
             void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         });
+        // Its late questions must not open cards in the next process's session.
+        backend.onFormElicitation(async () => ({ action: 'cancel' }));
         const handler = this.permissionHandler;
         this.permissionHandler = null;
         await handler?.cancelAll('Antigravity stopped');
@@ -417,8 +428,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             stopReason: null,
             sentAt: null,
             answeredAt: null,
-            idleWindows: [],
-            toolWindows: new Map(),
+            generation: new GenerationClock(),
+            openCommands: new Set(),
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -496,7 +507,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
+            this.closeBackgroundCommands(turn);
         } finally {
+            this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
             const endedCleanly = !turn.aborted && !this.backendLost;
@@ -517,9 +530,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const durationMs = turn.sentAt !== null && turn.answeredAt !== null
                     ? Math.max(0, turn.answeredAt - turn.sentAt)
                     : null;
-                const generationMs = turn.sawActivity
-                    ? agyGenerationMs(turn.sentAt, turn.answeredAt, turn.idleWindows)
-                    : null;
+                const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
                 session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs));
             }
             session.onThinkingChange(false);
@@ -528,6 +539,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 session.sendSessionEvent({ type: 'ready' });
             }
         }
+    }
+
+    /**
+     * agy sends nothing more for a command it moved to the background: its
+     * completion arrives inside a later prompt's stream. Until then the card
+     * would spin, so it shows the command as running in the background; the
+     * real result replaces this one when it comes.
+     */
+    private closeBackgroundCommands(turn: AgyTurn): void {
+        if (turn.aborted || this.backendLost || turn.stopReason !== 'end_turn') return;
+        for (const id of turn.openCommands) {
+            const placeholder = convertAgentMessage(
+                { type: 'tool_result', id, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
+                this.currentModelId
+            );
+            if (placeholder) this.session.sendAgentMessage(placeholder);
+        }
+        turn.openCommands.clear();
     }
 
     private async waitForSteers(turn: AgyTurn): Promise<void> {
@@ -558,9 +587,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!turn || turn.aborted || !backend || !acpSessionId || this.shouldExit) {
             return { steered: false, error: 'No active steerable turn' };
         }
-        // agy rejects a prompt while an approval is open.
+        // agy rejects a prompt while an approval or a question is open.
         if (this.permissionHandler?.hasPendingRequests()) {
-            return { steered: false, error: 'Antigravity is waiting for an approval; answer it, then steer' };
+            return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
         const taken = session.queue.takeByLocalId(localId);
         if (!taken) return { steered: false, error: 'Message not in queue' };
@@ -617,6 +646,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (this.turn !== turn || this.backend !== backend || turn.aborted) {
             await restoreQueued();
             return { steered: false, error: 'Active turn changed' };
+        }
+        // An approval or a question may have opened while the hub answered.
+        if (this.permissionHandler?.hasPendingRequests()) {
+            await restoreQueued();
+            return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
@@ -751,25 +785,58 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             default:
                 turn.sawActivity = true;
                 turn.acknowledge();
-                this.trackToolWindow(turn, message);
-                this.forwardAgentMessage(message);
+                turn.generation.observe(message);
+                this.trackOpenCommand(turn, message);
+                this.forwardAgentMessage(this.showQuestionCard(message));
         }
     }
 
-    private trackToolWindow(turn: AgyTurn, message: AgentMessage): void {
+    /**
+     * agy's ask_question, shown as the question card on its tool call. Never
+     * answered automatically: the user's choice goes back as agy's answer.
+     */
+    private async handleQuestion(request: FormElicitationRequest): Promise<FormElicitationResponse> {
+        const form = parseAgyQuestionForm(request);
+        const permissionHandler = this.permissionHandler;
+        // Not shown to the user, so not declined by them either.
+        if (!form || !permissionHandler) return { action: 'cancel' };
+        // Only a live turn can be asked on: after Stop, or once that turn has
+        // ended, nothing would settle the card.
+        if (!this.turn || this.turn.aborted || this.shouldExit) return { action: 'cancel' };
+        // Keyed by agy's tool call so the card shows on it, unless that id
+        // was already used for a request.
+        const id = form.toolCallId && !permissionHandler.isUsed(form.toolCallId)
+            ? form.toolCallId
+            : `agy-question-${randomUUID()}`;
+        const shownLabels = form.toolCallId ? this.questionLabels.get(form.toolCallId) : undefined;
+        const answer = await permissionHandler.askUser(id, QUESTION_TOOL_NAME, questionCardInput(form.questions));
+        if (answer.decision === 'abort') return { action: 'cancel' };
+        if (answer.decision === 'denied') return { action: 'decline' };
+        const content = agyQuestionContent(form.questions, answer.answers, shownLabels);
+        // An approval without a usable answer must not become an empty answer.
+        return Object.keys(content).length > 0 ? { action: 'accept', content } : { action: 'decline' };
+    }
+
+    private showQuestionCard(message: AgentMessage): AgentMessage {
+        const shown = asQuestionCard(message);
+        if (shown.shownLabels && message.type === 'tool_call') this.questionLabels.set(message.id, shown.shownLabels);
+        return shown.message;
+    }
+
+    /** Tracks commands agy moved to the background; the generation clock reads the same updates. */
+    private trackOpenCommand(turn: AgyTurn, message: AgentMessage): void {
         if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
-        const now = Date.now();
-        let window = turn.toolWindows.get(message.id);
-        if (!window) {
-            window = { start: now, end: null };
-            turn.toolWindows.set(message.id, window);
-            turn.idleWindows.push(window);
+        // Only a command agy reports as running counts: one still waiting
+        // for approval (pending) did not start, whatever happens to the turn.
+        if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
+            turn.openCommands.add(message.id);
+        } else if (message.status !== 'in_progress') {
+            turn.openCommands.delete(message.id);
         }
-        if (message.status === 'completed' || message.status === 'failed') window.end ??= now;
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
-        const converted = convertAgentMessage(message, this.currentModelId);
+        const converted = convertAgentMessage(this.toCanonicalToolMessage(message), this.currentModelId);
         if (converted) this.session.sendAgentMessage(converted);
 
         switch (message.type) {
@@ -798,6 +865,20 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return _exhaustive;
             }
         }
+    }
+
+    /** agy's own tool name picks the card; the open-command bookkeeping rides along. */
+    private toCanonicalToolMessage(message: AgentMessage): AgentMessage {
+        if (message.type === 'tool_call') {
+            if (message.nativeName) this.nativeToolNames.set(message.id, message.nativeName);
+            return mapAgyToolCall(message);
+        }
+        if (message.type === 'tool_result') {
+            const nativeName = this.nativeToolNames.get(message.id);
+            this.nativeToolNames.delete(message.id);
+            return mapAgyToolResult(message, nativeName);
+        }
+        return message;
     }
 
     private reportTurnError(message: string): void {

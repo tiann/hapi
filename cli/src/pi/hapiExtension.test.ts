@@ -3,66 +3,215 @@ import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
-import { materializePiTitleExtension, PI_TITLE_EXTENSION_SOURCE } from './titleExtension';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { materializePiExtension, PI_EXTENSION_SOURCE } from './hapiExtension';
 
-describe('pi title extension source', () => {
+describe('pi bundled extension source', () => {
     it('registers a namespaced hapi_change_title tool and applies it via setTitle', () => {
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain("name: TOOL_NAME");
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain("'hapi_change_title'");
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain('ctx.ui.setTitle');
+        expect(PI_EXTENSION_SOURCE).toContain("name: TITLE_TOOL_NAME");
+        expect(PI_EXTENSION_SOURCE).toContain("'hapi_change_title'");
+        expect(PI_EXTENSION_SOURCE).toContain('ctx.ui.setTitle');
     });
 
     it('uses the typebox specifier that old and new Pi loaders both resolve', () => {
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain("import { Type } from '@sinclair/typebox';");
+        expect(PI_EXTENSION_SOURCE).toContain("import { Type } from '@sinclair/typebox';");
     });
 
     it('injects the instruction on every turn, matching the persistent Claude/Codex rule', () => {
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain('## Session title');
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain('tool once');
-        expect(PI_TITLE_EXTENSION_SOURCE).toContain('before_agent_start');
-        expect(PI_TITLE_EXTENSION_SOURCE).not.toContain('titled');
+        expect(PI_EXTENSION_SOURCE).toContain('## Session title');
+        expect(PI_EXTENSION_SOURCE).toContain('tool once');
+        expect(PI_EXTENSION_SOURCE).toContain('before_agent_start');
+        expect(PI_EXTENSION_SOURCE).not.toContain('titled');
     });
 });
 
-describe('materializePiTitleExtension', () => {
-    it('writes the extension into the target dir and returns its path', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'hapi-pi-title-'));
-        const file = await materializePiTitleExtension(dir);
 
-        expect(file).toBe(join(dir, 'hapi-title-extension.ts'));
+type ExtensionHarness = {
+    handlers: Map<string, Array<(event: any, ctx?: any) => any>>;
+    registerTool: ReturnType<typeof vi.fn>;
+    registerMcpServer: ReturnType<typeof vi.fn> | null;
+    prompt: () => string;
+};
+
+function loadExtension(options: {
+    registerMcpServer?: boolean | (() => void);
+} = {}): ExtensionHarness {
+    const handlers = new Map<string, Array<(event: any, ctx?: any) => any>>();
+    const registerTool = vi.fn();
+    const registerMcpServer = options.registerMcpServer === false
+        ? null
+        : vi.fn(typeof options.registerMcpServer === 'function' ? options.registerMcpServer : undefined);
+    const pi: Record<string, unknown> = {
+        on: (event: string, handler: (event: any, ctx?: any) => any) => {
+            const current = handlers.get(event) ?? [];
+            current.push(handler);
+            handlers.set(event, current);
+        },
+        registerTool,
+    };
+    if (registerMcpServer) pi.registerMcpServer = registerMcpServer;
+
+    const load = new Function('Type', 'fs', PI_EXTENSION_SOURCE
+        .replace("import { Type } from '@sinclair/typebox';", '')
+        .replace('export default function', 'function')
+        .replace("await import('node:fs/promises')", 'fs')
+        + '\nreturn hapiPiExtension;');
+    load({ Object: (properties: unknown) => properties, String: (options: unknown) => options }, fs)(pi);
+
+    return {
+        handlers,
+        registerTool,
+        registerMcpServer,
+        prompt: () => {
+            const handler = handlers.get('before_agent_start')?.[0];
+            if (!handler) throw new Error('before_agent_start handler missing');
+            return handler({ systemPrompt: 'base' }).systemPrompt as string;
+        },
+    };
+}
+
+describe('pi peer MCP integration', () => {
+    afterEach(() => {
+        vi.unstubAllEnvs();
+        vi.restoreAllMocks();
+    });
+
+    it('registers the HAPI MCP URL as a direct Pi MCP server', () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension();
+
+        expect(harness.registerMcpServer).toHaveBeenCalledWith('hapi', {
+            url: 'http://127.0.0.1:12345/',
+            exposure: 'direct',
+            description: 'HAPI peer-session tools for this HAPI session',
+        });
+        expect(harness.prompt()).toContain('mcp__hapi__inspect_peer');
+        expect(harness.prompt()).toContain('mcp__hapi__ping_peer');
+        expect(harness.prompt()).toContain('mcp__hapi__spawn_peer');
+        expect(harness.prompt()).toContain('mcp__hapi__list_peers');
+        expect(harness.prompt()).not.toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
+    });
+
+    it('honors HAPI_DISABLE_PEER_TOOLS and injects the disabled steer', () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', 'yes');
+        const harness = loadExtension();
+
+        expect(harness.registerMcpServer).not.toHaveBeenCalled();
+        expect(harness.prompt()).toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
+        expect(harness.prompt()).not.toContain('mcp__hapi__inspect_peer');
+    });
+
+    it('falls back cleanly on older Pi versions without registerMcpServer', () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+
+        expect(harness.registerMcpServer).toBeNull();
+        expect(harness.prompt()).toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
+    });
+
+    it('fails closed when MCP server registration throws', () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const harness = loadExtension({
+            registerMcpServer: () => {
+                throw new Error('server name collision');
+            },
+        });
+
+        expect(harness.prompt()).toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
+    });
+
+    it.each([
+        'mcp__hapi__inspect_peer',
+        'mcp__hapi__ping_peer',
+        'mcp__hapi__spawn_peer',
+    ])('requires confirmation for %s', async (toolName) => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension();
+        const toolCall = harness.handlers.get('tool_call')![0];
+        const confirm = vi.fn(async () => false);
+
+        const result = await toolCall({ toolName, input: {} }, { ui: { confirm } });
+
+        expect(confirm).toHaveBeenCalledWith('Allow HAPI peer tool?', expect.stringContaining('HAPI session'));
+        expect(result).toEqual({
+            block: true,
+            reason: 'The user did not approve this HAPI peer tool call.',
+        });
+    });
+
+    it('allows a confirmed sensitive peer tool and does not gate list_peers', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension();
+        const toolCall = harness.handlers.get('tool_call')![0];
+        const confirm = vi.fn(async () => true);
+
+        expect(await toolCall({ toolName: 'mcp__hapi__ping_peer', input: {} }, { ui: { confirm } })).toBeUndefined();
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(await toolCall({ toolName: 'mcp__hapi__list_peers', input: {} }, { ui: { confirm } })).toBeUndefined();
+        expect(confirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when confirmation is unavailable', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const harness = loadExtension();
+        const toolCall = harness.handlers.get('tool_call')![0];
+
+        expect(await toolCall({ toolName: 'mcp__hapi__inspect_peer', input: {} }, { ui: {} })).toMatchObject({
+            block: true,
+        });
+    });
+
+    it('does not gate peer tools when MCP registration did not succeed', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const toolCall = harness.handlers.get('tool_call')![0];
+        const confirm = vi.fn(async () => true);
+
+        expect(await toolCall({ toolName: 'mcp__hapi__ping_peer', input: {} }, { ui: { confirm } })).toBeUndefined();
+        expect(confirm).not.toHaveBeenCalled();
+    });
+});
+describe('materializePiExtension', () => {
+    it('writes the extension into the target dir and returns its path', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-pi-extension-'));
+        const file = await materializePiExtension(dir);
+
+        expect(file).toBe(join(dir, 'hapi-extension.ts'));
         const content = await readFile(file, 'utf8');
-        expect(content).toContain('hapiTitleExtension');
+        expect(content).toContain('hapiPiExtension');
         expect(content).toContain('hapi_change_title');
     });
 
     it('creates missing directories and is idempotent', async () => {
-        const root = await mkdtemp(join(tmpdir(), 'hapi-pi-title-'));
+        const root = await mkdtemp(join(tmpdir(), 'hapi-pi-extension-'));
         const dir = join(root, 'runtime', '0.0.0-test', 'pi');
 
-        const first = await materializePiTitleExtension(dir);
-        const second = await materializePiTitleExtension(dir);
+        const first = await materializePiExtension(dir);
+        const second = await materializePiExtension(dir);
 
         expect(first).toBe(second);
     });
 
     it('publishes atomically under concurrent launches', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'hapi-pi-title-'));
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-pi-extension-'));
 
         const paths = await Promise.all(
-            Array.from({ length: 8 }, () => materializePiTitleExtension(dir)),
+            Array.from({ length: 8 }, () => materializePiExtension(dir)),
         );
 
         expect(new Set(paths).size).toBe(1);
-        const content = await readFile(join(dir, 'hapi-title-extension.ts'), 'utf8');
-        expect(content).toBe(PI_TITLE_EXTENSION_SOURCE);
+        const content = await readFile(join(dir, 'hapi-extension.ts'), 'utf8');
+        expect(content).toBe(PI_EXTENSION_SOURCE);
         const entries = await readdir(dir);
         expect(entries.filter((name) => name.endsWith('.tmp'))).toEqual([]);
     });
 
     it('keeps injecting the instruction on later turns so renames stay possible', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'hapi-pi-title-'));
-        const file = await materializePiTitleExtension(dir);
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-pi-extension-'));
+        const file = await materializePiExtension(dir);
 
         // The materialized source only imports typebox, which cannot be
         // resolved from an arbitrary temp dir; stub it so the module loads as ESM.
@@ -71,7 +220,7 @@ describe('materializePiTitleExtension', () => {
             "import { Type } from '@sinclair/typebox';",
             'const Type = { Object: (properties) => ({ properties }), String: (options) => options };',
         );
-        const moduleFile = join(dir, 'hapi-title-extension.mjs');
+        const moduleFile = join(dir, 'hapi-extension.mjs');
         await writeFile(moduleFile, testable, 'utf8');
         const mod = await import(pathToFileURL(moduleFile).href);
 
@@ -134,11 +283,11 @@ type ImageResult = { content: Array<{ type: string; text?: string; data?: string
 
 function loadImageTool(fileSystem: unknown = fs) {
     // Execute the bundled source with only its external dependencies injected.
-    const load = new Function('Type', 'fs', PI_TITLE_EXTENSION_SOURCE
+    const load = new Function('Type', 'fs', PI_EXTENSION_SOURCE
         .replace("import { Type } from '@sinclair/typebox';", '')
         .replace('export default function', 'function')
         .replace("await import('node:fs/promises')", 'fs')
-        + '\nreturn hapiTitleExtension;');
+        + '\nreturn hapiPiExtension;');
     const registerTool = vi.fn();
     load({ Object: (properties: unknown) => properties, String: (options: unknown) => options }, fileSystem)({
         on: vi.fn(), registerTool,
@@ -149,6 +298,16 @@ function loadImageTool(fileSystem: unknown = fs) {
 }
 
 describe('hapi_display_image execution', () => {
+    it('honors image delivery preferences while retaining Pi model-image semantics', () => {
+        const tool = loadExtension().registerTool.mock.calls.find(([tool]) => tool.name === 'hapi_display_image')![0]
+        expect(tool.description).toContain('explicit user or workspace preference')
+        expect(tool.description).toContain('10 MiB (10,485,760 bytes)')
+        expect(tool.description).toContain('hapi_display_image')
+        expect(tool.description).toContain('up to 25 MiB')
+        expect(tool.description).toContain('also enters the model context')
+        expect(tool.description).not.toContain('does not provide image input')
+    });
+
     const png = Buffer.from('89504e470d0a1a0a', 'hex');
     const limit = 25 * 1024 * 1024;
 

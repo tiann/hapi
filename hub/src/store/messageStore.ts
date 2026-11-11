@@ -7,6 +7,7 @@ import type { StoredMessage } from './types'
 import {
     addMessage,
     addMessageWithStatus,
+    upsertToolCallMessage,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -50,6 +51,7 @@ import {
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
+    type UpsertToolCallResult,
 } from './messages'
 import {
     hasPotentiallyIncompleteMessageContent,
@@ -72,6 +74,10 @@ export class MessageStore {
 
     addMessageWithStatus(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): { message: StoredMessage; inserted: boolean } {
         return addMessageWithStatus(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
+        return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {

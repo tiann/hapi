@@ -273,6 +273,19 @@ export interface ClientToServerEvents {
   /** CLI agent finished session/load (or equivalent) and can accept prompts. */
     'session-ready': (data: { sid: string; time: number }) => void
     'session-end': (data: { sid: string; time: number; reason?: SessionEndReason }) => void
+    /**
+     * Machine-scoped notice that a runner's child process for a HAPI session
+     * exited without going through the normal session-end handshake (crash,
+     * SIGKILL, OOM, ...). The hub only acts when this pid + process start
+     * marker still identify the session's current owner.
+     */
+    'session-child-exited': (data: {
+        machineId: string
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time: number
+    }) => void
     'messages-consumed': (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => void
     'messages-indeterminate': (data: { sid: string; localIds: string[] }) => void
     /** Native shared-engine queue projection. null = positively acknowledged removal. */
