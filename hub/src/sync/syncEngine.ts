@@ -14,7 +14,7 @@ import {
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
-import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
+import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -29,6 +29,13 @@ import type { RpcRegistry } from '../socket/rpcRegistry'
 import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
+import { toAttachedJob } from '../store/sessionJobs'
+import {
+    buildJobTerminalWakePrompt,
+    buildJobWakeLocalId,
+    isTerminalJobStatus,
+    waitUntilSessionActive,
+} from './sessionJobWake'
 
 import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
@@ -226,6 +233,14 @@ export class SyncEngine {
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Pending #1489 wake retries after recoverable pre-delivery failures. */
+    private readonly jobTerminalWakeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    private readonly jobTerminalWakeRetryAttempts = new Map<string, number>()
+    /** Debounced scan of DB-pending wakes after runner recovery / hub start. */
+    private jobWakeRequeueTimer: ReturnType<typeof setTimeout> | null = null
+    /** Base delay for wake retries; tests may lower this. */
+    private jobWakeRetryBaseMs = 1_000
+    private static readonly JOB_WAKE_RETRY_MAX_ATTEMPTS = 8
     /**
      * Single-flight + last-good caches for session enumerations. The backing
      * RPCs can queue for tens of seconds behind a busy engine (mid-turn or
@@ -240,6 +255,24 @@ export class SyncEngine {
         ttlMs: 30_000,
         fetchTimeoutMs: 8_000
     })
+    /**
+     * Same single-flight + last-good treatment for machine/session model
+     * lists. The backing RPC round-trips even when healthy (observed ~1s
+     * floor, 3-13s under load) and every picker open re-fetches; a stalled
+     * engine stretches them past the web server's 30s request cap. Model
+     * catalogs change rarely, so serve cached values and revalidate. The
+     * 8s cold cap sits well under that request cap — callers get a typed
+     * error instead of an opaque gateway timeout.
+     */
+    private readonly modelListCache = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+
+    /** A model-list payload is only cacheable when the RPC actually
+     *  succeeded — error bodies must propagate, never get pinned. */
+    private static readonly modelListCacheable = (result: unknown): boolean =>
+        !!result && typeof result === 'object' && (result as { success?: unknown }).success === true
 
     /** Drop cached enumeration RPCs for a session leaving the active set
      *  (deleted or archived). The keys are never queried again; without this
@@ -247,6 +280,7 @@ export class SyncEngine {
     private releaseSessionEnumerations(sessionId: string): void {
         this.slashCommandsEnumeration.releaseSession(sessionId)
         this.skillsEnumeration.releaseSession(sessionId)
+        this.modelListCache.releaseSession(sessionId)
     }
     /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
@@ -297,6 +331,9 @@ export class SyncEngine {
         this.sessionCache.closeTurnsLeftOpen()
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
+        // Hub start: undelivered opt-in wakes survive process restart as eligible
+        // SQLite rows — requeue after caches are warm.
+        this.requeuePendingJobTerminalWakes()
     }
 
     setHubOwnerUserId(ownerUserId: string | number): void {
@@ -310,6 +347,15 @@ export class SyncEngine {
             clearInterval(this.inactivityTimer)
             this.inactivityTimer = null
         }
+        if (this.jobWakeRequeueTimer) {
+            clearTimeout(this.jobWakeRequeueTimer)
+            this.jobWakeRequeueTimer = null
+        }
+        for (const timer of this.jobTerminalWakeRetryTimers.values()) {
+            clearTimeout(timer)
+        }
+        this.jobTerminalWakeRetryTimers.clear()
+        this.jobTerminalWakeRetryAttempts.clear()
     }
 
     subscribe(listener: SyncEventListener): () => void {
@@ -513,6 +559,46 @@ export class SyncEngine {
         return this.sessionCache.resolveSessionAccess(sessionId, namespace)
     }
 
+    /** Follow job-owner redirects after merge/dedup (tiann/hapi#1404 cold review). */
+    resolveAttachedJobSessionId(sessionId: string, namespace: string): string {
+        return this.sessionCache.resolveAttachedJobSessionId(sessionId, namespace)
+    }
+
+    /** Follow dual-running same-key remaps after merge (tiann/hapi#1404). */
+    resolveAttachedJobKey(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string
+    ): string {
+        return this.sessionCache.resolveAttachedJobKey(
+            requestedSessionId,
+            ownerSessionId,
+            jobKey,
+            namespace
+        )
+    }
+
+    /**
+     * PUT path: follow existing remaps, or allocate one when a redirected late
+     * registration would overwrite a different running generation.
+     */
+    resolveAttachedJobKeyForUpsert(
+        requestedSessionId: string,
+        ownerSessionId: string,
+        jobKey: string,
+        namespace: string,
+        incomingRunId: string | undefined
+    ): string {
+        return this.sessionCache.resolveAttachedJobKeyForUpsert(
+            requestedSessionId,
+            ownerSessionId,
+            jobKey,
+            namespace,
+            incomingRunId
+        )
+    }
+
     getActiveSessions(): Session[] {
         return this.sessionCache.getActiveSessions()
     }
@@ -634,7 +720,23 @@ export class SyncEngine {
         }
 
         if (event.type === 'machine-updated' && event.machineId) {
-            this.machineCache.refreshMachine(event.machineId)
+            // Connect publishes machine-update-state (active=1 in SQLite) before the
+            // first heartbeat. Requeue here so wake recovery is not skipped when
+            // handleMachineAlive later sees wasActive already true.
+            const wasActive = this.machineCache.getMachine(event.machineId)?.active === true
+            const refreshed = this.machineCache.refreshMachine(event.machineId)
+            const nowActive = refreshed?.active === true
+            if (!wasActive && nowActive) {
+                this.requeuePendingJobTerminalWakes()
+            }
+            return
+        }
+
+        if (event.type === 'machine-agy-models-updated' && event.machineId) {
+            // The runner just reported its agy catalog moved; drop the
+            // cached list so the web's event-driven refetch sees it cold.
+            this.modelListCache.release(event.machineId)
+            this.eventPublisher.emit(event)
             return
         }
 
@@ -804,6 +906,47 @@ export class SyncEngine {
             })
         }
         clearAgentTerminalBuffer(payload.sid)
+    }
+
+    /**
+     * A runner reported that one of its child processes exited without the
+     * CLI's normal session-end handshake (crash, SIGKILL, OOM). Accept the
+     * notice only while the reported OS generation still owns the session, so
+     * a late notice about a replaced process cannot flip a session that was
+     * already resumed elsewhere. Accepted notices reuse the existing crash
+     * path: active/thinking clear immediately, the row stays unarchived and
+     * resumable, and no second lifecycle event fires for an already-ended row.
+     */
+    handleSessionChildExited(payload: {
+        machineId: string
+        namespace: string
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time: number
+    }): boolean {
+        const session = this.sessionCache.getSessionByNamespace(payload.sid, payload.namespace)
+        if (!session) return false
+        if (session.metadata?.machineId !== payload.machineId) return false
+        if (session.metadata?.hostPid !== payload.pid) return false
+        // A marker on either side binds the notice to one process generation:
+        // only an exact match proves the dying process is the registered owner.
+        // When BOTH sides lack a marker (the CLI's start-marker probe can fail),
+        // a pid-only match must still reject a notice older than the current
+        // owner's registration — a reused pid's late notice would otherwise
+        // deactivate the new owner. lifecycleStateSince is written by the CLI
+        // together with hostPid on every (re)spawn of the row.
+        const ownerStartMarker = session.metadata?.hostStartMarker
+        if (ownerStartMarker !== undefined || payload.processStartMarker !== undefined) {
+            if (ownerStartMarker !== payload.processStartMarker) return false
+        } else {
+            const ownerRegisteredAt = session.metadata?.lifecycleStateSince
+            if (ownerRegisteredAt === undefined || payload.time < ownerRegisteredAt) return false
+        }
+        if (!session.active && !session.thinking) return false
+
+        this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })
+        return true
     }
 
     handleBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
@@ -985,6 +1128,369 @@ export class SyncEngine {
         return removed
     }
 
+    listSessionJobs(sessionId: string) {
+        return this.store.sessionJobs.list(sessionId).map((job) => toAttachedJob(job))
+    }
+
+    getPrimaryAttachedJob(sessionId: string) {
+        return this.store.sessionJobs.getPrimaryRunning(sessionId)
+    }
+
+    getPrimaryAttachedJobsBySessionIds(sessionIds: string[]) {
+        return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
+    }
+
+    /** Move outliving jobs + redirects onto another session (pre-delete). */
+    transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
+        this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
+    }
+
+    /** Shared REST/SSE watermark allocator for attachedJob patches. */
+    allocateAttachedJobVersion(sessionId: string): number {
+        return this.sessionCache.allocateAttachedJobVersion(sessionId)
+    }
+
+    upsertSessionJob(
+        sessionId: string,
+        jobKey: string,
+        body: import('@hapi/protocol').AttachedJobUpsert
+    ):
+        | { outcome: 'upserted'; job: import('@hapi/protocol').AttachedJob }
+        | { outcome: 'session-not-found' } {
+        const result = this.store.sessionJobs.upsert(sessionId, jobKey, body)
+        if (result.outcome === 'session-not-found') {
+            return result
+        }
+        const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
+        this.sessionCache.emitAttachedJobChanged(sessionId, primary)
+        this.maybeScheduleJobTerminalWake(sessionId, jobKey)
+        return {
+            outcome: 'upserted',
+            job: toAttachedJob(result.job)
+        }
+    }
+
+    patchSessionJob(
+        sessionId: string,
+        jobKey: string,
+        patch: import('@hapi/protocol').AttachedJobPatch
+    ):
+        | { outcome: 'patched'; job: import('@hapi/protocol').AttachedJob }
+        | { outcome: 'not-found' }
+        | { outcome: 'run-mismatch' } {
+        const result = this.store.sessionJobs.patch(sessionId, jobKey, patch)
+        if (result.outcome !== 'patched') {
+            return result
+        }
+        const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
+        this.sessionCache.emitAttachedJobChanged(sessionId, primary)
+        this.maybeScheduleJobTerminalWake(sessionId, jobKey)
+        return {
+            outcome: 'patched',
+            job: toAttachedJob(result.job)
+        }
+    }
+
+    private jobTerminalWakeRetryKey(sessionId: string, jobKey: string): string {
+        return `${sessionId}\0${jobKey}`
+    }
+
+    /**
+     * Follow merge/OpenCode job-owner + key redirects before claim/release/retry
+     * so a deferred wake does not abandon a transferred row.
+     */
+    private resolveJobWakeLocation(
+        sessionId: string,
+        jobKey: string,
+        namespace: string
+    ): { sessionId: string; jobKey: string; namespace: string } {
+        const ownerId = this.resolveAttachedJobSessionId(sessionId, namespace)
+        const resolvedKey = this.resolveAttachedJobKey(sessionId, ownerId, jobKey, namespace)
+        return { sessionId: ownerId, jobKey: resolvedKey, namespace }
+    }
+
+    private clearJobTerminalWakeRetry(sessionId: string, jobKey: string): void {
+        const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
+        const timer = this.jobTerminalWakeRetryTimers.get(key)
+        if (timer) {
+            clearTimeout(timer)
+            this.jobTerminalWakeRetryTimers.delete(key)
+        }
+        this.jobTerminalWakeRetryAttempts.delete(key)
+    }
+
+    /**
+     * After a recoverable pre-delivery failure, drop the provisional claim and
+     * retry with capped rapid backoff. Exhausted budgets leave the row eligible
+     * in SQLite; {@link requeuePendingJobTerminalWakes} picks them up when a
+     * runner returns (or on hub start).
+     */
+    private scheduleJobTerminalWakeRetry(
+        sessionId: string,
+        jobKey: string,
+        namespace: string
+    ): void {
+        const key = this.jobTerminalWakeRetryKey(sessionId, jobKey)
+        const attempt = (this.jobTerminalWakeRetryAttempts.get(key) ?? 0) + 1
+        if (attempt > SyncEngine.JOB_WAKE_RETRY_MAX_ATTEMPTS) {
+            console.warn('[session-job-wake] rapid retry budget exhausted; awaiting runner recovery', {
+                sessionId,
+                jobKey,
+                attempt,
+            })
+            this.clearJobTerminalWakeRetry(sessionId, jobKey)
+            return
+        }
+        this.jobTerminalWakeRetryAttempts.set(key, attempt)
+        const existing = this.jobTerminalWakeRetryTimers.get(key)
+        if (existing) clearTimeout(existing)
+        const delayMs = Math.min(30_000, this.jobWakeRetryBaseMs * (2 ** (attempt - 1)))
+        const timer = setTimeout(() => {
+            this.jobTerminalWakeRetryTimers.delete(key)
+            const loc = this.resolveJobWakeLocation(sessionId, jobKey, namespace)
+            this.maybeScheduleJobTerminalWake(loc.sessionId, loc.jobKey)
+        }, delayMs)
+        this.jobTerminalWakeRetryTimers.set(key, timer)
+    }
+
+    /**
+     * Re-claim opted-in terminal wakes that are still undelivered. Called on
+     * hub start and when a machine flips offline→online. Resets rapid-retry
+     * budgets so a long outage can still complete after recovery.
+     */
+    requeuePendingJobTerminalWakes(): void {
+        if (this.jobWakeRequeueTimer) return
+        this.jobWakeRequeueTimer = setTimeout(() => {
+            this.jobWakeRequeueTimer = null
+            this.jobTerminalWakeRetryAttempts.clear()
+            let pending: import('../store/types').StoredSessionJob[] = []
+            try {
+                // Hub restart leaves pending:<claimId> markers with no in-flight
+                // deliverer — clear them so rows are reclaimable.
+                this.store.sessionJobs.clearAbandonedProvisionalWakeClaims()
+                pending = this.store.sessionJobs.listPendingTerminalWakes()
+            } catch (error) {
+                console.warn('[session-job-wake] list pending failed', {
+                    error: error instanceof Error ? error.message : String(error),
+                })
+                return
+            }
+            for (const job of pending) {
+                const session = this.sessionCache.getSession(job.sessionId)
+                if (!session) continue
+                const loc = this.resolveJobWakeLocation(job.sessionId, job.key, session.namespace)
+                this.maybeScheduleJobTerminalWake(loc.sessionId, loc.jobKey)
+            }
+        }, 250)
+    }
+
+    /**
+     * After a durable job write: claim one-shot terminal wake and fire-and-forget
+     * resume→send (same ordering as pingPeer). Heartbeats never reach here with
+     * a new terminal claim. Claim is provisional until send persists.
+     */
+    private maybeScheduleJobTerminalWake(sessionId: string, jobKey: string): void {
+        const session = this.sessionCache.getSession(sessionId)
+        const namespace = session?.namespace
+        const loc = namespace
+            ? this.resolveJobWakeLocation(sessionId, jobKey, namespace)
+            : { sessionId, jobKey }
+        const claimed = this.store.sessionJobs.claimTerminalWake(loc.sessionId, loc.jobKey)
+        if (!claimed || !isTerminalJobStatus(claimed.status)) {
+            return
+        }
+        void this.deliverJobTerminalWake(loc.sessionId, claimed, namespace).catch((error) => {
+            console.warn('[session-job-wake] deliver failed', {
+                sessionId: loc.sessionId,
+                jobKey: loc.jobKey,
+                status: claimed.status,
+                error: error instanceof Error ? error.message : String(error),
+            })
+        })
+    }
+
+    /**
+     * Resume inactive owner (if needed), wait for active, then POST a user message.
+     * Injectable seams live on sessionJobWake helpers for unit tests.
+     * Pre-delivery failures release the provisional claim and schedule a retry.
+     */
+    private async deliverJobTerminalWake(
+        sessionId: string,
+        job: import('../store/types').StoredSessionJob,
+        namespaceHint?: string
+    ): Promise<void> {
+        const claimId = job.runId ?? `norun:${job.startedAt}`
+        let ownerSessionId = sessionId
+        let ownerJobKey = job.key
+        let namespace = namespaceHint
+
+        const releaseAndRetry = (info: Record<string, unknown>): void => {
+            const ns = namespace
+                ?? this.sessionCache.getSession(ownerSessionId)?.namespace
+                ?? this.sessionCache.getSession(sessionId)?.namespace
+            if (ns) {
+                const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, ns)
+                ownerSessionId = loc.sessionId
+                ownerJobKey = loc.jobKey
+                namespace = loc.namespace
+            }
+            console.warn('[session-job-wake] delivery deferred', {
+                sessionId: ownerSessionId,
+                jobKey: ownerJobKey,
+                ...info,
+            })
+            this.store.sessionJobs.releaseTerminalWake(ownerSessionId, ownerJobKey, claimId)
+            // Also clear a stale provisional claim left on the pre-transfer row.
+            if (ownerSessionId !== sessionId || ownerJobKey !== job.key) {
+                this.store.sessionJobs.releaseTerminalWake(sessionId, job.key, claimId)
+            }
+            if (namespace) {
+                this.scheduleJobTerminalWakeRetry(ownerSessionId, ownerJobKey, namespace)
+            }
+        }
+
+        try {
+            const session = this.sessionCache.getSession(ownerSessionId)
+            if (!session) {
+                releaseAndRetry({ reason: 'session_missing' })
+                return
+            }
+            namespace = session.namespace
+            let targetId = ownerSessionId
+
+            if (!session.active) {
+                const resume = await this.resumeSession(ownerSessionId, namespace)
+                if (resume.type !== 'success') {
+                    releaseAndRetry({
+                        reason: 'resume_failed',
+                        code: resume.code,
+                        message: resume.message,
+                    })
+                    return
+                }
+                targetId = resume.sessionId
+                // Resume/merge may have moved the job — follow redirects before release/send.
+                const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, namespace)
+                ownerSessionId = loc.sessionId
+                ownerJobKey = loc.jobKey
+                const becameActive = await waitUntilSessionActive({
+                    getActive: () => this.sessionCache.getSession(targetId)?.active === true,
+                    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    now: Date.now,
+                    timeoutMs: 30_000,
+                    pollMs: 250,
+                })
+                if (!becameActive) {
+                    releaseAndRetry({ reason: 'not_active', sessionId: targetId })
+                    return
+                }
+            }
+
+            // Pi can be active before piSessionId lands (#1143) — wait briefly.
+            const live = this.sessionCache.getSession(targetId)
+            if (live?.metadata?.flavor === 'pi') {
+                const piReady = await waitUntilSessionActive({
+                    getActive: () => {
+                        const s = this.sessionCache.getSession(targetId)
+                        const id = s?.metadata?.piSessionId
+                        return typeof id === 'string' && id.length > 0
+                    },
+                    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    now: Date.now,
+                    timeoutMs: 30_000,
+                    pollMs: 250,
+                })
+                if (!piReady) {
+                    releaseAndRetry({ reason: 'pi_session_id_missing', sessionId: targetId })
+                    return
+                }
+                // Re-check active after pi wait (mid-wait flips).
+                if (this.sessionCache.getSession(targetId)?.active !== true) {
+                    const resume = await this.resumeSession(targetId, namespace)
+                    if (resume.type !== 'success') {
+                        releaseAndRetry({
+                            reason: 're_resume_failed',
+                            sessionId: targetId,
+                            code: resume.code,
+                        })
+                        return
+                    }
+                    targetId = resume.sessionId
+                    const loc = this.resolveJobWakeLocation(ownerSessionId, ownerJobKey, namespace)
+                    ownerSessionId = loc.sessionId
+                    ownerJobKey = loc.jobKey
+                }
+            }
+
+            // Fence to the claimed run — key reuse mid-resume must not describe run B.
+            const liveJob = this.store.sessionJobs.get(ownerSessionId, ownerJobKey)
+            const liveClaimId = liveJob
+                ? (liveJob.runId ?? `norun:${liveJob.startedAt}`)
+                : null
+            if (
+                !liveJob
+                || liveClaimId !== claimId
+                || !liveJob.wakeOnTerminal
+                || !isTerminalJobStatus(liveJob.status)
+            ) {
+                console.warn('[session-job-wake] claimed run superseded; dropping wake', {
+                    sessionId: ownerSessionId,
+                    jobKey: ownerJobKey,
+                    claimId,
+                    liveClaimId,
+                    liveStatus: liveJob?.status,
+                    liveWake: liveJob?.wakeOnTerminal,
+                })
+                this.store.sessionJobs.releaseTerminalWake(ownerSessionId, ownerJobKey, claimId)
+                this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+                this.clearJobTerminalWakeRetry(sessionId, job.key)
+                return
+            }
+
+            // Prompt text from the claimed snapshot (run A), not a newer live generation.
+            const text = buildJobTerminalWakePrompt({
+                key: job.key,
+                label: job.label,
+                status: job.status,
+                ...(job.detail !== undefined ? { detail: job.detail } : {}),
+                ...(job.wakePrompt !== undefined ? { wakePrompt: job.wakePrompt } : {}),
+                ...(job.runId !== undefined ? { runId: job.runId } : {}),
+            })
+            // Run-scoped localId so a rare double-send after persist dedupes.
+            // Prefix must stay exempt from session-end synthetic sweep (see
+            // MessageService.sweepImmediateQueuedOnSessionEnd).
+            await this.sendMessage(targetId, {
+                text,
+                sentFrom: 'webapp',
+                localId: buildJobWakeLocalId(ownerJobKey, claimId),
+            })
+            this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
+            this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+            this.clearJobTerminalWakeRetry(sessionId, job.key)
+        } catch (error) {
+            releaseAndRetry({
+                reason: 'exception',
+                error: error instanceof Error ? error.message : String(error),
+            })
+        }
+    }
+
+    deleteSessionJob(
+        sessionId: string,
+        jobKey: string,
+        expectedRunId?: string
+    ):
+        | { outcome: 'deleted' }
+        | { outcome: 'not-found' }
+        | { outcome: 'run-mismatch' } {
+        const result = this.store.sessionJobs.delete(sessionId, jobKey, expectedRunId)
+        if (result.outcome === 'deleted') {
+            const primary = this.store.sessionJobs.getPrimaryRunning(sessionId)
+            this.sessionCache.emitAttachedJobChanged(sessionId, primary)
+        }
+        return result
+    }
+
     private async withScratchlistUploadLock<T>(
         namespace: string,
         sessionId: string,
@@ -1107,7 +1613,13 @@ export class SyncEngine {
     }
 
     handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
+        const wasActive = this.machineCache.getMachine(payload.machineId)?.active === true
         this.machineCache.handleMachineAlive(payload)
+        const nowActive = this.machineCache.getMachine(payload.machineId)?.active === true
+        if (!wasActive && nowActive) {
+            // Runner recovery: requeue wakes whose rapid-retry budget expired.
+            this.requeuePendingJobTerminalWakes()
+        }
     }
 
     /**
@@ -1291,8 +1803,8 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Claude, Pi, Codex, OpenCode, and Cursor
-     * ACP sessions; the CLI's handler is registered per flavor. Legacy
+     * (native steer). Supported for Claude, Pi, Codex, OpenCode, Antigravity,
+     * and Cursor ACP sessions; the CLI's handler is registered per flavor. Legacy
      * stream-json Cursor sessions and other flavors are rejected by the
      * capability gate.
      */
@@ -1305,7 +1817,12 @@ export class SyncEngine {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Claude, Pi, Codex, OpenCode, and Cursor ACP sessions', localId: null }
+            // An agy session gets its ACP marker only once its CLI has picked
+            // the transport, a few seconds after spawn.
+            const error = session.metadata?.flavor === 'agy'
+                ? 'Antigravity is not running on agy acp (yet); Steer is not available'
+                : 'Steering is only supported for Claude, Pi, Codex, OpenCode, Antigravity, and Cursor ACP sessions'
+            return { status: 'failed', error, localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
@@ -1766,7 +2283,8 @@ export class SyncEngine {
     async forkConversation(
         sessionId: string,
         namespace: string,
-        messageLocalId?: string
+        messageLocalId?: string,
+        latestCompleted = false
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
         if (candidate?.metadata?.codexResumePending) {
@@ -1780,7 +2298,7 @@ export class SyncEngine {
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId)
+            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId, latestCompleted)
         } finally {
             this.historyActionsInFlight.delete(sessionId)
         }
@@ -1789,16 +2307,21 @@ export class SyncEngine {
     private async forkConversationUnlocked(
         sessionId: string,
         namespace: string,
-        messageLocalId?: string
+        messageLocalId?: string,
+        latestCompleted = false
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
         }
         let source = access.session
+        if (latestCompleted && (messageLocalId || !source.active || this.resolveFlavor(source) !== 'codex'
+            || source.metadata?.capabilities?.conversationHistory?.forkLatestCompleted !== true)) {
+            return { type: 'error', message: 'No verified completed turn is available for this session' }
+        }
         if (!source.active) return this.forkArchivedCodexSession(source, namespace, messageLocalId)
         try {
-            this.assertConversationHistoryIdle(source, Boolean(messageLocalId) && this.resolveFlavor(source) === 'codex')
+            this.assertConversationHistoryIdle(source, (Boolean(messageLocalId) || latestCompleted) && this.resolveFlavor(source) === 'codex')
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -1827,7 +2350,7 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.forkConversation(
                 sessionId,
-                messageLocalId ? { messageLocalId } : {}
+                latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {}
             )
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
@@ -1850,6 +2373,9 @@ export class SyncEngine {
             !rpcResult.nativeSessionId
         ) {
             return { type: 'error', message: 'Native fork did not return a session id' }
+        }
+        if (latestCompleted && (!rpcResult.sessionId || !rpcResult.completedTurnId)) {
+            return { type: 'error', message: 'Runner did not verify the completed-turn fork boundary' }
         }
         if (rpcResult.sessionId) {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
@@ -3018,6 +3544,10 @@ export class SyncEngine {
             this.persistClearOperationState(sessionId, namespace, operation, message)
             return { type: 'error', message, code: 'replacement_link_failed' }
         }
+        // Move outliving jobs before writing supersededBySessionId. resolveAttachedJobSessionId
+        // follows that link; without a transfer, heartbeats on the retained source id hit the
+        // empty replacement while the meter row stays frozen on the archived source.
+        this.transferAttachedJobs(sessionId, replacementSessionId, namespace)
         if (!this.persistClearReplacement(sessionId, namespace, replacementSessionId, operation)) {
             const message = 'Fresh OpenCode session started but the archived source could not be linked'
             this.persistClearOperationState(sessionId, namespace, operation, message)
@@ -3722,6 +4252,11 @@ export class SyncEngine {
                         message: 'Cursor chat data is no longer available on the recorded machine',
                         code: 'resume_unavailable'
                     }
+                }
+                // Thread dir without store.db: nothing was ever persisted, so
+                // there is nothing to resume; start a fresh Cursor thread.
+                if (chatStatus.store === 'empty') {
+                    resumeToken = undefined
                 }
             } catch (error) {
                 // Soft-fail on probe skew / missing handler (#1084): definitive
@@ -4889,15 +5424,41 @@ export class SyncEngine {
         machineId: string,
         options?: { refresh?: boolean }
     ): Promise<RpcListAgyModelsResponse> {
-        return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        // An explicit refresh must actually hit the engine; bypass the cache
+        // entirely. `machine-agy-models-changed` invalidates the entry via
+        // handleRealtimeEvent so plain fetches revalidate too.
+        if (options?.refresh === true) {
+            return await this.rpcGateway.listAgyModelsForMachine(machineId, options)
+        }
+        return await this.modelListCache.get(
+            `${machineId}|agy-models`,
+            () => this.rpcGateway.listAgyModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListAgyModelsResponse
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
-        return await this.rpcGateway.listPiModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|pi-models`,
+            () => this.rpcGateway.listPiModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListPiModelsResponse
     }
 
     async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
-        return await this.rpcGateway.listClaudeModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|claude-models`,
+            () => this.rpcGateway.listClaudeModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListClaudeModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
@@ -4953,11 +5514,19 @@ export class SyncEngine {
     }
 
     async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
-        return await this.rpcGateway.listDshModelsForMachine(machineId)
+        return await this.modelListCache.get(
+            `${machineId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
     }
 
     async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
-        return await this.rpcGateway.listDshModelsForSession(sessionId)
+        return await this.modelListCache.get(
+            `${sessionId}|dsh-models`,
+            () => this.rpcGateway.listDshModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListDshModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
@@ -4968,12 +5537,20 @@ export class SyncEngine {
         return await this.rpcGateway.listCopilotModelsForCwd(machineId, cwd)
     }
 
+    async listCopilotReasoningEffortOptionsForSession(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.rpcGateway.listCopilotReasoningEffortOptionsForSession(sessionId)
+    }
+
     async listCopilotModelsForSession(sessionId: string): Promise<RpcListCopilotModelsResponse> {
         return await this.rpcGateway.listCopilotModelsForSession(sessionId)
     }
 
     async listKimiModelsForCwd(machineId: string, cwd: string): Promise<RpcListKimiModelsResponse> {
         return await this.rpcGateway.listKimiModelsForCwd(machineId, cwd)
+    }
+
+    async listKimiReasoningEffortOptionsForSession(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.rpcGateway.listKimiReasoningEffortOptionsForSession(sessionId)
     }
 
     async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {

@@ -8,13 +8,9 @@
 import { trimIdent } from '@/utils/trimIdent';
 import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
-import { HAPI_MCP_BRIDGE_PROMPT, HAPI_MCP_TITLE_INSTRUCTION } from '@/modules/common/hapiMcpBridgePrompt';
-import {
-    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
-    DISPLAY_MEDIA_PROMPT_HAPI_MCP,
-    DISPLAY_VIDEO_PROMPT_HAPI_MCP,
-} from '@/modules/common/displayImagePrompt';
+import { HAPI_MCP_BRIDGE_PROMPT } from '@/modules/common/hapiMcpBridgePrompt';
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
+import { withSessionJobInstruction } from '@/modules/common/sessionJobInstruction';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
@@ -32,7 +28,7 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(TITLE_INSTRUCTION, env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(TITLE_INSTRUCTION), env)
 }
 
 /**
@@ -40,10 +36,7 @@ export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): strin
  * same MCP bridge; manual titles take precedence over native ACP title sync.
  */
 export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
-    ${HAPI_MCP_TITLE_INSTRUCTION}
-    ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
-    ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
-    ${DISPLAY_MEDIA_PROMPT_HAPI_MCP}
+    ${HAPI_MCP_BRIDGE_PROMPT}
     ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
@@ -54,7 +47,7 @@ export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
 `);
 
 export function getOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(OPENCODE_NATIVE_TOOL_INSTRUCTION, env)
+    return withSessionSummaryInstruction(withSessionJobInstruction(OPENCODE_NATIVE_TOOL_INSTRUCTION), env)
 }
 
 /**

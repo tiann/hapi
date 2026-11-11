@@ -73,14 +73,14 @@ receipt.
 
 | Key | Example | Purpose |
 |-----|---------|---------|
-| `type` | `ready` | `ready`, `permission-request`, `input-request`, `task-notification` |
+| `type` | `ready` | `ready`, `permission-request`, `input-request` |
 | `sessionId` | uuid | Target session |
 | `sessionName` | string | Display name (`agent - project`) |
 | `url` | `/sessions/{id}` | Deep link path |
 | `requestId` | request-id | Pending request map key: approve/deny for permission, correlation only for input |
 | `title` | string | Notification title |
 | `body` | string | Notification body |
-| `severity` | `info` | `info` (ready/input), `warning` (permission), `success` / `error` (task) |
+| `severity` | `info` | `info` (ready/input), `warning` (permission) |
 | `contractVersion` | `1` | Present on every message; see [Versioning](#versioning) |
 | `notifySummary` | JSON string | Only on `ready`: parsed `AGENT_NOTIFY_SUMMARY` line from agent text, when present |
 

@@ -97,6 +97,9 @@ export class SharedCodexRoot {
                 }
                 if (method === 'turn/completed' && (!this.currentTurn || record(record(params).turn).id === this.currentTurn)) {
                     this.turnRevision++; this.currentTurn = undefined; this.interrupted = record(record(params).turn).status === 'interrupted';
+                    if (record(record(params).turn).status === 'completed') this.session.updateMetadata(metadata => ({ ...metadata,
+                        capabilities: { ...metadata.capabilities, conversationHistory: { ...metadata.capabilities?.conversationHistory,
+                            forkLatestCompleted: true } } }));
                     this.publishSteering();
                 }
                 const p = record(params);
@@ -233,7 +236,7 @@ export class SharedCodexRoot {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
             // advertise a destructive operation we cannot make atomic yet.
-            conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
+            conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: false, rewindToMessage: false }
         } }));
         this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
@@ -385,6 +388,12 @@ export class SharedCodexRoot {
             const last = turns.at(-1);
             const id = string(last?.id);
             this.latestTurn = id && last ? { id, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
+        }
+        const canForkLatest = turns.some(turn => turn.status === 'completed')
+            || (this.lazyHistory() && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted === true);
+        if (this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted !== canForkLatest) {
+            this.session.updateMetadata(metadata => ({ ...metadata, capabilities: { ...metadata.capabilities,
+                conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } } }));
         }
         await this.projectHistory(this.projection, thread); await this.queue.reconcile(); this.alive();
     }
@@ -582,7 +591,30 @@ export class SharedCodexRoot {
             const child = await this.newConversation(); return { sessionId: child.session.sessionId };
         });
         rpc.registerHandler(RPC_METHODS.ForkConversation, async raw => {
-            const { messageLocalId } = z.object({ messageLocalId: z.string().optional() }).parse(raw);
+            const { messageLocalId, latestCompleted } = z.object({ messageLocalId: z.string().optional(), latestCompleted: z.boolean().optional() })
+                .refine(value => !(value.messageLocalId && value.latestCompleted)).parse(raw);
+            if (latestCompleted) {
+                const thread = await this.readThread(this.threadId, true);
+                const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
+                const cutoff = latestCompletedForkCutoff(turns);
+                // An explicit inclusive native cutoff remains fixed even if the source advances.
+                // Shared children hydrate directly from native fork history, never a moving Hub tail.
+                const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
+                    lastTurnId: cutoff }, this);
+                try {
+                    const expected = turns.slice(0, turns.findIndex(turn => turn.id === cutoff) + 1).map(turn => string(turn.id));
+                    const inherited = await child.readThread(child.threadId, true);
+                    const actual = (Array.isArray(inherited.turns) ? inherited.turns : []).map(value => string(record(value).id));
+                    if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
+                        throw new Error('Native fork history does not match the completed-turn cutoff');
+                    }
+                    await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
+                    return { nativeSessionId: child.threadId, sessionId: child.session.sessionId, completedTurnId: cutoff };
+                } catch (error) {
+                    await this.host.end(child).catch(cleanup => logger.debug('[Codex shared] invalid fork cleanup failed', cleanup));
+                    throw error;
+                }
+            }
             if (this.currentTurn && !messageLocalId) throw new Error('Session is busy');
             const beforeTurnId = messageLocalId ? this.projection.turnFor(messageLocalId) : undefined;
             if (messageLocalId && !beforeTurnId) throw new Error('No native history point for this message');
@@ -640,9 +672,16 @@ export class SharedCodexRoot {
         if (slash.kind === 'passthrough') return text;
         if (slash.kind === 'goal') {
             const params = { threadId: this.threadId };
+            const goal = slash.action === 'set'
+                ? record(record(await this.client.request('thread/goal/get', params)).goal) : null;
+            if (goal?.status === 'complete') {
+                await this.client.request('thread/goal/clear', params);
+            }
             const response = slash.action === 'show' ? await this.client.request('thread/goal/get', params)
                 : slash.action === 'clear' ? await this.client.request('thread/goal/clear', params)
-                : await this.client.request('thread/goal/set', { ...params, ...(slash.action === 'set' ? { objective: slash.objective } : { status: slash.action === 'pause' ? 'paused' : 'active' }) });
+                : await this.client.request('thread/goal/set', { ...params, ...(slash.action === 'set'
+                    ? { objective: slash.objective, ...(goal?.status === 'complete' ? { status: 'active' } : {}) }
+                    : { status: slash.action === 'pause' ? 'paused' : 'active' }) });
             this.notice(JSON.stringify(response)); return null;
         }
         if (slash.updates?.proactiveMultiAgent !== undefined) throw new Error('This Codex version uses Ultra reasoning effort instead of a multi-agent toggle');
@@ -675,4 +714,18 @@ export class SharedCodexRoot {
             await this.session.flush(); this.session.close();
         })();
     }
+}
+
+/** Resolve an inclusive immutable prefix from authoritative native history. */
+export function latestCompletedForkCutoff(turns: Record<string, unknown>[]): string {
+    const ids = turns.map(turn => string(turn.id));
+    if (ids.some(id => !id) || new Set(ids).size !== ids.length) throw new Error('Native turn history is ambiguous');
+    let completed: string | undefined;
+    for (const turn of turns) {
+        if (turn.status === 'inProgress' || turn.status === 'in_progress') break;
+        if (!['completed', 'interrupted', 'failed'].includes(string(turn.status) ?? '')) throw new Error('Native history prefix is not complete');
+        if (turn.status === 'completed') completed = string(turn.id);
+    }
+    if (!completed) throw new Error('No completed turn is available to fork');
+    return completed;
 }

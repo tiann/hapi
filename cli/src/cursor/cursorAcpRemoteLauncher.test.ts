@@ -44,7 +44,9 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null,
+    notifyRuleInstallCalls: [] as Array<{ cwd: string; project?: string | null; agentId?: string | null }>,
+    notifyRuleCleanup: null as ReturnType<typeof vi.fn> | null,
+    agentActivityListener: null as ((thinking: boolean, source?: string) => void) | null,
     titleSyncControllers: [] as unknown[],
     titleSyncRegistered: [] as unknown[],
     onChangeTitle: null as ((title: string) => void) | null,
@@ -235,7 +237,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.stderrErrorHandler = handler ?? null;
             }),
             setUsageUpdateListener: vi.fn(),
-            setAgentActivityListener: vi.fn((listener: ((thinking: boolean) => void) | null) => {
+            setAgentActivityListener: vi.fn((listener: ((thinking: boolean, source?: string) => void) | null) => {
                 harness.agentActivityListener = listener;
             }),
             setSessionInfoUpdateListener: vi.fn(),
@@ -285,6 +287,18 @@ vi.mock('./utils/cursorMcpOverlay', () => ({
     },
 }));
 
+vi.mock('./utils/cursorNotifyRuleOverlay', () => ({
+    installCursorNotifyRuleOverlay: (opts: {
+        cwd: string
+        project?: string | null
+        agentId?: string | null
+    }) => {
+        harness.notifyRuleInstallCalls.push(opts);
+        harness.notifyRuleCleanup = vi.fn();
+        return { rulePath: `${opts.cwd}/.cursor/rules/hapi-session.mdc`, cleanup: harness.notifyRuleCleanup };
+    },
+}));
+
 vi.mock('@/ui/ink/OpencodeDisplay', () => ({
     OpencodeDisplay: () => null
 }));
@@ -298,6 +312,10 @@ import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
+import {
+    applyHubSessionSummaryContract,
+    resetSessionSummaryContractForTests
+} from '@/modules/common/sessionSummaryInstruction';
 import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
@@ -394,7 +412,11 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.stderrErrorHandler = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
+        harness.notifyRuleInstallCalls = [];
+        harness.notifyRuleCleanup = null;
         harness.agentActivityListener = null;
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
         harness.titleSyncControllers = [];
         harness.titleSyncRegistered = [];
         harness.onChangeTitle = null;
@@ -412,6 +434,8 @@ describe('cursorAcpRemoteLauncher', () => {
     afterEach(() => {
         vi.clearAllMocks();
         _resetSharedCursorModelsCacheForTests();
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
     });
 
     it('ends the launcher when a soft steer outlives an abort', async () => {
@@ -776,7 +800,7 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.model).toBe('auto');
     });
 
-    it('applies harness thinking transitions once per edge (#1470)', async () => {
+    it('ignores ambient state_update_running without a prompt; still applies idle/permission (#1553)', async () => {
         const keepAlive = vi.fn();
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = {
@@ -797,20 +821,74 @@ describe('cursorAcpRemoteLauncher', () => {
             permissionMode: 'default'
         });
         session.onSessionFoundWithProtocol = vi.fn();
-        // Keep the launcher in the main loop long enough to wire the listener.
         const runPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
 
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(false);
-
+        // Ambient Cursor chatter while queue-idle must not float Working.
+        harness.agentActivityListener!(true, 'state_update_running');
         expect(session.thinking).toBe(false);
-        expect(keepAlive.mock.calls.map((call) => call[0])).toEqual([true, false]);
+        expect(keepAlive).not.toHaveBeenCalled();
 
+        harness.agentActivityListener!(true, 'permission');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        keepAlive.mockClear();
+        harness.agentActivityListener!(false, 'state_update_idle');
+        expect(session.thinking).toBe(false);
+        expect(keepAlive).toHaveBeenCalled();
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('applies state_update_running while a prompt is in flight (#1470)', async () => {
+        const keepAlive = vi.fn();
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = {
+            ...makeClient(),
+            keepAlive
+        } as unknown as ApiSessionClient;
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        queue.push('do work', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBeGreaterThan(0));
+        await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
+
+        // Prompt start already set thinking; clear so we can assert the listener edge.
+        session.onThinkingChange(false);
+        keepAlive.mockClear();
+        harness.agentActivityListener!(true, 'state_update_running');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        harness.agentActivityListener!(true, 'state_update_requires_action');
+        expect(session.thinking).toBe(true);
+
+        harness.releasePrompt?.();
+        harness.releasePrompt = null;
+        harness.deferPrompt = null;
         queue.close();
         await runPromise;
     });
@@ -1096,6 +1174,35 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
         expect(harness.overlayCleanup).toHaveBeenCalled();
+    });
+
+    it('installs the notify-rule overlay when emit status summaries is on', async () => {
+        applyHubSessionSummaryContract(true);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([
+            { cwd: '/tmp/project', project: 'project', agentId: 'test-session-id' }
+        ]);
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
+    });
+
+    it('skips the notify-rule overlay when emit status summaries is off', async () => {
+        applyHubSessionSummaryContract(false);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([]);
+        expect(harness.notifyRuleCleanup).toBeNull();
+    });
+
+    it('removes the notify-rule overlay even when backend.disconnect rejects', async () => {
+        applyHubSessionSummaryContract(true);
+        harness.disconnectError = new Error('disconnect failed');
+        const session = makeSession(null);
+
+        await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
     });
 
     it('drops post-done harness speech after the HAPI prompt ends (#2267)', async () => {
