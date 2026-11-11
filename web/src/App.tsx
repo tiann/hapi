@@ -19,7 +19,7 @@ import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
@@ -301,7 +301,7 @@ function AppInner() {
             refreshAllAgyCatalogs(queryClient)
         ]
         const refreshMessages = (selectedSessionId && api)
-            ? syncTailMessages(api, selectedSessionId)
+            ? recoverWindowAfterGapResume(api, selectedSessionId)
             : Promise.resolve()
         Promise.all([...invalidations, refreshMessages])
             .catch((error) => {
@@ -346,6 +346,13 @@ function AppInner() {
         if (info.resumed) {
             return
         }
+        // First connects and gaps cannot prove continuity: reconcile the window
+        // from an authoritative latest page (applied by id, keeping loaded
+        // history) so in-place row updates (merged tool-call ticks) the replay
+        // cannot deliver are recovered too.
+        recoverWindowAfterGapResume(api, selectedSessionId).catch((error) => {
+            console.error('Failed to recover the message window after an SSE gap:', error)
+        })
         void reconcileQueuedStateAfterConnect(api, selectedSessionId).catch((error) => {
             console.error('Failed to reconcile queued state after SSE connect:', error)
         })
