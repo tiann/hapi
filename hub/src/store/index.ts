@@ -56,7 +56,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 34
+const SCHEMA_VERSION: number = 35
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -382,7 +382,7 @@ export class Store {
             // upstream session_turns at v27→v28; last_user_message_at at v28→v29;
             // upstream read-state at v29→v30;
             // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
-            // #1489 wake-on-terminal at v33→v34
+            // #1489 wake-on-terminal at v33→v34; uninvoked-local index at v34→v35
             // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
@@ -397,6 +397,7 @@ export class Store {
             31: () => this.migrateFromV31ToV32(),
             32: () => this.migrateFromV32ToV33(),
             33: () => this.migrateFromV33ToV34(),
+            34: () => this.migrateFromV34ToV35(),
         })
 
         if (currentVersion === 0) {
@@ -436,6 +437,7 @@ export class Store {
             this.migrateFromV30ToV31()
             this.migrateFromV31ToV32()
             this.migrateFromV32ToV33()
+            this.migrateFromV34ToV35()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -538,6 +540,9 @@ export class Store {
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS message_epochs (
                 session_id TEXT PRIMARY KEY,
@@ -1257,6 +1262,16 @@ export class Store {
     private migrateFromV30ToV31(): void {
         createMessageContentSearchTable(this.db)
         if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+    }
+
+    /** v34→v35: index the latest-page uninvoked-local-message lookup. */
+    private migrateFromV34ToV35(): void {
+        if (this.getMessageColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL
+        `)
     }
 
     private getSessionColumnNames(): Set<string> {
