@@ -56,6 +56,20 @@ describe('resolveToolAutoApprovalDecision ping_peer', () => {
         expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
     })
 
+    it('fails read-only closed for unclassifiable requests (title-only identity)', () => {
+        // Berry-style request: no kind, no rawInput — the title is a human
+        // summary like 'Run command', which the write-hint heuristic cannot
+        // classify. Auto-approving it would let a shell write (e.g.
+        // `touch file`) run while HAPI advertises read-only.
+        expect(resolveToolAutoApprovalDecision('read-only', 'Run command', 'call-1', undefined, { unclassifiable: true })).toBeNull()
+        expect(resolveToolAutoApprovalDecision('read-only', 'Check the build', 'APPROVAL-7', undefined, { unclassifiable: true })).toBeNull()
+    })
+
+    it('keeps classifiable requests on the title heuristic in read-only mode', () => {
+        expect(resolveToolAutoApprovalDecision('read-only', 'Run command', 'call-1', undefined, { unclassifiable: false })).toBe('approved')
+        expect(resolveToolAutoApprovalDecision('read-only', 'Write file', 'call-1', undefined, { unclassifiable: false })).toBeNull()
+    });
+
     it('still auto-approves unrelated read tools in read-only mode', () => {
         expect(resolveToolAutoApprovalDecision('read-only', 'Read', 'call-1')).toBe('approved')
         expect(resolveToolAutoApprovalDecision('read-only', 'grep', 'call-2')).toBe('approved')

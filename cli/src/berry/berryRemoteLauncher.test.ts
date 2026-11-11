@@ -505,17 +505,21 @@ describe('BerryRemoteLauncher', () => {
         expect(harness.backends[0].getSessionModelsMetadata).not.toHaveBeenCalled()
     })
 
-    it('respawns the backend and retries the prompt when the ACP process dies mid-session', async () => {
+    it('respawns the backend after a mid-session death without resubmitting the batch', async () => {
         // First backend survives exactly one prompt; the second prompt finds
         // the subprocess dead (indeterminate transport failure). The launcher
-        // must respawn the backend, restore the persisted session through
-        // session/load, and deliver the message on the fresh backend instead
-        // of wedging the session. (Distinct modes keep the two messages in
-        // separate queue batches.)
+        // respawns the backend and restores the persisted session through
+        // session/load so the session keeps working — but the failed batch is
+        // NOT automatically resubmitted: its outcome is unknowable (the turn
+        // may have partially executed, and replaying it can repeat commands),
+        // so the uncertain outcome is surfaced for an explicit retry and the
+        // NEXT message runs on the fresh backend. (Distinct modes keep the
+        // messages in separate queue batches.)
         harness.dieAfterPrompts = 1
         const session = createSessionWithBatches([
             ['first', { permissionMode: 'yolo' }],
-            ['second', {}]
+            ['second', {}],
+            ['third', { permissionMode: 'yolo' }]
         ])
         const launcher = new BerryRemoteLauncher(session as never)
 
@@ -538,19 +542,32 @@ describe('BerryRemoteLauncher', () => {
         for (const call of harness.createCalls) {
             expect(call.opts?.dataDir).toBe(EXPECTED_DATA_DIR)
         }
-        // The retried prompt delivered the second message successfully.
+        // 'second' was attempted once on the dying backend and never
+        // resubmitted; 'third' is what runs on the fresh backend.
         expect(harness.backends[1].prompt).toHaveBeenCalledWith(
+            'berry-session-1',
+            [{ type: 'text', text: 'third' }],
+            expect.any(Function)
+        )
+        expect(harness.backends[1].prompt).not.toHaveBeenCalledWith(
             'berry-session-1',
             [{ type: 'text', text: 'second' }],
             expect.any(Function)
         )
+        // The harness records only prompts that ran (the dying 'second'
+        // attempt throws before recording): first on the dead backend,
+        // third on the replacement.
         expect(harness.prompts).toEqual([
             [{ type: 'text', text: 'first' }],
-            [{ type: 'text', text: 'second' }]
+            [{ type: 'text', text: 'third' }]
         ])
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
             message: expect.stringContaining('restarting')
+        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('Re-send it to retry')
         })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
         // Cleanup tears down the respawned backend.
@@ -580,8 +597,10 @@ describe('BerryRemoteLauncher', () => {
             type: 'message',
             message: 'Berry session load failed; starting a new session.'
         })
-        // The retried prompt still ran on the fresh session.
-        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }], [{ type: 'text', text: 'second' }]])
+        // The failed batch is not resubmitted; the NEXT message runs on the
+        // fresh session.
+        expect(harness.backends[1].newSession).toHaveBeenCalled()
+        expect(harness.backends[1].prompt).not.toHaveBeenCalled()
     })
 
     it('respawns with the same spawn-time model lever and zero model-switch traffic', async () => {
@@ -650,9 +669,11 @@ describe('BerryRemoteLauncher', () => {
         expect(restarts).toEqual([])
     })
 
-    it('reports the failure without a second respawn when the retried prompt fails again', async () => {
-        // Every prompt attempt dies (dieAfterPrompts = 0): the respawn runs
-        // once, its retry fails, and the error is reported — no respawn cycle.
+    it('surfaces the uncertain outcome without resubmitting or a second respawn', async () => {
+        // Every prompt attempt dies (dieAfterPrompts = 0): the first prompt
+        // dies on the spot, the respawn runs once, and the batch is never
+        // resubmitted — the uncertain outcome is surfaced for an explicit
+        // retry. No respawn cycle.
         harness.dieAfterPrompts = 0
         const session = createSessionWithBatches([['first', {}]])
         const launcher = new BerryRemoteLauncher(session as never)
@@ -660,9 +681,10 @@ describe('BerryRemoteLauncher', () => {
         await launcher.launch()
 
         expect(harness.backends).toHaveLength(2)
+        expect(harness.backends[1].prompt).not.toHaveBeenCalled()
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'Berry prompt failed: ACP process exited (code=1, signal=null)'
+            message: expect.stringContaining('Re-send it to retry')
         })
     })
 

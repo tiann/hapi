@@ -4,6 +4,7 @@ import type { PermissionMode } from '@hapi/protocol/types'
 import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
+    isUnclassifiablePermissionRequest,
     BasePermissionHandler,
     type AutoApprovalDecision,
     type AutoApprovalRuleSet,
@@ -111,7 +112,8 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
                 this.getPermissionMode(),
                 toolName,
                 request.toolCallId,
-                this.options.autoApprovalRules
+                this.options.autoApprovalRules,
+                { unclassifiable: isUnclassifiablePermissionRequest(request) }
             )
         if (autoDecision) {
             const decision = this.options.autoApproveOnce && autoDecision === 'approved_for_session'

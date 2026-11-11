@@ -197,6 +197,12 @@ public enum AgentModelCatalog {
             options = rows
         case .dsh:
             options = rows.isEmpty ? [] : [CatalogOption(value: nil, label: "Default")] + rows
+        case .hermes:
+            // Session-scoped discovery (ListHermesModels): without a catalog
+            // the picker stays hidden (an empty response offers nothing to
+            // switch to); with one, a nil-value Default row clears back to
+            // the gateway's default.
+            options = rows.isEmpty ? [] : [CatalogOption(value: nil, label: "Default")] + rows
         case .copilot:
             options = [CatalogOption(value: nil, label: "Auto")] + rows
         case .cursor:

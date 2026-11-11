@@ -143,6 +143,27 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         auto.request(commandRequest)
     })
 
+    it('fails read-only closed for requests whose only identity is a human summary title', async () => {
+        // Berry-style request: no kind, no rawInput — the title is prose like
+        // 'Run command'. The real bridge must surface it to the user instead
+        // of auto-approving: the write-hint heuristic cannot classify a
+        // summary, and approving would let a shell write (e.g. `touch file`)
+        // run while HAPI advertises read-only.
+        const { backend, request } = setup('read-only', { sessionScopedPermissionGrants: true })
+        request({
+            id: 'perm-ro-1',
+            sessionId: 'acp-1',
+            toolCallId: 'APPROVAL-xyz',
+            title: 'Run command',
+            options: [
+                { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        } as PermissionRequest)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(backend.respondToPermission).not.toHaveBeenCalled()
+    })
+
     it('never auto-answers a request the agent marks as needing the user', () => {
         const { backend, client, request } = setup('always-proceed', { requiresUser: () => true })
 

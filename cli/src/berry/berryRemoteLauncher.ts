@@ -163,6 +163,22 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
                 break
             }
 
+            // A respawn that failed on an earlier batch leaves no backend
+            // behind: rebuild before touching this batch (one fresh attempt
+            // per message — a permanently down berry binary surfaces one
+            // error per message instead of wedging the session).
+            if (!this.backend) {
+                const reconnected = await this.respawnBackend()
+                if (!reconnected) {
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
+                }
+                backend = reconnected.backend
+                acpSessionId = reconnected.acpSessionId
+            }
+
             // Display-only: read-only turns are still SENT — the HAPI
             // permission bridge classifies and denies write requests; there
             // is no agent-side sandbox switch that could fail and skip the
@@ -207,14 +223,20 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
                 if (respawned) {
                     backend = respawned.backend
                     acpSessionId = respawned.acpSessionId
-                    // Exactly one retry on the fresh backend — a repeated
-                    // failure is reported like any other and the loop stays
-                    // alive for the next turn (no respawn cycles).
-                    try {
-                        await backend.prompt(acpSessionId, prompt, (msg) => this.handleAgentMessage(msg))
-                    } catch (retryError) {
-                        this.reportPromptFailure(retryError)
-                    }
+                    // The backend is rebuilt so the session (and the NEXT
+                    // message) works again, but the failed batch is NOT
+                    // automatically resubmitted: an indeterminate failure
+                    // means the child closed with the request already
+                    // dispatched and its outcome unknowable — the turn may
+                    // have partially executed (non-idempotent actions
+                    // included), and replaying the same instruction can
+                    // repeat commands and side effects. Surface the
+                    // uncertain outcome; the user re-sends to retry.
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Berry agent died mid-turn; the message may have partially run. Re-send it to retry.'
+                    })
+                    this.messageBuffer.addMessage('Berry agent died mid-turn — message not auto-retried; re-send to retry', 'status')
                 } else {
                     this.reportPromptFailure(error)
                 }
@@ -357,6 +379,17 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             logger.warn('[berry-acp] respawn failed', { message })
+            // Dispose the half-built replacement: leaving it assigned would
+            // make later prompts fail with the unmarked 'ACP transport not
+            // initialized' error, which can never trigger recovery. With
+            // this.backend null the next message re-enters the loop-top
+            // reconnect and retries initialization.
+            try {
+                await this.backend?.disconnect()
+            } catch (disconnectError) {
+                logger.debug('[berry-acp] disconnect of failed replacement failed', disconnectError)
+            }
+            this.backend = null
             this.session.sendSessionEvent({
                 type: 'message',
                 message: `Berry agent restart failed: ${message}`
