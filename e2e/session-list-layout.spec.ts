@@ -39,14 +39,14 @@ test.describe('session-list pin layout modes', () => {
         await page.screenshot({ path: testInfo.outputPath('combined-session-layout.png'), fullPage: true })
     })
 
-    test('keeps the existing Running and Active sections in detailed mode', async ({ page }) => {
+    test('keeps working sessions pinned and quiet sessions in project folders in detailed mode', async ({ page }) => {
         await page.goto(`${fixtureUrl}?mode=detailed`)
 
         await expect(page.getByTitle('In progress')).toBeVisible()
-        await expect(page.getByTitle('Active sessions')).toBeVisible()
+        await expect(page.getByTitle('Active sessions')).toHaveCount(0)
         await expect(page.getByText(/Running \(1\)/)).toBeVisible()
         await expect(page.getByText(/pending \(1\)/)).toBeVisible()
-        await expect(page.getByText(/Active \(1\)/)).toBeVisible()
+        await expect(page.getByTitle('/work/hapi', { exact: true })).toBeVisible()
         await expect(page.getByRole('separator', { name: 'Archived project sessions' })).toHaveCount(0)
     })
 })
