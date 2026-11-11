@@ -745,6 +745,33 @@ describe('getToolPresentation — CursorAskQuestion', () => {
         expect(presentation.title).toBe('Deployment')
         expect(presentation.subtitle).toBeNull()
     })
+
+    it('falls back to the request-level title when a Cursor question has none', () => {
+        const presentation = getToolPresentation({
+            toolName: 'CursorAskQuestion',
+            input: {
+                title: 'Choose approach',
+                questions: [
+                    {
+                        id: 'approach',
+                        prompt: 'Which approach?',
+                        allowMultiple: false,
+                        options: [
+                            { id: 'a', label: 'Option A' },
+                            { id: 'b', label: 'Option B' }
+                        ]
+                    }
+                ]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Choose approach')
+        expect(presentation.subtitle).toBe('Which approach?')
+    })
 })
 
 describe('getToolPresentation — AskUserQuestion pending header', () => {

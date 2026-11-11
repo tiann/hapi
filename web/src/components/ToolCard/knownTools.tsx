@@ -7,6 +7,7 @@ import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/T
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
+import { parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import {
     getCodexAgentActivity,
@@ -140,8 +141,9 @@ type ToolOpts = {
 // presentation: the parsed header titles the card and the question text is the
 // subtitle. While pending, the header stays minimal because the open card body
 // already shows the question; both return once the card settles and collapses.
-// Cursor payloads name the fields `title`/`prompt`, the others `header`/
-// `question` — the readers accept both, mirroring parseCursorAskQuestionInput.
+// Each tool parses its own payload shape, so the presentation takes a questions
+// reader — the Cursor reader is parseCursorAskQuestionInput itself, keeping its
+// request-level title fallback the single source of truth.
 function readQuestionFields(raw: unknown): { header: string; question: string } {
     if (!isObject(raw)) return { header: '', question: '' }
     const header = typeof raw.header === 'string' && raw.header.trim()
@@ -153,36 +155,49 @@ function readQuestionFields(raw: unknown): { header: string; question: string } 
     return { header, question }
 }
 
-const questionToolPresentation = {
-    icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
-    title: (opts: ToolOpts) => {
-        const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-            ? opts.input.questions : []
-        const count = questions.length
-        const { header } = readQuestionFields(questions[0] ?? null)
+type PresentationQuestion = { header: string | null; question: string }
 
-        if (count > 1) {
-            return `${count} Questions`
-        }
-        return header.length > 0 ? header : 'Question'
-    },
-    subtitle: (opts: ToolOpts) => {
-        const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-            ? opts.input.questions : []
-        const count = questions.length
-        const { question } = readQuestionFields(questions[0] ?? null)
+function questionToolPresentation(readQuestions: (input: unknown) => PresentationQuestion[]) {
+    return {
+        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts: ToolOpts) => {
+            const questions = readQuestions(opts.input)
+            const first = questions[0] ?? null
+            const header = first?.header?.trim() ?? ''
 
-        // While the question awaits a reply the open card body already
-        // shows the question text, so the header must not repeat it.
-        if (opts.pending) return null
+            if (questions.length > 1) {
+                return `${questions.length} Questions`
+            }
+            return header.length > 0 ? header : 'Question'
+        },
+        subtitle: (opts: ToolOpts) => {
+            const questions = readQuestions(opts.input)
+            const first = questions[0] ?? null
+            const question = first?.question?.trim() ?? ''
 
-        if (count > 1 && question.length > 0) {
-            return truncate(question, 100) + ` (+${count - 1} more)`
-        }
-        return question.length > 0 ? truncate(question, 120) : null
-    },
-    minimal: true
+            // While the question awaits a reply the open card body already
+            // shows the question text, so the header must not repeat it.
+            if (opts.pending) return null
+
+            if (questions.length > 1 && question.length > 0) {
+                return truncate(question, 100) + ` (+${questions.length - 1} more)`
+            }
+            return question.length > 0 ? truncate(question, 120) : null
+        },
+        minimal: true
+    }
 }
+
+function readAskUserQuestionQuestions(input: unknown): PresentationQuestion[] {
+    return isObject(input) && Array.isArray(input.questions)
+        ? input.questions.map((question) => readQuestionFields(question))
+        : []
+}
+
+const askUserQuestionPresentation = questionToolPresentation(readAskUserQuestionQuestions)
+const cursorAskQuestionPresentation = questionToolPresentation(
+    (input) => parseCursorAskQuestionInput(input).questions
+)
 
 export const knownTools: Record<string, {
     icon: (opts: ToolOpts) => ReactNode
@@ -642,9 +657,9 @@ export const knownTools: Record<string, {
         title: () => 'Plan proposal',
         minimal: false
     },
-    AskUserQuestion: questionToolPresentation,
-    ask_user_question: questionToolPresentation,
-    CursorAskQuestion: questionToolPresentation,
+    AskUserQuestion: askUserQuestionPresentation,
+    ask_user_question: askUserQuestionPresentation,
+    CursorAskQuestion: cursorAskQuestionPresentation,
     request_user_input: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
