@@ -49,26 +49,39 @@ const NOFILE_BUMP_THRESHOLD = 65536;
 const NOFILE_BUMP_TARGET = 1048576;
 
 let cachedNofileSoft: number | undefined;
+let cachedNofileHard: number | undefined;
+
+function probeUlimitLimit(flag: '-Sn' | '-Hn'): number {
+  try {
+    const result = spawnSync('/bin/sh', ['-c', `ulimit ${flag}`], {
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    if (result.status === 0) {
+      const parsed = Number.parseInt(result.stdout.trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Fall through — NaN is treated as "unknown".
+  }
+  return Number.NaN;
+}
 
 function getNofileSoftLimit(): number {
   if (cachedNofileSoft === undefined) {
-    cachedNofileSoft = Number.NaN;
-    try {
-      const result = spawnSync('/bin/sh', ['-c', 'ulimit -Sn'], {
-        encoding: 'utf8',
-        timeout: 5000
-      });
-      if (result.status === 0) {
-        const parsed = Number.parseInt(result.stdout.trim(), 10);
-        if (Number.isFinite(parsed) && parsed > 0) {
-          cachedNofileSoft = parsed;
-        }
-      }
-    } catch {
-      // Leave NaN — treated as "unknown", no wrapping.
-    }
+    cachedNofileSoft = probeUlimitLimit('-Sn');
   }
   return cachedNofileSoft;
+}
+
+function getNofileHardLimit(): number {
+  if (cachedNofileHard === undefined) {
+    // "unlimited" (and any non-numeric output) parses to NaN — "unknown".
+    cachedNofileHard = probeUlimitLimit('-Hn');
+  }
+  return cachedNofileHard;
 }
 
 /**
@@ -77,12 +90,18 @@ function getNofileSoftLimit(): number {
  * binaries. Returns the command unchanged on Windows, when the soft limit is
  * already comfortable (or unknown), or when it cannot be raised.
  *
- * `platform` and `softLimit` are injectable for tests.
+ * The raise target is clamped to the inherited hard limit: as a non-root
+ * process `ulimit -n` cannot exceed the hard cap ("Operation not permitted"),
+ * which would silently no-op the mitigation. When the hard limit cannot be
+ * probed, the fixed target is used and the shell failure is swallowed so the
+ * child still launches.
+ *
+ * `platform`, `softLimit`, and `hardLimit` are injectable for tests.
  */
 export function applyNofileBump(
   command: string,
   args: string[],
-  opts: { platform?: NodeJS.Platform; softLimit?: number } = {}
+  opts: { platform?: NodeJS.Platform; softLimit?: number; hardLimit?: number } = {}
 ): HappyCliCommand {
   const platform = opts.platform ?? process.platform;
   if (platform === 'win32') {
@@ -92,13 +111,23 @@ export function applyNofileBump(
   if (!Number.isFinite(softLimit) || softLimit >= NOFILE_BUMP_THRESHOLD) {
     return { command, args };
   }
+  let target = NOFILE_BUMP_TARGET;
+  const hardLimit = opts.hardLimit ?? getNofileHardLimit();
+  if (Number.isFinite(hardLimit)) {
+    if (hardLimit <= softLimit) {
+      // The soft limit cannot be raised at all — wrapping would only add a
+      // shell hop without changing the outcome.
+      return { command, args };
+    }
+    target = Math.min(target, hardLimit);
+  }
   // `sh -c <script> <argv0> <cmd> <args...>`: the first arg after the script
   // string becomes $0, so `"$@"` starts at the real command. Without `-c` sh
   // would treat the script string as a file name and fail with exit 127;
   // without the $0 placeholder `exec "$@"` would drop the real command.
   return {
     command: '/bin/sh',
-    args: ['-c', `ulimit -n ${NOFILE_BUMP_TARGET} 2>/dev/null; exec "$@"`, 'sh', command, ...args]
+    args: ['-c', `ulimit -n ${target} 2>/dev/null; exec "$@"`, 'sh', command, ...args]
   };
 }
 

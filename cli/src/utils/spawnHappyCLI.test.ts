@@ -10,7 +10,7 @@ const {
   canDisclaimForChildrenMock
 } = vi.hoisted(() => ({
   spawnMock: vi.fn((..._args: any[]) => ({ pid: 12345 }) as any),
-  spawnSyncMock: vi.fn(() => ({ status: 0, stdout: '1048576\n' }) as any),
+  spawnSyncMock: vi.fn((..._args: any[]) => ({ status: 0, stdout: '1048576\n' }) as any),
   existsSyncMock: vi.fn((path: string) => !path.includes('missing-hapi.exe')),
   isBunCompiledMock: vi.fn(() => false),
   projectPathMock: vi.fn(() => process.cwd()),
@@ -419,19 +419,69 @@ describe('applyNofileBump', () => {
     expect(result).toEqual({ command: '/usr/local/bin/hapi', args: ['claude'] });
   });
 
-  it('reads the inherited soft limit via /bin/sh ulimit -Sn when not injected', async () => {
-    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '10240\n' }) as any);
+  it('reads the inherited soft and hard limits via /bin/sh ulimit probes when not injected', async () => {
+    spawnSyncMock.mockImplementation((cmd: string, args: string[]) =>
+      (args?.[1] === 'ulimit -Sn'
+        ? { status: 0, stdout: '10240\n' }
+        : { status: 0, stdout: '1048576\n' }) as any
+    );
     const { applyNofileBump } = await import('./spawnHappyCLI');
 
     const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], { platform: 'darwin' });
 
     expect(spawnSyncMock).toHaveBeenCalledWith('/bin/sh', ['-c', 'ulimit -Sn'], expect.anything());
+    expect(spawnSyncMock).toHaveBeenCalledWith('/bin/sh', ['-c', 'ulimit -Hn'], expect.anything());
     expect(result.command).toBe('/bin/sh');
+  });
+
+  it('clamps the raise target to the inherited hard limit', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    // Non-root processes cannot raise the soft limit past the hard cap; a
+    // fixed 1048576 target would fail with "Operation not permitted" and
+    // silently leave the crashing low limit in place.
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 10240,
+      hardLimit: 65536
+    });
+
+    expect(result.command).toBe('/bin/sh');
+    expect(result.args[1]).toBe('ulimit -n 65536 2>/dev/null; exec "$@"');
+  });
+
+  it('keeps the fixed target when the hard limit cannot be probed', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 10240,
+      hardLimit: Number.NaN
+    });
+
+    expect(result.command).toBe('/bin/sh');
+    expect(result.args[1]).toBe('ulimit -n 1048576 2>/dev/null; exec "$@"');
+  });
+
+  it('does not wrap when the hard limit leaves no room to raise the soft limit', async () => {
+    const { applyNofileBump } = await import('./spawnHappyCLI');
+
+    const result = applyNofileBump('/usr/local/bin/hapi', ['claude'], {
+      platform: 'darwin',
+      softLimit: 10240,
+      hardLimit: 10240
+    });
+
+    expect(result).toEqual({ command: '/usr/local/bin/hapi', args: ['claude'] });
   });
 
   it('does not wrap dev-mode spawns even when the soft limit is low', async () => {
     setPlatform('darwin');
-    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '10240\n' }) as any);
+    spawnSyncMock.mockImplementation((cmd: string, args: string[]) =>
+      (args?.[1] === 'ulimit -Sn'
+        ? { status: 0, stdout: '10240\n' }
+        : { status: 0, stdout: '1048576\n' }) as any
+    );
     isBunCompiledMock.mockReturnValue(false);
     const { spawnHappyCLI } = await import('./spawnHappyCLI');
 
@@ -443,7 +493,11 @@ describe('applyNofileBump', () => {
 
   it('wraps compiled-mode spawns when the soft limit is low, keeping HAPI_CLI_EXECUTABLE on the real binary', async () => {
     setPlatform('darwin');
-    spawnSyncMock.mockImplementation(() => ({ status: 0, stdout: '10240\n' }) as any);
+    spawnSyncMock.mockImplementation((cmd: string, args: string[]) =>
+      (args?.[1] === 'ulimit -Sn'
+        ? { status: 0, stdout: '10240\n' }
+        : { status: 0, stdout: '1048576\n' }) as any
+    );
     isBunCompiledMock.mockReturnValue(true);
     const { spawnHappyCLI } = await import('./spawnHappyCLI');
 
