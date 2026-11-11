@@ -130,15 +130,18 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
     it('omits link_pr from standalone defaults (awareness opt-in)', async () => {
         await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006'])
 
-        expect([...harness.tools.keys()]).toEqual([
+        // Defaults include peer + session_job tools from upstream; link_pr stays opt-in.
+        expect([...harness.tools.keys()].sort()).toEqual([
             'change_title',
             'display_image',
-            'display_video',
             'display_media',
-            'ping_peer',
+            'display_video',
             'inspect_peer',
-            'list_peers'
-        ])
+            'list_peers',
+            'ping_peer',
+            'session_job',
+            'spawn_peer',
+        ].sort())
         expect(harness.tools.has('link_pr')).toBe(false)
     })
 
