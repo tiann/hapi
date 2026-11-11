@@ -2889,8 +2889,15 @@ export function SessionList(props: {
                     count: runningSessionTotal,
                     bucketKeys: ['jobs', 'working', 'pending'],
                 })}
-                {groups.map((group) => renderDirectoryGroup(group))}
-                {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                {shouldSortProjectsByCount && !hasTextQuery
+                    ? countSortedDirectoryGroups.map((group) => normalDirectoryKeys.has(group.key)
+                        ? renderDirectoryGroup(group)
+                        : renderActionOnlyGroupHeader(group))
+                    : <>
+                        {groups.map((group) => renderDirectoryGroup(group))}
+                        {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                    </>}
+
                     </>
                 )}
                 </SessionListScrollAnchor>

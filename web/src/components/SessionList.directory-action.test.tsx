@@ -2440,3 +2440,16 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByRole('button', { name: SEARCH_LABEL })).toBeNull()
     })
 })
+
+it('keeps larger fully working projects before smaller quiet projects in count order', () => {
+    localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+    localStorage.setItem('hapi-session-project-sort-mode', 'count')
+    const sessions = [
+        makeSession({ id: 'working-a', active: true, thinking: true, metadata: { path: '/work/a', name: 'Working A' } }),
+        makeSession({ id: 'working-b', active: true, thinking: true, metadata: { path: '/work/a', name: 'Working B' } }),
+        makeSession({ id: 'quiet-b', active: true, metadata: { path: '/work/b', name: 'Quiet B' } }),
+    ]
+    renderWithProviders(<SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+        onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={null} />)
+    expect(screen.getByTitle('/work/a')).toAppearBefore(screen.getByTitle('/work/b'))
+})
