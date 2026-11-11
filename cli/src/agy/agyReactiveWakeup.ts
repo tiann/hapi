@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage } from '@/agent/types';
@@ -54,6 +54,11 @@ export interface AgyReactiveTimingConfig {
     slowToolParkMs: number;
     /** Safety bound if agy stops writing mid-wakeup without a final PLANNER_RESPONSE. */
     maxIdleMs: number;
+}
+
+export interface AgyOpenBackgroundCommand {
+    callId: string;
+    taskId?: string;
 }
 
 export type AgyReactiveInspection =
@@ -112,34 +117,115 @@ export function agyTranscriptPaths(brainDir: string, sessionId: string): {
     };
 }
 
-/**
- * Parses only newline-terminated JSONL lines so a partial line written
- * mid-flush is ignored until its trailing newline lands.
- */
-function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
-    let raw: string;
-    try {
-        raw = readFileSync(filePath, 'utf8');
-    } catch {
-        return [];
-    }
-    const lastNewline = raw.lastIndexOf('\n');
-    if (lastNewline < 0) return [];
-    const completeChunk = raw.slice(0, lastNewline);
-    const steps: AgyTranscriptStep[] = [];
-    for (const line of completeChunk.split('\n')) {
+interface JsonlCacheEntry {
+    ino: number;
+    mtimeMs: number;
+    size: number;
+    parsedOffset: number;
+    head: Buffer;
+    steps: AgyTranscriptStep[];
+}
+
+const JSONL_CACHE_LIMIT = 8;
+const JSONL_HEAD_CHECK_BYTES = 128;
+const jsonlFileCache = new Map<string, JsonlCacheEntry>();
+
+function parseJsonlChunk(raw: string, out: AgyTranscriptStep[]): void {
+    for (const line of raw.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
             const parsed = JSON.parse(trimmed) as Partial<AgyTranscriptStep>;
             if (parsed && typeof parsed === 'object' && typeof parsed.step_index === 'number') {
-                steps.push(parsed as AgyTranscriptStep);
+                out.push(parsed as AgyTranscriptStep);
             }
         } catch {
             // Ignore malformed lines.
         }
     }
-    return steps;
+}
+
+/**
+ * Incrementally reads newline-terminated JSONL steps from `filePath`.
+ * Unchanged files cost a single `statSync` (0 bytes read); appended turns read
+ * and parse only the newly written tail bytes.
+ */
+function readCompleteJsonlSteps(filePath: string): AgyTranscriptStep[] {
+    let stat: ReturnType<typeof statSync>;
+    try {
+        stat = statSync(filePath);
+    } catch {
+        jsonlFileCache.delete(filePath);
+        return [];
+    }
+    if (stat.size === 0) {
+        jsonlFileCache.delete(filePath);
+        return [];
+    }
+
+    const cached = jsonlFileCache.get(filePath);
+    if (cached && cached.ino === stat.ino && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+        return cached.steps;
+    }
+
+    let fd: number;
+    try {
+        fd = openSync(filePath, 'r');
+    } catch {
+        return cached?.steps ?? [];
+    }
+
+    try {
+        let canAppend = false;
+        if (cached && cached.ino === stat.ino && stat.size >= cached.parsedOffset && cached.head.length > 0) {
+            const checkBuf = Buffer.allocUnsafe(cached.head.length);
+            const bytes = readSync(fd, checkBuf, 0, cached.head.length, 0);
+            canAppend = bytes === cached.head.length && checkBuf.equals(cached.head);
+        }
+
+        const startOffset = canAppend && cached ? cached.parsedOffset : 0;
+        const steps = canAppend && cached ? [...cached.steps] : [];
+        const remaining = stat.size - startOffset;
+
+        let parsedOffset = startOffset;
+        if (remaining > 0) {
+            const tailBuf = Buffer.allocUnsafe(remaining);
+            const bytesRead = readSync(fd, tailBuf, 0, remaining, startOffset);
+            if (bytesRead > 0) {
+                const slice = tailBuf.subarray(0, bytesRead);
+                const lastNewline = slice.lastIndexOf(0x0a);
+                if (lastNewline >= 0) {
+                    const completeBytes = slice.subarray(0, lastNewline);
+                    parseJsonlChunk(completeBytes.toString('utf8'), steps);
+                    parsedOffset = startOffset + lastNewline + 1;
+                }
+            }
+        }
+
+        let head = canAppend && cached ? cached.head : Buffer.alloc(0);
+        if (head.length === 0 && parsedOffset > 0) {
+            const headLen = Math.min(JSONL_HEAD_CHECK_BYTES, parsedOffset);
+            head = Buffer.allocUnsafe(headLen);
+            const headRead = readSync(fd, head, 0, headLen, 0);
+            head = head.subarray(0, headRead);
+        }
+
+        if (!jsonlFileCache.has(filePath) && jsonlFileCache.size >= JSONL_CACHE_LIMIT) {
+            const oldestKey = jsonlFileCache.keys().next().value;
+            if (oldestKey !== undefined) jsonlFileCache.delete(oldestKey);
+        }
+        jsonlFileCache.set(filePath, {
+            ino: stat.ino,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            parsedOffset,
+            head,
+            steps
+        });
+        return steps;
+    } finally {
+        closeSync(fd);
+    }
 }
 
 /** Reads the highest `step_index` currently persisted in `transcript.jsonl` (-1 when absent). */
@@ -281,18 +367,54 @@ export function inspectAgyReactiveSteps(
     const last = reactiveSteps[reactiveSteps.length - 1]!;
     const idleForMs = Math.max(0, nowMs - lastProgressAtMs);
 
-    if (last.source === 'MODEL' && last.type === 'PLANNER_RESPONSE' && last.status === 'DONE') {
-        const toolCalls = Array.isArray(last.tool_calls) ? last.tool_calls : [];
-        if (toolCalls.length === 0) {
-            if (idleForMs >= timings.settleMs) {
-                return { state: 'completed', steps: reactiveSteps, latestStepIndex: last.step_index };
-            }
-            return { state: 'running', latestStepIndex: last.step_index };
+    let lastSystemIdx = -1;
+    let lastPlannerIdx = -1;
+    for (let idx = 0; idx < reactiveSteps.length; idx += 1) {
+        const step = reactiveSteps[idx]!;
+        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+            lastSystemIdx = idx;
+        } else if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE') {
+            lastPlannerIdx = idx;
         }
+    }
 
-        const parkMs = requiredParkMsForToolCalls(toolCalls, workspacePath, timings);
-        if (parkMs !== null && idleForMs >= parkMs) {
-            return { state: 'parked_on_tool', latestStepIndex: last.step_index };
+    if (lastPlannerIdx > lastSystemIdx) {
+        const planner = reactiveSteps[lastPlannerIdx]!;
+        if (planner.status === 'DONE') {
+            const toolCalls = Array.isArray(planner.tool_calls) ? planner.tool_calls : [];
+            if (toolCalls.length === 0 && lastPlannerIdx === reactiveSteps.length - 1) {
+                if (idleForMs >= timings.settleMs) {
+                    return { state: 'completed', steps: reactiveSteps, latestStepIndex: last.step_index };
+                }
+                return { state: 'running', latestStepIndex: last.step_index };
+            }
+
+            if (toolCalls.length > 0) {
+                const trailingActions = reactiveSteps
+                    .slice(lastPlannerIdx + 1)
+                    .filter((step) => step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE');
+
+                const outstandingCalls: AgyTranscriptToolCall[] = [];
+                for (let callIdx = 0; callIdx < toolCalls.length; callIdx += 1) {
+                    const call = toolCalls[callIdx]!;
+                    const action = trailingActions[callIdx];
+                    if (
+                        !action
+                        || action.status === 'PENDING'
+                        || action.status === 'WAITING'
+                        || (call.name === 'ask_question' && action.status !== 'DONE' && action.status !== 'ERROR')
+                    ) {
+                        outstandingCalls.push(call);
+                    }
+                }
+
+                if (outstandingCalls.length > 0) {
+                    const parkMs = requiredParkMsForToolCalls(outstandingCalls, workspacePath, timings);
+                    if (parkMs !== null && idleForMs >= parkMs) {
+                        return { state: 'parked_on_tool', latestStepIndex: last.step_index };
+                    }
+                }
+            }
         }
     }
 
@@ -307,21 +429,39 @@ function stripAgyStepTimestamps(content: string): string {
     return content.replace(/^(?:Created At: [^\n]*\n(?:Completed At: [^\n]*\n)?)+/, '');
 }
 
+export function extractAgyBackgroundTaskId(content: string | undefined): string | undefined {
+    if (!content) return undefined;
+    const match = content.match(/Tool is running as a background task with task id:\s*([^\s"'<>]+\/task-\d+)/);
+    return match?.[1];
+}
+
+export function extractAgyBackgroundTaskIds(steps: AgyTranscriptStep[]): string[] {
+    const ids: string[] = [];
+    for (const step of steps) {
+        if (step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE') {
+            const id = extractAgyBackgroundTaskId(step.content);
+            if (id) ids.push(id);
+        }
+    }
+    return ids;
+}
+
 function parseCompletedBackgroundTask(
     systemMessageContent: string | undefined,
     sessionId: string
-): { body: string; exitCode?: number } | null {
+): { taskId: string; body: string; exitCode?: number } | null {
     if (!systemMessageContent) return null;
     const escapedSession = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(
-        `Task id "${escapedSession}/task-\\d+" finished with result:\\n([\\s\\S]*?)(?:\\nLog: file:\\/\\/\\/[^\\n]*)?\\s*<\\/SYSTEM_MESSAGE>`
+        `Task id "(${escapedSession}\\/task-\\d+)" finished with result:\\n([\\s\\S]*?)(?:\\nLog: file:\\/\\/\\/[^\\n]*)?\\s*<\\/SYSTEM_MESSAGE>`
     );
     const match = systemMessageContent.match(pattern);
     if (!match) return null;
-    const body = match[1]!.trimEnd();
+    const taskId = match[1]!;
+    const body = match[2]!.trimEnd();
     const exitMatch = body.match(/^Command exited with code (-?\d+)\./);
     const exitCode = exitMatch ? Number(exitMatch[1]) : undefined;
-    return { body, ...(Number.isFinite(exitCode) ? { exitCode } : {}) };
+    return { taskId, body, ...(Number.isFinite(exitCode) ? { exitCode } : {}) };
 }
 
 function buildGenericToolOutput(
@@ -363,7 +503,7 @@ function buildGenericToolOutput(
 export function convertAgyReactiveSteps(
     sessionId: string,
     steps: AgyTranscriptStep[],
-    openBackgroundCommandIds: string[]
+    openBackgroundCommands: AgyOpenBackgroundCommand[]
 ): {
     messages: AgentMessage[];
     usage: UsageMessage | null;
@@ -388,18 +528,26 @@ export function convertAgyReactiveSteps(
         const step = steps[i]!;
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
             const completedBg = parseCompletedBackgroundTask(step.content, sessionId);
-            if (completedBg && openBackgroundCommandIds.length > 0) {
-                const callId = openBackgroundCommandIds.shift()!;
-                const failed = completedBg.exitCode !== undefined && completedBg.exitCode !== 0;
-                messages.push({
-                    type: 'tool_result',
-                    id: callId,
-                    status: failed ? 'failed' : 'completed',
-                    output: {
-                        output: completedBg.body,
-                        ...(completedBg.exitCode !== undefined ? { exit_code: completedBg.exitCode } : {})
-                    }
-                });
+            if (completedBg && openBackgroundCommands.length > 0) {
+                const exactIdx = openBackgroundCommands.findIndex(
+                    (entry) => entry.taskId === completedBg.taskId
+                );
+                const matchIdx = exactIdx >= 0
+                    ? exactIdx
+                    : openBackgroundCommands.findIndex((entry) => !entry.taskId);
+                if (matchIdx >= 0) {
+                    const matched = openBackgroundCommands.splice(matchIdx, 1)[0]!;
+                    const failed = completedBg.exitCode !== undefined && completedBg.exitCode !== 0;
+                    messages.push({
+                        type: 'tool_result',
+                        id: matched.callId,
+                        status: failed ? 'failed' : 'completed',
+                        output: {
+                            output: completedBg.body,
+                            ...(completedBg.exitCode !== undefined ? { exit_code: completedBg.exitCode } : {})
+                        }
+                    });
+                }
             }
             continue;
         }
@@ -476,7 +624,11 @@ export function convertAgyReactiveSteps(
                     status: resultInfo.status
                 });
                 if (resultInfo.backgrounded) {
-                    openBackgroundCommandIds.push(id);
+                    const taskId = extractAgyBackgroundTaskId(action.content);
+                    openBackgroundCommands.push({
+                        callId: id,
+                        ...(taskId ? { taskId } : {})
+                    });
                 }
             }
         }

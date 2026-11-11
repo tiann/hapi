@@ -25,9 +25,11 @@ import {
     agyTranscriptPaths,
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
+    extractAgyBackgroundTaskIds,
     inspectAgyReactiveSteps,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
+    type AgyOpenBackgroundCommand,
     type AgyReactiveTimingConfig
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
@@ -203,10 +205,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: AcpPermissionHandler | null = null;
     // agy's own tool name by call id, to map results of the calls it started.
     private readonly nativeToolNames = new Map<string, string>();
-    // Background `run_command` call ids awaiting completion across turns.
-    private readonly backgroundCommandIds: string[] = [];
+    // Background `run_command` entries awaiting completion across turns.
+    private readonly backgroundCommands: AgyOpenBackgroundCommand[] = [];
     private acpSessionId: string | null = null;
     private lastTranscriptStepIndex = -1;
+    // Latest step_index seen when an unfinished wakeup hit `maxIdleMs`, so
+    // tracking resumes as soon as late output appends a newer step.
+    private pausedWakeupStepIndex: number | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
@@ -326,6 +331,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (latest > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = latest;
         }
+        this.pausedWakeupStepIndex = null;
     }
 
     private hasPendingReactiveWakeup(): boolean {
@@ -333,7 +339,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!acpSessionId || this.backendLost || !this.backend?.isTransportAlive()) return false;
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
         if (steps.length === 0) return false;
-        return steps.some((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE');
+        if (!steps.some((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')) {
+            return false;
+        }
+        if (this.pausedWakeupStepIndex !== null) {
+            const latest = steps[steps.length - 1]!.step_index;
+            return latest > this.pausedWakeupStepIndex;
+        }
+        return true;
     }
 
     private async waitForNextBatchOrWakeup(outerSignal: AbortSignal): Promise<
@@ -492,7 +505,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.reactiveWakeupAbort = abortController;
         session.onThinkingChange(true);
 
-        let watchedStepIndex = this.lastTranscriptStepIndex;
+        let watchedStepIndex = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
         let lastProgressAtMs = Date.now();
         const pollIntervalMs = Math.max(10, Math.min(this.reactivePollMs, 50));
 
@@ -532,17 +545,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
                 if (inspection.latestStepIndex > watchedStepIndex) {
                     watchedStepIndex = inspection.latestStepIndex;
+                    this.pausedWakeupStepIndex = null;
                     lastProgressAtMs = nowMs;
                     await this.waitWakeupTick(acpSessionId, pollIntervalMs, abortController.signal);
                     continue;
                 }
 
-                if (inspection.state === 'completed' || inspection.state === 'timed_out') {
+                if (inspection.state === 'completed') {
+                    this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
                     const converted = convertAgyReactiveSteps(
                         acpSessionId,
                         inspection.steps,
-                        this.backgroundCommandIds
+                        this.backgroundCommands
                     );
                     await this.advanceBackendCursor();
                     for (const msg of converted.messages) {
@@ -560,7 +575,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
 
+                if (inspection.state === 'timed_out') {
+                    // Pause idle polling without advancing completion cursors so
+                    // late output under the same `SYSTEM_MESSAGE` still wakes HAPI.
+                    this.pausedWakeupStepIndex = inspection.latestStepIndex;
+                    session.onThinkingChange(false);
+                    if (session.queue.size() === 0 && !this.shouldExit) {
+                        session.sendSessionEvent({ type: 'ready' });
+                    }
+                    return;
+                }
+
                 if (inspection.state === 'parked_on_tool') {
+                    this.pausedWakeupStepIndex = null;
                     if (this.reactiveWakeupAbort === abortController) {
                         this.reactiveWakeupAbort = null;
                     }
@@ -617,10 +644,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             if (!acpSessionId) {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
-                this.backgroundCommandIds.length = 0;
+                this.backgroundCommands.length = 0;
             }
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
+                this.pausedWakeupStepIndex = null;
             }
             this.acpSessionId = acpSessionId;
             this.syncTranscriptCursor();
@@ -794,6 +822,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             this.syncTranscriptCursor();
+            const turnStartStepIndex = this.lastTranscriptStepIndex;
             if (!internalWakeup) {
                 this.messageBuffer.addMessage(message, 'user');
             }
@@ -829,7 +858,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
-            this.closeBackgroundCommands(turn);
+            this.closeBackgroundCommands(turn, turnStartStepIndex);
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
             this.questionLabels.clear();
@@ -870,11 +899,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
      * would spin, so it shows the command as running in the background; the
      * real result replaces this one when it comes.
      */
-    private closeBackgroundCommands(turn: AgyTurn): void {
+    private closeBackgroundCommands(turn: AgyTurn, turnStartStepIndex: number): void {
         if (turn.aborted || this.backendLost || turn.stopReason !== 'end_turn') return;
-        for (const id of turn.openCommands) {
-            if (!this.backgroundCommandIds.includes(id)) {
-                this.backgroundCommandIds.push(id);
+        const openIds = [...turn.openCommands];
+        const turnSteps = openIds.length > 0 && this.acpSessionId
+            ? readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, turnStartStepIndex)
+            : [];
+        const taskIds = extractAgyBackgroundTaskIds(turnSteps);
+        for (let idx = 0; idx < openIds.length; idx += 1) {
+            const id = openIds[idx]!;
+            const taskId = taskIds[idx];
+            const existing = this.backgroundCommands.find((entry) => entry.callId === id);
+            if (!existing) {
+                this.backgroundCommands.push({ callId: id, ...(taskId ? { taskId } : {}) });
+            } else if (taskId && !existing.taskId) {
+                existing.taskId = taskId;
             }
             const placeholder = convertAgentMessage(
                 { type: 'tool_result', id, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
@@ -1161,8 +1200,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             turn.openCommands.add(message.id);
         } else if (message.status !== 'in_progress') {
             turn.openCommands.delete(message.id);
-            const bgIdx = this.backgroundCommandIds.indexOf(message.id);
-            if (bgIdx >= 0) this.backgroundCommandIds.splice(bgIdx, 1);
+            const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === message.id);
+            if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
         }
     }
 
