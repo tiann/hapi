@@ -93,6 +93,58 @@ describe('AcpPermissionHandler.askUserQuestion', () => {
         expect(harness.backend.respondToPermission).not.toHaveBeenCalled()
     })
 
+    it('translates multi_select into the client card spelling', async () => {
+        // The MCP schema spells it snake_case while every HAPI client card
+        // reads camelCase multiSelect; untranslated, a multi-select question
+        // renders as single-select and the UI forbids choosing several.
+        const pendingPromise = handler.askUserQuestion({
+            questions: [
+                {
+                    id: 'checks',
+                    question: 'Which checks should run?',
+                    multi_select: true,
+                    options: [{ label: 'lint' }, { label: 'test' }]
+                },
+                {
+                    id: 'note',
+                    question: 'Anything else?',
+                    multi_select: false
+                }
+            ]
+        })
+        const pending = pendingEntryAfter(handler)!
+        expect(pending.entry.arguments).toEqual({
+            questions: [
+                {
+                    id: 'checks',
+                    question: 'Which checks should run?',
+                    multi_select: true,
+                    multiSelect: true,
+                    options: [{ label: 'lint' }, { label: 'test' }]
+                },
+                {
+                    id: 'note',
+                    question: 'Anything else?',
+                    multi_select: false,
+                    multiSelect: false
+                }
+            ]
+        })
+
+        await permissionRpcRespond(harness, {
+            id: pending.id,
+            approved: true,
+            answers: { '0': ['lint', 'test'] }
+        })
+        await expect(pendingPromise).resolves.toEqual({
+            status: 'answered',
+            answers: [
+                { id: 'checks', selected: ['lint', 'test'] },
+                { id: 'note', selected: [] }
+            ]
+        })
+    })
+
     it('maps free-text answers to custom', async () => {
         const pendingPromise = handler.askUserQuestion(QUESTIONS_INPUT)
         const pending = pendingEntryAfter(handler)!

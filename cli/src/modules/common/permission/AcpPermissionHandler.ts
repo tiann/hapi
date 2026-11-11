@@ -34,6 +34,30 @@ export type AcpAskUserOutcome =
     | { status: 'denied'; reason?: string }
     | { status: 'canceled'; reason?: string }
 
+/**
+ * Translate the MCP `ask_user_question` spelling onto the card dialect every
+ * HAPI client renders. The MCP schema accepts snake_case (`multi_select`),
+ * while the web/iOS/Android AskUserQuestion cards read camelCase
+ * (`multiSelect`) — without this, a multi-select question silently renders
+ * as single-select and the client forbids choosing more than one option.
+ * Unknown payloads pass through unchanged; `multi_select` is kept alongside
+ * so snake_case consumers keep working.
+ */
+function normalizeAskUserQuestionCardInput(input: unknown): unknown {
+    if (!input || typeof input !== 'object') return input
+    const root = input as { questions?: unknown }
+    if (!Array.isArray(root.questions)) return input
+    return {
+        ...root,
+        questions: root.questions.map((question) => {
+            if (!question || typeof question !== 'object') return question
+            const record = question as Record<string, unknown>
+            if (record.multiSelect !== undefined || typeof record.multi_select !== 'boolean') return question
+            return { ...record, multiSelect: record.multi_select }
+        })
+    }
+}
+
 function pickOptionId(request: PermissionRequest, preferredKinds: string[]): string | null {
     for (const kind of preferredKinds) {
         const match = request.options.find((option) => option.kind === kind)
@@ -201,7 +225,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             this.askUserResolvers.set(id, resolve)
             this.usedIds.add(id)
             this.startUserWait(id)
-            this.addPendingRequest(id, 'ask_user_question', input, {
+            this.addPendingRequest(id, 'ask_user_question', normalizeAskUserQuestionCardInput(input), {
                 resolve: () => {},
                 reject: (error) => {
                     this.askUserResolvers.delete(id)

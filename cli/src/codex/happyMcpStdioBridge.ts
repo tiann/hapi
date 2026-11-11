@@ -430,6 +430,15 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
     // Only registered when the launching flavor passed the tool in --tools
     // (e.g. DSH: its ACP profile ships no native ask-user tool, so the bridge
     // provides it; the HTTP server escalates to the interactive card).
+    // Human answers are unbounded: the card may sit pending for many minutes
+    // while the user is away. The MCP client's default request timeout is
+    // 60s, which would fail every slow answer at the BRIDGE layer and push
+    // the model into a retry loop (stacking a second card while the first is
+    // still on screen). Raise this one call's lifetime; agents that enforce
+    // their own shorter per-call timeout still cancel through extra.signal,
+    // which is forwarded so the hub-side escalation aborts with it.
+    const ASK_USER_FORWARD_TIMEOUT_MS = 30 * 60 * 1000;
+
     if (toolNames.has('ask_user_question')) {
       server.registerTool<any, any>(
         'ask_user_question',
@@ -438,10 +447,14 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           title: 'Ask User Question',
           inputSchema: askUserInputSchema,
         },
-        async (args: Record<string, unknown>) => {
+        async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
           try {
             const client = await ensureHttpClient();
-            const response = await client.callTool({ name: 'ask_user_question', arguments: args });
+            const response = await client.callTool(
+              { name: 'ask_user_question', arguments: args },
+              undefined,
+              { timeout: ASK_USER_FORWARD_TIMEOUT_MS, signal: extra?.signal }
+            );
             return response as any;
           } catch (error) {
             return {
