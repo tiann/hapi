@@ -12,12 +12,14 @@ import type { AgyMode } from './types';
 import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
 import {
     AGY_WAKEUP_CONTINUE_PROMPT,
+    advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
     convertAgyReactiveSteps,
     decodeAgyTranscriptArgs,
     inspectAgyReactiveSteps,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
+    resolveAgyBackgroundTaskIds,
     type AgyOpenBackgroundCommand,
     type AgyReactiveTimingConfig,
     type AgyTranscriptStep
@@ -479,6 +481,68 @@ describe('agyReactiveWakeup pure helpers', () => {
         ]);
         expect(bgCommands).toEqual([]);
     });
+
+    it('never FIFO-attributes completions to open background commands whose taskId is unknown', () => {
+        const bgCommands: AgyOpenBackgroundCommand[] = [
+            { callId: 'call-unknown-1' },
+            { callId: 'call-unknown-2' }
+        ];
+        const slice = convertAgyReactiveSteps('conv-unknown', [
+            {
+                step_index: 10,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: '<SYSTEM_MESSAGE>\nTask id "conv-unknown/task-2" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSECOND_ONLY\n</SYSTEM_MESSAGE>'
+            }
+        ], bgCommands);
+
+        expect(slice.messages).toEqual([]);
+        expect(bgCommands).toEqual([
+            { callId: 'call-unknown-1' },
+            { callId: 'call-unknown-2' }
+        ]);
+    });
+
+    it('preserves autonomous SYSTEM_MESSAGE steps at turn end while advancing past intra-turn folds', () => {
+        // Post-terminal SYSTEM_MESSAGE arriving before prompt-answer callback is preserved.
+        const postTerminalSteps: AgyTranscriptStep[] = [
+            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+            { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Turn finished.' },
+            { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>Wakeup</SYSTEM_MESSAGE>' }
+        ];
+        expect(advanceAgyTurnTranscriptCursor(
+            postTerminalSteps,
+            -1,
+            new Map([['Turn finished.', 1]])
+        )).toBe(1);
+
+        // Intra-turn SYSTEM_MESSAGE folded into the active turn (before terminal planner, streamed text matches) advances.
+        const intraTurnFolded: AgyTranscriptStep[] = [
+            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+            {
+                step_index: 1,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'invoke_subagent', args: {} }]
+            },
+            { step_index: 2, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', content: '<SYSTEM_MESSAGE>Fast subagent</SYSTEM_MESSAGE>' },
+            { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Handled inside turn.' }
+        ];
+        expect(advanceAgyTurnTranscriptCursor(
+            intraTurnFolded,
+            -1,
+            new Map([['Handled inside turn.', 1]])
+        )).toBe(3);
+
+        // Unstreamed text after SYSTEM_MESSAGE is preserved even if no earlier terminal planner was seen.
+        expect(advanceAgyTurnTranscriptCursor(
+            intraTurnFolded,
+            -1,
+            new Map()
+        )).toBe(1);
+    });
 });
 
 describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
@@ -512,7 +576,21 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
             writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
                 { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run check' },
-                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Waiting for background task...' }
+                {
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5 && echo READY"' } }]
+                },
+                {
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-1`
+                },
+                { step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Waiting for background task...' }
             ]);
         });
 
@@ -539,7 +617,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             compactPath,
             [
                 JSON.stringify({
-                    step_index: 2,
+                    step_index: 4,
                     source: 'SYSTEM',
                     type: 'SYSTEM_MESSAGE',
                     status: 'DONE',
@@ -547,7 +625,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                     content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nREADY\n</SYSTEM_MESSAGE>`
                 }),
                 JSON.stringify({
-                    step_index: 3,
+                    step_index: 5,
                     source: 'MODEL',
                     type: 'PLANNER_RESPONSE',
                     status: 'DONE',
@@ -1097,6 +1175,217 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             callId: 'call-bg-slow',
             is_error: true,
             output: { stdout: 'SLOW_FAIL', exit_code: 2 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('preserves a wakeup whose SYSTEM_MESSAGE lands in transcript.jsonl before onAnswered fires', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        // Simulate the race where agy closes its prompt turn and immediately writes an autonomous
+        // SYSTEM_MESSAGE to transcript.jsonl BEFORE Node processes the session/prompt response (onAnswered).
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Dispatched fast subagent.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'go' },
+                {
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Dispatched fast subagent.'
+                },
+                {
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    created_at: '2026-11-11T12:30:00Z',
+                    content: '<SYSTEM_MESSAGE>Subagent finished in race window</SYSTEM_MESSAGE>'
+                }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 200
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('go', { permissionMode: 'always-proceed' }, 'msg-1');
+        // Turn 1 finishes and immediately enters reactive wakeup tracking for step 2.
+        await vi.waitFor(() => {
+            expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'message',
+                message: 'Dispatched fast subagent.'
+            }));
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Autonomous MODEL step finishes after Turn 1's response settled (with no new SYSTEM_MESSAGE).
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 3,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                created_at: '2026-11-11T12:30:01Z',
+                content: 'Race-window subagent output surfaced.'
+            })}\n`,
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(backend.resumeCalls).toEqual([backend.sessionIdToCreate]);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'Race-window subagent output surfaced.'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('resolves late-flushed RUN_COMMAND task IDs at wakeup time and attributes reverse-order completions', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        // At Turn 1 close, RUN_COMMAND steps have not flushed to transcript.jsonl yet!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-late-slow',
+                name: 'sleep 10 && exit 3',
+                title: 'sleep 10 && exit 3',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 10 && exit 3' }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-late-fast',
+                name: 'sleep 1 && echo LATE_FAST_OK',
+                title: 'sleep 1 && echo LATE_FAST_OK',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 1 && echo LATE_FAST_OK' }
+            });
+            onUpdate({ type: 'text', text: 'Started two background tasks.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run late' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('run late', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Turn 1's RUN_COMMAND steps flush to disk, followed by reverse-order completions (task-2 then task-1).
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: '"sleep 10 && exit 3"' } },
+                        { name: 'run_command', args: { CommandLine: '"sleep 1 && echo LATE_FAST_OK"' } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-1`
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-2`
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Started two background tasks.'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-2" finished with result:\nCommand exited with code 0.\n\nCommand output:\nLATE_FAST_OK\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 6,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-1" finished with result:\nCommand exited with code 3.\n\nCommand output:\nLATE_SLOW_FAIL\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 7,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Both late-flushed tasks finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        expect(resolveAgyBackgroundTaskIds).toBeDefined();
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-late-fast',
+            is_error: false,
+            output: { stdout: 'LATE_FAST_OK', exit_code: 0 }
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-late-slow',
+            is_error: true,
+            output: { stdout: 'LATE_SLOW_FAIL', exit_code: 3 }
         }));
 
         queue.close();

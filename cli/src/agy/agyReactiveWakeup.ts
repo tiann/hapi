@@ -59,6 +59,10 @@ export interface AgyReactiveTimingConfig {
 export interface AgyOpenBackgroundCommand {
     callId: string;
     taskId?: string;
+    afterStepIndex?: number;
+    ordinalInTurn?: number;
+    maxStepIndex?: number;
+    stepIndex?: number;
 }
 
 export type AgyReactiveInspection =
@@ -446,6 +450,152 @@ export function extractAgyBackgroundTaskIds(steps: AgyTranscriptStep[]): string[
     return ids;
 }
 
+/**
+ * Resolves `taskId` for any open background commands whose `RUN_COMMAND` step
+ * had not flushed to `transcript.jsonl` yet when the turn closed.
+ */
+export function resolveAgyBackgroundTaskIds(
+    brainDir: string,
+    sessionId: string,
+    openBackgroundCommands: AgyOpenBackgroundCommand[],
+    upperStepIndex?: number
+): void {
+    const unresolved = openBackgroundCommands.filter((entry) => !entry.taskId);
+    if (unresolved.length === 0) return;
+
+    const taskIdsByWindow = new Map<string, string[]>();
+    for (const entry of unresolved) {
+        if (entry.stepIndex !== undefined) {
+            const steps = readAgyTranscriptStepsAfter(brainDir, sessionId, entry.stepIndex - 1);
+            const exactStep = steps.find((step) => step.step_index === entry.stepIndex);
+            const taskId = extractAgyBackgroundTaskId(exactStep?.content);
+            if (taskId) entry.taskId = taskId;
+            continue;
+        }
+        if (entry.afterStepIndex === undefined || entry.ordinalInTurn === undefined) {
+            continue;
+        }
+        const maxStep = entry.maxStepIndex !== undefined && upperStepIndex !== undefined
+            ? Math.min(entry.maxStepIndex, upperStepIndex)
+            : (entry.maxStepIndex ?? upperStepIndex);
+        const key = `${entry.afterStepIndex}:${maxStep ?? 'inf'}`;
+        let taskIds = taskIdsByWindow.get(key);
+        if (!taskIds) {
+            let steps = readAgyTranscriptStepsAfter(brainDir, sessionId, entry.afterStepIndex);
+            if (maxStep !== undefined) {
+                steps = steps.filter((step) => step.step_index <= maxStep);
+            }
+            taskIds = extractAgyBackgroundTaskIds(steps);
+            taskIdsByWindow.set(key, taskIds);
+        }
+        const resolved = taskIds[entry.ordinalInTurn];
+        if (resolved) {
+            entry.taskId = resolved;
+        }
+    }
+}
+
+/**
+ * Advances the transcript cursor at the end of a prompt turn while preserving
+ * any autonomous `SYSTEM_MESSAGE` wakeup slice written after `agy` closed its
+ * prompt turn (before Node finished draining and settling the turn).
+ */
+export function advanceAgyTurnTranscriptCursor(
+    stepsAfterStart: AgyTranscriptStep[],
+    currentCursor: number,
+    streamedTextCounts: ReadonlyMap<string, number>
+): number {
+    let cursor = currentCursor;
+    const remainingTexts = new Map(streamedTextCounts);
+
+    const isTerminalPlanner = (step: AgyTranscriptStep): boolean =>
+        step.source === 'MODEL'
+        && step.type === 'PLANNER_RESPONSE'
+        && step.status === 'DONE'
+        && (!Array.isArray(step.tool_calls) || step.tool_calls.length === 0);
+
+    let lastUserInputIdx = -1;
+    for (let i = 0; i < stepsAfterStart.length; i += 1) {
+        const step = stepsAfterStart[i]!;
+        if (step.source === 'USER_EXPLICIT' && step.type === 'USER_INPUT') {
+            lastUserInputIdx = i;
+        }
+    }
+
+    let startIdx = 0;
+    if (lastUserInputIdx >= 0) {
+        for (let i = 0; i <= lastUserInputIdx; i += 1) {
+            const step = stepsAfterStart[i]!;
+            if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE') {
+                const text = step.content?.trim();
+                if (text) {
+                    const available = remainingTexts.get(text) ?? 0;
+                    if (available > 0) remainingTexts.set(text, available - 1);
+                }
+            }
+            if (step.step_index > cursor) cursor = step.step_index;
+        }
+        startIdx = lastUserInputIdx + 1;
+    }
+
+    let sawTerminalPlanner = false;
+    for (let i = startIdx; i < stepsAfterStart.length; i += 1) {
+        const step = stepsAfterStart[i]!;
+        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+            if (sawTerminalPlanner) break;
+
+            let terminalIdx = -1;
+            let unstreamed = false;
+            const probeTexts = new Map(remainingTexts);
+            for (let j = i + 1; j < stepsAfterStart.length; j += 1) {
+                const ahead = stepsAfterStart[j]!;
+                if (ahead.source === 'MODEL' && ahead.type === 'PLANNER_RESPONSE') {
+                    if (ahead.status !== 'DONE') {
+                        unstreamed = true;
+                        break;
+                    }
+                    const text = ahead.content?.trim();
+                    if (text) {
+                        const available = probeTexts.get(text) ?? 0;
+                        if (available <= 0) {
+                            unstreamed = true;
+                            break;
+                        }
+                        probeTexts.set(text, available - 1);
+                    }
+                    if (isTerminalPlanner(ahead)) {
+                        terminalIdx = j;
+                        break;
+                    }
+                }
+            }
+
+            if (unstreamed || terminalIdx < 0) {
+                break;
+            }
+            if (step.step_index > cursor) cursor = step.step_index;
+            continue;
+        }
+
+        if (step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE') {
+            const text = step.content?.trim();
+            if (text) {
+                const available = remainingTexts.get(text) ?? 0;
+                if (available > 0) remainingTexts.set(text, available - 1);
+            }
+            if (isTerminalPlanner(step)) {
+                sawTerminalPlanner = true;
+            }
+        }
+
+        if (step.step_index > cursor) {
+            cursor = step.step_index;
+        }
+    }
+
+    return cursor;
+}
+
 function parseCompletedBackgroundTask(
     systemMessageContent: string | undefined,
     sessionId: string
@@ -529,12 +679,9 @@ export function convertAgyReactiveSteps(
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
             const completedBg = parseCompletedBackgroundTask(step.content, sessionId);
             if (completedBg && openBackgroundCommands.length > 0) {
-                const exactIdx = openBackgroundCommands.findIndex(
-                    (entry) => entry.taskId === completedBg.taskId
+                const matchIdx = openBackgroundCommands.findIndex(
+                    (entry) => entry.taskId !== undefined && entry.taskId === completedBg.taskId
                 );
-                const matchIdx = exactIdx >= 0
-                    ? exactIdx
-                    : openBackgroundCommands.findIndex((entry) => !entry.taskId);
                 if (matchIdx >= 0) {
                     const matched = openBackgroundCommands.splice(matchIdx, 1)[0]!;
                     const failed = completedBg.exitCode !== undefined && completedBg.exitCode !== 0;
@@ -627,6 +774,7 @@ export function convertAgyReactiveSteps(
                     const taskId = extractAgyBackgroundTaskId(action.content);
                     openBackgroundCommands.push({
                         callId: id,
+                        stepIndex: action.step_index,
                         ...(taskId ? { taskId } : {})
                     });
                 }

@@ -22,6 +22,7 @@ import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from 
 import {
     AGY_WAKEUP_CONTINUE_PROMPT,
     addAgyUsage,
+    advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
@@ -29,6 +30,7 @@ import {
     inspectAgyReactiveSteps,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
+    resolveAgyBackgroundTaskIds,
     type AgyOpenBackgroundCommand,
     type AgyReactiveTimingConfig
 } from './agyReactiveWakeup';
@@ -164,6 +166,9 @@ type AgyTurn = {
     // Commands agy has not reported an end for; one still open at end_turn was
     // moved to the background.
     openCommands: Set<string>;
+    // Settled non-live assistant text segments streamed during this turn, used
+    // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
+    streamedTextCounts: Map<string, number>;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -330,6 +335,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const latest = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
         if (latest > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = latest;
+        }
+        this.pausedWakeupStepIndex = null;
+    }
+
+    private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number): void {
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId) return;
+        const stepsAfterStart = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, turnStartStepIndex);
+        const nextCursor = advanceAgyTurnTranscriptCursor(
+            stepsAfterStart,
+            this.lastTranscriptStepIndex,
+            turn.streamedTextCounts
+        );
+        if (nextCursor > this.lastTranscriptStepIndex) {
+            this.lastTranscriptStepIndex = nextCursor;
         }
         this.pausedWakeupStepIndex = null;
     }
@@ -554,6 +574,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (inspection.state === 'completed') {
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
+                    const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
+                    resolveAgyBackgroundTaskIds(
+                        this.brainDir,
+                        acpSessionId,
+                        this.backgroundCommands,
+                        wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
+                    );
                     const converted = convertAgyReactiveSteps(
                         acpSessionId,
                         inspection.steps,
@@ -776,6 +803,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answeredAt: null,
             generation: new GenerationClock(),
             openCommands: new Set(),
+            streamedTextCounts: new Map(),
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -823,6 +851,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             this.syncTranscriptCursor();
             const turnStartStepIndex = this.lastTranscriptStepIndex;
+            resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, turnStartStepIndex);
+            for (const entry of this.backgroundCommands) {
+                if (!entry.taskId && entry.maxStepIndex === undefined) {
+                    entry.maxStepIndex = turnStartStepIndex;
+                }
+            }
             if (!internalWakeup) {
                 this.messageBuffer.addMessage(message, 'user');
             }
@@ -833,7 +867,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     onSent: () => { turn.sentAt = Date.now(); },
                     onAnswered: () => {
                         turn.answeredAt = Date.now();
-                        this.syncTranscriptCursor();
                         turn.answerMain();
                     }
                 });
@@ -858,6 +891,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
+            if (!turn.aborted && !this.backendLost) {
+                this.syncTurnTranscriptCursor(turn, turnStartStepIndex);
+            }
             this.closeBackgroundCommands(turn, turnStartStepIndex);
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
@@ -911,7 +947,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const taskId = taskIds[idx];
             const existing = this.backgroundCommands.find((entry) => entry.callId === id);
             if (!existing) {
-                this.backgroundCommands.push({ callId: id, ...(taskId ? { taskId } : {}) });
+                this.backgroundCommands.push({
+                    callId: id,
+                    afterStepIndex: turnStartStepIndex,
+                    ordinalInTurn: idx,
+                    ...(taskId ? { taskId } : {})
+                });
             } else if (taskId && !existing.taskId) {
                 existing.taskId = taskId;
             }
@@ -1050,7 +1091,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steerAnswers.push(steer.answered.then(() => {
             if (this.turn === turn) {
                 turn.answeredAt = Date.now();
-                this.syncTranscriptCursor();
             }
         }));
         // agy echoes a steer (user_message_chunk) when it folds it into the
@@ -1154,6 +1194,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.sawActivity = true;
                 turn.acknowledge();
                 turn.generation.observe(message);
+                if (message.type === 'text' && !message.live) {
+                    const trimmed = message.text.trim();
+                    if (trimmed) {
+                        turn.streamedTextCounts.set(trimmed, (turn.streamedTextCounts.get(trimmed) ?? 0) + 1);
+                    }
+                }
                 this.trackOpenCommand(turn, message);
                 this.forwardAgentMessage(this.showQuestionCard(message));
         }
