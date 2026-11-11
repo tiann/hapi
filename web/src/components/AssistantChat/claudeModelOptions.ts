@@ -3,6 +3,8 @@ import { CLAUDE_MODEL_PRESETS, getClaudeModelLabel } from '@hapi/protocol'
 export type ClaudeComposerModelOption = {
     value: string | null
     label: string
+    /** Heading the option is listed under; ungrouped options come first. */
+    group?: string
 }
 
 function normalizeClaudeComposerModel(model?: string | null): string | null {

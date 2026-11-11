@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createSessionScanner, readSessionLog } from './sessionScanner'
 import { RawJSONLines } from '../types'
-import { mkdir, writeFile, appendFile, rm, readFile } from 'node:fs/promises'
+import { mkdir, writeFile, appendFile, rm, readFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { existsSync } from 'node:fs'
@@ -284,4 +284,34 @@ describe('sessionScanner', () => {
       ['s2', 'toolu_parent']
     ])
   })
+
+  it('follows the transcript when Claude Code relocates it into and out of a worktree project dir (#1950)', async () => {
+    const sessionId = 'c0ffee00-0000-4000-8000-000000001950'
+    const line = (uuid: string) => JSON.stringify({ type: 'user', uuid, parentUuid: null, message: { role: 'user', content: uuid } }) + '\n'
+    const mainFile = join(projectDir, `${sessionId}.jsonl`)
+    const worktreeDir = getProjectPath(join(testDir, '.claude', 'worktrees', 'wt'))
+    const worktreeFile = join(worktreeDir, `${sessionId}.jsonl`)
+    await mkdir(worktreeDir, { recursive: true })
+    try {
+      await writeFile(mainFile, line('before'))
+      scanner = await createSessionScanner({
+        sessionId: null,
+        workingDirectory: testDir,
+        onMessage: (msg) => collectedMessages.push(msg)
+      })
+      scanner.onNewSession(sessionId)
+      const uuids = () => collectedMessages.map((m) => m.type === 'user' ? m.uuid : null)
+      await vi.waitFor(() => expect(uuids()).toEqual(['before']), { timeout: 10000 })
+
+      await rename(mainFile, worktreeFile)
+      await appendFile(worktreeFile, line('inside'))
+      await vi.waitFor(() => expect(uuids()).toEqual(['before', 'inside']), { timeout: 10000 })
+
+      await rename(worktreeFile, mainFile)
+      await appendFile(mainFile, line('after'))
+      await vi.waitFor(() => expect(uuids()).toEqual(['before', 'inside', 'after']), { timeout: 10000 })
+    } finally {
+      await rm(worktreeDir, { recursive: true, force: true })
+    }
+  }, 30000)
 })

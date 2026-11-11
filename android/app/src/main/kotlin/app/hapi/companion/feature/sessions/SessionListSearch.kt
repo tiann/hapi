@@ -287,7 +287,7 @@ object SessionListSearch {
         val scoreA = index.scores[a.id] ?: 0.0
         val scoreB = index.scores[b.id] ?: 0.0
         if (scoreA != scoreB) return scoreB.compareTo(scoreA)
-        return b.updatedAt.compareTo(a.updatedAt)
+        return app.hapi.protocol.wire.SessionOrderComparator.compare(a, b)
     }
 
     fun sortSessionsBySearchRelevance(

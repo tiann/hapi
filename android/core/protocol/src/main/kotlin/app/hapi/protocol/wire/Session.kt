@@ -35,6 +35,7 @@ data class Session(
     val seq: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    val lastUserMessageAt: Long? = null,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val active: Boolean,
@@ -58,6 +59,8 @@ data class Session(
     val permissionMode: String? = null,
     val collaborationMode: String? = null,
     val copilotAgentMode: String? = null,
+    val contentRevision: Long? = null,
+    val readState: SessionReadState? = null,
 )
 
 /**

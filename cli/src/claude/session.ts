@@ -27,7 +27,10 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     localLaunchFailure: LocalLaunchFailure | null = null;
     /** Model the local TUI runs, "[1m]" suffix intact: launch seed, then PostModelSwitch. */
     localContextModel: string | null = null;
+    /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
+    localTurnStartedAt = 0;
     private nativeSkillNames = new Set<string>();
+    private permissionModeListener: ((mode: PermissionMode) => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -86,6 +89,11 @@ export class Session extends AgentSessionBase<EnhancedMode> {
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
+        this.permissionModeListener?.(mode);
+    };
+
+    setPermissionModeListener = (listener: ((mode: PermissionMode) => void) | null): void => {
+        this.permissionModeListener = listener;
     };
 
     // Override base getPermissionMode to return the Claude-narrow type. Safe

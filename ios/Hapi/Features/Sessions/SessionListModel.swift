@@ -20,6 +20,53 @@ struct SessionRowUI: Identifiable, Equatable {
 
     var id: String { summary.id }
     var status: SessionRowStatus? { SessionRowStatus(summary: summary) }
+    var presence: SessionPresence { SessionPresence(summary: summary) }
+    /// Only a running job is shown; finished ones leave no trace on the row.
+    var runningJob: AttachedJob? { summary.runningAttachedJob }
+}
+
+extension SessionSummary {
+    /// Work that outlives the agent (tiann/hapi#1404); web `hasRunningAttachedJob`.
+    var runningAttachedJob: AttachedJob? {
+        attachedJob?.isRunning == true ? attachedJob : nil
+    }
+}
+
+/// The agent icon's presence badge (web `SessionRowSummary`, #2296). Every
+/// state has its own mark, so none is shown by the absence of one: solid and
+/// pulsing while working (blue when only background tasks run), a ring when
+/// connected and waiting, a power mark when stopped or archived. A running
+/// attached job counts as working even when the agent is idle or gone.
+enum SessionPresence: Equatable {
+    case working
+    case background
+    case waiting
+    case stopped
+
+    init(summary: SessionSummary) {
+        // Same precedence as web: background-only before an attached job.
+        if summary.active && !summary.thinking && summary.backgroundTaskCount > 0 {
+            self = .background
+        } else if (summary.active && summary.thinking) || summary.runningAttachedJob != nil {
+            self = .working
+        } else if summary.active {
+            self = .waiting
+        } else {
+            self = .stopped
+        }
+    }
+
+    var pulses: Bool { self == .working || self == .background }
+
+    /// Localize in the view so its locale also governs previews/specimens.
+    var titleKey: String {
+        switch self {
+        case .working: return "Running"
+        case .background: return "Background tasks running"
+        case .waiting: return "Connected"
+        case .stopped: return "Stopped"
+        }
+    }
 }
 
 /// Presentation only: request totals/kinds come from the hub, independently
@@ -28,7 +75,6 @@ enum SessionRowStatus: Equatable {
     case needsReply(Int)
     case needsApproval(Int)
     case needsAttention(Int)
-    case running
 
     init?(summary: SessionSummary) {
         let count = summary.pendingRequestsCount
@@ -41,8 +87,6 @@ enum SessionRowStatus: Equatable {
             } else {
                 self = .needsAttention(count)
             }
-        } else if summary.active && summary.thinking {
-            self = .running
         } else {
             return nil
         }
@@ -54,25 +98,22 @@ enum SessionRowStatus: Equatable {
         case .needsReply: return "Needs reply"
         case .needsApproval: return "Needs approval"
         case .needsAttention: return "Needs attention"
-        case .running: return "Running"
         }
     }
 
-    var count: Int? {
+    var count: Int {
         switch self {
         case .needsReply(let count), .needsApproval(let count), .needsAttention(let count): return count
-        case .running: return nil
         }
     }
 
-    /// Unfilled attention symbols; running uses the native loading indicator.
-    /// Status wording/count remain available to VoiceOver in either case.
-    var symbolName: String? {
+    /// Unfilled attention symbols; activity is the agent icon's presence
+    /// badge. Status wording/count remain available to VoiceOver.
+    var symbolName: String {
         switch self {
         case .needsReply: return "bubble.left"
         case .needsApproval: return "hand.raised"
         case .needsAttention: return "exclamationmark.bubble"
-        case .running: return nil
         }
     }
 }
@@ -84,52 +125,92 @@ struct MachineFilterUI: Identifiable, Equatable {
     let sessionCount: Int
 }
 
+/// Web "Show" filter. Archived means not connected: closed sessions and ones
+/// whose CLI went away. A running attached job keeps an idle session under
+/// Active and out of Archived (web #1404 exception).
+enum SessionListStatus: Hashable {
+    case all
+    case active
+    case archived
+
+    func includes(_ summary: SessionSummary) -> Bool {
+        let live = summary.active || summary.runningAttachedJob != nil
+        switch self {
+        case .all: return true
+        case .active: return live
+        case .archived: return !live
+        }
+    }
+}
+
 /// Transient, per-home filters. Add future dimensions here, not to navigation.
+/// Ordering is a persisted preference instead (`SessionListOrderPrefs`).
 struct SessionListFilters: Equatable, Hashable {
     var machineId: String?
+    var status = SessionListStatus.all
+    /// Web "unread only" lens: hide sessions already read in this namespace.
+    var unreadOnly = false
 
-    var isActive: Bool { machineId != nil }
+    var isActive: Bool { machineId != nil || status != .all || unreadOnly }
 }
 
 /// Session-list presentation state over the `HubSession` stores — the iOS
 /// counterpart of the Android reference's `SessionListViewModel`: row/filter
 /// derivation, refresh + offline/loaded flags, last-seen stamping, and
-/// pin/archive forwarding (optimism lives in the store). The SSE
+/// pin/archive/rename/delete/reopen forwarding (optimism lives in the
+/// store). The SSE
 /// subscription itself is owned by `HubSession`, not this model.
 @MainActor @Observable
 final class SessionListModel {
     private let sessionStore: any SessionListStoring
     private let machineStore: any MachineListStoring
     private let lastSeenStore: LastSeenStore
+    private let orderPrefs: SessionListOrderPrefs
     private let hubUrl: String
+    /// Reopen follows a superseding id with the composer draft (web
+    /// `transferComposerDraftThenNavigate`).
+    private let drafts: (any ChatDrafts)?
 
     /// Not persisted: a new home / hub starts with all sessions.
     private(set) var filters = SessionListFilters()
+    /// Text search (`.searchable`); ranks by relevance while non-blank.
+    var searchQuery = ""
+    /// The split detail's session stays listed under the unread lens.
+    var selectedSessionId: String?
     private(set) var isRefreshing = false
     /// Last refresh failed — show the offline state over snapshot data.
     private(set) var isOffline = false
+    /// Last successful list fetch, for the offline notice's "updated …".
+    private(set) var lastRefreshedAt: Date?
     private(set) var hasRefreshedOnce = false
     @ObservationIgnored private var hasAttemptedRefresh = false
-    /// Transient pin/archive failure for an alert.
+    /// Transient row-action failure for an alert.
     var actionError: String?
 
     convenience init(session: HubSession) {
         self.init(
             sessionStore: session.sessionStore, machineStore: session.machineStore,
-            lastSeenStore: session.lastSeenStore, hubUrl: session.hubUrl
+            lastSeenStore: session.lastSeenStore, orderPrefs: .shared, hubUrl: session.hubUrl,
+            drafts: UserDefaultsChatDrafts(scope: session.hubUrl)
         )
     }
 
+    /// Without `orderPrefs` the order is in memory only, so tests never read
+    /// or write the host app's stored choice.
     init(
         sessionStore: any SessionListStoring,
         machineStore: any MachineListStoring,
         lastSeenStore: LastSeenStore,
-        hubUrl: String
+        orderPrefs: SessionListOrderPrefs? = nil,
+        hubUrl: String,
+        drafts: (any ChatDrafts)? = nil
     ) {
         self.sessionStore = sessionStore
         self.machineStore = machineStore
         self.lastSeenStore = lastSeenStore
+        self.orderPrefs = orderPrefs ?? SessionListOrderPrefs(defaults: nil)
         self.hubUrl = hubUrl
+        self.drafts = drafts
     }
 
     // MARK: - Derived state
@@ -185,8 +266,27 @@ final class SessionListModel {
             }
     }
 
+    /// The menu also holds sorting, the status/unread filters and Mark All
+    /// as Read; an applied filter keeps it reachable over an empty list.
     var showsFilterMenu: Bool {
+        !sessionStore.sessions.isEmpty || filters.status != .all || filters.unreadOnly
+    }
+
+    var showsMachineFilter: Bool {
         machineFilterIds.count >= 2
+    }
+
+    var hasActiveFilters: Bool {
+        activeMachineFilter != nil || filters.status != .all || filters.unreadOnly
+    }
+
+    var order: SessionListOrder { orderPrefs.order }
+
+    /// Filters or a non-default order: the menu button is tinted.
+    var isCustomized: Bool { hasActiveFilters || !order.isDefault }
+
+    var isSearching: Bool {
+        !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Never render an invalid filter, even before the view reconciles it.
@@ -200,9 +300,67 @@ final class SessionListModel {
     }
 
     var filterSummary: String? {
-        guard let id = activeMachineFilter,
-              let machine = machineFilters.first(where: { $0.id == id }) else { return nil }
-        return String(format: String(localized: "Machine: %@"), machine.label)
+        var parts: [String] = []
+        switch filters.status {
+        case .all: break
+        case .active: parts.append(String(localized: "Active only"))
+        case .archived: parts.append(String(localized: "Archived only"))
+        }
+        if filters.unreadOnly {
+            parts.append(String(localized: "Unread only"))
+        }
+        if let id = activeMachineFilter,
+           let machine = machineFilters.first(where: { $0.id == id }) {
+            parts.append(String(format: String(localized: "Machine: %@"), machine.label))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    func setUnreadOnly(_ enabled: Bool) {
+        filters.unreadOnly = enabled
+    }
+
+    func setStatus(_ status: SessionListStatus) {
+        filters.status = status
+    }
+
+    func setSort(_ sort: SessionListSort) {
+        orderPrefs.setSort(sort)
+    }
+
+    func setActiveFirst(_ enabled: Bool) {
+        orderPrefs.setActiveFirst(enabled)
+    }
+
+    /// Content not yet read by a client in this namespace.
+    var unreadCount: Int {
+        let readState = lastSeenStore.state
+        let followedTails = lastSeenStore.followedTails
+        return sessionStore.sessions.filter {
+            LastSeenStore.isUnread($0, state: readState, followedTails: followedTails)
+        }.count
+    }
+
+    /// Capture the observed heads; concurrent output must remain unread.
+    func markAllRead() {
+        let observed = sessionStore.sessions
+        Task {
+            for summary in observed {
+                await lastSeenStore.markSeen(sessionId: summary.id,
+                    revision: summary.contentRevision ?? 0, serverState: summary.readState)
+            }
+            if let error = lastSeenStore.persistenceError { actionError = error }
+        }
+    }
+
+    /// Swipe action: mark the observed head of one session as read.
+    func markRead(sessionId: String) {
+        guard let summary = sessionStore.sessions.first(where: { $0.id == sessionId }) else { return }
+        Task {
+            await lastSeenStore.markSeen(sessionId: summary.id,
+                revision: summary.contentRevision ?? 0, serverState: summary.readState)
+            if let error = lastSeenStore.persistenceError { actionError = error }
+        }
     }
 
     func selectMachine(_ id: String?) {
@@ -221,12 +379,37 @@ final class SessionListModel {
         }
     }
 
+    /// Machine filter → status → unread lens (both keep the selected
+    /// session) → order. Text search ranks by relevance instead, with the base
+    /// order as tie-break as on web, keeping pin sections so the Pinned header
+    /// still applies.
     var rows: [SessionRowUI] {
-        let lastSeen = lastSeenStore.state.lastSeen
+        let readState = lastSeenStore.state
+        let followedTails = lastSeenStore.followedTails
         let activeFilter = activeMachineFilter
-        let visible = sessionStore.sessions.filter { summary in
-            guard let activeFilter else { return true }
-            return (summary.metadata?.machineId ?? unknownMachineFilterId) == activeFilter
+        let status = filters.status
+        var visible = sessionStore.sessions.filter { summary in
+            if let activeFilter, (summary.metadata?.machineId ?? unknownMachineFilterId) != activeFilter {
+                return false
+            }
+            return status.includes(summary) || summary.id == selectedSessionId
+        }
+        if filters.unreadOnly {
+            visible = visible.filter { summary in
+                summary.id == selectedSessionId
+                    || LastSeenStore.isUnread(summary, state: readState, followedTails: followedTails)
+            }
+        }
+        if isSearching {
+            let labels = Dictionary(uniqueKeysWithValues: machineFilters.map { ($0.id, $0.label) })
+            if let index = SessionListSearch.scoreIndex(sessions: visible, query: searchQuery, machineLabel: { id in
+                labels[id ?? unknownMachineFilterId] ?? ""
+            }) {
+                visible = SessionListSearch.rank(visible, by: index)
+            }
+        } else if order != .base {
+            // The store already keeps the base order.
+            visible = sortSessionSummaries(visible, order: order)
         }
         return visible.map { summary in
             SessionRowUI(
@@ -234,13 +417,13 @@ final class SessionListModel {
                 title: Self.sessionTitle(summary),
                 project: Self.projectLabel(summary),
                 flavor: summary.metadata?.flavor,
-                unread: LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
+                unread: LastSeenStore.isUnread(summary, state: readState, followedTails: followedTails)
             )
         }
     }
 
-    /// The sort contract puts globalPinned/pinned rows first; this boundary
-    /// index is where the pinned section ends.
+    /// Every order puts globalPinned/pinned rows first; this boundary index
+    /// is where the pinned section ends.
     static func pinnedCount(of rows: [SessionRowUI]) -> Int {
         rows.prefix { $0.summary.globalPinned == true || $0.summary.pinned == true }.count
     }
@@ -265,9 +448,7 @@ final class SessionListModel {
         await Task { await self.refresh() }.value
     }
 
-    /// Pull-to-refresh / initial load. Coalesces concurrent calls; the first
-    /// successful list seeds the unread baseline so historical sessions do
-    /// not all light up as unread.
+    /// Pull-to-refresh / initial load. Coalesces concurrent calls.
     func refresh() async {
         guard !isRefreshing else { return }
         hasAttemptedRefresh = true
@@ -276,24 +457,14 @@ final class SessionListModel {
         do {
             try await sessionStore.refresh()
             reconcileFilters()
-            try await machineStore.refresh()
             isOffline = false
+            lastRefreshedAt = Date()
             hasRefreshedOnce = true
-            lastSeenStore.initializeBaseline(
-                scopeKey: hubUrl,
-                sessions: sessionStore.sessions
-            )
+            do { try await machineStore.refresh() }
+            catch { actionError = error.localizedDescription }
         } catch {
             isOffline = true
         }
-    }
-
-    /// Call when navigating into a session: stamps the last-seen watermark.
-    func onSessionOpened(_ sessionId: String) {
-        guard let summary = sessionStore.sessions.first(where: { $0.id == sessionId }) else {
-            return
-        }
-        lastSeenStore.markSeen(sessionId: sessionId, seenAt: summary.updatedAt)
     }
 
     /// `PUT /sessions/:id/pin` with store-side optimistic re-sort; failures
@@ -328,22 +499,62 @@ final class SessionListModel {
         }
     }
 
+    /// `PATCH /sessions/:id` with a store-side optimistic name.
+    func renameSession(sessionId: String, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let store = sessionStore
+        Task {
+            do {
+                try await store.renameSession(sessionId: sessionId, name: trimmed)
+            } catch {
+                self.actionError = String(
+                    format: String(localized: "Rename failed: %@"),
+                    error.localizedDescription
+                )
+            }
+        }
+    }
+
+    /// `DELETE /sessions/:id` (inactive sessions only) with store-side
+    /// optimistic removal; a 409 means it became active again.
+    func deleteSession(sessionId: String) {
+        let store = sessionStore
+        Task {
+            do {
+                try await store.deleteSession(sessionId: sessionId)
+            } catch {
+                self.actionError = isActiveSessionConflict(error)
+                    ? String(localized: "Active sessions can't be deleted — archive first")
+                    : String(format: String(localized: "Delete failed: %@"), error.localizedDescription)
+            }
+        }
+    }
+
+    /// `POST /sessions/:id/reopen`, then open the (possibly superseding)
+    /// session, carrying its composer draft along.
+    func reopenSession(sessionId: String, onReopened: @escaping @MainActor (String) -> Void) {
+        let store = sessionStore
+        Task {
+            do {
+                let response = try await store.reopenSession(sessionId: sessionId)
+                if response.sessionId != sessionId {
+                    self.drafts?.move(fromSessionId: sessionId, toSessionId: response.sessionId)
+                }
+                onReopened(response.sessionId)
+            } catch {
+                self.actionError = formatReopenError(error)
+                    ?? String(localized: "Failed to reopen session")
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// `getSessionTitle` (`web/src/lib/sessionTitle.ts`): name → summary
     /// text → path tail → id prefix.
     static func sessionTitle(_ summary: SessionSummary) -> String {
-        if let name = summary.metadata?.name, !name.isEmpty {
-            return name
-        }
-        if let text = summary.metadata?.summary?.text, !text.isEmpty {
-            return text
-        }
-        if let path = summary.metadata?.path,
-           let tail = path.split(separator: "/").last(where: { !$0.isEmpty }) {
-            return String(tail)
-        }
-        return String(summary.id.prefix(8))
+        SessionListSearch.sessionTitle(summary)
     }
 }
 

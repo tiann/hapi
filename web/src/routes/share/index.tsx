@@ -6,7 +6,7 @@ import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
-import { SessionListSearch, getSessionTimeRange, prepareSidebarSessions } from '@/components/SessionList'
+import { SessionListSearch, prepareSidebarSessions } from '@/components/SessionList'
 import {
     countHiddenActiveSharePickerSessions,
     filterSharePickerSessions,
@@ -122,12 +122,6 @@ export default function SharePage() {
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const [searchQuery, setSearchQuery] = useState('')
     const [searchExpanded, setSearchExpanded] = useState(true)
-    const [customStart, setCustomStart] = useState('')
-    const [customEnd, setCustomEnd] = useState('')
-    const timeRange = useMemo(
-        () => getSessionTimeRange(customStart, customEnd),
-        [customStart, customEnd],
-    )
 
     const resolveMachineLabel = useCallback((machineId: string | null): string => {
         if (machineId && machineLabelsById[machineId]) {
@@ -210,27 +204,16 @@ export default function SharePage() {
         setSessionsSnapshot(prepareSidebarSessions(sessions))
     }, [sessionsSnapshot, sessions, sessionsLoading])
 
-    const isSearching = searchQuery.trim().length > 0 || timeRange !== null
-    const sessionActivityDates = useMemo(() => {
-        if (!sessionsSnapshot) return new Set<string>()
-        return new Set(sessionsSnapshot.map((session) => {
-            const date = new Date(session.updatedAt)
-            const year = date.getFullYear()
-            const month = String(date.getMonth() + 1).padStart(2, '0')
-            const day = String(date.getDate()).padStart(2, '0')
-            return `${year}-${month}-${day}`
-        }))
-    }, [sessionsSnapshot])
+    const isSearching = searchQuery.trim().length > 0
     const pickerSessions = useMemo(() => {
         if (!sessionsSnapshot) return null
         return filterSharePickerSessions(
             sessionsSnapshot,
             searchQuery,
             resolveMachineLabel,
-            timeRange,
             sessionPreviewLimit,
         )
-    }, [sessionsSnapshot, searchQuery, resolveMachineLabel, timeRange, sessionPreviewLimit])
+    }, [sessionsSnapshot, searchQuery, resolveMachineLabel, sessionPreviewLimit])
 
     const hiddenActiveCount = useMemo(() => {
         if (!sessionsSnapshot || isSearching) return 0
@@ -327,13 +310,6 @@ export default function SharePage() {
                         <SessionListSearch
                             value={searchQuery}
                             onChange={setSearchQuery}
-                            customStart={customStart}
-                            customEnd={customEnd}
-                            sessionActivityDates={sessionActivityDates}
-                            onDateRangeChange={(start, end) => {
-                                setCustomStart(start)
-                                setCustomEnd(end)
-                            }}
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
                         />

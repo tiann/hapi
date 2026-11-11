@@ -9,11 +9,11 @@ import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
-import { useFixedSessionOrder } from '@/hooks/useFixedSessionOrder'
+import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
 import { useSyncingState } from '@/hooks/useSyncingState'
-import { usePushNotifications } from '@/hooks/usePushNotifications'
+import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
@@ -47,6 +47,8 @@ import type { SyncEvent } from '@/types/api'
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
 
 const REQUIRE_SERVER_URL = requireHubUrlForLogin()
+/** Matches the native apps: transient connection states show after 2s. */
+const CONNECTION_STATUS_DELAY_MS = 2_000
 
 function withPwaBanner(content: ReactNode) {
     return (
@@ -214,7 +216,7 @@ function AppInner() {
         isLoading: appBadgeSessionsLoading,
         hasError: Boolean(appBadgeSessionsError),
     })
-    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
+    const { isSupported: isPushSupported, permission: pushPermission, subscribe } = usePushNotifications(api)
 
     useEffect(() => {
         if (baseUrlRef.current === baseUrl) {
@@ -256,20 +258,13 @@ function AppInner() {
         pushPromptedRef.current = true
 
         const run = async () => {
-            if (pushPermission === 'granted') {
+            if (pushPermission === 'granted' && !pushNotificationsDisabled()) {
                 await subscribe()
-                return
-            }
-            if (pushPermission === 'default') {
-                const granted = await requestPermission()
-                if (granted) {
-                    await subscribe()
-                }
             }
         }
 
         void run()
-    }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
+    }, [api, isPushSupported, pushPermission, subscribe, token])
 
     const handleSseConnect = useCallback((info: { resumed: boolean }) => {
         // Clear disconnected state on successful connection
@@ -421,9 +416,9 @@ function AppInner() {
     )
     const sseEnabled = Boolean(api && token)
     const showReconnectingBanner = sseDisconnected && !isSyncing
-    // "固定会话顺序": read once here and threaded into both useSSE instances
-    // — either subscription can upsert into the shared sessions cache.
-    const { fixedSessionOrder } = useFixedSessionOrder()
+    // Transient states wait before showing; quick reconnects never flash.
+    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
+    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -434,8 +429,7 @@ function AppInner() {
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
         onEvent: () => {},
-        onToast: handleToast,
-        fixedSessionOrder
+        onToast: handleToast
     })
 
     const { subscriptionId: sessionSubscriptionId } = useSSE({
@@ -445,8 +439,7 @@ function AppInner() {
         subscription: sessionEventSubscription ?? undefined,
         scope: 'full',
         onConnect: handleSessionSseConnect,
-        onEvent: handleSseEvent,
-        fixedSessionOrder
+        onEvent: handleSseEvent
     })
 
     useVisibilityReporter({
@@ -543,12 +536,12 @@ function AppInner() {
         <AppContextProvider value={{ api, token, baseUrl, titleSuggestionAvailable }}>
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
-                    isSyncing={isSyncing}
-                    isReconnecting={showReconnectingBanner}
+                    isSyncing={revealSyncing}
+                    isReconnecting={revealReconnecting}
                 />
-                <SyncingBanner isSyncing={isSyncing} />
+                <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={showReconnectingBanner}
+                    isReconnecting={revealReconnecting}
                     reason={sseDisconnectReason}
                 />
                 <VoiceErrorBanner />

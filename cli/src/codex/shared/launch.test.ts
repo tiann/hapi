@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { sharedLaunchConfig, takeReservedSessionId } from './launch';
 import { parseCodexCliOverrides } from '../utils/codexCliOverrides';
@@ -26,6 +27,7 @@ describe('shared launch configuration', () => {
         }
     });
     it('keeps unspecified settings inherited and explicit Standard distinct', () => {
+        expect(sharedLaunchConfig({}, '/tmp').threadParams).not.toHaveProperty('developerInstructions');
         expect(sharedLaunchConfig({}, '/tmp').threadParams).not.toHaveProperty('serviceTier');
         expect(sharedLaunchConfig({}, '/tmp').threadParams.config).not.toHaveProperty('model_reasoning_effort');
         expect(sharedLaunchConfig({ serviceTier: 'standard' }, '/tmp').threadParams.serviceTier).toBeNull();
@@ -33,8 +35,9 @@ describe('shared launch configuration', () => {
     });
     it('normalizes short flags, forwards configuration and resolves cwd exactly once', () => {
         const result = sharedLaunchConfig({ codexArgs: ['-C', 'project', '-mcustom', '-a', 'never', '--search', '--add-dir', '../extra', '-c', 'model_reasoning_effort="high"'] }, '/tmp');
-        expect(result.cwd).toBe('/tmp/project'); expect(result.tuiArgs).not.toContain('-C');
-        expect(result.threadParams).toMatchObject({ model: 'custom', approvalPolicy: 'never', config: { web_search: 'live', 'sandbox_workspace_write.writable_roots': ['/tmp/extra'] } });
+        const expectedCwd = resolve('/tmp', 'project');
+        expect(result.cwd).toBe(expectedCwd); expect(result.tuiArgs).not.toContain('-C');
+        expect(result.threadParams).toMatchObject({ model: 'custom', approvalPolicy: 'never', config: { web_search: 'live', 'sandbox_workspace_write.writable_roots': [resolve(expectedCwd, '../extra')] } });
         expect(result.serverArgs).toContain('model_reasoning_effort="high"');
     });
     it('rejects unsupported flags before starting an execution rather than silently ignoring them', () => {
@@ -45,7 +48,6 @@ describe('shared launch configuration', () => {
     it('does not interpret flags after -- as configuration', () => {
         expect(sharedLaunchConfig({ codexArgs: ['--', '--profile=explain'] }, '/tmp').tuiArgs).toEqual(['--', '--profile=explain']);
         expect(sharedLaunchConfig({ codexArgs: ['--', '-C', 'literal'] }, '/tmp').tuiArgs).toEqual(['--', '-C', 'literal']);
-        expect(() => sharedLaunchConfig({ permissionMode: 'safe-yolo' }, '/tmp')).toThrow('not a native shared');
     });
     it('maps HAPI autoReview to native auto-review in the workspace-write sandbox', () => {
         const result = sharedLaunchConfig({ permissionMode: 'autoReview', codexArgs: ['--yolo'] }, '/tmp');

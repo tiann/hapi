@@ -55,6 +55,9 @@ function getAgentConfigDir(flavor?: string): string {
             return process.env.CODEX_HOME || join(getHomeDirectory(), '.codex');
         case 'grok':
             return process.env.GROK_HOME || join(getHomeDirectory(), '.grok');
+        case 'dsh':
+            // DSH resolves its harness home from $DSH_HOME, then ~/.dsh.
+            return process.env.DSH_HOME || join(getHomeDirectory(), '.dsh');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -74,6 +77,10 @@ function getUserSkillsRoots(flavor?: string): string[] {
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
         case 'copilot':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'dsh':
+            // Mirrors DSH's own skill-filesystem provider: $DSH_HOME/skills.
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
     }
@@ -99,6 +106,10 @@ function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
         case 'copilot':
             roots.push(join(directory, '.copilot', 'skills'));
             roots.push(join(directory, '.github', 'skills'));
+            break;
+        case 'dsh':
+            // Mirrors DSH's own skill-filesystem provider: <project>/.dsh/skills.
+            roots.push(join(directory, '.dsh', 'skills'));
             break;
     }
     return roots;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { reduceTimeline } from './reducerTimeline'
+import { buildMessageMetadataLabels } from '@/components/AssistantChat/messages/MessageMetadata'
 import { normalizeAgentRecord } from './normalizeAgent'
 import { aggregateResponseGroups } from '@/lib/assistant-runtime'
 import { buildVisibleChatBlocks } from './toolGroups'
@@ -451,6 +452,49 @@ describe('reduceTimeline', () => {
         expect(agentTextBlock.model).toBeUndefined()
     })
 
+    it('drops empty reasoning so it does not split adjacent tool calls', () => {
+        const row = (id: string, content: unknown[], offset: number): TracedMessage => ({
+            id,
+            localId: null,
+            createdAt: 1_700_000_000_000 + offset,
+            role: 'agent',
+            content,
+            isSidechain: false
+        } as TracedMessage)
+        const toolCall = (id: string) => ({
+            type: 'tool-call', id, name: 'Bash', input: { command: 'ls' }, description: null, uuid: id, parentUUID: null
+        })
+        const emptyThinking = (id: string) => ({ type: 'reasoning', text: '', uuid: id, parentUUID: null })
+
+        const { blocks } = reduceTimeline([
+            row('row-1', [toolCall('tool-1')], 0),
+            row('row-2', [emptyThinking('thinking-2'), toolCall('tool-2')], 100),
+            row('row-3', [emptyThinking('thinking-3'), toolCall('tool-3')], 200)
+        ], makeContext())
+
+        expect(blocks.some((block) => block.kind === 'agent-reasoning')).toBe(false)
+        const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: false, groupingMode: 'grouped' })
+        expect(visible).toHaveLength(1)
+        expect(visible[0]).toMatchObject({ kind: 'tool-group', tools: [{ id: 'tool-1' }, { id: 'tool-2' }, { id: 'tool-3' }] })
+    })
+
+    it('creates a streamed reasoning block once its first non-empty snapshot arrives', () => {
+        const snapshot = (id: string, text: string, offset: number): TracedMessage => ({
+            id,
+            localId: null,
+            createdAt: 1_700_000_000_000 + offset,
+            role: 'agent',
+            content: [{ type: 'reasoning', text, uuid: id, streamId: 'reasoning-stream-1', parentUUID: null }],
+            isSidechain: false
+        } as TracedMessage)
+
+        const { blocks } = reduceTimeline([snapshot('row-1', '', 0), snapshot('row-2', 'thinking', 100)], makeContext())
+
+        expect(blocks.filter((block) => block.kind === 'agent-reasoning')).toMatchObject([
+            { id: 'reasoning-stream-1', text: 'thinking' }
+        ])
+    })
+
     it('collapses reasoning snapshots with the same stream id', () => {
         const first: TracedMessage = {
             id: 'reasoning-row-1',
@@ -586,7 +630,8 @@ describe('reduceTimeline', () => {
         expect(textBlocks).toHaveLength(2)
         expect(textBlocks[0]).toMatchObject({
             id: 'text-stream-1',
-            text: 'first second'
+            text: 'first second',
+            sourceMessageIds: ['text-row-1', 'text-row-2']
         })
         expect(textBlocks[1]).toMatchObject({
             id: 'text-row-3:0',
@@ -1753,5 +1798,32 @@ describe('reduceTimeline', () => {
             summary: 'Inspect README',
             activity: 'Completed: ok'
         })
+    })
+})
+
+
+describe('Codex cache metadata through the chat pipeline', () => {
+    it.each([undefined, 'gpt-5.4'])('preserves latest-request cache through replay and reload (model: %s)', (model) => {
+        const wire = (id: string, data: Record<string, unknown>) => normalizeAgentRecord(id, id, 1000, {
+            type: 'codex', data: { ...data, turn_id: 'cache-turn' }
+        })!
+        const answer = wire('cache-answer', { type: 'message', message: 'Cached answer' })
+        const usage = (cached: number, id: string) => wire(id, {
+            type: 'token_count', flavor: 'codex', model,
+            info: {
+                total_token_usage: { input_tokens: 10000, cached_input_tokens: 1000, output_tokens: 500 },
+                last_token_usage: { input_tokens: 100, cached_input_tokens: cached, output_tokens: 10 }
+            }
+        })
+        const latest = usage(80, 'cache-latest')
+        const messages = [answer, usage(20, 'cache-earlier'), latest, latest]
+        for (const records of [messages, JSON.parse(JSON.stringify(messages)) as TracedMessage[]]) {
+            const { blocks } = reduceTimeline(records, makeContext())
+            const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: false })
+            const metadata = aggregateResponseGroups(visible).get('cache-answer:0')!
+            expect(metadata.roundSummary?.usage?.cache_read_input_tokens).toBe(80)
+            expect(buildMessageMetadataLabels(metadata)).toContain('Cached input: 80%')
+            expect(buildMessageMetadataLabels(metadata)).toContain('Tokens: 110 (100 in · 10 out)')
+        }
     })
 })

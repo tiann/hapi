@@ -13,15 +13,12 @@ export type FcmDataPayload = {
     /**
      * Visual urgency hint for the client. Drives the notification accent
      * color on Wear OS / phone, and may be used for sound channel routing
-     * later. Independent of `type` because `task-notification` is one
-     * type that splits across success and failure outcomes.
+     * later.
      *
      *  - `info`     ready / input request                -> blue
-     *  - `success`  task completed                       -> green
      *  - `warning`  permission request                   -> amber
-     *  - `error`    task failed / aborted                -> red
      */
-    severity?: 'info' | 'success' | 'warning' | 'error'
+    severity?: 'info' | 'warning'
     /**
      * JSON-stringified `AGENT_NOTIFY_SUMMARY` object when the agent emitted
      * one as the trailing line of its last message. The companion app may

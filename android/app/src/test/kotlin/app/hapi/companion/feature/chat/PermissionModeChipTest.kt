@@ -51,11 +51,4 @@ class PermissionModeChipTest {
         assertNull(PermissionModeChipRule.displayMode(null, "claude"))
         assertNull(PermissionModeChipRule.displayMode("", "copilot"))
     }
-
-    @Test fun safeYoloShowsOnTheChipEvenThoughTheSwitcherFiltersIt() {
-        // The concurrent-clients carve-out (buildConfigUi) narrows the
-        // switcher only; the chip consults the unfiltered flavor catalog,
-        // like the web span.
-        assertEquals(PermissionMode.SafeYolo, PermissionModeChipRule.displayMode("safe-yolo", "codex"))
-    }
 }

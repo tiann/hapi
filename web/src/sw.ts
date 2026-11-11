@@ -9,7 +9,7 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
-import { cacheOkResponsesOnly } from './lib/swCachePolicy'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
@@ -32,6 +32,17 @@ type PushPayload = {
 }
 
 precacheAndRoute(self.__WB_MANIFEST)
+
+registerRoute(
+    ({ url }) => url.origin === self.location.origin && /\/assets\/shiki-[^/]+\.js$/.test(url.pathname),
+    new CacheFirst({
+        cacheName: 'syntax-grammars',
+        plugins: [
+            cacheJavaScriptOnly,
+            new ExpirationPlugin({ maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+        ],
+    }),
+)
 
 registerRoute(
     ({ url }) => url.pathname === '/api/sessions',

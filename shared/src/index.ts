@@ -1,3 +1,4 @@
+export * from './peerSpawnDefaults'
 export * from './scratchlistAttachments'
 export * from './workGraph'
 export * from './apiTypes'
@@ -8,14 +9,18 @@ export * from './conversationHistory'
 export * from './effort'
 export * from './flavors'
 export * from './models'
+export * from './agyModels'
 export * from './modes'
 export * from './resume'
 export * from './rpcMethods'
 export * from './runnerCapabilities'
 export * from './search'
 export * from './socket'
+export * from './sessionReadState'
 export * from './sessionSummary'
+export * from './sessionOrder'
 export * from './sessionCitation'
+export * from './peerParentStamp'
 export * from './sessionLifecycle'
 export * from './sessionExport'
 export * from './piThinkingLevel'
@@ -26,4 +31,16 @@ export * from './slashCommands'
 export * from './utils'
 export * from './usage'
 export * from './version'
+export {
+    AttachedJobSchema,
+    AttachedJobUpsertSchema,
+    AttachedJobPatchSchema,
+    AttachedJobStatusSchema
+} from './schemas'
+export type {
+    AttachedJob,
+    AttachedJobUpsert,
+    AttachedJobPatch,
+    AttachedJobStatus
+} from './schemas'
 export type * from './types'

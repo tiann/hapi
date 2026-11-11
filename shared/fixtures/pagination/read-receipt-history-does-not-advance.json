@@ -1,0 +1,145 @@
+{
+    "description": "Browsing history may reveal a delayed message with a higher content revision; an older-page load never certifies the current tail.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "contentRevision": 6,
+                "createdAt": 5000,
+                "id": "delayed",
+                "invokedAt": 5000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 11
+            },
+            {
+                "contentRevision": 5,
+                "createdAt": 10000,
+                "id": "answer",
+                "invokedAt": 10000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 10
+            }
+        ],
+        "newestCursor": {
+            "at": 10000,
+            "seq": 10
+        },
+        "olderCursor": {
+            "at": 5000,
+            "seq": 11
+        },
+        "readThroughRevision": 5,
+        "viewMode": "history"
+    },
+    "fixtureVersion": 1,
+    "name": "read-receipt-history-does-not-advance",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 20
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "answer",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "contentRevision": 5,
+                            "createdAt": 10000,
+                            "id": "answer",
+                            "invokedAt": 10000,
+                            "localId": null,
+                            "seq": 10
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": true,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 10000,
+                        "nextBeforeSeq": 10,
+                        "readThroughRevision": 5,
+                        "reset": false,
+                        "snapshotHeadAt": 10000,
+                        "snapshotHeadSeq": 10
+                    }
+                }
+            ]
+        },
+        {
+            "mode": "history",
+            "op": "set-view-mode"
+        },
+        {
+            "expectedOutcome": {
+                "addedRenderableCount": 1,
+                "hasMore": false,
+                "kind": "applied"
+            },
+            "expectedRequests": [
+                {
+                    "beforeAt": 10000,
+                    "beforeSeq": 10,
+                    "limit": 200
+                }
+            ],
+            "op": "fetch-older",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "delayed",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "contentRevision": 6,
+                            "createdAt": 5000,
+                            "id": "delayed",
+                            "invokedAt": 5000,
+                            "localId": null,
+                            "seq": 11
+                        }
+                    ],
+                    "page": {
+                        "direction": "before",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 5000,
+                        "nextBeforeSeq": 11,
+                        "reset": false,
+                        "snapshotHeadAt": null,
+                        "snapshotHeadSeq": null
+                    }
+                }
+            ]
+        }
+    ]
+}

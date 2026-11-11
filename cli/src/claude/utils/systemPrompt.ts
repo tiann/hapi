@@ -3,6 +3,7 @@ import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER }
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
 import { shouldIncludeCoAuthoredBy } from "./claudeSettings";
 import { DISPLAY_IMAGE_PROMPT_CLAUDE, DISPLAY_MEDIA_PROMPT_CLAUDE, DISPLAY_VIDEO_PROMPT_CLAUDE } from "@/modules/common/displayImagePrompt";
+import { withSessionJobInstruction } from "@/modules/common/sessionJobInstruction";
 import { withSessionSummaryInstruction } from "@/modules/common/sessionSummaryInstruction";
 
 /**
@@ -17,6 +18,7 @@ const BASE_SYSTEM_PROMPT = (() => trimIdent(`
         inspectTool: 'mcp__hapi__inspect_peer',
         pingTool: 'mcp__hapi__ping_peer',
         listPeersTool: 'mcp__hapi__list_peers',
+        spawnTool: 'mcp__hapi__spawn_peer',
     })}
 `))();
 
@@ -43,5 +45,5 @@ export function getSystemPrompt(): string {
     const base = includeCoAuthored
         ? BASE_SYSTEM_PROMPT + '\n\n' + CO_AUTHORED_CREDITS
         : BASE_SYSTEM_PROMPT;
-    return withSessionSummaryInstruction(base);
+    return withSessionSummaryInstruction(withSessionJobInstruction(base));
 }

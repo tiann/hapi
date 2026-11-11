@@ -41,6 +41,9 @@ function createSessionStub() {
         session: {
             localPermissionBridge: { start: vi.fn(), stop: vi.fn(), onTranscript: vi.fn() },
             sessionId: 'test-session',
+            thinking: false,
+            localTurnStartedAt: 0,
+            onThinkingChange: vi.fn(),
             path: '/tmp/test',
             startedBy: 'terminal' as const,
             startingMode: 'local' as const,
@@ -84,6 +87,40 @@ describe('claudeLocalLauncher message filtering', () => {
 
         expect(sentMessages).toHaveLength(0)
         expect(getMetadata().summary?.text).toBe('Native title')
+    })
+
+    it('clears thinking on exit and on an Esc interrupt, which fires no Stop hook', async () => {
+        const { session } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        expect(session.onThinkingChange).toHaveBeenCalledWith(false)
+
+        session.onThinkingChange.mockClear()
+        session.thinking = true
+        harness.scannerOnMessage!({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'keep going' } })
+        expect(session.onThinkingChange).not.toHaveBeenCalled()
+
+        harness.scannerOnMessage!({
+            type: 'user',
+            uuid: 'u2',
+            message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] }
+        })
+        expect(session.onThinkingChange).toHaveBeenCalledWith(false)
+    })
+
+    it('ignores an interrupt marker delivered after a newer turn started', async () => {
+        const { session } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        session.onThinkingChange.mockClear()
+        session.thinking = true
+        session.localTurnStartedAt = Date.parse('2026-10-27T10:00:05Z')
+
+        harness.scannerOnMessage!({
+            type: 'user',
+            uuid: 'u1',
+            timestamp: '2026-10-27T10:00:04Z',
+            message: { role: 'user', content: '[Request interrupted by user]' }
+        })
+        expect(session.onThinkingChange).not.toHaveBeenCalled()
     })
 
     it('passes the current session model to the local Claude process', async () => {

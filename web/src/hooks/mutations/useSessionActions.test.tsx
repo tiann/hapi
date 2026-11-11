@@ -5,10 +5,9 @@ import type { ReactNode } from 'react'
 import { useSessionActions } from './useSessionActions'
 import { ApiError, type ApiClient } from '@/api/client'
 
-function createWrapper() {
-    const queryClient = new QueryClient({
-        defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-    })
+function createWrapper(queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+})) {
     return function Wrapper({ children }: { children: ReactNode }) {
         return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     }
@@ -24,6 +23,38 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks()
+})
+
+describe('useSessionActions - local archive progress', () => {
+    it('does not subscribe each action consumer to the shared mutation cache', () => {
+        const client = new QueryClient()
+        const subscribe = vi.spyOn(client.getMutationCache(), 'subscribe')
+        const hook = renderHook(() => useSessionActions(null, 'session-A'), { wrapper: createWrapper(client) })
+        hook.rerender()
+        expect(subscribe).not.toHaveBeenCalled()
+    })
+
+    it.each(['success', 'failure'])('tracks its own unfinished archive (%s)', async outcome => {
+        let resolve!: () => void
+        let reject!: (error: Error) => void
+        const archivePromise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+        const api = { archiveSession: vi.fn(() => archivePromise) } as unknown as ApiClient
+        const wrapper = createWrapper()
+        const initiator = renderHook(() => useSessionActions(api, 'session-A'), { wrapper })
+        let pending!: Promise<unknown>
+        act(() => { pending = initiator.result.current.archiveSession().catch(error => error) })
+        await waitFor(() => expect(initiator.result.current.isPending).toBe(true))
+        const observer = renderHook(() => useSessionActions(api, 'session-A'), { wrapper })
+        expect(observer.result.current.isPending).toBe(false)
+        await act(async () => {
+            if (outcome === 'success') resolve()
+            else reject(new Error('Archive failed'))
+            await pending
+        })
+        await waitFor(() => expect(initiator.result.current.isPending).toBe(false))
+        initiator.unmount()
+        observer.unmount()
+    })
 })
 
 describe('useSessionActions - reopenSession', () => {
