@@ -65,7 +65,21 @@ export interface AgyOpenBackgroundCommand {
     stepIndex?: number;
     synthetic?: boolean;
     commandLine?: string;
+    nativeArgs?: Record<string, unknown>;
 }
+
+export interface AgyLiveBackgroundCompletionLookup {
+    liveCallId?: string;
+    commandLine?: string;
+    nativeArgs?: Record<string, unknown>;
+    resultOutput?: unknown;
+    resultStatus?: 'completed' | 'failed';
+}
+
+export type AgySyntheticCommandMatch =
+    | { kind: 'matched'; entry: AgyOpenBackgroundCommand }
+    | { kind: 'ambiguous' }
+    | { kind: 'none' };
 
 export type AgyReactiveInspection =
     | { state: 'none' }
@@ -640,6 +654,228 @@ function parseCompletedBackgroundTask(
     return { taskId, body, ...(Number.isFinite(exitCode) ? { exitCode } : {}) };
 }
 
+function normalizeAgyCommandBody(text: string): { stdout: string; exitCode?: number } {
+    const normalized = text.replace(/\r\n/g, '\n');
+    const exitMatch = normalized.match(/^Command exited with code (-?\d+)\./);
+    const exitCode = exitMatch ? Number(exitMatch[1]) : undefined;
+    const stdout = normalized
+        .replace(/^Command exited with code -?\d+\.\s*\n\s*Command output:\n?/, '')
+        .trimEnd();
+    return {
+        stdout,
+        ...(exitCode !== undefined && Number.isFinite(exitCode) ? { exitCode } : {})
+    };
+}
+
+function parseLiveCommandCompletionResult(
+    resultOutput: unknown
+): { stdout?: string; exitCode?: number } | null {
+    if (typeof resultOutput === 'string') {
+        return normalizeAgyCommandBody(resultOutput);
+    }
+    if (!resultOutput || typeof resultOutput !== 'object') return null;
+    const record = resultOutput as Record<string, unknown>;
+    const rawExitCode = typeof record.exit_code === 'number' && Number.isFinite(record.exit_code)
+        ? record.exit_code
+        : undefined;
+    if (typeof record.output === 'string') {
+        const parsed = normalizeAgyCommandBody(record.output);
+        const exitCode = rawExitCode ?? parsed.exitCode;
+        return {
+            stdout: parsed.stdout,
+            ...(exitCode !== undefined ? { exitCode } : {})
+        };
+    }
+    if (typeof record.stdout === 'string') {
+        return {
+            stdout: record.stdout.replace(/\r\n/g, '\n').trimEnd(),
+            ...(rawExitCode !== undefined ? { exitCode: rawExitCode } : {})
+        };
+    }
+    return rawExitCode !== undefined ? { exitCode: rawExitCode } : null;
+}
+
+function areCommandArgsCompatible(
+    candidate: AgyOpenBackgroundCommand,
+    liveArgs: Record<string, unknown> | undefined,
+    liveCommandLine: string | undefined
+): boolean {
+    if (
+        liveCommandLine !== undefined
+        && candidate.commandLine !== undefined
+        && candidate.commandLine !== liveCommandLine
+    ) {
+        return false;
+    }
+    if (liveArgs && candidate.nativeArgs) {
+        for (const [key, val] of Object.entries(liveArgs)) {
+            if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
+                continue;
+            }
+            const stored = candidate.nativeArgs[key];
+            if (stored !== undefined && stored !== val) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ * Inspects whether a live ACP background-command update during a subsequent
+ * prompt turn uniquely maps to an open synthetic `agy-wakeup-*` command entry,
+ * is still ambiguous (requiring `tool_result` output to disambiguate), or does
+ * not match any synthetic entry.
+ */
+export function inspectSyntheticBackgroundCommandMatch(
+    brainDir: string,
+    sessionId: string,
+    openBackgroundCommands: AgyOpenBackgroundCommand[],
+    turnStartStepIndex: number,
+    lookupOrCommandLine?: string | AgyLiveBackgroundCompletionLookup
+): AgySyntheticCommandMatch {
+    const candidates = openBackgroundCommands.filter((entry) => entry.synthetic === true);
+    if (candidates.length === 0) return { kind: 'none' };
+
+    resolveAgyBackgroundTaskIds(brainDir, sessionId, candidates);
+
+    const lookup: AgyLiveBackgroundCompletionLookup = typeof lookupOrCommandLine === 'string'
+        ? { commandLine: lookupOrCommandLine }
+        : (lookupOrCommandLine ?? {});
+    const liveArgs = lookup.nativeArgs;
+    const liveCommandLine = lookup.commandLine
+        ?? (typeof liveArgs?.CommandLine === 'string' ? liveArgs.CommandLine : undefined);
+
+    if (lookup.liveCallId) {
+        const exactById = candidates.filter((entry) => {
+            if (!entry.taskId) return false;
+            const shortTask = entry.taskId.includes('/')
+                ? entry.taskId.slice(entry.taskId.lastIndexOf('/') + 1)
+                : entry.taskId;
+            return lookup.liveCallId === entry.taskId || lookup.liveCallId === shortTask;
+        });
+        if (exactById.length === 1) return { kind: 'matched', entry: exactById[0]! };
+    }
+
+    const compatible = candidates.filter((entry) =>
+        areCommandArgsCompatible(entry, liveArgs, liveCommandLine)
+    );
+    if (compatible.length === 0) return { kind: 'none' };
+
+    let earliestStep = turnStartStepIndex;
+    for (const entry of compatible) {
+        if (entry.stepIndex !== undefined && entry.stepIndex < earliestStep) {
+            earliestStep = entry.stepIndex;
+        }
+    }
+    const recentSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, Math.max(-1, earliestStep - 1));
+    const completedTasks = new Map<string, { stdout: string; exitCode?: number }>();
+    for (const step of recentSteps) {
+        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+            const parsed = parseCompletedBackgroundTask(step.content, sessionId);
+            if (parsed) {
+                const normalized = normalizeAgyCommandBody(parsed.body);
+                const exitCode = parsed.exitCode ?? normalized.exitCode;
+                completedTasks.set(parsed.taskId, {
+                    stdout: normalized.stdout,
+                    ...(exitCode !== undefined ? { exitCode } : {})
+                });
+            }
+        }
+    }
+
+    const liveResult = lookup.resultOutput !== undefined
+        ? parseLiveCommandCompletionResult(lookup.resultOutput)
+        : null;
+    const hasResultSignal = liveResult !== null || lookup.resultStatus !== undefined;
+
+    const completedCandidates = compatible.filter(
+        (entry) => entry.taskId !== undefined && completedTasks.has(entry.taskId)
+    );
+    if (completedCandidates.length > 0) {
+        const filteredByResult = hasResultSignal
+            ? completedCandidates.filter((entry) => {
+                const taskResult = completedTasks.get(entry.taskId!)!;
+                if (
+                    liveResult?.exitCode !== undefined
+                    && taskResult.exitCode !== undefined
+                    && liveResult.exitCode !== taskResult.exitCode
+                ) {
+                    return false;
+                }
+                if (lookup.resultStatus === 'failed' && taskResult.exitCode === 0) {
+                    return false;
+                }
+                if (
+                    lookup.resultStatus === 'completed'
+                    && taskResult.exitCode !== undefined
+                    && taskResult.exitCode !== 0
+                ) {
+                    return false;
+                }
+                if (liveResult?.stdout !== undefined && liveResult.stdout !== taskResult.stdout) {
+                    return false;
+                }
+                return true;
+            })
+            : completedCandidates;
+
+        if (filteredByResult.length === 1) {
+            return { kind: 'matched', entry: filteredByResult[0]! };
+        }
+        if (filteredByResult.length > 1) {
+            // Multiple candidates match; only pick when we already have result
+            // payload and every matching completed task has identical stdout &
+            // exit status (so aliasing cannot swap output or exit status).
+            if (liveResult?.stdout !== undefined) {
+                const first = completedTasks.get(filteredByResult[0]!.taskId!)!;
+                const allIdentical = filteredByResult.every((entry) => {
+                    const current = completedTasks.get(entry.taskId!)!;
+                    return current.stdout === first.stdout && current.exitCode === first.exitCode;
+                });
+                if (allIdentical) {
+                    return { kind: 'matched', entry: filteredByResult[0]! };
+                }
+            }
+            return { kind: 'ambiguous' };
+        }
+    }
+
+    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
+        if (step.step_index <= turnStartStepIndex) return false;
+        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
+        return (step.tool_calls ?? []).some((call) => {
+            if (call.name !== 'run_command') return false;
+            const args = decodeAgyTranscriptArgs(call.args);
+            const plannedCmd = typeof args.CommandLine === 'string' ? args.CommandLine : undefined;
+            if (liveCommandLine !== undefined && plannedCmd !== liveCommandLine) return false;
+            if (liveArgs) {
+                for (const [key, val] of Object.entries(liveArgs)) {
+                    if (typeof val !== 'string' && typeof val !== 'number' && typeof val !== 'boolean') {
+                        continue;
+                    }
+                    if (args[key] !== undefined && args[key] !== val) return false;
+                }
+            }
+            return true;
+        });
+    });
+    if (turnPlannedCompatibleCommand) {
+        return { kind: 'none' };
+    }
+
+    if (compatible.length === 1) {
+        if (liveCommandLine !== undefined || liveArgs !== undefined || candidates.length === 1) {
+            return { kind: 'matched', entry: compatible[0]! };
+        }
+    }
+    if (compatible.length > 1) {
+        return { kind: 'ambiguous' };
+    }
+
+    return { kind: 'none' };
+}
+
 /**
  * Matches a live ACP background-command update during a subsequent prompt turn
  * back to an open synthetic `agy-wakeup-*` command entry so the real result
@@ -650,54 +886,16 @@ export function findCompletedSyntheticBackgroundCommand(
     sessionId: string,
     openBackgroundCommands: AgyOpenBackgroundCommand[],
     turnStartStepIndex: number,
-    commandLine?: string
+    lookupOrCommandLine?: string | AgyLiveBackgroundCompletionLookup
 ): AgyOpenBackgroundCommand | undefined {
-    const candidates = openBackgroundCommands.filter((entry) => entry.synthetic === true);
-    if (candidates.length === 0) return undefined;
-
-    resolveAgyBackgroundTaskIds(brainDir, sessionId, candidates);
-
-    let earliestStep = turnStartStepIndex;
-    for (const entry of candidates) {
-        if (entry.stepIndex !== undefined && entry.stepIndex < earliestStep) {
-            earliestStep = entry.stepIndex;
-        }
-    }
-    const recentSteps = readAgyTranscriptStepsAfter(brainDir, sessionId, Math.max(-1, earliestStep - 1));
-    const completedTaskIds = new Set<string>();
-    for (const step of recentSteps) {
-        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
-            const parsed = parseCompletedBackgroundTask(step.content, sessionId);
-            if (parsed) completedTaskIds.add(parsed.taskId);
-        }
-    }
-
-    const byCompletedTask = candidates.find(
-        (entry) =>
-            entry.taskId !== undefined
-            && completedTaskIds.has(entry.taskId)
-            && (commandLine === undefined || entry.commandLine === undefined || entry.commandLine === commandLine)
+    const match = inspectSyntheticBackgroundCommandMatch(
+        brainDir,
+        sessionId,
+        openBackgroundCommands,
+        turnStartStepIndex,
+        lookupOrCommandLine
     );
-    if (byCompletedTask) return byCompletedTask;
-
-    if (commandLine !== undefined) {
-        const turnPlannedSameCommand = recentSteps.some((step) => {
-            if (step.step_index <= turnStartStepIndex) return false;
-            if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
-            return (step.tool_calls ?? []).some((call) => {
-                if (call.name !== 'run_command') return false;
-                const args = decodeAgyTranscriptArgs(call.args);
-                return args.CommandLine === commandLine;
-            });
-        });
-        if (!turnPlannedSameCommand) {
-            return candidates.find((entry) => entry.commandLine === commandLine);
-        }
-    } else if (candidates.length === 1) {
-        return candidates[0];
-    }
-
-    return undefined;
+    return match.kind === 'matched' ? match.entry : undefined;
 }
 
 function buildGenericToolOutput(
@@ -865,6 +1063,7 @@ export function convertAgyReactiveSteps(
                         callId: id,
                         stepIndex: action.step_index,
                         synthetic: true,
+                        nativeArgs: decodedArgs,
                         ...(commandLine !== undefined ? { commandLine } : {}),
                         ...(taskId ? { taskId } : {})
                     });

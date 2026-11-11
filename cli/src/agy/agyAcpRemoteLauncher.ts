@@ -27,8 +27,8 @@ import {
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
-    findCompletedSyntheticBackgroundCommand,
     inspectAgyReactiveSteps,
+    inspectSyntheticBackgroundCommandMatch,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
     resolveAgyBackgroundTaskIds,
@@ -171,6 +171,12 @@ type AgyTurn = {
     // if an earlier command completes during a steer so call ordinals stay 1:1
     // with transcript `PLANNER_RESPONSE.tool_calls` entries.
     commandCallIds: string[];
+    // Background command call IDs already tracked from earlier turns, excluded
+    // from current-turn `commandCallIds` ordinals when their completion arrives.
+    priorBackgroundCallIds: Set<string>;
+    // Ambiguous `run_command` tool_calls held briefly until `tool_result`
+    // output disambiguates multiple synthetic background candidates.
+    deferredLiveCommandCalls: Map<string, Extract<AgentMessage, { type: 'tool_call' }>>;
     turnStartStepIndex: number;
     // Settled non-live assistant text segments streamed during this turn, used
     // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
@@ -819,6 +825,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             generation: new GenerationClock(),
             openCommands: new Set(),
             commandCallIds: [],
+            priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
+            deferredLiveCommandCalls: new Map(),
             turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
             usage: null,
@@ -847,9 +855,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // restarts or switches settings.
         this.turn = turn;
         try {
+            let relaunched = false;
             if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
                 try {
                     await this.relaunchBackend();
+                    relaunched = true;
                 } catch (error) {
                     this.reportTurnError(`Failed to restart Antigravity: ${errorMessage(error)}`);
                     restoreIfUserTurn();
@@ -866,12 +876,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 restoreIfUserTurn();
                 return;
             }
+            const preSyncStepIndex = this.lastTranscriptStepIndex;
             this.syncTranscriptCursor();
             const turnStartStepIndex = this.lastTranscriptStepIndex;
-            turn.turnStartStepIndex = turnStartStepIndex;
-            const commandWindowAfterStepIndex = opts.replayAfterStepIndex !== undefined
-                ? Math.min(opts.replayAfterStepIndex, turnStartStepIndex)
-                : turnStartStepIndex;
+            const commandWindowAfterStepIndex = relaunched
+                ? turnStartStepIndex
+                : Math.min(opts.replayAfterStepIndex ?? preSyncStepIndex, preSyncStepIndex, turnStartStepIndex);
+            turn.turnStartStepIndex = commandWindowAfterStepIndex;
+            turn.priorBackgroundCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
             resolveAgyBackgroundTaskIds(this.brainDir, acpSessionId, this.backgroundCommands, commandWindowAfterStepIndex);
             for (const entry of this.backgroundCommands) {
                 if (!entry.taskId && entry.maxStepIndex === undefined) {
@@ -912,6 +924,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // ends only when every open request has settled. Steers sent
             // during this wait extend it.
             await this.waitForSteers(turn);
+            this.flushDeferredLiveCommandCalls(turn);
             if (!turn.aborted && !this.backendLost) {
                 this.syncTurnTranscriptCursor(turn, turnStartStepIndex);
             }
@@ -1205,10 +1218,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private emitDeferredLiveCommandCall(
+        turn: AgyTurn,
+        callMessage: Extract<AgentMessage, { type: 'tool_call' }>
+    ): void {
+        turn.generation.observe(callMessage);
+        this.trackOpenCommand(turn, callMessage, true);
+        this.forwardAgentMessage(this.showQuestionCard(callMessage));
+    }
+
+    private flushDeferredLiveCommandCalls(turn: AgyTurn): void {
+        if (turn.deferredLiveCommandCalls.size === 0) return;
+        const pending = [...turn.deferredLiveCommandCalls.values()];
+        turn.deferredLiveCommandCalls.clear();
+        for (const callMessage of pending) {
+            this.emitDeferredLiveCommandCall(turn, callMessage);
+        }
+    }
+
     private reconcileSyntheticCommandMessage(
         turn: AgyTurn,
         message: AgentMessage
-    ): { message: AgentMessage; suppressForward: boolean } {
+    ): { message: AgentMessage; suppressForward: boolean; skipTracking?: boolean } {
         if ((message.type === 'tool_call' || message.type === 'tool_result') && this.syntheticCallAliases.has(message.id)) {
             const syntheticId = this.syntheticCallAliases.get(message.id)!;
             if (message.type === 'tool_result') {
@@ -1224,32 +1255,58 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             && message.nativeName === 'run_command'
             && message.status !== 'pending'
             && !turn.commandCallIds.includes(message.id)
+            && !turn.priorBackgroundCallIds.has(message.id)
         ) {
-            const rawCmd = (message.nativeArgs as { CommandLine?: unknown } | undefined)?.CommandLine;
-            const cmdLine = typeof rawCmd === 'string' ? rawCmd : undefined;
-            const matched = findCompletedSyntheticBackgroundCommand(
+            const nativeArgs = message.nativeArgs && typeof message.nativeArgs === 'object' && !Array.isArray(message.nativeArgs)
+                ? (message.nativeArgs as Record<string, unknown>)
+                : undefined;
+            const match = inspectSyntheticBackgroundCommandMatch(
                 this.brainDir,
                 acpSessionId,
                 this.backgroundCommands,
                 turn.turnStartStepIndex,
-                cmdLine
+                { liveCallId: message.id, nativeArgs }
             );
-            if (matched) {
-                this.syntheticCallAliases.set(message.id, matched.callId);
-                return { message: { ...message, id: matched.callId }, suppressForward: true };
+            if (match.kind === 'matched') {
+                this.syntheticCallAliases.set(message.id, match.entry.callId);
+                return { message: { ...message, id: match.entry.callId }, suppressForward: true };
+            }
+            if (match.kind === 'ambiguous') {
+                turn.deferredLiveCommandCalls.set(message.id, message);
+                return { message, suppressForward: true, skipTracking: true };
             }
         }
 
-        if (message.type === 'tool_result' && !this.nativeToolNames.has(message.id)) {
-            const matched = findCompletedSyntheticBackgroundCommand(
-                this.brainDir,
-                acpSessionId,
-                this.backgroundCommands,
-                turn.turnStartStepIndex
-            );
-            if (matched) {
-                this.nativeToolNames.set(matched.callId, 'run_command');
-                return { message: { ...message, id: matched.callId }, suppressForward: false };
+        if (message.type === 'tool_result') {
+            const deferredCall = turn.deferredLiveCommandCalls.get(message.id);
+            if (deferredCall) {
+                turn.deferredLiveCommandCalls.delete(message.id);
+            }
+            if (deferredCall || !this.nativeToolNames.has(message.id)) {
+                const nativeArgs = deferredCall?.nativeArgs
+                    && typeof deferredCall.nativeArgs === 'object'
+                    && !Array.isArray(deferredCall.nativeArgs)
+                    ? (deferredCall.nativeArgs as Record<string, unknown>)
+                    : undefined;
+                const match = inspectSyntheticBackgroundCommandMatch(
+                    this.brainDir,
+                    acpSessionId,
+                    this.backgroundCommands,
+                    turn.turnStartStepIndex,
+                    {
+                        liveCallId: message.id,
+                        nativeArgs,
+                        resultOutput: message.output,
+                        resultStatus: message.status
+                    }
+                );
+                if (match.kind === 'matched') {
+                    this.nativeToolNames.set(match.entry.callId, 'run_command');
+                    return { message: { ...message, id: match.entry.callId }, suppressForward: false };
+                }
+                if (deferredCall) {
+                    this.emitDeferredLiveCommandCall(turn, deferredCall);
+                }
             }
         }
 
@@ -1268,6 +1325,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 turn.sawActivity = true;
                 turn.acknowledge();
                 const reconciled = this.reconcileSyntheticCommandMessage(turn, message);
+                if (reconciled.skipTracking) {
+                    return;
+                }
                 const effective = reconciled.message;
                 turn.generation.observe(effective);
                 if (effective.type === 'text' && !effective.live) {
@@ -1319,7 +1379,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** Tracks commands agy moved to the background; the generation clock reads the same updates. */
     private trackOpenCommand(turn: AgyTurn, message: AgentMessage, recordCallOrdinal = true): void {
         if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
-        if (recordCallOrdinal && message.type === 'tool_call' && message.nativeName === 'run_command') {
+        const isPriorBackground = turn.priorBackgroundCallIds.has(message.id)
+            || this.backgroundCommands.some((entry) => entry.callId === message.id);
+        if (isPriorBackground) {
+            turn.priorBackgroundCallIds.add(message.id);
+        }
+        if (
+            recordCallOrdinal
+            && !isPriorBackground
+            && message.type === 'tool_call'
+            && message.nativeName === 'run_command'
+        ) {
             if (!turn.commandCallIds.includes(message.id)) {
                 turn.commandCallIds.push(message.id);
             }

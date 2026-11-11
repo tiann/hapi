@@ -1890,4 +1890,502 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('preserves replay task-ID attribution when a user prompt preempts a pending wakeup before reattachment', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Turn 1 ready.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Turn 1 ready.' }
+            ]);
+        });
+
+        // User preempts the parked wakeup: agy replays step 3's parked `run_command`,
+        // which backgrounds (`task-21`), and finishes the user turn.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-preempted-bg',
+                name: 'sleep 25',
+                title: 'sleep 25',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 25' }
+            });
+            onUpdate({ type: 'text', text: 'Preempted command is running in background.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'MODEL',
+                        type: 'GENERIC',
+                        status: 'RUNNING',
+                        content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-21`
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'USER_EXPLICIT',
+                        type: 'USER_INPUT',
+                        content: 'user follow-up'
+                    }),
+                    JSON.stringify({
+                        step_index: 6,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Preempted command is running in background.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 30,
+            reactiveSettleMs: 30,
+            reactiveToolParkMs: 500
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Write parked wakeup `PLANNER_RESPONSE` at step 3 AND immediately push a user prompt before `reactiveToolParkMs` (500ms) fires!
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const oldIso = new Date(Date.now() - 50).toISOString();
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    created_at: oldIso,
+                    content: '<SYSTEM_MESSAGE>Subagent note</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    created_at: oldIso,
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 25"' } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+        queue.push('user follow-up', { permissionMode: 'always-proceed' }, 'msg-2');
+
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(backend.prompts[1]).toEqual([{ type: 'text', text: 'user follow-up' }]);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Later `task-21` completes autonomously in a reactive wakeup and must replace `call-preempted-bg`'s placeholder!
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 7,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-21" finished with result:\nCommand exited with code 0.\n\nCommand output:\nPREEMPTED_BG_DONE\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 8,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Preempted background command finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-preempted-bg',
+            is_error: false,
+            output: { stdout: 'PREEMPTED_BG_DONE', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('excludes earlier-turn completed background tool_call updates with rawInput from current-turn command ordinals', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        // Turn 1 starts `call-bg-old` (`task-31`) in background.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-bg-old',
+                name: 'sleep 10',
+                title: 'sleep 10',
+                status: 'in_progress',
+                input: { CommandLine: 'sleep 10' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 10' }
+            });
+            onUpdate({ type: 'text', text: 'Old command backgrounded.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'turn 1' },
+                {
+                    step_index: 1,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 10"' } }]
+                },
+                {
+                    step_index: 2,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-31`
+                },
+                {
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Old command backgrounded.'
+                }
+            ]);
+        });
+
+        // Turn 2: `call-bg-old` completes WITH a completed `tool_call` (as AcpMessageHandler emits when rawInput is present),
+        // followed by a brand-new `call-bg-new` (`task-32`) that backgrounds at ordinal 0 of Turn 2's transcript window!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-bg-old',
+                name: 'sleep 10',
+                title: 'sleep 10',
+                status: 'completed',
+                input: { CommandLine: 'sleep 10' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 10' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call-bg-old',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nOLD_DONE', exit_code: 0 }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-bg-new',
+                name: 'sleep 20',
+                title: 'sleep 20',
+                status: 'in_progress',
+                input: { CommandLine: 'sleep 20' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 20' }
+            });
+            onUpdate({ type: 'text', text: 'New command backgrounded.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'USER_EXPLICIT',
+                        type: 'USER_INPUT',
+                        content: 'turn 2'
+                    }),
+                    JSON.stringify({
+                        step_index: 5,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-31" finished with result:\nCommand exited with code 0.\n\nCommand output:\nOLD_DONE\n</SYSTEM_MESSAGE>`
+                    }),
+                    JSON.stringify({
+                        step_index: 6,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 20"' } }]
+                    }),
+                    JSON.stringify({
+                        step_index: 7,
+                        source: 'MODEL',
+                        type: 'GENERIC',
+                        status: 'RUNNING',
+                        content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-32`
+                    }),
+                    JSON.stringify({
+                        step_index: 8,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'New command backgrounded.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('turn 1', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        queue.push('turn 2', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Autonomous completion of `task-32` must resolve `call-bg-new` at ordinal 0 and replace its placeholder!
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 9,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-32" finished with result:\nCommand exited with code 0.\n\nCommand output:\nNEW_DONE\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 10,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'New background command finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-bg-new',
+            is_error: false,
+            output: { stdout: 'NEW_DONE', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('correlates reverse-order live completions of synthetic commands sharing CommandLine without swapping output or exit status', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Ready.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'init' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ]);
+        });
+
+        // Live follow-up turn: both `task-41` (card 0, exit 0, SUITE_A_PASS) and `task-42` (card 1, exit 1, SUITE_B_FAIL)
+        // share `CommandLine: 'npm test'`, both `SYSTEM_MESSAGE`s are persisted first, and ACP emits `task-42` BEFORE `task-41`!
+        backend.promptScripts.push(async (onUpdate) => {
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 7,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-41" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSUITE_A_PASS\n</SYSTEM_MESSAGE>`
+                    }),
+                    JSON.stringify({
+                        step_index: 8,
+                        source: 'SYSTEM',
+                        type: 'SYSTEM_MESSAGE',
+                        status: 'DONE',
+                        content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-42" finished with result:\nCommand exited with code 1.\n\nCommand output:\nSUITE_B_FAIL\n</SYSTEM_MESSAGE>`
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+
+            // Second synthetic command (`task-42`) completes FIRST over live ACP!
+            onUpdate({
+                type: 'tool_call',
+                id: 'live_completion_second',
+                name: 'npm test',
+                title: 'npm test',
+                status: 'failed',
+                input: { CommandLine: 'npm test' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm test' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live_completion_second',
+                status: 'failed',
+                output: { output: 'Command exited with code 1.\n\nCommand output:\nSUITE_B_FAIL', exit_code: 1 }
+            });
+
+            // First synthetic command (`task-41`) completes SECOND over live ACP!
+            onUpdate({
+                type: 'tool_call',
+                id: 'live_completion_first',
+                name: 'npm test',
+                title: 'npm test',
+                status: 'completed',
+                input: { CommandLine: 'npm test' },
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'npm test' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live_completion_first',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nSUITE_A_PASS', exit_code: 0 }
+            });
+
+            onUpdate({ type: 'text', text: 'Reported both npm test suites.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('init', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Reactive wakeup starts TWO background `npm test` commands (`agy-wakeup-...-3-0` -> `task-41`, `agy-wakeup-...-3-1` -> `task-42`).
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Run test suites</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: '"npm test"' } },
+                        { name: 'run_command', args: { CommandLine: '"npm test"' } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-41`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-42`
+                }),
+                JSON.stringify({
+                    step_index: 6,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Both npm test suites started in background.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        queue.push('check test results', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-1`,
+            is_error: true,
+            output: { stdout: 'SUITE_B_FAIL', exit_code: 1 }
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+            is_error: false,
+            output: { stdout: 'SUITE_A_PASS', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
 });
