@@ -96,3 +96,32 @@ describe('historical forks while the source runs', () => {
         } finally { engine.stop() }
     })
 })
+
+describe('latest completed mode admission', () => {
+    it('fails closed for old Runner capabilities and non-Codex sessions', async () => {
+        const { engine, source, rpc } = fixture();
+        try {
+            let calls = 0;
+            rpc.forkConversation = async () => { calls++; return { nativeSessionId: 'unused' }; };
+            expect(await engine.forkConversation(source.id, 'default', undefined, true)).toMatchObject({ type: 'error' });
+            expect(calls).toBe(0);
+        } finally { engine.stop(); }
+    });
+    it('requires a verified shared child rather than copying a moving source tail', async () => {
+        const { engine, store, source, rpc } = fixture();
+        try {
+            const current = store.sessions.getSession(source.id)!;
+            store.sessions.updateSessionMetadata(source.id, { ...current.metadata as object,
+                capabilities: { conversationHistory: { forkCurrent: true, forkLatestCompleted: true } } }, current.metadataVersion, 'default');
+            (engine as any).sessionCache.refreshSession(source.id);
+            rpc.forkConversation = async (_id, payload) => {
+                expect(payload).toEqual({ latestCompleted: true });
+                return { nativeSessionId: 'unverified' };
+            };
+            expect(await engine.forkConversation(source.id, 'default', undefined, true)).toEqual({
+                type: 'error', message: 'Runner did not verify the completed-turn fork boundary'
+            });
+            expect(engine.getSession(source.id)?.thinking).toBe(true);
+        } finally { engine.stop(); }
+    });
+});

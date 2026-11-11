@@ -1,5 +1,5 @@
 import React from 'react';
-import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -11,9 +11,12 @@ import type { PermissionMode } from './types';
 import { createKimiBackend } from './utils/kimiBackend';
 import { KimiPermissionHandler } from './utils/permissionHandler';
 import { resolveKimiRuntimeConfig } from './utils/config';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 class KimiRemoteLauncher extends RemoteLauncherBase {
     private readonly session: KimiSession;
     private readonly model?: string;
+    private readonly onEffortRollback?: (effort: string | null) => void;
+    private readonly getQueuedModel?: () => string | null;
     private backend: ReturnType<typeof createKimiBackend> | null = null;
     private permissionHandler: KimiPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
@@ -21,12 +24,21 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private displayModel: string | null = null;
     private displayPermissionMode: PermissionMode | null = null;
     private currentBackendModel: string | null = null;
+    private currentBackendEffort: string | null = null;
+    private defaultBackendEffort: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private lastDisplayedToolCall = new Map<string, string>();
-    constructor(session: KimiSession, opts: { model?: string }) {
+    constructor(session: KimiSession, opts: {
+        model?: string;
+        onEffortRollback?: (effort: string | null) => void;
+        /** Model the next queued turn will carry; differs from the backend's while a switch is pending. */
+        getQueuedModel?: () => string | null;
+    }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.model = opts.model;
+        this.onEffortRollback = opts.onEffortRollback;
+        this.getQueuedModel = opts.getQueuedModel;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -44,8 +56,9 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
+        const titleSync = createAcpSessionTitleSync(session.client);
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
+            onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'kimi' }
         });
         this.happyServer = happyServer;
@@ -54,7 +67,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
 
         const backend = createKimiBackend();
         this.backend = backend;
-        registerAcpSessionTitleSync(backend, session.client);
+        registerAcpSessionTitleSync(backend, session.client, titleSync);
 
         backend.onStderrError((error) => {
             logger.debug('[kimi-remote] stderr error', error);
@@ -117,6 +130,17 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(`[MODEL:${effectiveModel}]`, 'system');
         }
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode, effectiveModel ?? undefined);
+        this.captureEffortBaseline(acpSessionId);
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListKimiReasoningEffortOptions, async () => {
+            // A model change is applied with the turn that carries it; until
+            // then (or after it failed) the cached levels belong to another model.
+            const queuedModel = this.getQueuedModel?.() ?? null;
+            if (queuedModel !== null && queuedModel !== this.currentBackendModel) {
+                return { success: false, error: 'Kimi model switch pending' };
+            }
+            const option = backend.getThoughtLevelConfigOption(acpSessionId);
+            return { success: true, options: option?.options ?? [], currentValue: option?.currentValue ?? null };
+        });
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -136,6 +160,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            const modelBeforeBatch = this.currentBackendModel;
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 if (!backend.setModel || this.setModelSupported === false) {
                     batch.mode.model = this.currentBackendModel ?? undefined;
@@ -166,6 +191,11 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             }
+
+            if (this.currentBackendModel !== modelBeforeBatch) {
+                this.captureEffortBaseline(acpSessionId);
+            }
+            await this.applyQueuedEffort(acpSessionId, batch.mode);
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
             messageBuffer.addMessage(batch.message, 'user');
@@ -199,6 +229,35 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                     sendReady();
                 }
             }
+        }
+    }
+
+    /** The agent's level for the active model; "Default" resets to it. */
+    private captureEffortBaseline(sessionId: string): void {
+        this.currentBackendEffort = this.backend?.getThoughtLevelConfigOption(sessionId)?.currentValue ?? null;
+        this.defaultBackendEffort = this.currentBackendEffort;
+    }
+
+    private async applyQueuedEffort(sessionId: string, mode: { effort?: string | null }): Promise<void> {
+        const backend = this.backend;
+        const requested = mode.effort ?? this.defaultBackendEffort;
+        if (!backend || !requested || requested === this.currentBackendEffort) return;
+        const option = backend.getThoughtLevelConfigOption(sessionId);
+        try {
+            if (!option) throw new Error('no thinking option');
+            await backend.setConfigOption(sessionId, option.id, requested);
+            this.currentBackendEffort = requested;
+        } catch (error) {
+            logger.warn('[kimi-remote] Inline effort switch failed', error);
+            const effort = this.currentBackendEffort === this.defaultBackendEffort ? null : this.currentBackendEffort;
+            mode.effort = effort;
+            this.session.setEffort(effort);
+            this.session.pushKeepAlive();
+            this.onEffortRollback?.(effort);
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch Kimi effort to ${requested}.`
+            });
         }
     }
 
@@ -263,6 +322,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
+                break;
+            case 'round_summary':
                 break;
             default: {
                 const _exhaustive: never = message;
@@ -356,7 +417,7 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function kimiRemoteLauncher(
     session: KimiSession,
-    opts: { model?: string }
+    opts: ConstructorParameters<typeof KimiRemoteLauncher>[1]
 ): Promise<'switch' | 'exit'> {
     const launcher = new KimiRemoteLauncher(session, opts);
     return launcher.launch();

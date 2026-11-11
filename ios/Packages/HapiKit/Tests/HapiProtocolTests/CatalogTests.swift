@@ -94,7 +94,7 @@ struct CatalogTests {
     @Test func remainingFlavorsMatchTheirDeclaredSets() {
         #expect(permissionModes(forFlavor: "grok") == [.default, .auto, .plan, .bypassPermissions])
         #expect(permissionModes(forFlavor: "opencode") == [.default, .plan, .yolo])
-        #expect(permissionModes(forFlavor: "agy") == [.requestReview, .alwaysProceed])
+        #expect(permissionModes(forFlavor: "agy") == [.requestReview, .acceptEdits, .plan, .alwaysProceed])
         #expect(permissionModes(forFlavor: "cursor") == [.default, .plan, .ask, .debug, .autoReview, .yolo])
         // Pi has no runtime permission switching (always auto-approve).
         #expect(permissionModes(forFlavor: "pi") == [])

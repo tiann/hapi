@@ -21,14 +21,21 @@ export type RoundModelUsage = {
     cacheCreationInputTokens?: number
 }
 
+export type AgyUsage = Partial<Record<
+    'input_tokens' | 'output_tokens' | 'thinking_tokens' | 'cache_read_tokens' | 'total_tokens', number
+>>
+
 export type RoundSummary = {
-    provider?: 'codex'
+    provider?: 'codex' | 'agy'
+    agyUsage?: AgyUsage
     turnId?: string
     usage?: UsageData
     modelUsage: Record<string, RoundModelUsage>
     totalCostUsd?: number
     numTurns?: number
     durationMs?: number
+    generationMs?: number
+    generationOutputTokens?: number
 }
 
 export type AgentEvent =
@@ -240,6 +247,8 @@ export type UserTextBlock = {
 export type AgentTextBlock = {
     kind: 'agent-text'
     id: string
+    /** Raw HAPI message ids represented by a coalesced streaming block. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null
@@ -254,6 +263,8 @@ export type AgentTextBlock = {
 export type AgentReasoningBlock = {
     kind: 'agent-reasoning'
     id: string
+    /** Raw HAPI message ids represented by a coalesced streaming block. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null

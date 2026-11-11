@@ -12,6 +12,7 @@ describe('DEFAULT_COMPOSER_TOOLBAR_LAYOUT', () => {
             'attachment',
             'settings',
             'expand',
+            'fast',
             'model',
             'effort',
             'terminal',
@@ -40,7 +41,7 @@ describe('normalizeComposerToolbarLayout', () => {
         })
 
         expect(result.mode).toBe('split')
-        expect(result.left.slice(0, 2)).toEqual(['settings', 'attachment'])
+        expect(result.left.filter(item => item === 'settings' || item === 'attachment')).toEqual(['settings', 'attachment'])
         expect(result.right).toEqual(['abort', 'schedule'])
         expect([...result.left, ...result.right, ...result.hidden]).toHaveLength(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left.length)
     })
@@ -56,6 +57,11 @@ describe('normalizeComposerToolbarLayout', () => {
         expect(result.hidden).toEqual(['settings', 'abort'])
         expect(result.left).toContain('schedule')
         expect(result.left).not.toContain('settings')
+    })
+
+    it('places the new fast control beside the model in a saved layout', () => {
+        const layout = normalizeComposerToolbarLayout({ mode: 'split', left: ['settings'], right: ['model'] })
+        expect(layout.right.slice(0, 2)).toEqual(['fast', 'model'])
     })
 
     it('moves tools between visible and hidden groups without duplication', () => {
@@ -78,15 +84,15 @@ describe('normalizeComposerToolbarLayout', () => {
 
         expect([...result.left, ...result.right].slice(0, 10)).toEqual([
             'settings',
+            'fast',
             'model',
             'effort',
             'terminal',
             'expand',
             'abort',
-            'switch',
             'attachment',
+            'switch',
             'voiceMic',
-            'scratchlist',
         ])
         expect(result.left).toHaveLength(layout.left.length)
     })

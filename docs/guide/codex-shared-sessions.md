@@ -219,3 +219,18 @@ to the test Hub and `HAPI_ACCESS_TOKEN` to its token before running the Live
 Playwright suite with `HAPI_LIVE=1`. The fixture makes Codex execute a shell
 tool that modifies and creates files. Assertions verify transcript truncation,
 the subsequent model request, file bytes, Git HEAD, index and working tree.
+
+### Fork the latest completed turn from the session list
+
+For an updated Shared Codex runtime, **Fork session** remains available while a
+turn is running if a completed turn is known. The confirmation explains that the
+unfinished turn is excluded and the source continues running. A first running
+turn without completed history is disabled; older runtimes retain the busy guard.
+
+The Hub requests an explicit latest-completed boundary. The Runner reads native
+history and forks inclusively through the selected completed turn with
+`lastTurnId`. That cutoff is fixed before the native mutation, so later source
+progress cannot widen the child. Shared children hydrate from the native fork;
+the Hub does not copy the source's changing message tail. Unsupported or
+unverified boundaries are rejected rather than falling back to a current fork.
+Manual **Fork at message** keeps its existing exclusive boundary semantics.

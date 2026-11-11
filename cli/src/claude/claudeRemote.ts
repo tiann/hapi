@@ -509,6 +509,8 @@ export async function claudeRemote(opts: {
                 specialCommand = nextSpecialCommand;
                 pushUserMessage(next.message);
                 setSteerable(nextSpecialCommand.type === null);
+                // A follow-up prompt starts a new turn; only the first turn gets system/init.
+                updateThinking(true);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
                     `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
@@ -638,8 +640,12 @@ export async function claudeRemote(opts: {
                 message.type === 'system' && message.subtype === 'compact_boundary'
                     ? (message as any).compact_metadata
                     : undefined;
+            // The result of the manual /compact turn describes the compaction
+            // call, not an assistant round: mark it so the log converter skips
+            // tok/s fields for it (everything else flows as before).
+            const isCompactTurnResult = compactState.active !== null && message.type === 'result';
             if (!isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
-                opts.onMessage(message);
+                opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }
 
             // Handle special system messages

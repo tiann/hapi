@@ -1,6 +1,6 @@
 {
   "name": "@twsxtd/hapi",
-  "version": "0.34.0",
+  "version": "0.34.6",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
   "license": "AGPL-3.0-only",
@@ -64,7 +64,7 @@
     "socket.io-client": "^4.8.3",
     "tar": "^7.5.2",
     "vscode-jsonrpc": "8.2.0",
-    "ws": "8.18.3",
+    "ws": "8.21.0",
     "yaml": "^2.8.2",
     "zod": "^4.2.1"
   },
@@ -74,7 +74,7 @@
     "bun-types": "1.4.0",
     "dotenv": "^17.2.3",
     "typescript": "^5",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.12"
   },
   "resolutions": {
     "whatwg-url": "14.2.0",
