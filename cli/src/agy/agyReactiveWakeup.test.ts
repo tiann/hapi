@@ -3275,4 +3275,149 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('retains ambiguous live completions across turn end and reconciles onto the synthetic card when SYSTEM_MESSAGE persists after ready', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Ready.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'init' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Ready.' }
+            ]);
+        });
+
+        // Turn 2: `call_native_after_ready` completes over ACP and the turn finishes (`end_turn`)
+        // BEFORE `task-91`'s `SYSTEM_MESSAGE` completion row is written to `transcript.jsonl`!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_native_after_ready',
+                name: 'sleep 5 && echo AFTER_READY_BG_OK',
+                title: 'sleep 5 && echo AFTER_READY_BG_OK',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 5 && echo AFTER_READY_BG_OK' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call_native_after_ready',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nAFTER_READY_BG_OK', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Handled background completion.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('init', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        // Wakeup 1 starts synthetic `run_command` (`task-91`)
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Timer fired</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"sleep 5 && echo AFTER_READY_BG_OK"' } }]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'GENERIC',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${backend.sessionIdToCreate}/task-91`
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Started background check in wakeup.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Turn 2 finishes and returns to `ready` BEFORE `SYSTEM_MESSAGE` flushes to disk
+        queue.push('next user message', { permissionMode: 'always-proceed' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // At `ready`, no duplicate `tool-call` or native `tool-call-result` has been emitted!
+        const beforeFlushMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(beforeFlushMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+        expect(beforeFlushMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call-result')).toEqual([]);
+
+        // Now `task-91`'s `SYSTEM_MESSAGE` and Turn 2's `PLANNER_RESPONSE` flush to disk AFTER `ready`!
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 6,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${backend.sessionIdToCreate}/task-91" finished with result:\nCommand exited with code 0.\n\nCommand output:\nAFTER_READY_BG_OK\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 7,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Handled background completion.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            const messages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+            expect(messages).toContainEqual(expect.objectContaining({
+                type: 'tool-call-result',
+                callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+                is_error: false,
+                output: { stdout: 'AFTER_READY_BG_OK', exit_code: 0 }
+            }));
+        });
+
+        const allMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(allMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+
+        queue.close();
+        await runPromise;
+    });
 });

@@ -244,6 +244,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Latest step_index seen when an unfinished wakeup hit `maxIdleMs`, so
     // tracking resumes as soon as late output appends a newer step.
     private pausedWakeupStepIndex: number | null = null;
+    private lastTurnTranscriptState: {
+        turnStartStepIndex: number;
+        streamedTextCounts: Map<string, number>;
+    } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
@@ -359,6 +363,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private syncTranscriptCursor(): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
+        this.reconcileRetainedAmbiguousCompletions(null);
+        this.advanceCursorFromLastTurnState();
+        this.lastTurnTranscriptState = null;
         const latest = readLatestAgyTranscriptStepIndex(this.brainDir, acpSessionId);
         if (latest > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = latest;
@@ -369,21 +376,36 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
-        const stepsAfterStart = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, turnStartStepIndex);
+        this.lastTurnTranscriptState = {
+            turnStartStepIndex,
+            streamedTextCounts: new Map(turn.streamedTextCounts)
+        };
+        this.advanceCursorFromLastTurnState();
+        this.pausedWakeupStepIndex = null;
+    }
+
+    private advanceCursorFromLastTurnState(): void {
+        const acpSessionId = this.acpSessionId;
+        const state = this.lastTurnTranscriptState;
+        if (!acpSessionId || !state) return;
+        const stepsAfterStart = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, state.turnStartStepIndex);
         const nextCursor = advanceAgyTurnTranscriptCursor(
             stepsAfterStart,
-            this.lastTranscriptStepIndex,
-            turn.streamedTextCounts
+            state.turnStartStepIndex,
+            state.streamedTextCounts
         );
         if (nextCursor > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = nextCursor;
         }
-        this.pausedWakeupStepIndex = null;
     }
 
     private hasPendingReactiveWakeup(): boolean {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId || this.backendLost || !this.backend?.isTransportAlive()) return false;
+        if (this.retainedAmbiguousCompletions.length > 0) {
+            this.reconcileRetainedAmbiguousCompletions(null);
+        }
+        this.advanceCursorFromLastTurnState();
         const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
         if (steps.length === 0) return false;
         if (!steps.some((step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE')) {
@@ -714,6 +736,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
                 this.pausedWakeupStepIndex = null;
+                this.lastTurnTranscriptState = null;
             }
             this.acpSessionId = acpSessionId;
             this.syncTranscriptCursor();
@@ -1276,17 +1299,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
         }
         this.reconcileRetainedAmbiguousCompletions(turn);
-        if (turn.corroboratedSyntheticMatches === 0 && this.retainedAmbiguousCompletions.length > 0) {
-            const uncorroborated = this.retainedAmbiguousCompletions.splice(0, this.retainedAmbiguousCompletions.length);
-            for (const item of uncorroborated) {
-                if (item.callMessage) {
-                    this.emitDeferredLiveCommandCall(turn, item.callMessage);
-                }
-                turn.generation.observe(item.resultMessage);
-                this.trackOpenCommand(turn, item.resultMessage, false);
-                this.forwardAgentMessage(this.showQuestionCard(item.resultMessage));
-            }
-        }
     }
 
     private reconcileRetainedAmbiguousCompletions(turn: AgyTurn | null): void {
