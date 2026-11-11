@@ -45,6 +45,14 @@ object MessageWindowLogic {
         return MessagePosition(at = message.positionAt, seq = seq)
     }
 
+    /**
+     * Swap one row's content in place (the gap-recovery sweep's by-id
+     * refresh): merged by id, re-deriving the seq bounds and bumping the
+     * messages version like every other messages change.
+     */
+    fun mergeRefreshedRow(previous: MessageWindowState, row: WindowMessage): MessageWindowState =
+        previous.withMessages(MessageMerge.mergeMessages(previous.messages, listOf(row)))
+
     enum class PositionEnd { Oldest, Newest }
 
     fun derivePosition(messages: List<WindowMessage>, end: PositionEnd): MessagePosition? {
@@ -267,6 +275,7 @@ object MessageWindowLogic {
         page: MessagesPage,
         replaceServerRows: Boolean,
         requestBaseline: Map<String, WindowMessage>,
+        trimLimit: Int = VISIBLE_WINDOW_SIZE,
     ): MessageWindowState {
         val retainedResponseMessages = responseMessages.filter { shouldRetainWindowMessage(it) }
         val concurrentServerRows = previous.messages.filter { message ->
@@ -281,7 +290,7 @@ object MessageWindowLogic {
         }
         val authoritative = MessageMerge.mergeMessages(preserved, retainedResponseMessages)
         val incoming = MessageMerge.mergeMessages(authoritative, concurrentServerRows)
-        val (kept, dropped) = trimPreservingQueued(incoming, VISIBLE_WINDOW_SIZE, TrimMode.Append)
+        val (kept, dropped) = trimPreservingQueued(incoming, trimLimit, TrimMode.Append)
             .let { it.kept to it.dropped }
         val snapshotHead = pagePosition(page.snapshotHeadAt, page.snapshotHeadSeq)
             ?: derivePosition(responseMessages, PositionEnd.Newest)
@@ -291,7 +300,13 @@ object MessageWindowLogic {
         val oldest = when {
             dropped.isNotEmpty() -> derivePosition(kept, PositionEnd.Oldest)
             replaceServerRows -> responseOldest
-            else -> responseOldest ?: previous.oldestPosition
+            responseOldest == null -> previous.oldestPosition
+            previous.oldestPosition == null -> responseOldest
+            // An upsert keeps rows older than the response page, so the
+            // older-paging cursor must stay on whichever side is older
+            // instead of jumping to the response page's own bound.
+            responseOldest <= previous.oldestPosition!! -> responseOldest
+            else -> previous.oldestPosition
         }
         return previous.withMessages(kept).copy(
             readThroughRevision = maxOf(previous.readThroughRevision ?: 0, page.readThroughRevision ?: 0, kept.maxOfOrNull { it.wire.contentRevision ?: 0 } ?: 0),
