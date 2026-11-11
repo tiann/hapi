@@ -60,6 +60,15 @@ export class SharedCodexProjection {
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
     reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); this.generation.reset(); }
+
+    /**
+     * Hub-only reconnect variant: replay final history with stable IDs, but
+     * the native turn keeps running without a new turn/started, so the
+     * active round's ledger identity, baseline and windows must survive.
+     * Only an app-server reconnect may drop the ledger (reset), because the
+     * resumed turn re-announces itself and re-measures from its own start.
+     */
+    resetAfterHubReconnect(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
     private send(body: Record<string, unknown>, key: string): void {
         if (this.emitted.has(key)) return;
         this.emitted.add(key);

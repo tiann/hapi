@@ -421,7 +421,37 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
 
-it('keeps timing approval waits out of generation after a reconnect', async () => {
+it('keeps the active round measurable when only the hub reconnects', async () => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000_000);
+            const f = await fixture();
+            await f.root.activate();
+            const settled = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); await f.drain(); };
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } } });
+            vi.setSystemTime(1_001_000);
+            await f.drain();
+            f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+            vi.setSystemTime(1_002_000);
+            await f.drain();
+            // Hub-only reconnect: the native turn keeps running without a new
+            // turn/started, so the active round's ledger identity, baseline
+            // and windows must survive the replay.
+            f.reconnect();
+            await settled();
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } } });
+            vi.setSystemTime(1_003_000);
+            await f.drain();
+            f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } });
+            vi.setSystemTime(1_004_000);
+            await f.drain();
+            expect(f.send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+                expect.objectContaining({ durationMs: 2_000, generationMs: 2_000, generationOutputTokens: 60 })
+            ]);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('keeps timing approval waits out of generation after a reconnect', async () => {
         vi.useFakeTimers();
         try {
             vi.setSystemTime(1_000_000);

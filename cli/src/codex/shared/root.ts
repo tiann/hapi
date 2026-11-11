@@ -146,7 +146,9 @@ export class SharedCodexRoot {
             const wasActivated = Boolean(this.heartbeat);
             // An emitted socket packet is not a durable hub acknowledgement.
             // Replay final native history with stable IDs after every reconnect.
-            this.projection?.reset();
+            // The native turn keeps running across a hub-only reconnect, so the
+            // active generation ledger must survive it.
+            this.projection?.resetAfterHubReconnect();
             this.steeringActive = undefined;
             this.publishedPlanId = undefined;
             this.publishedCompactionIds = undefined;

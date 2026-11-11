@@ -301,6 +301,27 @@ describe('shared history projection', () => {
         })]);
     });
 
+    it('preserves the active generation ledger across a hub-only reconnect reset', async () => {
+        // The hub reconnect replays history with stable IDs, but the native
+        // turn keeps running without a new turn/started: the active round's
+        // identity, baseline and windows must survive the reset.
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } }
+        }, undefined, 500);
+        await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'turn' } }, undefined, 1_000);
+        projection.resetAfterHubReconnect();
+        await projection.notification('thread/tokenUsage/updated', {
+            threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } }
+        }, undefined, 3_000);
+        await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } }, undefined, 4_000);
+        expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+            expect.objectContaining({ durationMs: 3_000, generationMs: 3_000, generationOutputTokens: 60 })
+        ]);
+    });
+
     it('does not let mid-turn usage stand in for a baseline on a resumed thread', async () => {
         // Cold reopen path: a new app-server process resumes with
         // excludeTurns, so no usage replay arrives (codex rust-v0.167.0
