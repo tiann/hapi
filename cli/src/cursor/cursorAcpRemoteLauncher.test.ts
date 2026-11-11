@@ -44,7 +44,12 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null,
+    notifyRuleInstallCalls: [] as Array<{ cwd: string; project?: string | null; agentId?: string | null }>,
+    notifyRuleCleanup: null as ReturnType<typeof vi.fn> | null,
+    agentActivityListener: null as ((thinking: boolean, source?: string) => void) | null,
+    titleSyncControllers: [] as unknown[],
+    titleSyncRegistered: [] as unknown[],
+    onChangeTitle: null as ((title: string) => void) | null,
     /** When set, the next backend.initialize() rejects once, then clears. */
     failNextInitialize: null as Error | null,
     /** When > 0, the next N backend.initialize() calls reject. */
@@ -52,8 +57,32 @@ const harness = vi.hoisted(() => ({
     /** When set, the next backend.initialize() awaits this before completing. */
     deferNextInitialize: null as Promise<void> | null,
     /** Spawn flags passed to createCursorAcpBackend (newest last). */
-    spawnAutoReviewFlags: [] as boolean[]
+    spawnAutoReviewFlags: [] as boolean[],
+    /** Last prompt() onUpdate — used to simulate post-prompt harness resume (#2267). */
+    lastPromptOnUpdate: null as ((message: AgentMessage) => void) | null,
+    /** Mirrors AcpSdkBackend.promptGeneration for post-done gate reopen. */
+    promptGeneration: 0
 }));
+
+vi.mock('@/agent/acpSessionTitle', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/agent/acpSessionTitle')>();
+    return {
+        ...actual,
+        createAcpSessionTitleSync: (...args: Parameters<typeof actual.createAcpSessionTitleSync>) => {
+            const controller = actual.createAcpSessionTitleSync(...args);
+            harness.titleSyncControllers.push(controller);
+            return controller;
+        },
+        registerAcpSessionTitleSync: (
+            backend: Parameters<typeof actual.registerAcpSessionTitleSync>[0],
+            client: Parameters<typeof actual.registerAcpSessionTitleSync>[1],
+            controller?: Parameters<typeof actual.registerAcpSessionTitleSync>[2]
+        ) => {
+            harness.titleSyncRegistered.push(controller ?? null);
+            return actual.registerAcpSessionTitleSync(backend, client, controller);
+        }
+    };
+});
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
 
@@ -180,6 +209,10 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             prompt: vi.fn(async (_sessionId: string, content: unknown[], onMessage?: (message: AgentMessage) => void) => {
                 harness.promptCalls++;
                 harness.prompts.push(content);
+                harness.lastPromptOnUpdate = onMessage ?? null;
+                // Real AcpSdkBackend bumps generation after the pre-swap drain and
+                // new handler install; mock skips drain and bumps before emitting.
+                harness.promptGeneration += 1;
                 const messages = harness.promptMessageBatches.shift() ?? harness.promptMessages.splice(0, 1);
                 for (const message of messages) onMessage?.(message);
                 const stderrError = harness.promptStderrErrors.shift();
@@ -189,7 +222,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (error) throw error;
             }),
             cancelPrompt: vi.fn(async () => {}),
-            getPromptGeneration: vi.fn(() => 1),
+            getPromptGeneration: vi.fn(() => harness.promptGeneration),
             beginSoftSteerPrompt: vi.fn(() => ({
                 dispatched: harness.softSteerDispatchError
                     ? Promise.reject(harness.softSteerDispatchError)
@@ -204,11 +237,12 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.stderrErrorHandler = handler ?? null;
             }),
             setUsageUpdateListener: vi.fn(),
-            setAgentActivityListener: vi.fn((listener: ((thinking: boolean) => void) | null) => {
+            setAgentActivityListener: vi.fn((listener: ((thinking: boolean, source?: string) => void) | null) => {
                 harness.agentActivityListener = listener;
             }),
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
+            discardPendingMessageBuffers: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
             registerExtensionRequestHandler: vi.fn(),
             disconnect: vi.fn(async () => {
@@ -234,12 +268,15 @@ vi.mock('@/agent/permissionAdapter', () => ({
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async () => ({
-        server: { stop: () => {} },
-        mcpServers: {
-            hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:1/'] },
-        },
-    }),
+    buildHapiMcpBridge: async (_client: unknown, options?: { onChangeTitle?: (title: string) => void }) => {
+        harness.onChangeTitle = options?.onChangeTitle ?? null;
+        return {
+            server: { stop: () => {} },
+            mcpServers: {
+                hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:1/'] },
+            },
+        };
+    },
 }));
 
 vi.mock('./utils/cursorMcpOverlay', () => ({
@@ -247,6 +284,18 @@ vi.mock('./utils/cursorMcpOverlay', () => ({
     installCursorMcpOverlay: () => {
         harness.overlayCleanup = vi.fn();
         return { cleanup: harness.overlayCleanup };
+    },
+}));
+
+vi.mock('./utils/cursorNotifyRuleOverlay', () => ({
+    installCursorNotifyRuleOverlay: (opts: {
+        cwd: string
+        project?: string | null
+        agentId?: string | null
+    }) => {
+        harness.notifyRuleInstallCalls.push(opts);
+        harness.notifyRuleCleanup = vi.fn();
+        return { rulePath: `${opts.cwd}/.cursor/rules/hapi-session.mdc`, cleanup: harness.notifyRuleCleanup };
     },
 }));
 
@@ -263,6 +312,10 @@ import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
+import {
+    applyHubSessionSummaryContract,
+    resetSessionSummaryContractForTests
+} from '@/modules/common/sessionSummaryInstruction';
 import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
@@ -313,6 +366,7 @@ function makeClient() {
         emitSteerIndeterminate: vi.fn(),
         setSteerDeliveryState: vi.fn(async () => true),
         sendClaudeSessionMessage: vi.fn(),
+        getMetadata: vi.fn(() => null),
         keepAlive: vi.fn(),
         emitSessionReady: vi.fn()
     } as unknown as ApiSessionClient;
@@ -358,11 +412,20 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.stderrErrorHandler = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
+        harness.notifyRuleInstallCalls = [];
+        harness.notifyRuleCleanup = null;
         harness.agentActivityListener = null;
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
+        harness.titleSyncControllers = [];
+        harness.titleSyncRegistered = [];
+        harness.onChangeTitle = null;
         harness.failNextInitialize = null;
         harness.failInitializeTimes = 0;
         harness.deferNextInitialize = null;
         harness.spawnAutoReviewFlags = [];
+        harness.lastPromptOnUpdate = null;
+        harness.promptGeneration = 0;
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
@@ -371,6 +434,8 @@ describe('cursorAcpRemoteLauncher', () => {
     afterEach(() => {
         vi.clearAllMocks();
         _resetSharedCursorModelsCacheForTests();
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
     });
 
     it('ends the launcher when a soft steer outlives an abort', async () => {
@@ -681,6 +746,51 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(legacyLauncher).not.toHaveBeenCalled();
     });
 
+    it('shares one title-sync controller across backend (re)creation paths', async () => {
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.titleSyncControllers).toHaveLength(1);
+        expect(harness.titleSyncRegistered.length).toBeGreaterThan(0);
+        for (const controller of harness.titleSyncRegistered) {
+            expect(controller).toBe(harness.titleSyncControllers[0]);
+        }
+    });
+
+    it.each([false, true])('keeps manual title precedence after live Auto relaunch (restore: %s)', async (restore) => {
+        const session = makeSession(null, false);
+        session.model = 'composer-2.5[fast=false]';
+        const runPromise = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+            await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+            const createdBefore = vi.mocked(createCursorAcpBackend).mock.results.length;
+            if (restore) {
+                harness.failNextInitialize = new Error('auto spawn refused');
+                await expect(session.applyModelConfig('auto')).rejects.toThrow(/relaunch with --model auto failed/i);
+            } else {
+                await session.applyModelConfig('auto');
+            }
+            expect(vi.mocked(createCursorAcpBackend).mock.results.length).toBe(createdBefore + (restore ? 2 : 1));
+            expect(harness.loadSessionCalled).toBe(true);
+            const replacement = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value!;
+            const listener = vi.mocked(replacement.setSessionInfoUpdateListener).mock.calls.at(-1)![0]!;
+            const sendSummary = vi.mocked(session.client.sendClaudeSessionMessage);
+            sendSummary.mockClear();
+            listener({ sessionId: 'loaded-acp-session', title: 'Relaunched Native Title' });
+            expect(sendSummary).toHaveBeenCalledWith(expect.objectContaining({ type: 'summary', summary: 'Relaunched Native Title' }));
+
+            sendSummary.mockClear();
+            expect(harness.onChangeTitle).not.toBeNull();
+            harness.onChangeTitle!('Manual Title');
+            listener({ sessionId: 'loaded-acp-session', title: 'Later Native Title' });
+            expect(sendSummary).not.toHaveBeenCalled();
+        } finally {
+            session.queue.close();
+            await runPromise;
+        }
+    });
+
     it('pins CLI auto with --model auto on spawn', async () => {
         const session = makeSession(null);
         session.model = 'auto';
@@ -690,7 +800,7 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.model).toBe('auto');
     });
 
-    it('applies harness thinking transitions once per edge (#1470)', async () => {
+    it('ignores ambient state_update_running without a prompt; still applies idle/permission (#1553)', async () => {
         const keepAlive = vi.fn();
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = {
@@ -711,20 +821,74 @@ describe('cursorAcpRemoteLauncher', () => {
             permissionMode: 'default'
         });
         session.onSessionFoundWithProtocol = vi.fn();
-        // Keep the launcher in the main loop long enough to wire the listener.
         const runPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
 
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(false);
-
+        // Ambient Cursor chatter while queue-idle must not float Working.
+        harness.agentActivityListener!(true, 'state_update_running');
         expect(session.thinking).toBe(false);
-        expect(keepAlive.mock.calls.map((call) => call[0])).toEqual([true, false]);
+        expect(keepAlive).not.toHaveBeenCalled();
 
+        harness.agentActivityListener!(true, 'permission');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        keepAlive.mockClear();
+        harness.agentActivityListener!(false, 'state_update_idle');
+        expect(session.thinking).toBe(false);
+        expect(keepAlive).toHaveBeenCalled();
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('applies state_update_running while a prompt is in flight (#1470)', async () => {
+        const keepAlive = vi.fn();
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = {
+            ...makeClient(),
+            keepAlive
+        } as unknown as ApiSessionClient;
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        queue.push('do work', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBeGreaterThan(0));
+        await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
+
+        // Prompt start already set thinking; clear so we can assert the listener edge.
+        session.onThinkingChange(false);
+        keepAlive.mockClear();
+        harness.agentActivityListener!(true, 'state_update_running');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        harness.agentActivityListener!(true, 'state_update_requires_action');
+        expect(session.thinking).toBe(true);
+
+        harness.releasePrompt?.();
+        harness.releasePrompt = null;
+        harness.deferPrompt = null;
         queue.close();
         await runPromise;
     });
@@ -1012,6 +1176,146 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.overlayCleanup).toHaveBeenCalled();
     });
 
+    it('installs the notify-rule overlay when emit status summaries is on', async () => {
+        applyHubSessionSummaryContract(true);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([
+            { cwd: '/tmp/project', project: 'project', agentId: 'test-session-id' }
+        ]);
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
+    });
+
+    it('skips the notify-rule overlay when emit status summaries is off', async () => {
+        applyHubSessionSummaryContract(false);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([]);
+        expect(harness.notifyRuleCleanup).toBeNull();
+    });
+
+    it('removes the notify-rule overlay even when backend.disconnect rejects', async () => {
+        applyHubSessionSummaryContract(true);
+        harness.disconnectError = new Error('disconnect failed');
+        const session = makeSession(null);
+
+        await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
+    });
+
+    it('drops post-done harness speech after the HAPI prompt ends (#2267)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releasePrompt = resolve;
+        });
+        harness.promptMessages = [
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, false);
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('finish the topic', mode);
+
+        const launched = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.lastPromptOnUpdate).not.toBeNull());
+
+        // Prompt is still deferred → promptInFlight true; release so the finally clears it.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await vi.waitFor(() => expect(session.thinking).toBe(false));
+
+        const beforeHarness = client.sendAgentMessage.mock.calls.length;
+        harness.lastPromptOnUpdate?.({ type: 'text', text: 'Shell finished; here is a redundant summary.' });
+        harness.agentActivityListener?.(true);
+
+        expect(client.sendAgentMessage.mock.calls.length).toBe(beforeHarness);
+        expect(session.thinking).toBe(false);
+
+        session.queue.close();
+        await launched;
+    });
+
+    it('forwards a coalesced done footer without the buried harness prose (#2268)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        harness.promptMessages = [
+            {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nShell finished; here is a redundant summary.`
+            },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, false);
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        session.queue.push('finish the topic', { permissionMode: 'default' } as EnhancedMode);
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const textBodies = client.sendAgentMessage.mock.calls
+            .map((call) => call[0] as { type?: string; message?: string })
+            .filter((msg) => msg.type === 'message' || typeof msg.message === 'string')
+            .map((msg) => msg.message ?? '');
+        expect(textBodies.some((body) => body.includes('Finished.') && body.includes(doneFooter))).toBe(true);
+        expect(textBodies.some((body) => body.includes('redundant summary'))).toBe(false);
+    });
+
+    it('does not truncate coalesced speech while a soft-steer is outstanding (#2268)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releasePrompt = resolve;
+        });
+        harness.deferSoftSteer = new Promise<void>((resolve) => {
+            releaseSoftSteer = resolve;
+        });
+        harness.promptMessages = [
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, false);
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('finish the topic', mode, 'first');
+
+        const launched = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.lastPromptOnUpdate).not.toBeNull());
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('steer please', mode, 'steer');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+
+        harness.lastPromptOnUpdate?.({
+            type: 'text',
+            text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+        });
+
+        const textBodies = client.sendAgentMessage.mock.calls
+            .map((call) => call[0] as { type?: string; message?: string })
+            .filter((msg) => msg.type === 'message')
+            .map((msg) => msg.message ?? '');
+        expect(textBodies.some((body) => body.includes('Steered follow-up the user asked for.'))).toBe(true);
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        releaseSoftSteer();
+        session.queue.close();
+        await launched;
+    });
 
     it('throws on initialize failure without invoking legacy launcher', async () => {
         harness.initializeError = new Error('agent acp not found');
@@ -1093,6 +1397,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1181,6 +1486,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1232,6 +1538,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1445,6 +1752,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1491,6 +1799,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1537,6 +1846,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1586,6 +1896,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1632,6 +1943,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1691,6 +2003,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1734,6 +2047,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1785,6 +2099,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1835,6 +2150,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1887,6 +2203,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1948,6 +2265,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2006,6 +2324,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2092,6 +2411,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2149,6 +2469,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2237,6 +2558,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2298,6 +2620,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2349,6 +2672,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2409,6 +2733,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2459,6 +2784,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2502,6 +2828,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2587,6 +2914,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -2629,6 +2957,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),

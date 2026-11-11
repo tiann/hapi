@@ -175,3 +175,65 @@ describe('CopilotRemoteLauncher.applyAgentMode', () => {
         expect(internals.currentBackendModel).toBe('gpt-5.6');
     });
 });
+
+describe('CopilotRemoteLauncher effort', () => {
+    it('applies queued effort through the thought_level option and rolls back on failure', async () => {
+        const { launcher, session } = createLauncher(vi.fn());
+        const onEffortRollback = vi.fn();
+        const setConfigOption = vi.fn()
+            .mockResolvedValueOnce(undefined)
+            .mockResolvedValueOnce(undefined)
+            .mockRejectedValueOnce(new Error('unsupported'));
+        const internals = launcher as unknown as {
+            backend: unknown;
+            currentBackendEffort: string | null;
+            defaultBackendEffort: string | null;
+            onEffortRollback: typeof onEffortRollback;
+            applyQueuedEffort: (sessionId: string, mode: { effort?: string | null }) => Promise<void>;
+        };
+        internals.backend = {
+            setConfigOption,
+            getThoughtLevelConfigOption: () => ({ id: 'reasoning_effort', options: [] })
+        };
+        internals.onEffortRollback = onEffortRollback;
+        (session as unknown as { setEffort: unknown }).setEffort = vi.fn();
+        internals.currentBackendEffort = 'medium';
+        internals.defaultBackendEffort = 'medium';
+
+        await internals.applyQueuedEffort('s', { effort: 'high' });
+        await internals.applyQueuedEffort('s', { effort: null });
+        const mode = { effort: 'xhigh' as string | null };
+        await internals.applyQueuedEffort('s', mode);
+
+        expect(setConfigOption.mock.calls).toEqual([
+            ['s', 'reasoning_effort', 'high'],
+            ['s', 'reasoning_effort', 'medium'],
+            ['s', 'reasoning_effort', 'xhigh']
+        ]);
+        expect(internals.currentBackendEffort).toBe('medium');
+        expect(mode.effort).toBeNull();
+        expect(onEffortRollback).toHaveBeenCalledWith(null);
+    });
+
+    it('re-applies the selected effort when a model switch changes the agent level', async () => {
+        const { launcher } = createLauncher(vi.fn());
+        const setConfigOption = vi.fn().mockResolvedValue(undefined);
+        const internals = launcher as unknown as {
+            backend: unknown;
+            currentBackendEffort: string | null;
+            captureEffortBaseline: (sessionId: string) => void;
+            applyQueuedEffort: (sessionId: string, mode: { effort?: string | null }) => Promise<void>;
+        };
+        // config_option_update for the new model reported `medium`.
+        internals.backend = {
+            setConfigOption,
+            getThoughtLevelConfigOption: () => ({ id: 'reasoning_effort', currentValue: 'medium', options: [] })
+        };
+        internals.currentBackendEffort = 'high';
+
+        internals.captureEffortBaseline('s');
+        await internals.applyQueuedEffort('s', { effort: 'high' });
+
+        expect(setConfigOption).toHaveBeenCalledWith('s', 'reasoning_effort', 'high');
+    });
+});

@@ -23,13 +23,14 @@ export function usesCodexFamilyPermissionModes(
  * Ports: `NewSessionLogic.usesNativePermissionSelect`
  * (`ios/Packages/HapiKit/Sources/HapiClient/NewSession/NewSessionForm.swift`,
  * `android/app/src/main/kotlin/app/hapi/companion/feature/newsession/NewSessionForm.kt`).
- * claude and grok do not share the codex-family mode set, but they render
- * through the same native select.
+ * claude, grok, cursor and agy do not share the codex-family mode set, but
+ * they render through the same native select.
  */
 export function usesNativePermissionSelect(flavor: string | null | undefined): boolean {
     return flavor === 'claude'
         || flavor === 'grok'
         || flavor === 'cursor'
+        || flavor === 'agy'
         || usesCodexFamilyPermissionModes(flavor)
 }
 
@@ -50,4 +51,4 @@ export function usesSharedPermissionModeState(flavor: string | null | undefined)
  * once into the native mode it mapped to; flavors that moved earlier already
  * settled on 'default' and are intentionally left alone.
  */
-export const LEGACY_YOLO_BRIDGE_AGENTS: readonly AgentFlavor[] = ['codex', 'claude', 'cursor']
+export const LEGACY_YOLO_BRIDGE_AGENTS: readonly AgentFlavor[] = ['codex', 'claude', 'cursor', 'agy']

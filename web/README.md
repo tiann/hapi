@@ -41,7 +41,7 @@ See `src/router.tsx` for route definitions.
 - `/settings` - Settings category hub (mobile) and responsive master-detail shell.
 - `/settings/general` - Language preferences.
 - `/settings/display` - Appearance, typography, colors, and session list preferences.
-- `/settings/chat` - Message input, tool card, and conversation color preferences.
+- `/settings/chat` - Message input, concise view, tool card, and conversation color preferences.
 - `/settings/voice` - Everyday voice assistant preferences.
 - `/settings/voice/voices` - Full-page voice picker.
 - `/settings/voice/advanced` - Voice persona, tuning, and diagnostics.
@@ -76,7 +76,9 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 ### Chat interface (`src/components/SessionChat.tsx`)
 
 - Message thread with infinite scroll.
+- Concise view (header toggle or `/settings/chat`, per device): shows only user input and each round's final reply (`src/chat/conciseView.ts`). Permission requests, questions, plan proposals, user shell commands, and errors stay visible; the full thread returns while a search target is active.
 - Composer for sending messages.
+- A collapsible **Awaiting your reply** section above the composer collects all live non-blocking `request_user_input` questions, including those outside the loaded transcript. Answer there or dismiss individual questions without sending an answer or stopping the agent. Collapsing preserves drafts; blocking permissions retain their existing controls.
 - Permission mode and model selection for supported agents.
   Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. Switching a live session to Auto when ACP does not advertise a literal Auto option relaunches the Cursor ACP process in place under `--model auto` while preserving the hub session id.
 - Session abort and handoff controls.
@@ -161,6 +163,19 @@ See `src/hooks/useSSE.ts`.
 - SSE connection to `/api/events`.
 - Session/message/machine update events.
 - Automatic cache invalidation on events.
+
+## Syntax highlighting
+
+Code fences load their Shiki grammar on demand and reuse one highlighter. Plain
+text and unknown languages fetch no grammars; aliases, line wrapping and the
+150 ms streaming debounce are retained. A Markdown source fence loads the full
+supported set to preserve its embedded-language colors. Failed loads or rendering
+fall back to the current plain text instead of retaining an older code block.
+
+The PWA caches optional grammar/theme chunks after use, outside its install-time
+precache. Previously used grammars remain available offline; an unseen language
+falls back to plain text while offline. Only successful JavaScript responses are
+cached, so SSO HTML/redirects cannot replace a grammar module.
 
 ## Stack
 

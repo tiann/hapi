@@ -53,7 +53,8 @@ fun HomeScreen(
             HomeTopBar(
                 activeHubUrl = activeHubUrl,
                 pairedHubs = pairedHubs,
-                hasActiveFilters = state.hasActiveFilters,
+                // Web's dot: any filter or a non-default order.
+                hasActiveFilters = state.isCustomized,
                 connectionStatus = state.connectionStatus,
                 searchExpanded = searchExpanded,
                 searchQuery = state.searchQuery,
@@ -86,6 +87,10 @@ fun HomeScreen(
     if (filterDestination == FilterDestination.Filters) {
         SessionFilterSheet(
             state = state,
+            onSelectSort = viewModel::setSort,
+            onSetActiveFirst = viewModel::setActiveFirst,
+            onSelectStatus = viewModel::setStatusFilter,
+            onSetUnreadOnly = viewModel::setUnreadOnly,
             onSelectMachine = viewModel::setMachineFilter,
             onOpenDates = { filterDestination = FilterDestination.Dates },
             onClearDates = viewModel::clearDateRange,
