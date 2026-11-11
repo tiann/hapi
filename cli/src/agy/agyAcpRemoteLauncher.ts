@@ -227,10 +227,23 @@ type AgyTurn = {
  * is a count over transcript facts.
  */
 type WakeGatingState = {
-    /** ACP call ids agy left open at end_turn (HAPI-observed), not yet completed. */
-    bgIds: string[];
+    /**
+     * ACP-turn background commands outstanding at window start. A completion
+     * whose native task id is in the background registry settles one even when
+     * the text match used for card delivery fails; a legacy id-less completion
+     * falls back to launch order; an id HAPI never saw backgrounded belongs to
+     * neither side and decrements nothing.
+     */
+    openAcpCommands: number;
     /** Native task ids backgrounded during this window, not yet completed. */
     openContinuation: Set<string>;
+    /**
+     * Surfaced planner calls awaiting a terminal tool step or their native-id
+     * completion: a count over transcript facts, with no per-card attribution.
+     */
+    surfacedOpenCalls: number;
+    /** Native task ids already settled once: a duplicate completion decrements nothing. */
+    settledTaskIds: Set<string>;
 };
 
 /**
@@ -240,6 +253,8 @@ type WakeGatingState = {
  * prompt.
  */
 type WakeCardPairing = {
+    /** ACP call ids awaiting their completion's result (card delivery only). */
+    bgIds: string[];
     /** Synthetic wake-call cards awaiting results, FIFO. */
     pendingWakeCalls: string[];
     /** Native agy task id -> command text, from agy's own backgrounding records. */
@@ -1006,8 +1021,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (baseline === null || baseline < 0) {
             return { reason: 'error', surfacedThroughIdx: null, latestSeenIdx: null, surfacedFully: false, steps: 0 };
         }
-        const gating: WakeGatingState = { bgIds: opts.bgIds, openContinuation: new Set() };
+        const gating: WakeGatingState = {
+            openAcpCommands: opts.bgIds.length,
+            openContinuation: new Set(),
+            surfacedOpenCalls: 0,
+            settledTaskIds: new Set()
+        };
         const pairing: WakeCardPairing = {
+            bgIds: opts.bgIds,
             pendingWakeCalls: [],
             backgrounding: new Map(),
             taskDescriptions: opts.taskDescriptions,
@@ -1085,9 +1106,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 // Live work: the original commands, a surfaced continuation
                 // tool call awaiting its result, and commands the continuation
                 // backgrounded itself — all bound by the safety cap.
-                hasOpenBackgroundCommands: () => gating.bgIds.length > 0
-                    || pairing.pendingWakeCalls.length > 0
-                    || gating.openContinuation.size > 0,
+                hasOpenBackgroundCommands: () => gating.openAcpCommands > 0
+                    || gating.openContinuation.size > 0
+                    || gating.surfacedOpenCalls > 0,
                 onStep: surface,
                 onActivity: () => this.session.onThinkingChange(true)
             });
@@ -1095,6 +1116,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             watcher.start();
             const close = await watcher.waitForSettle(opts.signal);
             this.wakeWatcher = null;
+            // Synthetic cards the pairing never completed fail open: give them
+            // the placeholder the ACP cards get at close, so they do not spin
+            // after the window is gone.
+            for (const wakeId of pairing.pendingWakeCalls) {
+                const placeholder = convertAgentMessage(
+                    { type: 'tool_result', id: wakeId, output: AGY_BACKGROUND_COMMAND_RESULT, status: 'completed' },
+                    this.currentModelId
+                );
+                if (placeholder) this.session.sendAgentMessage(placeholder);
+            }
+            pairing.pendingWakeCalls.length = 0;
             // The watcher only surfaces post-baseline steps; a raced backlog
             // surfaced above counts toward the close record, so a fully
             // surfaced window (backlog + watch) still reads as drop-mode.
@@ -1132,18 +1164,39 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // An unrelated system message (no completion marker) touches no
             // pending command.
             if (!completion) return;
-            if (completion.taskId !== null) gating.openContinuation.delete(completion.taskId);
+            // A native task id settles exactly once: a duplicate completion
+            // re-attempts the delivery below but decrements nothing.
+            const duplicate = completion.taskId !== null && gating.settledTaskIds.has(completion.taskId);
+            if (completion.taskId !== null && !duplicate) gating.settledTaskIds.add(completion.taskId);
+            if (!duplicate) {
+                // Gating counts identified ends: a native id the window saw
+                // backgrounded frees its surfaced call; any other completion
+                // (the turn's own command by native id even when the text
+                // match below fails — that card then fails open to the close
+                // placeholder — a legacy id-less one, or an id whose record
+                // HAPI never saw) releases one ACP command: uncertain
+                // identity fails open toward quiet, never toward the cap.
+                if (completion.taskId !== null && gating.openContinuation.delete(completion.taskId) && gating.surfacedOpenCalls > 0) {
+                    // The id the window saw backgrounded frees one surfaced
+                    // call; a count of zero means the record belonged to an
+                    // ACP-turn command surfacing in-window, so the ACP arm
+                    // takes it below.
+                    gating.surfacedOpenCalls -= 1;
+                } else {
+                    gating.openAcpCommands = Math.max(0, gating.openAcpCommands - 1);
+                }
+            }
             let bgId: string | undefined;
             const description = completion.taskId !== null ? pairing.backgrounding.get(completion.taskId) : undefined;
             if (description === undefined) {
                 // No native task id on the completion, or no backgrounding
                 // record for it (older builds): launch-order pairing, as before.
-                bgId = gating.bgIds.shift();
+                bgId = pairing.bgIds.shift();
             } else {
                 // Pair by the native task id agy recorded at backgrounding time,
                 // so out-of-order completions complete their own card.
-                bgId = gating.bgIds.find((id) => (pairing.taskDescriptions.get(id) ?? '').trim() === description);
-                if (bgId !== undefined) gating.bgIds.splice(gating.bgIds.indexOf(bgId), 1);
+                bgId = pairing.bgIds.find((id) => (pairing.taskDescriptions.get(id) ?? '').trim() === description);
+                if (bgId !== undefined) pairing.bgIds.splice(pairing.bgIds.indexOf(bgId), 1);
             }
             if (bgId !== undefined) {
                 this.forwardAgentMessage({
@@ -1192,6 +1245,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     nativeName: call.name
                 });
                 pairing.pendingWakeCalls.push(id);
+                gating.surfacedOpenCalls += 1;
                 const command = call.args && typeof call.args === 'object' && !Array.isArray(call.args)
                     ? (call.args as { CommandLine?: unknown }).CommandLine
                     : undefined;
@@ -1214,8 +1268,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 return; // the ACP card already shows the backgrounded command
             }
-            const wakeId = pairing.pendingWakeCalls.shift();
-            if (!wakeId) return; // result without a surfaced call: nothing to attach it to
+            // A terminal tool step frees one surfaced call regardless of which
+            // card it belongs to: the count is the reliable fact, the
+            // attribution below is display-only.
+            gating.surfacedOpenCalls = Math.max(0, gating.surfacedOpenCalls - 1);
+            // Settle the oldest pending card with no native-task link: a
+            // backgrounded command's card settles on its completion, so a
+            // foreground result must not consume it (tiann/hapi#2366 review).
+            const linked = new Set(pairing.wakeCallByTask.values());
+            const wakeId = pairing.pendingWakeCalls.find((id) => !linked.has(id));
+            if (wakeId === undefined) return; // every pending card awaits its completion: nothing to attach
+            pairing.pendingWakeCalls.splice(pairing.pendingWakeCalls.indexOf(wakeId), 1);
             this.forwardAgentMessage({
                 type: 'tool_result',
                 id: wakeId,

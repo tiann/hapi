@@ -2818,6 +2818,97 @@ describe('AgyAcpRemoteLauncher late continuation (completions pair by task id)',
     });
 });
 
+describe('AgyAcpRemoteLauncher late continuation (gating on reliably identified state)', () => {
+    const BACKGROUNDING = (taskId: string, description: string): string =>
+        `Created At: 2026-11-10T14:00:07+09:00\nTool is running as a background task with task id: ${taskId}\nTask Description: ${description}`;
+    const COMPLETION = (taskId: string, output: string): string =>
+        `Task id "${taskId}" finished with result:\nCommand exited with code 0.\n\nCommand output:\n${output}`;
+
+    it('does not let a foreground result complete a backgrounded wake card, and releases ready', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The turn's command completes, then the continuation surfaces two
+        // calls: the first backgrounds a command (agy records the task), the
+        // second runs in the foreground and is slow.
+        source.push(
+            wakeStep(3, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nTURN-OK'),
+            wakeStep(4, 'planner', '', [{ name: 'run_command', args: { CommandLine: 'echo follow-up-analysis', WaitMsBeforeAsync: 5000 } }]),
+            wakeStep(5, 'planner', '', [{ name: 'run_command', args: { CommandLine: 'sleep 60 && echo SLOW-OUT', WaitMsBeforeAsync: 5000 } }]),
+            { ...wakeStep(6, 'tool', BACKGROUNDING('sample/task-9', 'echo follow-up-analysis')), status: 'running' }
+        );
+        source.latest = 6;
+        await vi.waitFor(() => expect(agentRows(client).filter((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'))).toHaveLength(2));
+
+        // The foreground result lands first, then the background completion.
+        source.push(wakeStep(7, 'tool', 'SLOW-OUT-STDOUT'));
+        source.latest = 7;
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(1));
+        source.push(wakeStep(8, 'system', COMPLETION('sample/task-9', 'FOLLOW-UP-OUT')));
+        source.latest = 8;
+
+        // The foreground result belongs to the second card; the background
+        // completion closes the first; ready fires instead of riding the cap.
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        const calls = agentRows(client).filter((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'));
+        const first = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === calls[0].callId) as Record<string, unknown> | undefined;
+        const second = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === calls[1].callId) as Record<string, unknown> | undefined;
+        expect(JSON.stringify(first)).toContain('FOLLOW-UP-OUT');
+        expect(JSON.stringify(second)).toContain('SLOW-OUT-STDOUT');
+    });
+
+    it('releases ready when a completion pairs by task id even though the command text drifted', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        const driftedArgs = { CommandLine: 'sleep 30  &&  echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: driftedArgs, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: driftedArgs });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // agy's record collapses the command's inner spacing, so the exact
+        // text match against the ACP call fails; the native task id still
+        // identifies the completion as this turn's command.
+        source.push(
+            { ...wakeStep(3, 'tool', BACKGROUNDING('sample/task-1', 'sleep 30 && echo FIRST-OUT')), status: 'running' },
+            wakeStep(4, 'system', COMPLETION('sample/task-1', 'FIRST-OUT'))
+        );
+        source.latest = 4;
+
+        // The task id is the reliable fact: ready fires instead of riding the
+        // safety cap, whatever the text match decides for the card.
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+    });
+});
+
 describe('AgyAcpRemoteLauncher late continuation (raced completion keeps watching)', () => {
     it('surfaces the raced backlog and keeps watching for steps that land after it', async () => {
         const { session, queue, client } = makeSession();
