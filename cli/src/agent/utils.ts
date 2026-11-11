@@ -21,6 +21,14 @@ function firstString(value: unknown, keys: readonly string[]): string | null {
 }
 
 /**
+ * Semantic hints (ACP kinds or tool names) that unlock diff canonicalization.
+ * Shared by {@link canonicalizeDiffToolInput}'s gate and
+ * {@link resolveDiffToolSemanticHint}'s name fallback so the two can never
+ * drift apart.
+ */
+const DIFF_TOOL_SEMANTIC_HINTS = ['edit', 'write', 'write_file', 'replace', 'modify', 'file_edit', 'apply_patch'];
+
+/**
  * Detects diff/write-shaped tool inputs emitted by ACP agents that keep their
  * native argument shapes (OpenCode: `{filePath, oldString, newString}` for
  * edit and `{filePath, content}` for write) and normalizes them to the
@@ -39,7 +47,7 @@ function firstString(value: unknown, keys: readonly string[]): string | null {
  */
 export function canonicalizeDiffToolInput(rawInput: unknown, semanticHint: string | null): CanonicalDiffToolInput | null {
     const kind = semanticHint?.trim().toLowerCase() ?? null;
-    if (!kind || !['edit', 'write', 'write_file', 'replace', 'modify', 'file_edit'].includes(kind)) {
+    if (!kind || !DIFF_TOOL_SEMANTIC_HINTS.includes(kind)) {
         return null;
     }
 
@@ -77,6 +85,41 @@ export function canonicalizeDiffToolInput(rawInput: unknown, semanticHint: strin
     }
 
     return null;
+}
+
+/**
+ * Resolve the semantic hint {@link canonicalizeDiffToolInput} should gate on,
+ * from an update's ACP `kind` plus the derived tool name.
+ *
+ * Mirrors the historical call-site rule `kind ?? derivedName` for every input
+ * EXCEPT the one case it could not serve: agents that emit the uninformative
+ * ACP kind `'other'` for every tool while carrying the real tool name as the
+ * title with Claude-shaped rawInput (kind:'other', title
+ * 'edit'/'write'/'apply_patch', rawInput JSON.parse(args)). For those, the
+ * derived tool name — when it is exactly one of the known diff-tool names —
+ * stands in for the kind so the args canonicalize exactly like a flavor whose
+ * kind is real.
+ *
+ * Backward compatibility: flavors whose kinds are real ('edit', 'read',
+ * 'execute', …) keep the kind-based hint untouched — the name is only
+ * consulted when the kind is explicitly `'other'`. When the kind is absent
+ * the raw name is returned, preserving the old `kind ?? name` fallback.
+ */
+export function resolveDiffToolSemanticHint(
+    kind: string | null | undefined,
+    name: string | null | undefined
+): string | null {
+    const normalizedKind = typeof kind === 'string' ? kind.trim().toLowerCase() : null;
+    if (normalizedKind === null) {
+        return typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
+    }
+    if (normalizedKind === 'other') {
+        const normalizedName = typeof name === 'string' ? name.trim().toLowerCase() : null;
+        if (normalizedName && DIFF_TOOL_SEMANTIC_HINTS.includes(normalizedName)) {
+            return normalizedName;
+        }
+    }
+    return normalizedKind;
 }
 
 function normalizeToolName(value: unknown): string | null {

@@ -5,7 +5,7 @@ import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedIm
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 import { asString, isObject } from '@hapi/protocol';
 import { extractNotifySummary } from '@hapi/protocol/messages';
-import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
+import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName, resolveDiffToolSemanticHint } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
@@ -23,7 +23,7 @@ function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'complete
  * tool input — treating it as valid blocks kind+title/content fallbacks and can
  * clobber a previously captured non-empty input.
  */
-function isUsableRawInput(value: unknown): boolean {
+export function isUsableRawInput(value: unknown): boolean {
     if (value == null) return false;
     if (isObject(value) && Object.keys(value).length === 0) return false;
     return true;
@@ -427,6 +427,51 @@ function normalizePlanEntries(entries: unknown): PlanItem[] {
     }
 
     return items;
+}
+
+type ToolContentImageSplit = {
+    /** ACP image blocks ready for registerGeneratedImageFromAcpBlock. */
+    imageBlocks: Array<Record<string, unknown>>;
+    /** The content array with every image block removed (original order kept). */
+    remaining: unknown[];
+    hadImages: boolean;
+};
+
+/**
+ * Splits a `tool_call_update` content array into image blocks and everything
+ * else. Some agents embed tool-result images (e.g. screenshot readers) inline
+ * in the content array as base64 `{type:'content', content:{type:'image',
+ * data}}` blocks. The raw array must never leak into the transcript
+ * (multi-MB base64 JSON), so the images are routed through the
+ * generated-image registration and only the remaining blocks become the tool
+ * output string.
+ *
+ * Only blocks the registration can actually accept (inline base64 data) are
+ * extracted. URI-only image blocks and bare non-wrapper image entries keep the
+ * historical behavior — they stay in the content and fall back to the raw
+ * value via normalizeAcpToolContent's null path, losing nothing.
+ */
+function splitToolContentImages(content: unknown): ToolContentImageSplit {
+    if (!Array.isArray(content)) {
+        return { imageBlocks: [], remaining: [], hadImages: false };
+    }
+    const imageBlocks: Array<Record<string, unknown>> = [];
+    const remaining: unknown[] = [];
+    for (const block of content) {
+        if (
+            isObject(block)
+            && block.type === 'content'
+            && isObject(block.content)
+            && block.content.type === 'image'
+            && typeof block.content.data === 'string'
+            && block.content.data.length > 0
+        ) {
+            imageBlocks.push(block.content);
+            continue;
+        }
+        remaining.push(block);
+    }
+    return { imageBlocks, remaining, hadImages: imageBlocks.length > 0 };
 }
 
 export type AcpTextChunkMode = 'dedupe' | 'delta';
@@ -903,7 +948,7 @@ export class AcpMessageHandler {
             // across the tool_result boundary. Reasoning is separate and is
             // flushed above so tool results still appear after the thought
             // that led to them.
-            this.handleToolCallUpdate(update);
+            await this.handleToolCallUpdate(update);
             return;
         }
 
@@ -917,11 +962,11 @@ export class AcpMessageHandler {
         }
     }
 
-    private async emitGeneratedImageFromAcpContent(content: Record<string, unknown>): Promise<void> {
+    private async emitGeneratedImageFromAcpContent(content: Record<string, unknown>): Promise<boolean> {
         try {
             const image = await registerGeneratedImageFromAcpBlock(content);
             if (!image) {
-                return;
+                return false;
             }
             this.onMessage({
                 type: 'generated_image',
@@ -930,11 +975,13 @@ export class AcpMessageHandler {
                 mimeType: image.mimeType,
                 source: this.buildAcpInlineMediaSource(),
             });
+            return true;
         } catch (error) {
             logger.debug(
                 '[AcpMessageHandler] Failed to register ACP image block:',
                 error instanceof Error ? error.message : String(error)
             );
+            return false;
         }
     }
 
@@ -991,8 +1038,16 @@ export class AcpMessageHandler {
         // oldString, newString} / {filePath, content}) must be canonicalized to
         // the Claude-shaped Edit/Write inputs the web diff views render — the
         // same contract as hoistDiffContentIntoInput for Gemini's diff blocks.
-        // Gate on the kind so an arbitrary non-edit tool isn't misclassified.
-        const canonical = input == null ? null : canonicalizeDiffToolInput(input, asString(update.kind) ?? derivedName.name);
+        // Gate on the kind so an arbitrary non-edit tool isn't misclassified
+        // (kind:'other' falls back to the derived tool name — see
+        // resolveDiffToolSemanticHint — so agents that label every tool
+        // 'other' while naming it in the title canonicalize too).
+        const canonical = input == null
+            ? null
+            : canonicalizeDiffToolInput(
+                input,
+                resolveDiffToolSemanticHint(asString(update.kind), derivedName.name)
+            );
         if (canonical) {
             name = canonical.name;
             input = canonical.input;
@@ -1012,7 +1067,7 @@ export class AcpMessageHandler {
         });
     }
 
-    private handleToolCallUpdate(update: Record<string, unknown>): void {
+    private async handleToolCallUpdate(update: Record<string, unknown>): Promise<void> {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
 
@@ -1030,8 +1085,13 @@ export class AcpMessageHandler {
             let input: unknown = update.rawInput;
             // Native-shape args (OpenCode) arrive here as the first usable
             // input; canonicalize before storing so the web diff views match.
-            // Gate on the kind so an arbitrary non-edit tool isn't misclassified.
-            const canonical = canonicalizeDiffToolInput(input, asString(update.kind) ?? derivedName.name);
+            // Gate on the kind so an arbitrary non-edit tool isn't misclassified
+            // (kind:'other' falls back to the derived tool name — see
+            // resolveDiffToolSemanticHint).
+            const canonical = canonicalizeDiffToolInput(
+                input,
+                resolveDiffToolSemanticHint(asString(update.kind), derivedName.name)
+            );
             if (canonical) {
                 name = canonical.name;
                 input = canonical.input;
@@ -1116,7 +1176,43 @@ export class AcpMessageHandler {
                 }
             }
 
-            const output = resolveToolResultOutput(update.rawOutput, update.content);
+            // Prefer rawOutput (Claude/Codex path); when present it is
+            // authoritative and no image extraction runs. When absent,
+            // normalize the ACP content array sent by agents such as Gemini
+            // and OpenCode. Image blocks embedded in the content array
+            // (inline base64, e.g. screenshot-reader tools) are first routed
+            // through the same generated-image registration
+            // agent_message_chunk images use; only the remaining blocks
+            // become the tool output, so the raw multi-MB base64 array never
+            // leaks into the transcript.
+            let output: unknown;
+            if (update.rawOutput !== undefined) {
+                output = resolveToolResultOutput(update.rawOutput, update.content);
+            } else {
+                const { imageBlocks, remaining, hadImages } = splitToolContentImages(update.content);
+                let source: unknown = update.content;
+                if (hadImages) {
+                    // Only blocks that actually registered as generated images
+                    // may be removed from the tool output. A rejected
+                    // registration (undecodable base64, sniffed-MIME mismatch,
+                    // or a write failure) must fall back to keeping the block
+                    // in the output — stripping it here would discard the
+                    // tool's only copy of the result with no trace.
+                    const unregistered: Array<Record<string, unknown>> = [];
+                    for (const imageBlock of imageBlocks) {
+                        if (!(await this.emitGeneratedImageFromAcpContent(imageBlock))) {
+                            unregistered.push(imageBlock);
+                        }
+                    }
+                    source = unregistered.length === 0 ? remaining : [...remaining, ...unregistered];
+                }
+                // If content is not an array (normalizeAcpToolContent returns
+                // null), fall back to the image-stripped value to avoid
+                // silent data loss — without ever re-introducing the image
+                // payload.
+                const normalized = normalizeAcpToolContent(source);
+                output = normalized !== null ? normalized : source;
+            }
             this.onMessage({
                 type: 'tool_result',
                 id: toolCallId,
