@@ -744,3 +744,31 @@ describe('completed fork capability snapshot races', () => {
         expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
     });
 });
+
+for (const queued of [false, true]) {
+    it(`retains completed-history discovery when only turn/start intervenes (${queued ? 'queued updater' : 'delayed read'})`, async () => {
+        const f = await fixture();
+        expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(false);
+        f.native.thread.turns = [{ id: 'historical', status: 'completed', items: [] }];
+        const original = f.session.updateMetadata.bind(f.session);
+        let delayed: Parameters<ApiSessionClient['updateMetadata']>[0] | undefined;
+        let release!: () => void;
+        const spy = queued ? vi.spyOn(f.session, 'updateMetadata').mockImplementation(fn => {
+            if (!delayed) { delayed = fn; return; }
+            return original(fn);
+        }) : vi.spyOn(f.root, 'readThread').mockImplementationOnce(async () => {
+            await new Promise<void>(resolve => { release = resolve; });
+            return { turns: [{ id: 'historical', status: 'completed', items: [] }] };
+        });
+        const refresh = f.root.refresh();
+        if (queued) await refresh;
+        else await vi.waitFor(() => expect(release).toBeDefined());
+        spy.mockRestore();
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'next', status: 'inProgress' } });
+        await f.drain();
+        if (queued) original(delayed!);
+        else { release(); await refresh; }
+        expect(f.metadata().capabilities?.conversationHistory?.forkLatestCompleted).toBe(true);
+        expect(f.state().steeringActive).toBe(true);
+    });
+}
