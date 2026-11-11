@@ -256,10 +256,6 @@ describe('SessionList machine filter', () => {
             <SessionListSearch
                 value=""
                 onChange={vi.fn()}
-                customStart=""
-                customEnd=""
-                sessionActivityDates={new Set()}
-                onDateRangeChange={vi.fn()}
                 expanded
                 onExpandedChange={vi.fn()}
             />
@@ -289,27 +285,4 @@ describe('SessionList machine filter', () => {
         expect(screen.getByRole('button', { name: SEARCH_LABEL })).toBeTruthy()
     })
 
-    it('keeps the search scope and date popovers mutually exclusive', () => {
-        renderSessionList([
-            makeSession({
-                id: 'session-popovers',
-                updatedAt: 100,
-                metadata: { path: '/work/popovers', machineId: 'machine-1', name: 'Popover test' }
-            })
-        ])
-
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        const scopeButton = screen.getByRole('button', { name: SEARCH_SCOPE_LABEL })
-        const dateButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
-
-        fireEvent.click(scopeButton)
-        expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy()
-        fireEvent.click(dateButton)
-        expect(screen.queryByRole('button', { name: 'Default' })).toBeNull()
-        expect(screen.getByText('Select start date')).toBeTruthy()
-
-        fireEvent.click(scopeButton)
-        expect(screen.queryByText('Select start date')).toBeNull()
-        expect(screen.getByRole('button', { name: 'Default' })).toBeTruthy()
-    })
 })

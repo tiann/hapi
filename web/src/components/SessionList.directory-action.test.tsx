@@ -2138,7 +2138,7 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
-    it('gives expanded search a 48px clear end-cap with calendar immediately left (tiann/hapi#2019)', () => {
+    it('gives expanded search a 48px clear end-cap at the end of the field (tiann/hapi#2019)', () => {
         renderWithProviders(
             <SessionList
                 sessions={[makeSession({
@@ -2165,16 +2165,9 @@ describe('SessionList search toggle', () => {
         expect(clearButton.className).toMatch(/min-h-\[48px\]/)
         expect(clearButton.className).toMatch(/min-w-\[48px\]/)
 
-        const dateButton = screen.getByTestId('session-list-search-date-embedded')
-        expect(dateButton.className).toMatch(/min-h-\[48px\]/)
-        expect(dateButton.className).toMatch(/min-w-\[48px\]/)
-        expect(clearButton.parentElement?.contains(dateButton)).toBe(true)
-
         const fieldChildren = Array.from(clearButton.parentElement?.children ?? [])
-        const dateIndex = fieldChildren.findIndex((node) => node === dateButton.parentElement || node.contains(dateButton))
-        const clearIndex = fieldChildren.indexOf(clearButton)
-        expect(dateIndex).toBeGreaterThanOrEqual(0)
-        expect(clearIndex).toBeGreaterThan(dateIndex)
+        expect(fieldChildren.at(-1)).toBe(clearButton)
+        expect(fieldChildren.at(-2)).toBe(input)
     })
 
     it('stays expanded with focus on the input after clearing the query', () => {

@@ -21,10 +21,7 @@ import {
     normalizeSearch,
     prepareSidebarSessions,
     sessionMatchesQuery,
-
     sessionMatchesSearchMode,
-    sessionMatchesTimeRange,
-
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
