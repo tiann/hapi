@@ -3343,3 +3343,230 @@ describe('AcpMessageHandler idle text flush', () => {
         expect(text[1].text).toEqual('```js\nconst a = 1;\nconsole.log(a);\n```');
     });
 });
+
+describe('AcpMessageHandler kind other tools and inline tool-result images', () => {
+    const pngData = Buffer
+        .from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00])
+        .toString('base64');
+
+    afterEach(() => {
+        clearGeneratedImages();
+    });
+
+    it('canonicalizes Claude-shaped edit args when kind is other and the title is the tool name', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-edit-1',
+            title: 'edit',
+            kind: 'other',
+            rawInput: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' },
+            status: 'in_progress'
+        });
+
+        const toolCalls = messages.filter((message) => message.type === 'tool_call');
+        expect(toolCalls).toHaveLength(1);
+        if (toolCalls[0]?.type !== 'tool_call') {
+            throw new Error('expected tool_call message');
+        }
+        expect(toolCalls[0].name).toBe('Edit');
+        expect(toolCalls[0].input).toEqual({
+            file_path: '/tmp/a.ts',
+            old_string: 'foo',
+            new_string: 'bar'
+        });
+    });
+
+    it('canonicalizes Claude-shaped write args under kind other', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-write-1',
+            title: 'write',
+            kind: 'other',
+            rawInput: { file_path: '/tmp/b.txt', content: 'hello' },
+            status: 'in_progress'
+        });
+
+        const toolCalls = messages.filter((message) => message.type === 'tool_call');
+        if (toolCalls[0]?.type !== 'tool_call') {
+            throw new Error('expected tool_call message');
+        }
+        expect(toolCalls[0].name).toBe('Write');
+        expect(toolCalls[0].input).toEqual({ file_path: '/tmp/b.txt', content: 'hello' });
+    });
+
+    it('canonicalizes edit args arriving on tool_call_update with usable rawInput', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-edit-2',
+            title: 'edit',
+            kind: 'other',
+            status: 'in_progress'
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'other-edit-2',
+            title: 'edit',
+            kind: 'other',
+            rawInput: { file_path: '/tmp/c.ts', old_string: 'a', new_string: 'b', replace_all: true },
+            status: 'in_progress'
+        });
+
+        const toolCalls = messages.filter((message) => message.type === 'tool_call');
+        const last = toolCalls[toolCalls.length - 1];
+        if (last?.type !== 'tool_call') {
+            throw new Error('expected tool_call message');
+        }
+        expect(last.name).toBe('Edit');
+        expect(last.input).toEqual({
+            file_path: '/tmp/c.ts',
+            old_string: 'a',
+            new_string: 'b',
+            replace_all: true
+        });
+    });
+
+    it('does not canonicalize kind other when the title is not a diff tool name', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-bash-1',
+            title: 'bash',
+            kind: 'other',
+            rawInput: { command: 'ls -la' },
+            status: 'in_progress'
+        });
+
+        const toolCalls = messages.filter((message) => message.type === 'tool_call');
+        if (toolCalls[0]?.type !== 'tool_call') {
+            throw new Error('expected tool_call message');
+        }
+        expect(toolCalls[0].name).toBe('bash');
+        expect(toolCalls[0].input).toEqual({ command: 'ls -la' });
+    });
+
+    it('does not canonicalize when the kind is a real non-edit kind even if the title looks like a diff tool', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'gemini-read-1',
+            title: 'write',
+            kind: 'read',
+            rawInput: { file_path: '/tmp/d.txt', content: 'hello' },
+            status: 'in_progress'
+        });
+
+        const toolCalls = messages.filter((message) => message.type === 'tool_call');
+        if (toolCalls[0]?.type !== 'tool_call') {
+            throw new Error('expected tool_call message');
+        }
+        // Real kinds keep the kind-based gate: 'read' never canonicalizes.
+        expect(toolCalls[0].input).toEqual({ file_path: '/tmp/d.txt', content: 'hello' });
+    });
+
+    it('extracts tool_call_update image blocks into generated images and keeps text-only output', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-image-1',
+            title: 'read_image',
+            kind: 'other',
+            rawInput: { file_path: '/tmp/shot.png' },
+            status: 'in_progress'
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'other-image-1',
+            status: 'completed',
+            content: [
+                { type: 'content', content: { type: 'text', text: 'the screenshot' } },
+                { type: 'content', content: { type: 'image', mimeType: 'image/png', data: pngData } }
+            ]
+        });
+
+        const result = getToolResult(messages, 'other-image-1');
+        expect(result.status).toBe('completed');
+        // Only the text block becomes the output string.
+        expect(result.output).toBe('the screenshot');
+        expect(JSON.stringify(result.output)).not.toContain(pngData);
+
+        const imageMessage = messages.find(
+            (message): message is Extract<AgentMessage, { type: 'generated_image' }> =>
+                message.type === 'generated_image'
+        );
+        expect(imageMessage).toBeTruthy();
+        expect(imageMessage?.mimeType).toBe('image/png');
+        expect(imageMessage?.imageId).toBeTruthy();
+        // The image is registered before the tool result is emitted.
+        const imageIndex = messages.findIndex((message) => message.type === 'generated_image');
+        const resultIndex = messages.findIndex((message) => message.type === 'tool_result');
+        expect(imageIndex).toBeGreaterThanOrEqual(0);
+        expect(resultIndex).toBeGreaterThan(imageIndex);
+    });
+
+    it('emits the generated image and an empty output for image-only tool content', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-image-2',
+            title: 'read_image',
+            kind: 'other',
+            rawInput: { file_path: '/tmp/shot2.png' },
+            status: 'in_progress'
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'other-image-2',
+            status: 'completed',
+            content: [
+                { type: 'content', content: { type: 'image', mimeType: 'image/png', data: pngData } }
+            ]
+        });
+
+        const result = getToolResult(messages, 'other-image-2');
+        expect(result.output).toBe('');
+        expect(messages.some((message) => message.type === 'generated_image')).toBe(true);
+    });
+
+    it('prefers rawOutput and skips image extraction when rawOutput is present (regression guard)', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'other-image-3',
+            title: 'read_image',
+            kind: 'other',
+            status: 'in_progress'
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'other-image-3',
+            status: 'completed',
+            rawOutput: { note: 'cached' },
+            content: [
+                { type: 'content', content: { type: 'image', mimeType: 'image/png', data: pngData } }
+            ]
+        });
+
+        const result = getToolResult(messages, 'other-image-3');
+        expect(result.output).toEqual({ note: 'cached' });
+        expect(messages.some((message) => message.type === 'generated_image')).toBe(false);
+    });
+});

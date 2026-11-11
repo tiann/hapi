@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import agySteeredTurn from './__fixtures__/agy-steered-turn.json';
-import type { AgentMessage } from '@/agent/types';
+import type { AgentMessage, PermissionRequest } from '@/agent/types';
 import { logger } from '@/ui/logger';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
@@ -2596,7 +2596,7 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
 });
 
 describe('AcpSdkBackend config_option_update', () => {
-    it('refreshes cached thought_level only when the flavor opts in', () => {
+    it('refreshes cached thought_level unconditionally when the agent pushes the update', () => {
         const update = {
             sessionId: 's1',
             update: {
@@ -2604,10 +2604,216 @@ describe('AcpSdkBackend config_option_update', () => {
                 configOptions: [{ id: 'effort', category: 'thought_level', currentValue: 'low', options: [{ value: 'low', name: 'low' }] }]
             }
         };
-        for (const configOptionUpdates of [true, false]) {
-            const backend = new AcpSdkBackend({ command: 'acp-agent', configOptionUpdates });
-            (backend as unknown as { handleNotification: (m: string, p: unknown) => void }).handleNotification('session/update', update);
-            expect(backend.getThoughtLevelConfigOption('s1')?.currentValue).toBe(configOptionUpdates ? 'low' : undefined);
-        }
+        const backend = new AcpSdkBackend({ command: 'acp-agent' });
+        (backend as unknown as { handleNotification: (m: string, p: unknown) => void }).handleNotification('session/update', update);
+        expect(backend.getThoughtLevelConfigOption('s1')?.currentValue).toBe('low');
+    });
+});
+
+describe('AcpSdkBackend bare request_permission correlation + config_option_update metadata', () => {
+    type BackendInternal = {
+        handleSessionUpdate: (params: unknown) => void;
+        handlePermissionRequest: (params: unknown, requestId: string | number | null) => Promise<unknown>;
+    };
+
+    function makeBarePermissionBackend() {
+        return new AcpSdkBackend({ command: 'acp-agent' });
+    }
+
+    it('correlates a bare request_permission with the drained tool_call update', async () => {
+        const backend = makeBarePermissionBackend();
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        // The agent drains the full tool_call update BEFORE asking; the
+        // capture is synchronous so this also holds when both lines arrive in
+        // the same stdout chunk (no await between the two calls).
+        internal.handleSessionUpdate({
+            sessionId: 'session-bare',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'call-bare-1',
+                title: 'bash',
+                kind: 'other',
+                rawInput: { command: 'cat /etc/hosts' },
+                status: 'in_progress'
+            }
+        });
+        await internal.handlePermissionRequest({
+            sessionId: 'session-bare',
+            // Some agents send ONLY {toolCallId} — no title/kind/rawInput.
+            toolCall: { toolCallId: 'call-bare-1' },
+            options: [
+                { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+                { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' }
+            ]
+        }, 'req-1');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0]).toMatchObject({
+            id: 'call-bare-1',
+            sessionId: 'session-bare',
+            toolCallId: 'call-bare-1',
+            title: 'bash',
+            kind: 'other'
+        });
+        expect(captured[0].rawInput).toEqual({ command: 'cat /etc/hosts' });
+    });
+
+    it('correlates a request_permission that hoists toolCallId to the params level', async () => {
+        const backend = makeBarePermissionBackend();
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        internal.handleSessionUpdate({
+            sessionId: 'session-bare',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'call-bare-2',
+                title: 'write',
+                kind: 'other',
+                rawInput: { file_path: '/tmp/x.txt', content: 'hi' },
+                status: 'in_progress'
+            }
+        });
+        await internal.handlePermissionRequest({
+            sessionId: 'session-bare',
+            toolCallId: 'call-bare-2',
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, 'req-2');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].title).toBe('write');
+        expect(captured[0].rawInput).toEqual({ file_path: '/tmp/x.txt', content: 'hi' });
+    });
+
+    it('keeps request-carried fields over correlated values (flavors that fill toolCall)', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        internal.handleSessionUpdate({
+            sessionId: 'session-oc',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'call-oc-1',
+                title: 'bash',
+                kind: 'execute',
+                rawInput: { command: 'ls' },
+                status: 'in_progress'
+            }
+        });
+        await internal.handlePermissionRequest({
+            sessionId: 'session-oc',
+            toolCall: {
+                toolCallId: 'call-oc-1',
+                title: 'Shell',
+                kind: 'execute',
+                rawInput: { cmd: 'echo from-request' }
+            },
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, 'req-3');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].title).toBe('Shell');
+        expect(captured[0].kind).toBe('execute');
+        expect(captured[0].rawInput).toEqual({ cmd: 'echo from-request' });
+    });
+
+    it('leaves an uncorrelatable bare permission request anonymous (read-only then fails closed)', async () => {
+        const backend = makeBarePermissionBackend();
+        const captured: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            captured.push(request);
+            void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
+        });
+        const internal = backend as unknown as BackendInternal;
+
+        // No tool_call update was drained for this id — the request must stay
+        // anonymous (title/kind/rawInput undefined) so the permission bridge's
+        // read-only auto-approval fails closed instead of approving 'Tool'.
+        await internal.handlePermissionRequest({
+            sessionId: 'session-bare',
+            toolCall: { toolCallId: 'call-bare-unknown' },
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        }, 'req-4');
+
+        expect(captured).toHaveLength(1);
+        expect(captured[0].toolCallId).toBe('call-bare-unknown');
+        expect(captured[0].title).toBeUndefined();
+        expect(captured[0].kind).toBeUndefined();
+        expect(captured[0].rawInput).toBeUndefined();
+    });
+
+    it('refreshes sessionConfigOptions and model metadata from config_option_update', () => {
+        const backend = makeBarePermissionBackend();
+        const internal = backend as unknown as BackendInternal;
+
+        const sendConfigOptionUpdate = (modelValue: string, effortValue: string) => {
+            internal.handleSessionUpdate({
+                sessionId: 'session-bare',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.configOptionUpdate,
+                    configOptions: [
+                        {
+                            id: 'model',
+                            name: 'Model',
+                            category: 'model',
+                            type: 'select',
+                            currentValue: modelValue,
+                            options: [
+                                {
+                                    group: 'official',
+                                    name: 'Official',
+                                    options: [
+                                        { value: '["official","model-flash"]', name: 'Model Flash' },
+                                        { value: '["official","model-pro"]', name: 'Model Pro' }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            id: 'reasoning_effort',
+                            category: 'thought_level',
+                            currentValue: effortValue,
+                            options: [
+                                { value: 'off', name: 'Off' },
+                                { value: 'low', name: 'Low' },
+                                { value: 'high', name: 'High' }
+                            ]
+                        }
+                    ]
+                }
+            });
+        };
+
+        sendConfigOptionUpdate('["official","model-flash"]', 'high');
+        expect(backend.getSessionConfigOptions('session-bare')?.map((option) => option.id))
+            .toEqual(['model', 'reasoning_effort']);
+        expect(backend.getSessionModelsMetadata('session-bare')?.currentModelId)
+            .toBe('["official","model-flash"]');
+        expect(backend.getThoughtLevelConfigOption('session-bare')?.currentValue).toBe('high');
+
+        // The agent pushes a fresh catalog mid-session (adapters updated).
+        sendConfigOptionUpdate('["official","model-pro"]', 'low');
+        expect(backend.getSessionModelsMetadata('session-bare')?.currentModelId)
+            .toBe('["official","model-pro"]');
+        expect(backend.getThoughtLevelConfigOption('session-bare')?.currentValue).toBe('low');
+        expect(backend.getConfigOptionByCategory('session-bare', 'model')?.options).toEqual([
+            { value: '["official","model-flash"]', name: 'Model Flash' },
+            { value: '["official","model-pro"]', name: 'Model Pro' }
+        ]);
     });
 });

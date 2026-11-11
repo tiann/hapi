@@ -1,6 +1,7 @@
 import type { AgentState } from "@/api/types";
 import type { PermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { isPlaceholderToolName } from '@/agent/utils';
 
 type RpcHandlerManagerLike = {
     registerHandler<TRequest = unknown, TResponse = unknown>(
@@ -103,6 +104,16 @@ export function resolveToolAutoApprovalDecision(
     }
 
     if (mode === 'read-only') {
+        // Fail closed: a tool we cannot classify (no title / generic
+        // placeholder like 'Tool'/'Unknown'/'other' — e.g. a bare
+        // session/request_permission that carried only {toolCallId} and could
+        // not be correlated to its drained tool_call) must never be
+        // auto-approved in read-only. It might be anything, including a
+        // sandbox-escalating write, so surface it to the user instead.
+        // Other modes keep their existing behavior.
+        if (isPlaceholderToolName(toolName)) {
+            return null;
+        }
         const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name));
         return isWriteTool ? null : 'approved';
     }
