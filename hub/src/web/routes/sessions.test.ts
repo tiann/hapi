@@ -68,6 +68,7 @@ function createApp(session: Session, opts?: {
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
+    listHermesModelsForSession?: SyncEngine['listHermesModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
@@ -157,6 +158,11 @@ function createApp(session: Session, opts?: {
         listDshModelsForSession: opts?.listDshModelsForSession ?? (async () => ({
             success: true,
             models: []
+        })),
+        listHermesModelsForSession: opts?.listHermesModelsForSession ?? (async () => ({
+            success: true,
+            availableModels: [],
+            currentModelId: null
         })),
         listPiModelsForSession: opts?.listPiModelsForSession ?? (async () => ({
             success: true,
@@ -467,6 +473,58 @@ describe('sessions routes', () => {
             success: false,
             error: 'RPC handler not registered: session-1:listDshModels',
             code: 'rpc_target_missing'
+        })
+    })
+
+    it('returns a stable code when the Hermes session model RPC target is absent', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'hermes' }
+        })
+        const { app } = createApp(session, {
+            listHermesModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listHermesModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/hermes-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listHermesModels',
+            code: 'rpc_target_missing'
+        })
+    })
+
+    it('serves Hermes session model lists and rejects other flavors', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'hermes' }
+        })
+        const { app } = createApp(session, {
+            listHermesModelsForSession: async () => ({
+                success: true,
+                availableModels: [{ modelId: 'newapi:glm-5.3', name: 'GLM 5.3' }],
+                currentModelId: 'newapi:glm-5.3'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/hermes-models')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'newapi:glm-5.3', name: 'GLM 5.3' }],
+            currentModelId: 'newapi:glm-5.3'
+        })
+
+        const claudeSession = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const other = createApp(claudeSession)
+        const rejected = await other.app.request('/api/sessions/session-1/hermes-models')
+        expect(rejected.status).toBe(400)
+        expect(await rejected.json()).toEqual({
+            success: false,
+            error: 'Hermes models are only available for Hermes sessions'
         })
     })
 

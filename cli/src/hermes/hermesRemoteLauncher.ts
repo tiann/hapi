@@ -24,6 +24,13 @@ const HERMES_EDIT_MODE_BY_PERMISSION: Record<string, string> = {
     yolo: 'dont_ask'
 }
 
+/** Increasing permissiveness along Hermes's edit axis. */
+const HERMES_EDIT_MODE_PERMISSIVENESS: Record<string, number> = {
+    default: 0,
+    accept_edits: 1,
+    dont_ask: 2
+}
+
 /**
  * Readiness handshake for the ListHermesModels catalog RPC (registered once
  * per launcher in runMainLoop). A pending placeholder is armed BEFORE the
@@ -204,6 +211,17 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     }
                     continue
                 }
+                if (generationAtDequeue !== this.abortGeneration) {
+                    // A user stop landed while the replacement backend was
+                    // being established (ported from dsh): the user already
+                    // saw 'Session aborted' and the queue was reset, so this
+                    // already-dequeued batch must not run.
+                    this.messageBuffer.addMessage('Aborted while reconnecting the Hermes session; dropping the queued message', 'status')
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
+                }
             }
 
             // Reference the CURRENT backend/session per iteration (not a
@@ -212,8 +230,33 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             const acpSessionId = this.acpSessionId!
 
             this.applyDisplayMode(batch.mode.permissionMode)
+            let modeBlockedMessage: string | null = null
             if (batch.mode.permissionMode !== undefined) {
-                await this.applyHermesEditMode(backend, acpSessionId, batch.mode.permissionMode)
+                const applied = await this.applyHermesEditMode(backend, acpSessionId, batch.mode.permissionMode)
+                if (!applied) {
+                    const requestedEditMode = HERMES_EDIT_MODE_BY_PERMISSION[batch.mode.permissionMode ?? 'default'] ?? 'default'
+                    const runningEditMode = this.lastAppliedEditMode
+                    const relaxed = (HERMES_EDIT_MODE_PERMISSIVENESS[requestedEditMode] ?? 0)
+                        > (HERMES_EDIT_MODE_PERMISSIVENESS[runningEditMode ?? 'default'] ?? 0)
+                    if (!relaxed) {
+                        // A stricter (or equal-but-unconfirmed) mode failed to
+                        // apply: prompting now would run the turn under
+                        // Hermes's more permissive live mode while HAPI shows
+                        // the stricter one. Block the turn; the next message
+                        // retries the switch.
+                        modeBlockedMessage = `Hermes prompt blocked: could not apply the "${batch.mode.permissionMode}" edit mode (Hermes is running "${runningEditMode}"). Re-send the message to retry.`
+                    }
+                }
+            }
+            if (modeBlockedMessage !== null) {
+                this.session.sendSessionEvent({ type: 'message', message: modeBlockedMessage })
+                this.messageBuffer.addMessage(modeBlockedMessage, 'status')
+                this.session.onThinkingChange(false)
+                await this.permissionHandler?.cancelAll('Prompt finished')
+                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                    this.session.sendSessionEvent({ type: 'ready' })
+                }
+                continue
             }
 
             const requestedModel = batch.mode.model
@@ -271,49 +314,22 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 // Regular JSON-RPC rejections (unknown session, etc.) do not
                 // carry it and keep the old surface-and-continue behavior.
                 if (isAcpIndeterminateError(error) && !this.shouldExit) {
-                    // Rebuild the backend, re-establish the ACP session, and
-                    // retry THIS batch exactly once; a failure here surfaces
-                    // and falls through — the loop stays alive and the next
-                    // message attempts a fresh respawn.
-                    let revived = false
+                    // Rebuild the backend and re-establish the ACP session so
+                    // the session (and the NEXT message) works again — but do
+                    // NOT automatically resubmit this batch. An indeterminate
+                    // failure means the child closed with the request already
+                    // dispatched and its outcome unknowable: the turn may have
+                    // partially executed (non-idempotent actions included), and
+                    // resubmitting the same instruction after resume can
+                    // duplicate native turns and repeat those actions. Surface
+                    // the uncertain outcome; the user re-sends to retry.
                     try {
                         await this.respawnBackend()
-                        revived = true
+                        failureMessage = `Hermes process died mid-turn; the message may have partially run. Re-send it to retry. (transport: ${message})`
                     } catch (respawnError) {
                         const reconnectMessage = respawnError instanceof Error ? respawnError.message : String(respawnError)
                         logger.warn('[hermes-acp] reconnect failed', { message: reconnectMessage })
                         failureMessage = `Hermes reconnect failed: ${reconnectMessage}`
-                    }
-                    if (revived) {
-                        if (generationAtDequeue !== this.abortGeneration) {
-                            // A user stop landed while the replacement backend
-                            // was being established (ported from dsh): the
-                            // user already saw 'Session aborted' and the queue
-                            // was reset, so the retried batch must not run.
-                            this.messageBuffer.addMessage('Aborted while reconnecting the Hermes session; dropping the queued message', 'status')
-                        } else {
-                            // The fresh process lost the dead turn's session
-                            // state: re-apply the batch's edit mode before the
-                            // retry (establishBackend already restored the
-                            // session-stored mode; the dedupe makes this a no-op
-                            // when they map to the same edit mode).
-                            if (batch.mode.permissionMode !== undefined) {
-                                await this.applyHermesEditMode(this.backend!, this.acpSessionId!, batch.mode.permissionMode)
-                            }
-                            // Re-assert the thinking state around the retry:
-                            // the failed prompt left it asserted, but making
-                            // the retry self-contained guarantees the hub
-                            // shows the turn as running even if anything reset
-                            // it during the reconnect window.
-                            this.session.onThinkingChange(true)
-                            try {
-                                await this.backend!.prompt(this.acpSessionId!, prompt, (message) => this.handleAgentMessage(message))
-                            } catch (retryError) {
-                                const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
-                                logger.warn('[hermes-acp] prompt failed after reconnect', { message: retryMessage })
-                                failureMessage = `Hermes prompt failed after reconnect: ${retryMessage}`
-                            }
-                        }
                     }
                 } else {
                     failureMessage = `Hermes prompt failed: ${message}`
@@ -643,20 +659,26 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
      * `session/set_mode` (default / accept_edits / dont_ask). Only the edit
      * axis lives in Hermes; dangerous-command approvals always arrive as
      * request_permission and are decided by the HAPI permission bridge. No-op
-     * when the mode is unchanged; failures degrade to a status note because
-     * the bridge still honors the mode on the HAPI side.
+     * when the mode is unchanged. Returns whether the requested mode is in
+     * effect: callers block the turn when a STRICTER mode failed to apply —
+     * Hermes would keep auto-editing under its more permissive mode while
+     * HAPI displays the stricter one, and the bridge cannot interpose for
+     * edits Hermes executes without request_permission. A failed relaxation
+     * is safe (Hermes stays stricter than requested), so it only degrades to
+     * a status note.
      */
     private async applyHermesEditMode(
         backend: ReturnType<typeof createHermesBackend>,
         acpSessionId: string,
         permissionMode: PermissionMode | undefined
-    ): Promise<void> {
+    ): Promise<boolean> {
         const editMode = HERMES_EDIT_MODE_BY_PERMISSION[permissionMode ?? 'default'] ?? 'default'
-        if (editMode === this.lastAppliedEditMode) return
+        if (editMode === this.lastAppliedEditMode) return true
         try {
             await backend.setMode(acpSessionId, editMode, { syncThoughtLevel: false })
             this.lastAppliedEditMode = editMode
             logger.debug(`[hermes-acp] Applied edit mode via set_mode: ${editMode}`)
+            return true
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             logger.warn('[hermes-acp] set_mode failed', { message })
@@ -664,6 +686,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 type: 'message',
                 message: `Hermes edit mode switch failed: ${message}`
             })
+            return false
         }
     }
 

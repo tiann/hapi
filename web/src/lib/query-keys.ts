@@ -41,6 +41,7 @@ export const queryKeys = {
     machineAgyModels: (machineId: string) => ['machine-agy-models', machineId] as const,
     machineDshModels: (machineId: string) => ['machine-dsh-models', machineId] as const,
     sessionDshModels: (sessionId: string) => ['session-dsh-models', sessionId] as const,
+    sessionHermesModels: (sessionId: string) => ['session-hermes-models', sessionId] as const,
     machinePiModels: (machineId: string) => ['machine-pi-models', machineId] as const,
     machineClaudeModels: (machineId: string) => ['machine-claude-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,

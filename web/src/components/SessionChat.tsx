@@ -126,7 +126,7 @@ import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReasoningEffortOptions'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
-import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
+import { useDshModelsForSession, useHermesModelsForSession } from '@/hooks/queries/useDshModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1242,6 +1242,24 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, dshModelsState.availableModels])
+    // Hermes rides the same rail: the catalog arrives through the session's
+    // ACP config options (ListHermesModels RPC).
+    const hermesModelsState = useHermesModelsForSession({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'hermes' && props.session.active
+    })
+    const hermesModelOptions = useMemo(() => (
+        agentFlavor === 'hermes' && hermesModelsState.availableModels.length > 0
+            ? [
+                { value: null, label: 'Default' },
+                ...hermesModelsState.availableModels.map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            ]
+            : undefined
+    ), [agentFlavor, hermesModelsState.availableModels])
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -2336,6 +2354,8 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? agyModelOptions
                                             : agentFlavor === 'dsh'
                                                 ? dshModelOptions
+                                            : agentFlavor === 'hermes'
+                                                ? hermesModelOptions
                                         // Pi gets its provider-qualified model list from the piModels prop;
                                         // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,

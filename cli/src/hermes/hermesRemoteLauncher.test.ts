@@ -643,9 +643,15 @@ describe('HermesRemoteLauncher', () => {
         expect(harness.backends[0].getSessionModelsMetadata).not.toHaveBeenCalled()
     })
 
-    it('respawns the ACP backend and retries the same batch when the child process dies', async () => {
+    it('respawns the ACP backend after a child death without resubmitting the batch', async () => {
         // Gateway daemon restart killed the `hermes acp` child: the first
-        // prompt rejects with the transport's typed dead-marker.
+        // prompt rejects with the transport's typed dead-marker. The backend
+        // is rebuilt so the session (and the NEXT message) works again, but
+        // the failed batch is NOT automatically resubmitted: an
+        // indeterminate failure means the turn may have partially executed,
+        // and replaying the same instruction can duplicate native turns and
+        // repeat non-idempotent actions. The uncertain outcome is surfaced
+        // for an explicit retry.
         harness.promptErrorQueue = [deadTransportError()]
         const session = createSessionWithBatches([['hello', {}]], 'hermes-existing-1')
         const launcher = new HermesRemoteLauncher(session as never)
@@ -664,15 +670,14 @@ describe('HermesRemoteLauncher', () => {
             mcpServers: []
         })
         expect(harness.resumeInsideSuppress).toBe(true)
-        // The SAME batch ran against the dead transport and again on the
-        // replacement — and the retry's answer reached the hub.
+        // The batch ran exactly once — against the dead transport. No retry.
         expect(harness.prompts).toEqual([
-            [{ type: 'text', text: 'hello' }],
             [{ type: 'text', text: 'hello' }]
         ])
-        expect(session.sendAgentMessage).toHaveBeenCalledWith({
+        // The uncertain outcome is surfaced with an explicit-retry instruction.
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
-            message: 'answer'
+            message: expect.stringContaining('Re-send it to retry')
         })
         // Exactly one reconnect status line for the whole respawn.
         const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
@@ -684,10 +689,9 @@ describe('HermesRemoteLauncher', () => {
             message: 'Hermes connection lost; reconnecting…'
         })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
-        expect(harness.backends[1].disconnect).toHaveBeenCalled()
     })
 
-    it('re-applies the edit mode on the respawned backend before the retried batch', async () => {
+    it('restores the session edit mode on the respawned backend', async () => {
         harness.promptErrorQueue = [deadTransportError()]
         const session = createSessionWithBatches([['hello', { permissionMode: 'yolo' }]], 'hermes-existing-1')
         const launcher = new HermesRemoteLauncher(session as never)
@@ -695,16 +699,14 @@ describe('HermesRemoteLauncher', () => {
         await launcher.launch()
 
         // Startup default + queued yolo on the first backend; the respawn
-        // re-issues the session-stored default and then yolo for the retry —
-        // the fresh process must not silently fall back to default mode.
+        // re-issues the session-stored default so the fresh process must not
+        // silently fall back to a permissive mode. No retry runs.
         expect(harness.setModeCalls.map((call) => call.modeId)).toEqual([
             'default',
             'dont_ask',
-            'default',
-            'dont_ask'
+            'default'
         ])
         expect(harness.prompts).toEqual([
-            [{ type: 'text', text: 'hello' }],
             [{ type: 'text', text: 'hello' }]
         ])
     })
@@ -752,6 +754,80 @@ describe('HermesRemoteLauncher', () => {
             [{ type: 'text', text: 'third' }],
             expect.any(Function)
         )
+    })
+
+    it('drops the dequeued message when an abort lands during the reconnect before the batch runs', async () => {
+        // The mid-prompt respawn fails, so the NEXT message enters the
+        // top-of-loop reconnect with no backend. An abort inside that window
+        // must discard the already-dequeued batch — the user saw 'Session
+        // aborted' and the queue was reset (ported from dsh).
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.initializeErrorQueue = [null, new Error('Failed to spawn hermes: not found')]
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('first', {})
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        // Initial establishment + the failed mid-prompt respawn.
+        await vi.waitFor(() => expect(harness.backends).toHaveLength(2))
+
+        // 'second' enters the top-of-loop reconnect; park its session/resume
+        // (the initial establishment ran with an empty blocker queue and
+        // the failed mid-prompt respawn died at initialize before any
+        // resume — so this reconnect's resume is the FIRST blocked call).
+        let releaseResume!: () => void
+        const park = new Promise<void>((resolve) => { releaseResume = resolve })
+        harness.resumeBlockerQueue = [park]
+        queue.push('second', {})
+        await vi.waitFor(() => expect(harness.backends[2]?.resumeSession).toHaveBeenCalled())
+
+        // Simulate the production abort path (the RPC handler invokes
+        // handleAbort directly): kill() alone would no-op here because the
+        // failed respawn left this.backend null.
+        const abortPromise = (launcher as unknown as { handleAbort: () => Promise<void> }).handleAbort()
+        releaseResume()
+        await abortPromise
+        queue.close()
+        await done
+
+        // 'second' was dropped after the reconnect completed: only 'first'
+        // ever reached prompt.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }]
+        ])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+    })
+
+    it('blocks the turn when a stricter edit mode cannot be applied', async () => {
+        // A yolo session switching back to default: if set_mode fails, the
+        // turn must NOT run — Hermes would keep auto-editing under dont_ask
+        // while HAPI displays default, and the bridge cannot interpose for
+        // edits Hermes executes without request_permission.
+        harness.setModeError = new Error('gateway rejected set_mode')
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('first', { permissionMode: 'yolo' })
+        queue.push('second', { permissionMode: 'default' })
+        queue.close()
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // The first (yolo) apply failed too, but yolo-vs-running-default is a
+        // relaxation: the turn still ran. The second (stricter default)
+        // failure blocked the turn.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }]
+        ])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('Hermes prompt blocked')
+        })
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: expect.stringContaining('Re-send the message to retry')
+        })
     })
 
     it('surfaces the error and keeps the loop alive when the respawn also fails', async () => {
@@ -875,8 +951,9 @@ describe('HermesRemoteLauncher', () => {
             cwd: '/tmp/hermes-test',
             mcpServers: expectedServers
         })
+        // The batch ran once against the dead transport; the respawn no
+        // longer resubmits it automatically.
         expect(harness.prompts).toEqual([
-            [{ type: 'text', text: 'hello' }],
             [{ type: 'text', text: 'hello' }]
         ])
     })

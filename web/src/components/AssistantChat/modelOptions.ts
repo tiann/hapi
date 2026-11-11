@@ -174,6 +174,13 @@ export function getModelOptionsForFlavor(
     if (flavor === 'dsh') {
         return []
     }
+    // Hermes rides the same rail (SessionChat's hermesModelOptions): without
+    // the catalog the picker must stay empty rather than fall through to the
+    // Claude presets — a selected `sonnet`-style id would be rejected by the
+    // Hermes gateway's config-option validation on the next turn.
+    if (flavor === 'hermes') {
+        return []
+    }
     if (flavor === 'cursor') {
         return withCurrentModelOption([{ value: 'auto', label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
     }
@@ -243,7 +250,8 @@ export function getNextModelForFlavor(
     }
     // DSH: same guard for the Ctrl/Cmd+M cycler — without the catalog the
     // shortcut must keep the current model, never cycle into Claude presets.
-    if (flavor === 'dsh') {
+    // Hermes rides the same rail for the same reason.
+    if (flavor === 'dsh' || flavor === 'hermes') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {

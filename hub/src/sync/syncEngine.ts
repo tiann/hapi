@@ -69,6 +69,7 @@ import {
     type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
     type RpcListDshModelsResponse,
+    type RpcListHermesModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -4204,8 +4205,13 @@ export class SyncEngine {
             session,
             namespace,
             {
+                // Hermes native sessions live in the gateway state of the
+                // machine that created them: another runner on the same host
+                // cannot resume them, and letting it try would spawn a fresh
+                // gateway session whose id overwrites hermesSessionId on the
+                // HAPI row — losing the original resume target.
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'hermes') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {
@@ -5530,6 +5536,14 @@ export class SyncEngine {
             () => this.rpcGateway.listDshModelsForSession(sessionId),
             SyncEngine.modelListCacheable
         ) as RpcListDshModelsResponse
+    }
+
+    async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|hermes-models`,
+            () => this.rpcGateway.listHermesModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListHermesModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
