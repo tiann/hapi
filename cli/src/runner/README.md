@@ -54,7 +54,11 @@ The runner detects when the CLI binary changes (e.g., after `npm update -g @twsx
 `HAPI_DISABLE_VERSION_HANDOFF=1` disables this automatic replacement, not
 the rest of the heartbeat. A foreground supervisor should run
 `hapi runner start-sync`; advertise `HAPI_RUNNER_SUPERVISED=1` only when it
-will restart the process after exit.
+will restart the process after exit. The same flag gates the external
+watchdog's destructive recovery: a frozen runner is kill -9'd only when it
+advertised supervision, because only then does something respawn it. An
+unsupervised runner is left for the operator — killing it would take the
+machine offline with nothing to restart it.
 
 ### Heartbeat System
 
