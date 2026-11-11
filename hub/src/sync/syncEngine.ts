@@ -139,6 +139,10 @@ export type LocalResumeTargetByAgentResult =
     | { type: 'success'; target: LocalResumeTarget | null; historical: boolean }
     | { type: 'error'; message: string; code: 'resume_unavailable' }
 
+export type LocalResumePrepareResult =
+    | { type: 'success'; revived: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' }
+
 export type LocalHandoffResult =
     | { type: 'success' }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' }
@@ -3799,6 +3803,31 @@ export class SyncEngine {
             })
             .filter((session) => !opts?.machineId || session.machineId === opts.machineId)
             .sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+
+    /**
+     * Intentional terminal revive of an inactive session (`hapi resume`,
+     * `hapi claude --resume`): clear a hub-authored archive before the CLI
+     * reopens the row with `--existing-session-id`, the same way hub reopen
+     * does before spawning. The #1911 guard still rejects CLI metadata writes
+     * that try to un-archive on their own.
+     */
+    async prepareLocalResume(sessionId: string, namespace: string): Promise<LocalResumePrepareResult> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return access.reason === 'access-denied'
+                ? { type: 'error', message: 'Session access denied', code: 'access_denied' }
+                : { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        }
+        if (access.session.active) {
+            return { type: 'error', message: 'Session is active; hand it off before reopening locally', code: 'session_active' }
+        }
+        const metadata = access.session.metadata
+        if (metadata?.lifecycleState !== 'archived' || metadata.archivedBy !== 'hub') {
+            return { type: 'success', revived: false }
+        }
+        await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
+        return { type: 'success', revived: true }
     }
 
     /**

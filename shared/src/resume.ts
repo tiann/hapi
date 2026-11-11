@@ -62,3 +62,11 @@ export const LocalHandoffResponseSchema = z.object({
 })
 
 export type LocalHandoffResponse = z.infer<typeof LocalHandoffResponseSchema>
+
+/** `POST /cli/sessions/:id/prepare-local-resume`; `revived` = a hub archive was cleared. */
+export const LocalResumePrepareResponseSchema = z.object({
+    ok: z.boolean(),
+    revived: z.boolean().optional()
+})
+
+export type LocalResumePrepareResponse = z.infer<typeof LocalResumePrepareResponseSchema>

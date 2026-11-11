@@ -208,6 +208,28 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ target: result.target })
     })
 
+    app.post('/sessions/:id/prepare-local-resume', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        let result: Awaited<ReturnType<SyncEngine['prepareLocalResume']>>
+        try {
+            result = await engine.prepareLocalResume(c.req.param('id'), namespace)
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to prepare session', code: 'prepare_failed' }, 409)
+        }
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : 409
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+        return c.json({ ok: true, revived: result.revived })
+    })
+
     app.post('/sessions/:id/handoff-local', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {

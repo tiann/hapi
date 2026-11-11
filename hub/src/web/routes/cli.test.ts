@@ -139,6 +139,26 @@ describe('cli resume routes', () => {
         }
     })
 
+    it('prepares a session for local resume and maps errors to status codes', async () => {
+        const results: Record<string, unknown> = {
+            revive: { type: 'success', revived: true },
+            active: { type: 'error', message: 'Session is active', code: 'session_active' },
+            missing: { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        }
+        const app = createApp({
+            prepareLocalResume: async (sessionId: string) => results[sessionId]
+        } as never)
+
+        const ok = await app.request('/cli/sessions/revive/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(ok.status).toBe(200)
+        expect(await ok.json()).toEqual({ ok: true, revived: true })
+
+        const active = await app.request('/cli/sessions/active/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(active.status).toBe(409)
+        const missing = await app.request('/cli/sessions/missing/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(missing.status).toBe(404)
+    })
+
     it('returns handoff errors with status codes', async () => {
         const app = createApp({
             handoffSessionToLocal: async () => ({

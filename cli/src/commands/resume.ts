@@ -282,6 +282,10 @@ export async function prepareLocalResume(api: ApiClient, target: LocalResumeTarg
 
     if (target.active) {
         await api.handoffSessionToLocal(target.sessionId)
+    } else {
+        // An inactive row may carry a hub archive that existing-session
+        // bootstrap refuses; the hub clears it for this intentional revive.
+        await api.prepareSessionForLocalResume(target.sessionId)
     }
 }
 

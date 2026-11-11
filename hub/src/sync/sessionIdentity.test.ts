@@ -190,3 +190,56 @@ describe('SyncEngine.resolveLocalResumeTargetByAgentSessionId', () => {
         }
     })
 })
+
+describe('SyncEngine.prepareLocalResume', () => {
+    function setup() {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        return { store, engine }
+    }
+
+    it('clears a hub-authored archive so a terminal reopen is not refused', async () => {
+        const { engine } = setup()
+        try {
+            const session = engine.getOrCreateSession('hub-archived', claudeMetadata({
+                claudeSessionId: 'claude-h', lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'Archived by user'
+            }), null, 'default')
+
+            await expect(engine.prepareLocalResume(session.id, 'default')).resolves.toEqual({ type: 'success', revived: true })
+
+            const metadata = engine.getSession(session.id)?.metadata
+            expect(metadata?.lifecycleState).toBeUndefined()
+            expect(metadata?.archivedBy).toBeUndefined()
+            expect(metadata?.claudeSessionId).toBe('claude-h')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('leaves CLI-archived and live-lifecycle rows alone', async () => {
+        const { engine } = setup()
+        try {
+            const cliArchived = engine.getOrCreateSession('cli-archived', claudeMetadata({
+                lifecycleState: 'archived', archivedBy: 'cli'
+            }), null, 'default')
+
+            await expect(engine.prepareLocalResume(cliArchived.id, 'default')).resolves.toEqual({ type: 'success', revived: false })
+            expect(engine.getSession(cliArchived.id)?.metadata?.archivedBy).toBe('cli')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('refuses active sessions and unknown ids', async () => {
+        const { engine } = setup()
+        try {
+            const live = engine.getOrCreateSession('live', claudeMetadata(), null, 'default')
+            engine.handleSessionAlive({ sid: live.id, time: Date.now() })
+
+            await expect(engine.prepareLocalResume(live.id, 'default')).resolves.toMatchObject({ type: 'error', code: 'session_active' })
+            await expect(engine.prepareLocalResume('missing', 'default')).resolves.toMatchObject({ type: 'error', code: 'session_not_found' })
+        } finally {
+            engine.stop()
+        }
+    })
+})

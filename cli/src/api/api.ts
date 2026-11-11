@@ -11,6 +11,7 @@ import {
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
     LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     RunnerStateSchema,
     MachineMetadataSchema,
     MetadataSchema,
@@ -293,6 +294,25 @@ export class ApiClient {
             throw apiValidationError('Invalid /cli/sessions/resume-target-by-agent response', response)
         }
         return parsed.data
+    }
+
+    /**
+     * Before reopening an inactive session from this terminal: the hub clears a
+     * hub-authored archive (which `--existing-session-id` bootstrap refuses).
+     */
+    async prepareSessionForLocalResume(sessionId: string): Promise<void> {
+        const response = await axios.post(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/prepare-local-resume`,
+            {},
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalResumePrepareResponseSchema.safeParse(response.data)
+        if (!parsed.success || !parsed.data.ok) {
+            throw apiValidationError('Invalid /cli/sessions/:id/prepare-local-resume response', response)
+        }
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
