@@ -214,6 +214,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     }
                     continue
                 }
+                if (generationAtDequeue !== this.abortGeneration) {
+                    // A user stop landed while the replacement backend was
+                    // being established: the user already saw 'Session
+                    // aborted' and the queue was reset, so this already-
+                    // dequeued batch must not run (same contract as the
+                    // mid-prompt reconnect below).
+                    this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
+                }
             }
 
             // Reference the CURRENT backend/session per iteration (not a
@@ -238,29 +250,51 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // saw 'Session aborted').
                 const generationBeforeRespawn = this.abortGeneration
                 let resumed = false
-                if (this.session.sessionId && backend.supportsSessionResume()) {
-                    try {
-                        acpSessionId = await backend.resumeSession({
-                            sessionId: this.session.sessionId,
+                try {
+                    if (this.session.sessionId && backend.supportsSessionResume()) {
+                        try {
+                            acpSessionId = await backend.resumeSession({
+                                sessionId: this.session.sessionId,
+                                cwd: this.session.path,
+                                // Same cwd as the original establishment: dsh
+                                // compares the resume cwd by realpath and rejects
+                                // mismatches terminally (invalidParams).
+                                mcpServers: this.acpMcpServers
+                            })
+                            resumed = true
+                        } catch (error) {
+                            // Mirror the startup path: a stale on-disk session must
+                            // not strand the HAPI session.
+                            const message = error instanceof Error ? error.message : String(error)
+                            logger.warn('[dsh-acp] session/resume after abort failed; starting a fresh session', { message })
+                        }
+                    }
+                    if (!resumed) {
+                        acpSessionId = await backend.newSession({
                             cwd: this.session.path,
-                            // Same cwd as the original establishment: dsh
-                            // compares the resume cwd by realpath and rejects
-                            // mismatches terminally (invalidParams).
                             mcpServers: this.acpMcpServers
                         })
-                        resumed = true
-                    } catch (error) {
-                        // Mirror the startup path: a stale on-disk session must
-                        // not strand the HAPI session.
-                        const message = error instanceof Error ? error.message : String(error)
-                        logger.warn('[dsh-acp] session/resume after abort failed; starting a fresh session', { message })
                     }
-                }
-                if (!resumed) {
-                    acpSessionId = await backend.newSession({
-                        cwd: this.session.path,
-                        mcpServers: this.acpMcpServers
-                    })
+                } catch (error) {
+                    // The backend itself died inside the recovery window
+                    // (child exit, closed transport): every RPC on it now
+                    // rejects the same way, so let the exception escape the
+                    // recovery instead of the loop — surface one error, drop
+                    // the batch, clear the dead backend so the next message
+                    // goes through the reconnect branch, and keep the
+                    // ended marker so recovery is retried after the rebuild.
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] session restart failed; the backend will be rebuilt for the next message', { message })
+                    const failureMessage = `DSH session restart failed: ${message}`
+                    this.session.sendSessionEvent({ type: 'message', message: failureMessage })
+                    this.messageBuffer.addMessage(failureMessage, 'status')
+                    this.backend = null
+                    this.acpSessionId = null
+                    this.session.onThinkingChange(false)
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
                 }
                 this.acpSessionId = acpSessionId
                 // Re-pin through onSessionFound: the respawn replaces the stored
@@ -760,6 +794,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // short by the context limit and must not read as a normal
                 // completion.
                 if (message.stopReason === 'max_tokens') {
+                    // Remote clients see the transcript, not this local log:
+                    // publish the truncation through the session event
+                    // channel too, or a cut-short turn just falls silent in
+                    // the web/mobile UI.
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Turn truncated: the model hit its output limit before finishing (max_tokens).'
+                    })
                     this.messageBuffer.addMessage('Turn truncated: context limit reached', 'status')
                 } else {
                     this.messageBuffer.addMessage('Turn complete', 'status')

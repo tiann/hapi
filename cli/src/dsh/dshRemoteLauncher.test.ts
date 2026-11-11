@@ -25,6 +25,9 @@ const harness = vi.hoisted(() => ({
     supportsResume: false,
     resumeCalls: [] as unknown[],
     resumeError: null as Error | null,
+    // When set, newSession() rejects with this — lets tests kill the backend
+    // inside every recovery/reconnect window.
+    newSessionError: null as Error | null,
     // When set, resumeSession() parks on this promise — lets tests abort
     // inside the post-abort restart window.
     resumeBlocker: null as null | Promise<void>,
@@ -77,6 +80,7 @@ vi.mock('./utils/dshBackend', () => ({
                 if (harness.newSessionBlocker) {
                     await harness.newSessionBlocker
                 }
+                if (harness.newSessionError) throw harness.newSessionError
                 return `dsh-session-${harness.newSessionCalls.length}`
             }),
             prompt: vi.fn(async (sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
@@ -261,6 +265,7 @@ describe('DshRemoteLauncher', () => {
         harness.supportsResume = false
         harness.resumeCalls = []
         harness.resumeError = null
+        harness.newSessionError = null
         harness.resumeBlocker = null
         harness.permissionGetMode = null
         harness.permissionCancelIssued = null
@@ -678,6 +683,84 @@ describe('DshRemoteLauncher', () => {
             [{ type: 'text', text: 'second' }],
             [{ type: 'text', text: 'fourth' }]
         ])
+    })
+
+    it('drops the dequeued message when an abort lands during the reconnect before the batch runs', async () => {
+        // The mid-prompt respawn fails, so the NEXT message enters the
+        // top-of-loop reconnect with no backend. An abort landing inside
+        // that respawn window must discard the already-dequeued batch —
+        // the same contract as the mid-prompt and recovery windows.
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.initializeErrorQueue = [null, new Error('Failed to spawn dsh: not found')]
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        // Initial establishment + the failed mid-prompt respawn.
+        await vi.waitFor(() => expect(harness.backends).toHaveLength(2))
+
+        // 'second' enters the top-of-loop reconnect; park session/new.
+        let releaseNewSession!: () => void
+        harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
+        queue.push('second', {})
+        await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(2))
+
+        // Abort inside the reconnect window, then let the respawn finish.
+        const killPromise = launcher.kill()
+        await killPromise
+        releaseNewSession()
+        queue.close()
+        await done
+
+        // 'second' was dropped after the reconnect completed: only 'first'
+        // ever reached prompt, and no retry of it ran either.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+    })
+
+    it('keeps the loop alive when the backend dies during closed-session recovery', async () => {
+        // A child exit inside the post-abort recovery window rejects every
+        // RPC on the dead backend; the failure must surface as one error and
+        // a reconnect on the next message instead of escaping the loop.
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        const killPromise = launcher.kill()
+        releaseFirstPrompt()
+        await killPromise
+
+        // 'second' hits the closed session → implicit end.
+        harness.promptErrorQueue = [new Error('Session not found: dsh-session-1')]
+        queue.push('second', {})
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+
+        // 'third' enters recovery; the backend dies inside it (resume AND
+        // the fresh session/new both reject).
+        harness.resumeError = deadTransportError('session/resume failed: ACP process exited (code=1)')
+        harness.newSessionError = deadTransportError('session/new failed: ACP process exited (code=1)')
+        queue.push('third', {})
+        queue.close()
+        await done
+
+        // The loop survived: the recovery failure was surfaced as an error
+        // event, 'third' never ran, and no unhandled rejection escaped.
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH session restart failed: session/new failed: ACP process exited (code=1)'
+        })
     })
 
     it('discovers the current model from the model config option', async () => {
@@ -1245,6 +1328,12 @@ describe('DshRemoteLauncher', () => {
 
         expect([...lines]).toContain('Turn truncated: context limit reached')
         expect([...lines]).not.toContain('Turn complete')
+        // Remote clients read the session event channel, not the local
+        // buffer: the truncation must be published there too.
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Turn truncated: the model hit its output limit before finishing (max_tokens).'
+        })
     })
 
     it('reports the normal completion line for an end_turn turn', async () => {

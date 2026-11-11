@@ -2451,7 +2451,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onModelReasoningEffortChange={
-                            (agentFlavor === 'codex' || agentFlavor === 'opencode')
+                            (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh')
                                 && props.session.active
                                 && !controlledByUser
                                 && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)
