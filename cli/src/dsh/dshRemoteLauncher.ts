@@ -422,6 +422,20 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 logger.warn('[dsh-acp] prompt preparation failed', { message })
                 prompt = [{ type: 'text', text: batch.message }]
             }
+            if (generationAtDequeue !== this.abortGeneration) {
+                // A user stop landed while the prompt content was being
+                // prepared (image reads await): the user already saw
+                // 'Session aborted' and the queue was reset, so the
+                // already-dequeued batch must not run (same contract as the
+                // reconnect windows).
+                this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
+                this.session.onThinkingChange(false)
+                await this.permissionHandler?.cancelAll('Prompt finished')
+                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                    this.session.sendSessionEvent({ type: 'ready' })
+                }
+                continue
+            }
             let failureMessage: string | null = null
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
