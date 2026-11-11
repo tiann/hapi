@@ -47,7 +47,7 @@ export type AgentEvent =
     | { type: 'limit-warning'; /** 0–1 ratio (e.g. 0.9 = 90%), integer-precision via CLI pipe format */ utilization: number; endsAt: number; limitType: string }
     | { type: 'ready' }
     | { type: 'api-error'; retryAttempt: number; maxRetries: number; error: unknown }
-    | { type: 'turn-duration'; durationMs: number; targetMessageId?: string; provider?: 'codex'; turnId?: string }
+    | { type: 'turn-duration'; durationMs: number; targetMessageId?: string; provider?: 'codex'; turnId?: string; generationMs?: number; generationOutputTokens?: number }
     | { type: 'turn-summary'; summary: RoundSummary }
     | { type: 'token-count'; info: unknown; provider?: 'codex'; turnId?: string; model?: string | null }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
