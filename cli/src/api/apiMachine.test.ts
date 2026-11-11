@@ -974,3 +974,40 @@ describe('ApiMachineClient connect runner-state advertisement', () => {
         }
     })
 })
+
+describe('ApiMachineClient child-exit notices', () => {
+    beforeEach(() => {
+        ioMock.mockReset()
+    })
+
+    it('reports a dead child on the machine socket with its process generation', () => {
+        const machine = makeMachine('machine-child-exit')
+        const socket = {
+            on: vi.fn(),
+            emit: vi.fn(),
+            emitWithAck: vi.fn().mockResolvedValue({ result: 'success', version: 1 }),
+            close: vi.fn()
+        }
+        ioMock.mockReturnValue(socket)
+
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            client.connect()
+            client.reportSessionChildExited({
+                sid: 'session-1',
+                pid: 4321,
+                processStartMarker: 'Mon Jan  1 00:00:00 2024'
+            })
+
+            expect(socket.emit).toHaveBeenCalledWith('session-child-exited', {
+                machineId: machine.id,
+                sid: 'session-1',
+                pid: 4321,
+                processStartMarker: 'Mon Jan  1 00:00:00 2024',
+                time: expect.any(Number)
+            })
+        } finally {
+            client.shutdown()
+        }
+    })
+})

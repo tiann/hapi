@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { HAPI_MCP_BRIDGE_PROMPT } from './hapiMcpBridgePrompt'
 import {
+    IMAGE_DELIVERY_GUIDANCE,
     DISPLAY_IMAGE_PROMPT_CLAUDE,
     DISPLAY_IMAGE_PROMPT_CODEX,
     DISPLAY_IMAGE_PROMPT_CURSOR,
@@ -95,5 +96,32 @@ describe('display prompts for other agents', () => {
         expect(DISPLAY_VIDEO_PROMPT_CLAUDE).toContain('mcp__hapi__display_video')
         expect(DISPLAY_MEDIA_PROMPT_CODEX).toContain('functions.hapi__display_media')
         expect(DISPLAY_MEDIA_PROMPT_CURSOR).toContain('"display_media"')
+    })
+})
+
+describe('image delivery preference guidance', () => {
+    it('reaches every MCP image hint and the OpenCode bridge exactly once', () => {
+        for (const prompt of [...displayImagePrompts, DISPLAY_TOOLS_PROMPT_HAPI_MCP, HAPI_MCP_BRIDGE_PROMPT]) {
+            expect(countOccurrences(prompt, IMAGE_DELIVERY_GUIDANCE)).toBe(1)
+            expect(prompt).not.toContain('When you create or find a local image file')
+        }
+    })
+
+    it('documents the Web/PWA boundary and keeps explicit preferences ahead of the default', () => {
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('explicit user or workspace preference')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('Without a stated preference')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('10 MiB (10,485,760 bytes)')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain("current session's configured working directory")
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('native iOS and Android')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('angle brackets')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('file:, data:, or blob:')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('browser-decodable')
+    })
+
+    it('avoids duplicate delivery and preserves the approval boundary', () => {
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('unless requested')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('both Markdown and a display tool')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('denied file access or tool approval')
+        expect(IMAGE_DELIVERY_GUIDANCE).toContain('own format and size requirements')
     })
 })

@@ -92,4 +92,24 @@ describe('mergeMessages', () => {
         expect(merged).toHaveLength(1)
         expect(merged[0]?.status).not.toBe('queued')
     })
+
+    it('replaces a stored row in place when an update re-sends its id (tool-call upsert)', () => {
+        const existing: DecryptedMessage = {
+            id: 'row-1',
+            localId: null,
+            seq: 7,
+            createdAt: 1_000,
+            invokedAt: 1_000,
+            content: { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', callId: 'call-1', name: 'Read', input: { path: '/a' }, status: 'in_progress' } } },
+        }
+        const update: DecryptedMessage = {
+            ...existing,
+            content: { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', callId: 'call-1', name: 'Read', input: { path: '/a' }, status: 'completed' } } },
+        }
+
+        const merged = mergeMessages([existing], [update])
+        expect(merged).toHaveLength(1)
+        expect(merged[0]?.content).toEqual(update.content)
+        expect(merged[0]?.seq).toBe(7)
+    })
 })

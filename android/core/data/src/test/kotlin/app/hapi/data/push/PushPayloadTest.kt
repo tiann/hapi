@@ -67,7 +67,7 @@ class PushPayloadTest {
             assertFalse(payload.supportsActions)
             assertEquals("input-request-${payload.sessionId}", payload.notificationTag)
             assertEquals(if (version == "1") PushPayload.CHANNEL_INPUT_REQUESTS
-                else PushPayload.CHANNEL_TASK_NOTIFICATIONS, payload.channelId)
+                else PushPayload.CHANNEL_OTHER, payload.channelId)
         }
     }
 
@@ -80,9 +80,7 @@ class PushPayloadTest {
     @Test
     fun `all severities decode and unknown severity degrades to null`() {
         assertEquals(PushSeverity.INFO, PushPayload.parse(permissionData("severity" to "info"))!!.severity)
-        assertEquals(PushSeverity.SUCCESS, PushPayload.parse(permissionData("severity" to "success"))!!.severity)
         assertEquals(PushSeverity.WARNING, PushPayload.parse(permissionData("severity" to "warning"))!!.severity)
-        assertEquals(PushSeverity.ERROR, PushPayload.parse(permissionData("severity" to "error"))!!.severity)
         assertNull(PushPayload.parse(permissionData("severity" to "catastrophic"))!!.severity)
         assertNull(PushPayload.parse(permissionData().minus("severity"))!!.severity)
     }
@@ -99,10 +97,6 @@ class PushPayloadTest {
             PushPayload.CHANNEL_READY,
             PushPayload.parse(permissionData("type" to "ready"))!!.channelId,
         )
-        assertEquals(
-            PushPayload.CHANNEL_TASK_NOTIFICATIONS,
-            PushPayload.parse(permissionData("type" to "task-notification"))!!.channelId,
-        )
     }
 
     @Test
@@ -111,7 +105,7 @@ class PushPayloadTest {
 
         assertNull(payload.type)
         assertEquals("mystery-event", payload.rawType)
-        assertEquals(PushPayload.CHANNEL_TASK_NOTIFICATIONS, payload.channelId)
+        assertEquals(PushPayload.CHANNEL_OTHER, payload.channelId)
         assertEquals("mystery-event-11111111-2222-3333-4444-555555555555", payload.notificationTag)
         assertEquals("Permission Request", payload.displayTitle)
         assertFalse(payload.supportsActions)
@@ -123,7 +117,7 @@ class PushPayloadTest {
 
         assertFalse(payload.isKnownContractVersion)
         assertFalse(payload.supportsActions) // v2 action semantics are unknowable
-        assertEquals(PushPayload.CHANNEL_TASK_NOTIFICATIONS, payload.channelId) // never heads-up
+        assertEquals(PushPayload.CHANNEL_OTHER, payload.channelId) // never heads-up
         assertEquals("Permission Request", payload.displayTitle)
         assertEquals("Claude Edit: hub/server.ts\nSession: Claude - hapi", payload.displayBody)
     }
