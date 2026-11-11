@@ -26,7 +26,7 @@ for (const theme of ['light', 'dark', 'oled']) {
             await expect(dot).toHaveCSS('background-color', foreground)
             await expect(row('Finished · all output read').getByTestId('session-unread')).toHaveCount(0)
             await expect(row('Waiting for permission').getByTestId('session-unread')).toHaveCount(0)
-            await expect(row('Waiting for permission').getByTestId('session-activity')).toHaveCount(0)
+            await expect(row('Waiting for permission').getByTestId('session-activity')).toBeVisible()
             await expect(row('Waiting for permission').locator('[aria-label="pending"], [aria-label="Permission required"]').first()).toBeVisible()
             await expect(row('Background work').getByTestId('session-activity')).toBeVisible()
             expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

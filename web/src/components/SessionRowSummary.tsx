@@ -206,13 +206,15 @@ export function SessionRowSummary(props: {
         : s.active && (s.pendingRequestsCount ?? 0) > 0
             ? (s.pendingRequestKinds?.length && !s.pendingRequestKinds.includes('permission') ? 'input' : 'permission')
             : null
-    // A request can leave `thinking` set while the agent waits for the user.
-    // Independent background work/jobs still count, even if the agent is blocked
-    // or disconnected. No work running is not a claim of successful completion:
+    // `thinking` is authoritative for foreground activity. A pending input can
+    // be blocking or async, and summaries do not distinguish the two, so keep
+    // the spinner rather than hiding real work behind the request symbol.
+    // Independent background work/jobs still count, even if the agent is
+    // disconnected. No work running is not a claim of successful completion:
     // summaries carry no turn-outcome field, and the dot only means unread.
     const hasRunningWork = Boolean(attachedJob)
         || (s.active && (s.backgroundTaskCount ?? 0) > 0)
-        || (isRunning && !requestKind)
+        || isRunning
     const activityLabel = isBackgroundOnly
         ? t('session.item.background')
         : t('session.item.running')

@@ -461,14 +461,14 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
     })
 
-    it.each(['permission', 'input'] as const)('keeps %s attention without a misleading completed dot or foreground spinner', (kind) => {
+    it.each(['permission', 'input'] as const)('keeps the spinner and %s symbol without a misleading completed dot', (kind) => {
         render(<I18nProvider><SessionRowSummary session={makeSummary({
             thinking: true, backgroundTaskCount: 0, contentRevision: 2,
             pendingRequestsCount: 1, pendingRequestKinds: [kind],
             pendingRequests: [{ id: 'request', kind, tool: 'Question', since: 0 }],
         })} /></I18nProvider>)
         expect(screen.queryByTestId('session-unread')).toBeNull()
-        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Question')
         expectUnread()
     })
