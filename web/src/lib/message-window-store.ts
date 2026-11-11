@@ -52,6 +52,9 @@ export type MessageWindowState = {
     // cursor is invalid. Consumers must treat that window as provisional
     // until the next tail reconciliation completes.
     requiresLatestReset: boolean
+    // Gap-recovery pending: the next tail sync must catch up the missed
+    // interval and then reconcile an authoritative latest page as an upsert.
+    pendingGapRecovery: boolean
     /**
      * A search/context window stops short of the session head. True while
      * newer messages exist between the loaded window and that head, so the
@@ -1058,6 +1061,15 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         preferLatestOnActivation: false
                     })
                 })
+            } else if (getState(sessionId).requiresLatestReset) {
+                // The catch-up overflowed the window's history budget:
+                // history-mode trimming dropped the newer caught-up rows and
+                // marked the window for a reset. Reconciling the latest page
+                // on top would strand the rows between the reset-marked
+                // window and the page — unreachable from either cursor — so
+                // leave the reset requirement and the recovery flags intact:
+                // the next sync's authoritative replacement closes the hole
+                // and consumes the flags.
             } else {
                 // The cursor phase caught the window up without error. Only
                 // now may the recovery advance to the latest page: reconciling

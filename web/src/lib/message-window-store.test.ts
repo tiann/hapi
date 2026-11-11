@@ -3283,4 +3283,87 @@ describe('gap recovery', () => {
         expect(state.warning).toBeTruthy()
         expect(state.messages).toHaveLength(310)
     })
+
+    it('leaves the window reset-marked when the recovery catch-up overflows the history budget', async () => {
+        const id = sessionId('gap-recovery-overflow')
+        const cached = Array.from({ length: 600 }, (_, i) => (
+            makeUserMessage({ id: `r${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const caughtUp = Array.from({ length: 200 }, (_, i) => (
+            makeUserMessage({ id: `r${601 + i}`, seq: 601 + i, invokedAt: (601 + i) * 10, createdAt: (601 + i) * 10 })
+        ))
+        const recoveryPage = Array.from({ length: 200 }, (_, i) => (
+            makeUserMessage({ id: `r${901 + i}`, seq: 901 + i, invokedAt: (901 + i) * 10, createdAt: (901 + i) * 10 })
+        ))
+        let latestCalls = 0
+        let beforeCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                // The catch-up page overflows the 600-row history budget:
+                // merging 601-800 into the held 1-600 trims the newer rows
+                // away and marks the window for a reset.
+                return afterResponse(caughtUp, {
+                    epoch: 1,
+                    hasMore: true,
+                    nextAfterAt: 8_000,
+                    nextAfterSeq: 800,
+                    snapshotHeadAt: 11_000,
+                    snapshotHeadSeq: 1_100
+                })
+            }
+            if (query.beforeAt !== undefined) {
+                beforeCalls += 1
+                const from = beforeCalls === 1 ? 201 : 1
+                return beforeResponse(cached.filter((message) => (message.seq ?? 0) >= from && (message.seq ?? 0) <= from + 199), {
+                    epoch: 1,
+                    hasMore: beforeCalls === 1,
+                    nextBeforeAt: (from - 1) * 10,
+                    nextBeforeSeq: from - 1
+                })
+            }
+            latestCalls += 1
+            if (latestCalls === 1) {
+                return latestResponse(cached.filter((message) => (message.seq ?? 0) >= 401), {
+                    epoch: 1,
+                    hasMore: true,
+                    nextBeforeAt: 4_000,
+                    nextBeforeSeq: 400
+                })
+            }
+            return latestResponse(recoveryPage, { epoch: 1, hasMore: true, nextBeforeAt: 9_010, nextBeforeSeq: 900 })
+        })
+
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        await fetchOlderMessages(api, id)
+        await fetchOlderMessages(api, id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(
+            cached.map((message) => message.id)
+        )
+
+        // The catch-up overflowed: history-mode trimming kept rows 1-600,
+        // dropped the caught-up 601-800, and marked the window for a reset.
+        // The recovery must NOT reconcile the latest page on top of that —
+        // rows 601-900 would sit between the two cursors, unreachable from
+        // either — and must not consume the recovery flags.
+        await recoverWindowAfterGapResume(api, id)
+
+        const overflowed = getMessageWindowState(id)
+        expect(overflowed.messages.map((message) => message.id)).toEqual(cached.map((message) => message.id))
+        expect(overflowed.requiresLatestReset).toBe(true)
+        expect(overflowed.pendingGapRecovery).toBe(true)
+        expect(overflowed.warning).toBeNull()
+
+        // The next sync takes the reset-marked authoritative replacement and
+        // closes the hole: the window becomes the fresh latest page and older
+        // paging resumes from its bound.
+        await syncTailMessages(api, id)
+
+        const replaced = getMessageWindowState(id)
+        expect(replaced.messages.map((message) => message.id)).toEqual(recoveryPage.map((message) => message.id))
+        expect(replaced.requiresLatestReset).toBe(false)
+        expect(replaced.pendingGapRecovery).toBe(false)
+        expect(replaced.oldestSeq).toBe(901)
+        expect(replaced.warning).toBeNull()
+    })
 })
