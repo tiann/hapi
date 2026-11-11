@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as agentAvailability from './agentAvailability'
 import { CodexAppServerClient } from '@/codex/codexAppServerClient'
@@ -308,5 +311,55 @@ describe('agentQuotas parsers and probes', () => {
         const claude = await probeClaudeQuota({})
         expect(agy.status).toBe('unavailable')
         expect(claude.status).toBe('unavailable')
+    })
+
+    it('shares live quota observations across process boundaries via HAPI_HOME state file', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-live-quotas-'))
+        try {
+            const env = { HAPI_HOME: hapiHome, ANTHROPIC_BASE_URL: 'https://any.s6o.org' }
+            // Session process records a Claude rate_limit_event to HAPI_HOME
+            recordClaudeRateLimitEvent({
+                status: 'allowed',
+                rateLimitType: 'five_hour',
+                utilization: 0.4,
+                resetsAt: Math.floor(Date.now() / 1000) + 3600
+            }, env)
+
+            // Runner process has fresh in-memory state (liveClaudeBuckets is empty)
+            _resetAgentQuotasCacheForTests()
+
+            const availabilitySpy = vi.spyOn(agentAvailability, 'getAgentAvailability').mockImplementation((agent) => ({
+                agent,
+                available: false
+            }))
+
+            // Runner caches initial quota response
+            await getAgentQuotasResponse({ env })
+            expect(availabilitySpy).toHaveBeenCalledTimes(3)
+
+            // Another process updates agent-quotas-live.json without clearing runner's in-memory cachedResponse
+            writeFileSync(join(hapiHome, 'agent-quotas-live.json'), JSON.stringify({
+                codexUpdatedAt: Date.now() + 1000,
+                agyTierLabel: 'Google AI Ultra',
+                claudeBuckets: {
+                    five_hour: {
+                        id: 'claude-five_hour',
+                        label: '5h window',
+                        group: null,
+                        window: '5h',
+                        usedPercent: 40,
+                        remainingPercent: 60,
+                        resetsAt: Date.now() + 3_600_000,
+                        updatedAt: Date.now() + 1000
+                    }
+                }
+            }))
+
+            // Runner detects newer codexUpdatedAt/claudeBuckets.updatedAt on disk and invalidates its in-memory cache
+            await getAgentQuotasResponse({ env })
+            expect(availabilitySpy).toHaveBeenCalledTimes(6)
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
     })
 })

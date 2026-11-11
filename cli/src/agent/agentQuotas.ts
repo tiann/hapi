@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type {
     AgentQuotaAccount,
     AgentQuotaBucket,
@@ -14,6 +16,7 @@ import type {
     CodexRateLimitEntry,
     CodexRateLimitWindow
 } from '@/codex/appServerTypes'
+import { resolveHapiHomeDir } from '@/configuration'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import { getAgentAvailability } from './agentAvailability'
@@ -169,20 +172,114 @@ export function extractCodexQuotaBuckets(response: AccountRateLimitsReadResponse
     return buckets
 }
 
-// Live in-memory observations from active sessions
-let cachedResponse: { expiresAt: number; response: AgentQuotasResponse } | null = null
-let inflightPromise: Promise<AgentQuotasResponse> | null = null
-const liveClaudeBuckets = new Map<string, AgentQuotaBucket & { updatedAt: number }>()
-let liveAgyTierLabel: string | null = null
+// Live in-memory observations + cross-process shared state file under HAPI_HOME
+type LiveClaudeBucketRecord = AgentQuotaBucket & { updatedAt: number }
 
-export function recordCodexRateLimitsUpdate(params: unknown): void {
-    const record = asRecord(params)
-    if (!record) return
-    // Invalidate short cache so next dashboard read reflects the updated window immediately
-    cachedResponse = null
+type PersistedLiveQuotaState = {
+    codexUpdatedAt?: number
+    claudeBuckets?: Record<string, LiveClaudeBucketRecord>
+    agyTierLabel?: string | null
 }
 
-export function recordClaudeRateLimitEvent(info: unknown): void {
+let cachedResponse: { startedAt: number; expiresAt: number; response: AgentQuotasResponse } | null = null
+let inflightPromise: Promise<AgentQuotasResponse> | null = null
+const liveClaudeBuckets = new Map<string, LiveClaudeBucketRecord>()
+let liveAgyTierLabel: string | null = null
+
+function resolveLiveQuotaStatePath(env: NodeJS.ProcessEnv = process.env): string | null {
+    if (env.VITEST === 'true' && !env.HAPI_HOME) {
+        return null
+    }
+    return join(resolveHapiHomeDir(env), 'agent-quotas-live.json')
+}
+
+function readPersistedLiveQuotaState(env: NodeJS.ProcessEnv = process.env): PersistedLiveQuotaState {
+    const filePath = resolveLiveQuotaStatePath(env)
+    if (!filePath || !existsSync(filePath)) return {}
+    try {
+        const raw = readFileSync(filePath, 'utf8')
+        const parsed = asRecord(JSON.parse(raw))
+        if (!parsed) return {}
+        const codexUpdatedAt = asFiniteNumber(parsed.codexUpdatedAt) ?? undefined
+        const agyTierLabel = asNonEmptyString(parsed.agyTierLabel)
+        const claudeBuckets: Record<string, LiveClaudeBucketRecord> = {}
+        const rawBuckets = asRecord(parsed.claudeBuckets)
+        if (rawBuckets) {
+            for (const [key, val] of Object.entries(rawBuckets)) {
+                const entry = asRecord(val)
+                if (!entry) continue
+                const id = asNonEmptyString(entry.id)
+                const label = asNonEmptyString(entry.label)
+                const usedPercent = asFiniteNumber(entry.usedPercent)
+                const remainingPercent = asFiniteNumber(entry.remainingPercent)
+                const updatedAt = asFiniteNumber(entry.updatedAt)
+                if (!id || !label || usedPercent === null || remainingPercent === null || updatedAt === null) continue
+                claudeBuckets[key] = {
+                    id,
+                    label,
+                    group: asNonEmptyString(entry.group),
+                    window: asNonEmptyString(entry.window),
+                    usedPercent,
+                    remainingPercent,
+                    resetsAt: asFiniteNumber(entry.resetsAt),
+                    updatedAt
+                }
+            }
+        }
+        return { codexUpdatedAt, claudeBuckets, agyTierLabel }
+    } catch {
+        return {}
+    }
+}
+
+function writePersistedLiveQuotaState(
+    updater: (prev: PersistedLiveQuotaState) => PersistedLiveQuotaState,
+    env: NodeJS.ProcessEnv = process.env
+): void {
+    const filePath = resolveLiveQuotaStatePath(env)
+    if (!filePath) return
+    try {
+        const next = updater(readPersistedLiveQuotaState(env))
+        mkdirSync(dirname(filePath), { recursive: true })
+        const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+        writeFileSync(tmpPath, JSON.stringify(next), 'utf8')
+        renameSync(tmpPath, filePath)
+    } catch {
+        // Best-effort cross-process cache sharing
+    }
+}
+
+function getLatestLiveQuotaUpdateAt(env: NodeJS.ProcessEnv = process.env): number {
+    const persisted = readPersistedLiveQuotaState(env)
+    let latest = persisted.codexUpdatedAt ?? 0
+    if (persisted.claudeBuckets) {
+        for (const entry of Object.values(persisted.claudeBuckets)) {
+            if (entry.updatedAt > latest) {
+                latest = entry.updatedAt
+            }
+        }
+    }
+    for (const entry of liveClaudeBuckets.values()) {
+        if (entry.updatedAt > latest) {
+            latest = entry.updatedAt
+        }
+    }
+    return latest
+}
+
+export function recordCodexRateLimitsUpdate(params: unknown, env: NodeJS.ProcessEnv = process.env): void {
+    const record = asRecord(params)
+    if (!record) return
+    const now = Date.now()
+    // Invalidate short cache in this process and across runner/session processes
+    cachedResponse = null
+    writePersistedLiveQuotaState((prev) => ({
+        ...prev,
+        codexUpdatedAt: now
+    }), env)
+}
+
+export function recordClaudeRateLimitEvent(info: unknown, env: NodeJS.ProcessEnv = process.env): void {
     const record = asRecord(info)
     if (!record) return
     const utilization = asFiniteNumber(record.utilization)
@@ -204,7 +301,7 @@ export function recordClaudeRateLimitEvent(info: unknown): void {
             ? 'Weekly (7d)'
             : `Limit (${rateLimitType})`
 
-    liveClaudeBuckets.set(rateLimitType, {
+    const bucketRecord: LiveClaudeBucketRecord = {
         id: `claude-${rateLimitType}`,
         label,
         group: null,
@@ -213,14 +310,26 @@ export function recordClaudeRateLimitEvent(info: unknown): void {
         remainingPercent,
         resetsAt,
         updatedAt: Date.now()
-    })
+    }
+    liveClaudeBuckets.set(rateLimitType, bucketRecord)
     cachedResponse = null
+    writePersistedLiveQuotaState((prev) => ({
+        ...prev,
+        claudeBuckets: {
+            ...(prev.claudeBuckets ?? {}),
+            [rateLimitType]: bucketRecord
+        }
+    }), env)
 }
 
-export function recordAgyTier(tierName: string | null | undefined): void {
+export function recordAgyTier(tierName: string | null | undefined, env: NodeJS.ProcessEnv = process.env): void {
     const normalized = asNonEmptyString(tierName)
     if (normalized) {
         liveAgyTierLabel = normalized
+        writePersistedLiveQuotaState((prev) => ({
+            ...prev,
+            agyTierLabel: normalized
+        }), env)
     }
 }
 
@@ -496,7 +605,7 @@ export async function probeAgyQuota(env: NodeJS.ProcessEnv = process.env): Promi
             available: true,
             status: 'ok',
             accountLabel: null,
-            planLabel: liveAgyTierLabel,
+            planLabel: liveAgyTierLabel ?? readPersistedLiveQuotaState(env).agyTierLabel ?? null,
             creditsLabel,
             buckets: parsedUsage.buckets,
             updatedAt
@@ -651,10 +760,24 @@ function runClaudeStatusProbe(executable: string, env: NodeJS.ProcessEnv): Promi
     })
 }
 
-function getActiveClaudeBuckets(): AgentQuotaBucket[] {
+function getActiveClaudeBuckets(env: NodeJS.ProcessEnv = process.env): AgentQuotaBucket[] {
     const now = Date.now()
-    const buckets: AgentQuotaBucket[] = []
+    const merged = new Map<string, LiveClaudeBucketRecord>()
+    const persisted = readPersistedLiveQuotaState(env)
+    if (persisted.claudeBuckets) {
+        for (const [key, entry] of Object.entries(persisted.claudeBuckets)) {
+            merged.set(key, entry)
+        }
+    }
     for (const [key, entry] of liveClaudeBuckets.entries()) {
+        const existing = merged.get(key)
+        if (!existing || entry.updatedAt >= existing.updatedAt) {
+            merged.set(key, entry)
+        }
+    }
+
+    const buckets: AgentQuotaBucket[] = []
+    for (const [key, entry] of merged.entries()) {
         if (entry.resetsAt && entry.resetsAt <= now) {
             liveClaudeBuckets.delete(key)
             continue
@@ -712,7 +835,7 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
             ?? asNonEmptyString(account?.apiProvider)
         const organization = rows.get('Organization')
 
-        const buckets = getActiveClaudeBuckets()
+        const buckets = getActiveClaudeBuckets(env)
 
         if (!email && !authTokenSource && !loginMethod && !baseUrl) {
             return {
@@ -762,7 +885,7 @@ export async function probeClaudeQuota(env: NodeJS.ProcessEnv = process.env): Pr
             agent: 'claude',
             available: true,
             status: 'error',
-            buckets: getActiveClaudeBuckets(),
+            buckets: getActiveClaudeBuckets(env),
             note: error instanceof Error ? error.message : 'Failed to query Claude status',
             updatedAt
         }
@@ -776,8 +899,14 @@ export async function getAgentQuotasResponse(options?: {
     const refresh = options?.refresh === true
     const env = options?.env ?? process.env
     const now = Date.now()
+    const latestLiveUpdateAt = getLatestLiveQuotaUpdateAt(env)
 
-    if (!refresh && cachedResponse && cachedResponse.expiresAt > now) {
+    if (
+        !refresh
+        && cachedResponse
+        && cachedResponse.expiresAt > now
+        && latestLiveUpdateAt <= cachedResponse.startedAt
+    ) {
         return cachedResponse.response
     }
 
@@ -785,6 +914,7 @@ export async function getAgentQuotasResponse(options?: {
         return await inflightPromise
     }
 
+    const startedAt = Date.now()
     const promise = (async (): Promise<AgentQuotasResponse> => {
         const accounts = await Promise.all([
             probeCodexQuota(env),
@@ -797,6 +927,7 @@ export async function getAgentQuotasResponse(options?: {
             fetchedAt
         }
         cachedResponse = {
+            startedAt,
             expiresAt: fetchedAt + CACHE_TTL_MS,
             response
         }

@@ -232,7 +232,7 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
                 agent: 'agy',
                 model,
                 kind: 'delta',
-                inputTokens: Math.max(inputTokens, cacheReadTokens),
+                inputTokens: inputTokens + cacheReadTokens,
                 outputTokens,
                 cacheReadTokens,
                 cacheCreationTokens: 0,
