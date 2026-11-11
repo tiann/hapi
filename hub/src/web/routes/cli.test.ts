@@ -159,6 +159,21 @@ describe('cli resume routes', () => {
         expect(missing.status).toBe(404)
     })
 
+    it('follows merged-away session redirects for CLI lookups', async () => {
+        const calls: unknown[] = []
+        const app = createApp({
+            resolveSessionAccess: (sessionId: string, namespace: string, opts?: { followRedirects?: boolean }) => {
+                calls.push({ sessionId, namespace, opts })
+                return { ok: false, reason: 'not-found' }
+            }
+        } as never)
+
+        const response = await app.request('/cli/sessions/merged-away', { headers: authHeaders() })
+
+        expect(response.status).toBe(404)
+        expect(calls).toEqual([{ sessionId: 'merged-away', namespace: 'default', opts: { followRedirects: true } }])
+    })
+
     it('returns handoff errors with status codes', async () => {
         const app = createApp({
             handoffSessionToLocal: async () => ({

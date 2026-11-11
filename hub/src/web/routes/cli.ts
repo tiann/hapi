@@ -32,7 +32,8 @@ function resolveSessionForNamespace(
     sessionId: string,
     namespace: string
 ): { ok: true; session: Session; sessionId: string } | { ok: false; status: 403 | 404; error: string } {
-    const access = engine.resolveSessionAccess(sessionId, namespace)
+    // CLI callers continue with the returned id (e.g. a runner reopen of a merged-away id).
+    const access = engine.resolveSessionAccess(sessionId, namespace, { followRedirects: true })
     if (access.ok) {
         return { ok: true, session: access.session, sessionId: access.sessionId }
     }

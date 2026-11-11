@@ -561,16 +561,19 @@ export class SyncEngine {
     }
 
     /**
-     * Entry point for client-supplied ids (web/native routes, CLI REST): a
-     * merged-away id follows its durable redirect, so callers must continue
-     * with the returned `sessionId`. Internal paths use the strict
-     * `sessionCache.resolveSessionAccess`.
+     * Session lookup for route handlers. With `followRedirects`, a merged-away
+     * id resolves to its surviving session and callers must continue with the
+     * returned `sessionId`; only clients that rebind to that id opt in (CLI
+     * REST always; web via FOLLOW_SESSION_REDIRECTS_HEADER).
      */
     resolveSessionAccess(
         sessionId: string,
-        namespace: string
+        namespace: string,
+        opts?: { followRedirects?: boolean }
     ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
-        return this.sessionCache.resolveSessionAccessFollowingRedirects(sessionId, namespace)
+        return opts?.followRedirects
+            ? this.sessionCache.resolveSessionAccessFollowingRedirects(sessionId, namespace)
+            : this.sessionCache.resolveSessionAccess(sessionId, namespace)
     }
 
     /** Follow job-owner redirects after merge/dedup (tiann/hapi#1404 cold review). */

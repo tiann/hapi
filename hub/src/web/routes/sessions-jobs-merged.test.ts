@@ -5,6 +5,7 @@ import { RpcRegistry } from '../../socket/rpcRegistry'
 import type { SessionCache } from '../../sync/sessionCache'
 import { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
+import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import { createSessionsRoutes } from './sessions'
 
 /**
@@ -40,15 +41,39 @@ async function setup() {
     return { store, engine, app, remappedKey }
 }
 
-function request(app: Hono<WebAppEnv>, method: string, path: string, body?: unknown) {
+function request(app: Hono<WebAppEnv>, method: string, path: string, body?: unknown, followRedirects = false) {
+    const headers: Record<string, string> = {}
+    if (body !== undefined) headers['content-type'] = 'application/json'
+    if (followRedirects) headers[FOLLOW_SESSION_REDIRECTS_HEADER] = '1'
     return app.request(`http://localhost/api${path}`, {
         method,
-        headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body)
     })
 }
 
-describe('job routes on a merged-away session id', () => {
+describe('session detail on a merged-away id', () => {
+    it('resolves to the survivor only for clients that opt in', async () => {
+        const { store, engine, app } = await setup()
+        try {
+            const followed = await request(app, 'GET', `/sessions/${OLD_ID}`, undefined, true)
+            expect(followed.status).toBe(200)
+            expect(((await followed.json()) as { session: { id: string } }).session.id).toBe(NEW_ID)
+
+            // Native clients keep live state under the requested id; they get the plain 404.
+            const plain = await request(app, 'GET', `/sessions/${OLD_ID}`)
+            expect(plain.status).toBe(404)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+})
+
+describe.each([
+    ['with redirect opt-in', true],
+    ['without redirect opt-in', false]
+])('job routes on a merged-away session id (%s)', (_label, follow) => {
     it('keeps the merged source job under a remapped key on the survivor', async () => {
         const { store, remappedKey } = await setup()
         try {
@@ -63,7 +88,7 @@ describe('job routes on a merged-away session id', () => {
     it('PATCH via the old id updates the remapped job, not the survivor job with the same key', async () => {
         const { store, engine, app, remappedKey } = await setup()
         try {
-            const res = await request(app, 'PATCH', `/sessions/${OLD_ID}/jobs/build`, { remaining: 1, expectedRunId: 'run-old' })
+            const res = await request(app, 'PATCH', `/sessions/${OLD_ID}/jobs/build`, { remaining: 1, expectedRunId: 'run-old' }, follow)
 
             expect(res.status).toBe(200)
             expect(store.sessionJobs.get(NEW_ID, remappedKey!)?.remaining).toBe(1)
@@ -77,7 +102,7 @@ describe('job routes on a merged-away session id', () => {
     it('DELETE via the old id removes the remapped job only', async () => {
         const { store, engine, app, remappedKey } = await setup()
         try {
-            const res = await request(app, 'DELETE', `/sessions/${OLD_ID}/jobs/build`)
+            const res = await request(app, 'DELETE', `/sessions/${OLD_ID}/jobs/build`, undefined, follow)
 
             expect(res.status).toBe(200)
             expect(store.sessionJobs.get(NEW_ID, remappedKey!)).toBeNull()
@@ -93,7 +118,7 @@ describe('job routes on a merged-away session id', () => {
         try {
             const res = await request(app, 'PUT', `/sessions/${OLD_ID}/jobs/build`, {
                 label: 'old build', status: 'running', remaining: 2, runId: 'run-old'
-            })
+            }, follow)
 
             expect(res.status).toBe(200)
             expect(store.sessionJobs.get(NEW_ID, remappedKey!)?.remaining).toBe(2)
