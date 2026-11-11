@@ -421,7 +421,79 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
 
-describe('shared permission modes', () => {
+it('keeps the active round measurable when only the hub reconnects', async () => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000_000);
+            const f = await fixture();
+            await f.root.activate();
+            const settled = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); await f.drain(); };
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } } });
+            vi.setSystemTime(1_001_000);
+            await f.drain();
+            f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+            vi.setSystemTime(1_002_000);
+            await f.drain();
+            // Hub-only reconnect: the native turn keeps running without a new
+            // turn/started, so the active round's ledger identity, baseline
+            // and windows must survive the replay.
+            f.reconnect();
+            await settled();
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } } });
+            vi.setSystemTime(1_003_000);
+            await f.drain();
+            f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } });
+            vi.setSystemTime(1_004_000);
+            await f.drain();
+            expect(f.send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+                expect.objectContaining({ durationMs: 2_000, generationMs: 2_000, generationOutputTokens: 60 })
+            ]);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('keeps timing approval waits out of generation after a reconnect', async () => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000_000);
+            const f = await fixture();
+            await f.root.activate();
+            const settled = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); await f.drain(); };
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', tokenUsage: { total: { output_tokens: 100 } } });
+            vi.setSystemTime(1_001_000);
+            await f.drain();
+            // App-server reconnect: the re-armed permissions must keep the
+            // host's user-wait hook, or approval waits count as generation.
+            await (f.root as unknown as { reconnect(): Promise<void> }).reconnect();
+            f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+            vi.setSystemTime(1_002_000);
+            await f.drain();
+            const question: NativeRequest = { id: 'native-question', method: 'item/tool/requestUserInput', params: {
+                threadId: 'thread', turnId: 'turn', itemId: 'question',
+                questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }]
+            } };
+            vi.setSystemTime(1_003_000);
+            f.native.serverRequest(question);
+            for (let i = 0; i < 200 && Object.keys(f.state().requests ?? {}).length === 0; i++) await Promise.resolve();
+            await f.drain();
+            const key = Object.keys(f.state().requests!)[0];
+            expect(key, 'approval surfaced after reconnect').toBeTruthy();
+            vi.setSystemTime(1_003_500);
+            await f.rpc.get(RPC_METHODS.Permission)!({ id: key, approved: true, answers: { choice: ['A'] } });
+            await settled();
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', tokenUsage: { total: { output_tokens: 160 } } });
+            vi.setSystemTime(1_004_000);
+            await f.drain();
+            f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } });
+            vi.setSystemTime(1_005_000);
+            await f.drain();
+            // 3 s round with a 0.5 s wait for the user: 2.5 s of generation.
+            expect(f.send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+                expect.objectContaining({ durationMs: 3_000, generationMs: 2_500, generationOutputTokens: 60 })
+            ]);
+        } finally { vi.useRealTimers(); }
+    });
+
+    describe('shared permission modes', () => {
     it('switches native auto-review on and back to the human reviewer', async () => {
         const f = await fixture();
         expect((await f.root.applySettings({ permissionMode: 'autoReview' })).applied.permissionMode).toBe('autoReview');
