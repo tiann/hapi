@@ -9,6 +9,7 @@ export default defineConfig({
         'mermaid-lightbox-session.spec.ts',
         'latex-bracket-math-session.spec.ts',
         'codex-fork-while-running.spec.ts',
+        'codex-list-completed-fork.spec.ts',
         'codex-archived-fork.spec.ts',
         'codex-session-list-fork.spec.ts',
         'late-codex-command-session.spec.ts',
