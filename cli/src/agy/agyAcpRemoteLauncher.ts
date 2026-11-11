@@ -1271,7 +1271,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     name: call.name,
                     input: call.args,
                     status: 'in_progress',
-                    nativeName: call.name
+                    nativeName: call.name,
+                    nativeArgs: call.args
                 });
                 pairing.pendingWakeCalls.push(id);
                 gating.surfacedOpenCalls += 1;

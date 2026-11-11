@@ -3366,6 +3366,47 @@ describe('AgyAcpRemoteLauncher late continuation (baseline vs transcript coverag
     });
 });
 
+describe('AgyAcpRemoteLauncher synthetic continuation calls', () => {
+    const toolMessages = (client: ReturnType<typeof makeClient>) => client.sendAgentMessage.mock.calls
+        .map(([message]) => message as Record<string, unknown>)
+        .filter((message) => message.type === 'tool-call' || message.type === 'tool-call-result');
+
+    it('renders a forwarded synthetic run_command as its canonical Bash card', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('check the sample');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run sample', input: BG_ARGS, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: BG_ARGS });
+            onUpdate({ type: 'text', text: 'Started the sample check in the background.' });
+            source.latest = 2;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('check the sample', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // The continuation surfaces a planner call of its own: agy's native
+        // tool id and arguments ride along so the card renders canonically.
+        source.push(
+            wakeStep(3, 'system', 'The background task finished with result:\nCommand exited with code 0.\n\nCommand output:\nTURN-OK'),
+            wakeStep(4, 'planner', '', [{ name: 'run_command', args: { CommandLine: 'echo wake-normalized', WaitMsBeforeAsync: 5000 } }]),
+            wakeStep(5, 'tool', 'wake-normalized-stdout'),
+            wakeStep(6, 'planner', 'All done.')
+        );
+        source.latest = 6;
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        const call = toolMessages(client).find((row) => row.type === 'tool-call' && String(row.callId).startsWith('agy-wake-'));
+        expect(call).toMatchObject({ name: 'Bash', input: { command: 'echo wake-normalized' } });
+    });
+});
+
 describe('AgyAcpRemoteLauncher dequeue hold', () => {
     it('surfaces steps that appeared after the last watcher before running the held message', async () => {
         const { session, queue, client } = makeSession();
