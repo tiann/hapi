@@ -127,6 +127,7 @@ export function ToolTimingSummary(props: {
 }
 
 function ToolCardTimingSummary(props: { tool: ChatToolCall }) {
+    const { t } = useTranslation()
     const active = props.tool.state === 'running'
     const [now, setNow] = useState(() => Date.now())
 
@@ -136,6 +137,19 @@ function ToolCardTimingSummary(props: { tool: ChatToolCall }) {
         const id = setInterval(() => setNow(Date.now()), ELAPSED_INTERVAL_MS)
         return () => clearInterval(id)
     }, [active, props.tool.startedAt, props.tool.createdAt])
+
+    // A pending question card stays in the 'running' tool state until its
+    // reply lands (the transcript has no result yet), which would otherwise
+    // read as an ever-growing Duration. Questions awaiting an answer are not
+    // work in progress — label them accordingly instead of showing timing.
+    if (props.tool.permission?.status === 'pending'
+        && (isAskUserQuestionToolName(props.tool.name) || isRequestUserInputToolName(props.tool.name))) {
+        return (
+            <div className="text-xs text-[var(--app-hint)]">
+                {t('tool.waitingForReply')}
+            </div>
+        )
+    }
 
     return <ToolTimingSummary {...getToolTimingDetails(props.tool, now)} />
 }
