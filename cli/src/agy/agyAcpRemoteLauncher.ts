@@ -166,6 +166,10 @@ type AgyTurn = {
     // Commands agy has not reported an end for; one still open at end_turn was
     // moved to the background.
     openCommands: Set<string>;
+    // All `run_command` call IDs seen in this turn in arrival order, kept even
+    // if an earlier command completes during a steer so call ordinals stay 1:1
+    // with transcript `PLANNER_RESPONSE.tool_calls` entries.
+    commandCallIds: string[];
     // Settled non-live assistant text segments streamed during this turn, used
     // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
     streamedTextCounts: Map<string, number>;
@@ -672,6 +676,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!acpSessionId) {
                 acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
                 this.backgroundCommands.length = 0;
+                this.nativeToolNames.clear();
             }
             if (this.acpSessionId !== acpSessionId) {
                 this.lastTranscriptStepIndex = -1;
@@ -803,6 +808,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answeredAt: null,
             generation: new GenerationClock(),
             openCommands: new Set(),
+            commandCallIds: [],
             streamedTextCounts: new Map(),
             usage: null,
             sawActivity: false,
@@ -944,13 +950,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const taskIds = extractAgyBackgroundTaskIds(turnSteps);
         for (let idx = 0; idx < openIds.length; idx += 1) {
             const id = openIds[idx]!;
-            const taskId = taskIds[idx];
+            const callOrdinal = turn.commandCallIds.indexOf(id);
+            const ordinalInTurn = callOrdinal >= 0 ? callOrdinal : idx;
+            const taskId = taskIds[ordinalInTurn];
             const existing = this.backgroundCommands.find((entry) => entry.callId === id);
             if (!existing) {
                 this.backgroundCommands.push({
                     callId: id,
                     afterStepIndex: turnStartStepIndex,
-                    ordinalInTurn: idx,
+                    ordinalInTurn,
                     ...(taskId ? { taskId } : {})
                 });
             } else if (taskId && !existing.taskId) {
@@ -1240,6 +1248,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** Tracks commands agy moved to the background; the generation clock reads the same updates. */
     private trackOpenCommand(turn: AgyTurn, message: AgentMessage): void {
         if (message.type !== 'tool_call' && message.type !== 'tool_result') return;
+        if (message.type === 'tool_call' && message.nativeName === 'run_command') {
+            if (!turn.commandCallIds.includes(message.id)) {
+                turn.commandCallIds.push(message.id);
+            }
+        }
         // Only a command agy reports as running counts: one still waiting
         // for approval (pending) did not start, whatever happens to the turn.
         if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
@@ -1291,7 +1304,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         if (message.type === 'tool_result') {
             const nativeName = this.nativeToolNames.get(message.id);
-            this.nativeToolNames.delete(message.id);
+            if (!this.backgroundCommands.some((entry) => entry.callId === message.id)) {
+                this.nativeToolNames.delete(message.id);
+            }
             return mapAgyToolResult(message, nativeName);
         }
         return message;

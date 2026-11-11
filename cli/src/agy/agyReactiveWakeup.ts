@@ -439,12 +439,36 @@ export function extractAgyBackgroundTaskId(content: string | undefined): string 
     return match?.[1];
 }
 
-export function extractAgyBackgroundTaskIds(steps: AgyTranscriptStep[]): string[] {
-    const ids: string[] = [];
-    for (const step of steps) {
-        if (step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE') {
-            const id = extractAgyBackgroundTaskId(step.content);
-            if (id) ids.push(id);
+/**
+ * Extracts `taskId` (or `undefined` for non-backgrounded / not-yet-flushed rows)
+ * for every `run_command` tool call in `steps` in call-ordinal order, so an
+ * earlier command completing during a steer does not shift later ordinals.
+ */
+export function extractAgyBackgroundTaskIds(steps: AgyTranscriptStep[]): Array<string | undefined> {
+    const ids: Array<string | undefined> = [];
+    for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i]!;
+        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') continue;
+        const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+        if (toolCalls.length === 0) continue;
+
+        const actionSteps: AgyTranscriptStep[] = [];
+        let cursor = i + 1;
+        while (
+            cursor < steps.length
+            && actionSteps.length < toolCalls.length
+            && steps[cursor]!.source === 'MODEL'
+            && steps[cursor]!.type !== 'PLANNER_RESPONSE'
+        ) {
+            actionSteps.push(steps[cursor]!);
+            cursor += 1;
+        }
+        i = cursor - 1;
+
+        for (let callIdx = 0; callIdx < toolCalls.length; callIdx += 1) {
+            if (toolCalls[callIdx]!.name === 'run_command') {
+                ids.push(extractAgyBackgroundTaskId(actionSteps[callIdx]?.content));
+            }
         }
     }
     return ids;
@@ -463,7 +487,7 @@ export function resolveAgyBackgroundTaskIds(
     const unresolved = openBackgroundCommands.filter((entry) => !entry.taskId);
     if (unresolved.length === 0) return;
 
-    const taskIdsByWindow = new Map<string, string[]>();
+    const taskIdsByWindow = new Map<string, Array<string | undefined>>();
     for (const entry of unresolved) {
         if (entry.stepIndex !== undefined) {
             const steps = readAgyTranscriptStepsAfter(brainDir, sessionId, entry.stepIndex - 1);
