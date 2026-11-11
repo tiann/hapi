@@ -1,16 +1,22 @@
-import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnOptions } from 'child_process';
 
 const {
   spawnMock,
   existsSyncMock,
   isBunCompiledMock,
-  projectPathMock
+  projectPathMock,
+  canDisclaimForChildrenMock
 } = vi.hoisted(() => ({
   spawnMock: vi.fn((..._args: any[]) => ({ pid: 12345 }) as any),
   existsSyncMock: vi.fn((path: string) => !path.includes('missing-hapi.exe')),
   isBunCompiledMock: vi.fn(() => false),
-  projectPathMock: vi.fn(() => process.cwd())
+  projectPathMock: vi.fn(() => process.cwd()),
+  canDisclaimForChildrenMock: vi.fn(() => false)
+}));
+
+vi.mock('@/runtime/responsibility', () => ({
+  canDisclaimForChildren: canDisclaimForChildrenMock
 }));
 
 vi.mock('child_process', async () => {
@@ -69,6 +75,7 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     existsSyncMock.mockImplementation((path: string) => !path.includes('missing-hapi.exe'));
     isBunCompiledMock.mockReturnValue(false);
     projectPathMock.mockReturnValue(process.cwd());
+    canDisclaimForChildrenMock.mockReturnValue(false);
     if (originalInvokedCwd === undefined) {
       delete process.env.HAPI_INVOKED_CWD;
     } else {
@@ -132,6 +139,75 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     const options = getSpawnOptionsOrThrow();
     expect(options.detached).toBe(true);
     expect('windowsHide' in options).toBe(false);
+  });
+
+  describe('macOS responsibility disclaim', () => {
+    const exe = '/Users/me/.local/bin/hapi-local';
+
+    function spawnCall(): { command: string; args: string[]; env: NodeJS.ProcessEnv | undefined } {
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      const [command, args, options] = spawnMock.mock.calls[0] as [string, string[], SpawnOptions];
+      return { command, args, env: options.env };
+    }
+
+    beforeEach(() => {
+      isBunCompiledMock.mockReturnValue(true);
+      process.env.HAPI_CLI_EXECUTABLE = exe;
+      existsSyncMock.mockImplementation(() => true);
+      canDisclaimForChildrenMock.mockReturnValue(true);
+    });
+
+    afterEach(() => {
+      delete process.env.HAPI_DISCLAIM_RESPONSIBILITY;
+    });
+
+    it('requests the disclaim for this spawner through the environment, leaving the command unchanged', async () => {
+      setPlatform('darwin');
+      const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+      spawnHappyCLI(['claude', '--started-by', 'runner'], { detached: true, stdio: 'ignore' });
+
+      const call = spawnCall();
+      expect(call.command).toBe(exe);
+      expect(call.args).toEqual(['claude', '--started-by', 'runner']);
+      expect(call.env?.HAPI_DISCLAIM_RESPONSIBILITY).toBe(String(process.pid));
+      expect(getSpawnOptionsOrThrow().detached).toBe(true);
+    });
+
+    it('does not request it when the spawner cannot hand its responsibility on (Terminal, SSH)', async () => {
+      setPlatform('darwin');
+      canDisclaimForChildrenMock.mockReturnValue(false);
+      process.env.HAPI_DISCLAIM_RESPONSIBILITY = '1';
+      const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+      spawnHappyCLI(['runner', 'start-sync'], { detached: true, stdio: 'ignore' });
+
+      const call = spawnCall();
+      expect(call.args).toEqual(['runner', 'start-sync']);
+      expect(call.env && 'HAPI_DISCLAIM_RESPONSIBILITY' in call.env).toBe(false);
+    });
+
+    it('does not request it for a non-detached darwin spawn', async () => {
+      setPlatform('darwin');
+      const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+      spawnHappyCLI(['hub'], { detached: false, stdio: 'ignore' });
+
+      const call = spawnCall();
+      expect(call.args).toEqual(['hub']);
+      expect(call.env && 'HAPI_DISCLAIM_RESPONSIBILITY' in call.env).toBe(false);
+    });
+
+    it.each(['linux', 'win32'])('does not request it for a detached %s spawn', async (platform) => {
+      setPlatform(platform);
+      const { spawnHappyCLI } = await import('./spawnHappyCLI');
+
+      spawnHappyCLI(['runner', 'start-sync'], { detached: true, stdio: 'ignore' });
+
+      const call = spawnCall();
+      expect(call.args).toEqual(['runner', 'start-sync']);
+      expect(call.env && 'HAPI_DISCLAIM_RESPONSIBILITY' in call.env).toBe(false);
+    });
   });
 
   it('forces Bun child processes to run with the cli project root as cwd', async () => {

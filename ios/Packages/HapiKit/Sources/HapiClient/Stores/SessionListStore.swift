@@ -379,11 +379,13 @@ public final class SessionListStore: SessionListStoring {
         let index = list.firstIndex { $0.id == session.id }
         let existing = index.map { list[$0] }
         // The projection cannot derive the hub-computed scheduled-message
-        // fields — carry them over from the previous row (web
-        // `upsertSessionSummary`).
+        // fields or the attached job — carry them over from the previous row
+        // (web `upsertSessionSummary`).
         var summary = SummaryPatching.toSessionSummary(session)
         summary.futureScheduledMessageCount = existing?.futureScheduledMessageCount ?? 0
         summary.nextScheduledAt = existing?.nextScheduledAt
+        summary.attachedJob = existing?.attachedJob
+        summary.attachedJobUpdatedAt = existing?.attachedJobUpdatedAt
         summary.contentRevision = [existing?.contentRevision, session.contentRevision].compactMap { $0 }.max()
         summary.readState = SessionReadState.merge(existing?.readState, session.readState)
         summary.lastUserMessageAt = session.lastUserMessageAt.map { max(existing?.lastUserMessageAt ?? 0, $0) } ?? existing?.lastUserMessageAt

@@ -15,7 +15,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migrations through v31', () => {
+describe('schema migrations through v33', () => {
     it('adds events and event_links tables to a V22 database', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v23-'))
         tempDirs.push(dir)
@@ -45,9 +45,7 @@ describe('schema migrations through v31', () => {
             expect(links?.name).toBe('event_links')
             const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
             expect(columns.map((column) => column.name)).toContain('delivery_state')
-            const scratchlistColumns = internalDb.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
-            expect(scratchlistColumns.map((column) => column.name)).toContain('position')
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
         } finally {
             migrated.close()
         }
@@ -80,7 +78,7 @@ describe('schema migrations through v31', () => {
             expect(migrated.messages.searchContent('backfill this', 'default')[0]?.sessionId).toBe(session.id)
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
         } finally {
             migrated.close()
         }
@@ -116,7 +114,7 @@ describe('schema migrations through v31', () => {
             ).get() as { name: string } | null
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
             expect(lookup?.name).toBe('message_content_search_lookup')
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
         } finally {
             migrated.close()
         }
@@ -179,7 +177,7 @@ describe('schema migrations through v31', () => {
             expect(target?.target_message_id).toBe(message.id)
             expect(indexed?.searchable_text.length).toBeLessThanOrEqual(MAX_INDEXED_MESSAGE_CHARACTERS)
             expect(indexed?.searchable_text).toContain('tail-migration-needle')
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
         } finally {
             migrated.close()
         }
@@ -241,7 +239,7 @@ describe('schema migrations through v31', () => {
             expect(indexed?.searchable_text).toContain('v30-middle-needle')
             expect(metadata?.is_truncated).toBe(1)
             expect(metadata?.short_index_truncated).toBe(1)
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
         } finally {
             migrated.close()
         }

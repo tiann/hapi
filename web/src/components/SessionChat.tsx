@@ -57,6 +57,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
+import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -138,7 +139,9 @@ import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorMode
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
+import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReasoningEffortOptions'
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
+import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
@@ -1385,6 +1388,12 @@ function SessionChatInner(props: SessionChatProps) {
         sessionId: props.session.id,
         enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
     })
+    const copilotEffortOptions = useCopilotReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        model: props.session.model,
+        enabled: agentFlavor === 'copilot' && props.session.active && !controlledByUser
+    })
     const copilotModelOptions = useMemo(() => (
         agentFlavor === 'copilot'
             ? [
@@ -1411,6 +1420,12 @@ function SessionChatInner(props: SessionChatProps) {
         api: props.api,
         sessionId: props.session.id,
         enabled: agentFlavor === 'kimi' && props.session.active
+    })
+    const kimiEffortOptions = useKimiReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        model: props.session.model,
+        enabled: agentFlavor === 'kimi' && props.session.active && !controlledByUser
     })
     const kimiModelOptions = useMemo(() => (
         agentFlavor === 'kimi' && kimiModelsState.availableModels.length > 0
@@ -2439,6 +2454,14 @@ function SessionChatInner(props: SessionChatProps) {
                         />
 
                         <div className="px-3">
+                            <AsyncQuestionsPanel
+                                key={`questions-${props.session.id}`}
+                                api={props.api}
+                                sessionId={props.session.id}
+                                requests={props.session.agentState?.requests}
+                                disabled={sessionInactive}
+                                onRefresh={props.onRefresh}
+                            />
                             {/*
                              * Scratchlist drawer - composer-controlled. Only
                              * mounted when the operator clicks the notepad icon
@@ -2553,6 +2576,10 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? agyEffortOptions
                                 : agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
+                                : agentFlavor === 'copilot'
+                                ? copilotEffortOptions
+                                : agentFlavor === 'kimi'
+                                ? kimiEffortOptions
                                 : claudeEffortOptions
                         }
                         active={props.session.active}
@@ -2655,6 +2682,14 @@ function SessionChatInner(props: SessionChatProps) {
                                     : undefined)
                                 : agentFlavor === 'grok'
                                 ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'copilot'
+                                ? (props.session.active && !controlledByUser && copilotEffortOptions.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : agentFlavor === 'kimi'
+                                ? (props.session.active && !controlledByUser && kimiEffortOptions.length > 0
                                     ? handleEffortChange
                                     : undefined)
                                 : handleEffortChange

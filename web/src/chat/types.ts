@@ -21,8 +21,13 @@ export type RoundModelUsage = {
     cacheCreationInputTokens?: number
 }
 
+export type AgyUsage = Partial<Record<
+    'input_tokens' | 'output_tokens' | 'thinking_tokens' | 'cache_read_tokens' | 'total_tokens', number
+>>
+
 export type RoundSummary = {
-    provider?: 'codex'
+    provider?: 'codex' | 'agy'
+    agyUsage?: AgyUsage
     turnId?: string
     usage?: UsageData
     modelUsage: Record<string, RoundModelUsage>

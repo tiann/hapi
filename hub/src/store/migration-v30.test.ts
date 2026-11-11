@@ -52,7 +52,7 @@ it('creates and backfills search tables when upgrading a base v30 database', () 
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
             expect(migrated.messages.searchContent('searchable', 'default')[0]?.sessionId).toBe(session.id)
         } finally { migrated.close() }
     } finally { Bun.gc(true); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) }
@@ -84,7 +84,7 @@ it('upgrades a genuine v26 schema without read-state or search table shortcuts',
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
             const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-            expect(version.user_version).toBe(32)
+            expect(version.user_version).toBe(35)
             expect(migrated.sessions.getSession(session.id)?.readState).toEqual({ readRevision: 0, manualUnread: false, version: 0 })
             migrated.messages.addMessage(session.id, {
                 role: 'user', content: { type: 'text', text: 'genuine v26 searchable text' }
@@ -143,7 +143,7 @@ describe('scratchlist order schema through v32', () => {
                     ['newer', 0, 'keep new draft'], ['older', 1, 'keep old draft'],
                 ])
                 const db = (store as unknown as { db: Database }).db
-                expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 32 })
+                expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 35 })
                 expect(store.sessions.getSession(sessionId)?.readState).toEqual({ readRevision: 0, manualUnread: true, version: 1 })
                 expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_session_scratchlist_session_position'").get()).not.toBeNull()
             } finally { store.close() }
@@ -163,7 +163,7 @@ describe('scratchlist order schema through v32', () => {
                 ['newer', 0], ['older', 1],
             ])
             const db = (store as unknown as { db: Database }).db
-            expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 32 })
+            expect(db.prepare('PRAGMA user_version').get()).toEqual({ user_version: 35 })
         } finally { store.close() }
     })
 
