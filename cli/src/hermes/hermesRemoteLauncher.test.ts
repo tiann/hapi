@@ -17,6 +17,11 @@ const harness = vi.hoisted(() => ({
     initializeErrorQueue: [] as unknown[],
     resumeError: null as Error | null,
     resumeSupported: true,
+    // When non-empty, each resumeSession() call parks on the next entry
+    // (shifted off the front; a resolved entry passes straight through) —
+    // lets tests abort inside a chosen respawn window without parking the
+    // initial establishment's resume too.
+    resumeBlockerQueue: [] as Array<Promise<void>>,
     // Set while suppressUpdatesDuring's callback runs; lets the resumeSession
     // mock record whether it executed inside the suppression window.
     insideSuppress: false,
@@ -65,6 +70,10 @@ vi.mock('./utils/hermesBackend', () => ({
             }),
             resumeSession: vi.fn(async (config: { sessionId: string }) => {
                 harness.resumeInsideSuppress = harness.insideSuppress
+                const blocker = harness.resumeBlockerQueue.shift()
+                if (blocker) {
+                    await blocker
+                }
                 if (harness.resumeError) throw harness.resumeError
                 return config.sessionId
             }),
@@ -176,6 +185,7 @@ describe('HermesRemoteLauncher', () => {
         harness.initializeErrorQueue = []
         harness.resumeError = null
         harness.resumeSupported = true
+        harness.resumeBlockerQueue = []
         harness.insideSuppress = false
         harness.resumeInsideSuppress = null
         harness.suppressCalls = 0
@@ -585,6 +595,51 @@ describe('HermesRemoteLauncher', () => {
             [{ type: 'text', text: 'hello' }],
             [{ type: 'text', text: 'hello' }]
         ])
+    })
+
+    it('drops the retried batch when a user stop lands during the respawn', async () => {
+        // Abort-generation guard (ported from dsh): a stop that lands while
+        // the replacement backend is being established must discard the
+        // already-dequeued batch — the user saw 'Session aborted' and the
+        // queue was reset, so the retry would run a message the user killed.
+        harness.promptErrorQueue = [deadTransportError()]
+        // Park only the RESPAWN's session/resume (the initial
+        // establishment's resume passes through a resolved slot) so the stop
+        // lands inside the reconnect window.
+        let releaseResume!: () => void
+        const park = new Promise<void>((resolve) => { releaseResume = resolve })
+        harness.resumeBlockerQueue = [Promise.resolve(), park]
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('hello', {})
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        // 'hello' ran once and died with the transport; the respawn parks
+        // inside session/resume on the fresh backend.
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        await vi.waitFor(() => expect(harness.backends[1]?.resumeSession).toHaveBeenCalled())
+
+        const killPromise = launcher.kill()
+        releaseResume()
+        await killPromise
+
+        // The aborted 'hello' must be dropped, not retried; the loop stays
+        // alive and the NEXT message runs on the respawned backend.
+        queue.push('third', {})
+        queue.close()
+        await done
+
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'hello' }],
+            [{ type: 'text', text: 'third' }]
+        ])
+        expect(harness.backends[1].prompt).toHaveBeenCalledWith(
+            'hermes-existing-1',
+            [{ type: 'text', text: 'third' }],
+            expect.any(Function)
+        )
     })
 
     it('surfaces the error and keeps the loop alive when the respawn also fails', async () => {

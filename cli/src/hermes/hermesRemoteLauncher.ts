@@ -45,6 +45,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createHermesBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
+    /** Bumped at the top of every handleAbort (ported from dsh); lets the
+     * prompt-catch respawn branch detect an abort that landed while the
+     * replacement backend was being established and drop the retried batch. */
+    private abortGeneration = 0
     private currentBackendModel: string | null = null
     /** Server default captured at session creation, before any override. */
     private initialBackendModel: string | null = null
@@ -158,6 +162,12 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 break
             }
 
+            // Snapshot before any await in this iteration (ported from dsh):
+            // a user stop that lands while the batch runs — or while the
+            // respawn below rebuilds the backend — bumps the generation, and
+            // the mismatch is what discards the already-dequeued batch.
+            const generationAtDequeue = this.abortGeneration
+
             // A respawn that failed on an earlier batch leaves no backend
             // behind: rebuild before touching this batch. One fresh attempt
             // per message — a permanently down gateway surfaces one error per
@@ -260,20 +270,34 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                         failureMessage = `Hermes reconnect failed: ${reconnectMessage}`
                     }
                     if (revived) {
-                        // The fresh process lost the dead turn's session
-                        // state: re-apply the batch's edit mode before the
-                        // retry (establishBackend already restored the
-                        // session-stored mode; the dedupe makes this a no-op
-                        // when they map to the same edit mode).
-                        if (batch.mode.permissionMode !== undefined) {
-                            await this.applyHermesEditMode(this.backend!, this.acpSessionId!, batch.mode.permissionMode)
-                        }
-                        try {
-                            await this.backend!.prompt(this.acpSessionId!, prompt, (message) => this.handleAgentMessage(message))
-                        } catch (retryError) {
-                            const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
-                            logger.warn('[hermes-acp] prompt failed after reconnect', { message: retryMessage })
-                            failureMessage = `Hermes prompt failed after reconnect: ${retryMessage}`
+                        if (generationAtDequeue !== this.abortGeneration) {
+                            // A user stop landed while the replacement backend
+                            // was being established (ported from dsh): the
+                            // user already saw 'Session aborted' and the queue
+                            // was reset, so the retried batch must not run.
+                            this.messageBuffer.addMessage('Aborted while reconnecting the Hermes session; dropping the queued message', 'status')
+                        } else {
+                            // The fresh process lost the dead turn's session
+                            // state: re-apply the batch's edit mode before the
+                            // retry (establishBackend already restored the
+                            // session-stored mode; the dedupe makes this a no-op
+                            // when they map to the same edit mode).
+                            if (batch.mode.permissionMode !== undefined) {
+                                await this.applyHermesEditMode(this.backend!, this.acpSessionId!, batch.mode.permissionMode)
+                            }
+                            // Re-assert the thinking state around the retry:
+                            // the failed prompt left it asserted, but making
+                            // the retry self-contained guarantees the hub
+                            // shows the turn as running even if anything reset
+                            // it during the reconnect window.
+                            this.session.onThinkingChange(true)
+                            try {
+                                await this.backend!.prompt(this.acpSessionId!, prompt, (message) => this.handleAgentMessage(message))
+                            } catch (retryError) {
+                                const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+                                logger.warn('[hermes-acp] prompt failed after reconnect', { message: retryMessage })
+                                failureMessage = `Hermes prompt failed after reconnect: ${retryMessage}`
+                            }
                         }
                     }
                 } else {
@@ -614,6 +638,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        // Bump first, synchronously (ported from dsh): the prompt-catch
+        // respawn branch compares generations around its respawnBackend
+        // `await` to detect aborts that land inside that window.
+        this.abortGeneration += 1
         // Tear the wait down synchronously FIRST (ported from dsh): aborting
         // and replacing the controller unparks a waiting loop iteration via
         // its captured signal, and resetting the queue before the awaits drops
