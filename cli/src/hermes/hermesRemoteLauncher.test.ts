@@ -39,7 +39,10 @@ const harness = vi.hoisted(() => ({
     configOptionError: null as Error | null,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
-    newSessionBlocker: null as null | Promise<void>
+    newSessionBlocker: null as null | Promise<void>,
+    // When set, disconnect() parks on this promise — lets tests query the
+    // catalog RPC while a respawn is still tearing the dead backend down.
+    disconnectBlocker: null as null | Promise<void>
 }))
 
 vi.mock('./utils/hermesBackend', () => ({
@@ -105,7 +108,11 @@ vi.mock('./utils/hermesBackend', () => ({
             setSessionInfoUpdateListener: vi.fn((listener: (update: { title?: unknown }) => void) => {
                 harness.titleListener = listener
             }),
-            disconnect: vi.fn(async () => {})
+            disconnect: vi.fn(async () => {
+                if (harness.disconnectBlocker) {
+                    await harness.disconnectBlocker
+                }
+            })
         }
         harness.backends.push(backend)
         harness.backend = backend
@@ -139,6 +146,16 @@ function deadTransportError(message = 'ACP process exited (code=1, signal=null)'
     const error = new Error(message)
     Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true })
     return error
+}
+
+/** Whether `promise` settled within a short window (true) or is still parked
+ * (false) — proves a catalog query parks through a blocked window instead of
+ * answering a terminal error immediately. */
+async function settlesQuickly(promise: Promise<unknown>): Promise<boolean> {
+    return await Promise.race([
+        promise.then(() => true, () => true),
+        new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), 25) })
+    ])
 }
 
 function createSessionFromQueue(queue: MessageQueue2<HermesMode>, sessionId: string | null = null) {
@@ -197,6 +214,7 @@ describe('HermesRemoteLauncher', () => {
         harness.setModeError = null
         harness.configOptionError = null
         harness.newSessionBlocker = null
+        harness.disconnectBlocker = null
     })
 
     it('creates a fresh ACP session and forwards text prompts', async () => {
@@ -529,6 +547,100 @@ describe('HermesRemoteLauncher', () => {
             ],
             currentModelId: GLM
         })
+    })
+
+    it('parks a ListHermesModels query that arrives during the MCP bridge build, then answers it', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.modelsMetadata = {
+            availableModels: [{ modelId: GLM, name: 'GLM-5.3' }],
+            currentModelId: GLM
+        }
+        // Park the bridge build: the picker's catalog query arrives while the
+        // bridge HTTP server is still being created — before the first
+        // establishment has run at all.
+        const { buildHapiMcpBridge } = await import('@/codex/utils/buildHapiMcpBridge')
+        let releaseBridge!: () => void
+        const bridgeBlocker = new Promise<void>((resolve) => { releaseBridge = resolve })
+        vi.mocked(buildHapiMcpBridge).mockImplementationOnce(async () => {
+            await bridgeBlocker
+            return {
+                server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+                mcpServers: {}
+            }
+        })
+        const session = createSession()
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        const registered = await vi.waitFor(() => {
+            const call = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+                .find((c) => c[0] === 'listHermesModels')
+            expect(call).toBeTruthy()
+            return call!
+        })
+
+        // While the bridge build is pending the query must PARK on the
+        // seeded placeholder readiness — the pre-fix launcher answered a
+        // terminal 'Hermes session is not available' error in this window.
+        const pending = (registered[1] as () => Promise<unknown>)()
+        await expect(settlesQuickly(pending)).resolves.toBe(false)
+        releaseBridge()
+        await done
+
+        // The first establishment adopts the placeholder and settles it: the
+        // parked query now answers with the discovered catalog.
+        await expect(pending).resolves.toEqual({
+            success: true,
+            availableModels: [{ modelId: GLM, name: 'GLM-5.3' }],
+            currentModelId: GLM
+        })
+    })
+
+    it('parks a ListHermesModels query that arrives during respawn teardown, then answers from the replacement', async () => {
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.modelsMetadata = {
+            availableModels: [{ modelId: GLM, name: 'GLM-5.3' }],
+            currentModelId: GLM
+        }
+        // The first prompt dies with the transport marker; the dead backend's
+        // disconnect parks, so the respawn is mid-teardown (readiness already
+        // swapped, replacement not yet established) when the query arrives.
+        let releaseDisconnect!: () => void
+        harness.disconnectBlocker = new Promise<void>((resolve) => { releaseDisconnect = resolve })
+        const session = createSessionWithBatches([['hello', {}]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        const registered = await vi.waitFor(() => {
+            const call = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+                .find((c) => c[0] === 'listHermesModels')
+            expect(call).toBeTruthy()
+            return call!
+        })
+        await vi.waitFor(() => {
+            const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+            expect(events.some((call) =>
+                String((call[0] as { message?: string } | undefined)?.message ?? '').includes('reconnecting'))).toBe(true)
+        })
+
+        // Mid-teardown the query must PARK on the fresh pending handshake
+        // armed at the top of the respawn — the pre-fix launcher served the
+        // settled handshake's dead backend here.
+        const pending = (registered[1] as () => Promise<unknown>)()
+        await expect(settlesQuickly(pending)).resolves.toBe(false)
+        releaseDisconnect()
+        await done
+
+        await expect(pending).resolves.toEqual({
+            success: true,
+            availableModels: [{ modelId: GLM, name: 'GLM-5.3' }],
+            currentModelId: GLM
+        })
+        // The answer was served from the REPLACEMENT backend's metadata,
+        // never from the corpse.
+        expect(harness.backends[1].getSessionModelsMetadata).toHaveBeenCalledWith('hermes-existing-1')
+        expect(harness.backends[0].getSessionModelsMetadata).not.toHaveBeenCalled()
     })
 
     it('respawns the ACP backend and retries the same batch when the child process dies', async () => {

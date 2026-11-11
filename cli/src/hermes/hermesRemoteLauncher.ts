@@ -26,19 +26,28 @@ const HERMES_EDIT_MODE_BY_PERMISSION: Record<string, string> = {
 
 /**
  * Readiness handshake for the ListHermesModels catalog RPC (registered once
- * per launcher in runMainLoop). Replaced on every backend (re)establishment
- * so a picker query that arrives mid-respawn parks until the replacement
- * session exists and model discovery has settled — and one that arrives
- * while a respawn fails gets the failure instead of hanging forever. The
- * backend of the establishment the promise belongs to travels with it: the
- * handler must query metadata on the backend that captured that session,
- * which a respawn swap keeps visible to parked queries.
+ * per launcher in runMainLoop). A pending placeholder is armed BEFORE the
+ * awaited bridge build and again at the top of every respawn, so a picker
+ * query that arrives in those windows parks instead of eating a terminal
+ * error (or stale metadata off a dying backend); each establishment adopts
+ * the pending handshake, rebinds it to its own backend, and settles it —
+ * and a respawn that fails settles it with the failure instead of hanging
+ * forever. The backend of the establishment that resolves the promise
+ * travels with it: the handler must query metadata on the backend that
+ * captured that session, which a respawn swap keeps visible to parked
+ * queries.
  */
 type ModelsReadiness = {
-    backend: ReturnType<typeof createHermesBackend>
+    /** Backend of the establishment that settles `promise`; null while the
+     * handshake is a pre-establishment placeholder (establishBackend rebinds
+     * it before the promise can ever resolve). */
+    backend: ReturnType<typeof createHermesBackend> | null
     promise: Promise<string>
     resolve: (acpSessionId: string) => void
     reject: (error: unknown) => void
+    /** True once resolve/reject ran: a settled handshake can never re-arm,
+     * so the next establishment replaces the object instead of adopting it. */
+    settled: boolean
 }
 
 export class HermesRemoteLauncher extends RemoteLauncherBase {
@@ -94,6 +103,12 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async runMainLoop(): Promise<void> {
+        // Seed a pending placeholder BEFORE the awaited bridge build: the
+        // handler below is registered immediately, and a picker query that
+        // lands while the bridge HTTP server is still being built must park
+        // on the placeholder — not get a terminal "not available" answer —
+        // and be answered by the first establishment (which adopts it).
+        this.armModelsReadiness()
         // Register the catalog RPC before initialization: a client that opens
         // the model picker while initialize/session/new is still pending
         // would otherwise hit an unregistered-method rejection, and the
@@ -113,7 +128,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 const message = error instanceof Error ? error.message : String(error)
                 return { success: false, error: `Hermes session is not available: ${message}` }
             }
-            const metadata = readiness.backend.getSessionModelsMetadata(acpSessionId)
+            const metadata = readiness.backend?.getSessionModelsMetadata(acpSessionId)
             if (!metadata) {
                 return { success: false, error: 'Hermes model metadata is not available' }
             }
@@ -354,17 +369,16 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             this.messageBuffer.addMessage(error.message, 'status')
         })
 
-        let markReady!: (acpSessionId: string) => void
-        let markFailed!: (error: unknown) => void
-        const ready = new Promise<string>((resolve, reject) => {
-            markReady = resolve
-            markFailed = reject
-        })
-        // A failing establishment rejects `ready` through markFailed below;
-        // with no catalog query parked on it yet, that rejection would
-        // otherwise surface as an unhandled promise rejection.
-        ready.catch(() => {})
-        this.modelsReadiness = { backend, promise: ready, resolve: markReady, reject: markFailed }
+        // Adopt the pending handshake armed before this establishment began
+        // (a query that parked during the bridge build or the respawn
+        // teardown must be answered by THIS establishment); when the standing
+        // handshake is settled — a finished or failed earlier establishment —
+        // arm a fresh one. The backend rebind happens before any await below,
+        // so a resolve can only ever surface the establishment's own backend.
+        const readiness = (!this.modelsReadiness || this.modelsReadiness.settled)
+            ? this.armModelsReadiness()
+            : this.modelsReadiness
+        readiness.backend = backend
 
         let acpSessionId: string
         try {
@@ -420,7 +434,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 logger.warn(`[hermes-acp] hermesSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
             }
         } catch (error) {
-            markFailed(error)
+            readiness.reject(error)
             throw error
         }
 
@@ -449,7 +463,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
         }
-        markReady(acpSessionId)
+        readiness.resolve(acpSessionId)
 
         // Auto-approval consults the LIVE session mode: a mid-turn switch to
         // yolo starts auto-approving request_permission immediately, while the
@@ -463,6 +477,42 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         const sessionPermissionMode = this.session.getPermissionMode() as PermissionMode | undefined
         this.applyDisplayMode(sessionPermissionMode)
         await this.applyHermesEditMode(backend, acpSessionId, sessionPermissionMode)
+    }
+
+    /**
+     * Arm a fresh pending readiness handshake, make it current, and return
+     * it. Called before the bridge build (pre-first-establishment
+     * placeholder) and at the top of every respawn (before the teardown
+     * awaits): catalog queries that arrive in those windows park on it.
+     * establishBackend adopts the pending handshake, rebinds its backend,
+     * and settles it with the establishment's outcome.
+     */
+    private armModelsReadiness(): ModelsReadiness {
+        let markReady!: (acpSessionId: string) => void
+        let markFailed!: (error: unknown) => void
+        const ready = new Promise<string>((resolve, reject) => {
+            markReady = resolve
+            markFailed = reject
+        })
+        // A failing establishment rejects `ready` through the reject wrapper;
+        // with no catalog query parked on it yet, that rejection would
+        // otherwise surface as an unhandled promise rejection.
+        ready.catch(() => {})
+        const readiness: ModelsReadiness = {
+            backend: null,
+            promise: ready,
+            settled: false,
+            resolve: (acpSessionId) => {
+                readiness.settled = true
+                markReady(acpSessionId)
+            },
+            reject: (error) => {
+                readiness.settled = true
+                markFailed(error)
+            }
+        }
+        this.modelsReadiness = readiness
+        return readiness
     }
 
     /**
@@ -497,6 +547,13 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             this.backend = null
             this.acpSessionId = null
             this.permissionHandler = null
+            // Swap the catalog readiness to a fresh pending handshake BEFORE
+            // the teardown awaits below: the standing one is settled on the
+            // dead backend, and a picker query that lands while
+            // cancelAll/disconnect are still in flight must park here to be
+            // answered by the replacement establishment — not be served stale
+            // metadata off the corpse. establishBackend adopts it.
+            this.armModelsReadiness()
             // The fresh process starts at the server-default edit mode; clear
             // the dedupe so establishBackend re-issues session/set_mode.
             this.lastAppliedEditMode = null
@@ -517,6 +574,16 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             const partial = this.backend
             this.backend = null
             this.acpSessionId = null
+            // A catalog query that parked during the teardown or the failed
+            // rebuild must get the failure, not an eternal park: settle the
+            // handshake armed at the top of this respawn (establishBackend
+            // already settled its own adoptee, so this is usually a no-op —
+            // it covers failures that predate the adopt, e.g. a synchronous
+            // backend-factory throw). The next respawn attempt re-arms.
+            const pending = this.modelsReadiness
+            if (pending && !pending.settled) {
+                pending.reject(error)
+            }
             try {
                 await partial?.disconnect()
             } catch (disconnectError) {
