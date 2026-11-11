@@ -19,6 +19,7 @@ test.describe('session-list pin layout modes', () => {
         await expect(page.getByRole('button', { name: /Working task/ })).toBeVisible()
         await expect(page.getByRole('button', { name: /Pending task/ })).toBeVisible()
         await expect(page.getByRole('button', { name: /Quiet task/ })).toBeVisible()
+        await expect(page.getByRole('button', { name: /Detached running job/ })).toBeVisible()
         await expect(page.getByRole('button', { name: /Working task/ })).not.toContainText('/work/hapi')
 
         const divider = page.getByRole('separator', { name: 'Archived project sessions' })
@@ -28,6 +29,8 @@ test.describe('session-list pin layout modes', () => {
         const archivedHeader = projectHeaders.nth(1)
         const activePanel = activeHeader.locator('xpath=following-sibling::*[1]')
         await expect(divider).toHaveClass(/border-t/)
+        const jobBox = (await page.getByRole('button', { name: /Detached running job/ }).boundingBox())!
+        expect(jobBox.y).toBeLessThan((await divider.boundingBox())!.y)
         await expect(activeHeader).toBeVisible()
         await expect(archivedHeader).toBeVisible()
         await expect(activePanel.getByRole('button', { name: /Expand/ })).toHaveCount(0)

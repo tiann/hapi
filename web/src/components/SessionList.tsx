@@ -1869,7 +1869,7 @@ export function SessionList(props: {
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && session.active),
+                machineFilteredSessions.filter((session) => !session.globalPinned && (session.active || hasRunningAttachedJob(session))),
                 hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
@@ -1885,7 +1885,7 @@ export function SessionList(props: {
         () => {
             if (!isCombinedPinLayout) return []
             const grouped = groupSessionsByDirectory(
-                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active),
+                machineFilteredSessions.filter((session) => !session.globalPinned && !session.active && !hasRunningAttachedJob(session)),
                 hasTextQuery ? undefined : listView
             )
             if (searchScoreIndex && hasTextQuery) {
