@@ -384,13 +384,30 @@ preserving replay cursors; background retries defer until foreground. A local
 hub route does not need Android's internet-validation capability.
 
 Home centers the Sessions title between a **Hubs and settings** icon and a
-**Filters** icon, keeping the new-session FAB. The hub menu is the only entry
+**Sort & filter** icon, keeping the new-session FAB. The hub menu is the only entry
 for switching/adding hubs, app settings and sign-out; the active hub is checked.
-The filter icon marks an applied filter and opens a Material 3 single-selection
-sheet. Choices come from all sessions, including historical
+The icon carries a dot for any applied filter or a non-default order and opens
+one Material 3 sheet that mirrors the web sort and filter menu: machines,
+activity dates, **Show** all / active only / archived only and **Unread only**,
+then **Sort by** last message (default) or date created and **Active first**
+(on by default: connected sessions lead the pinned and recent sections, below
+manual pins), both persisted app-wide in `hapi_prefs`. Status and unread
+filters keep the open session listed; search ranks by relevance with the base
+order as tie-break, as on web. Machine choices come from all sessions, including historical
 machines; names/IDs determine ordering, never counts. Duplicate names include
-IDs; unnamed and unknown machines are labeled. The applied filter has a Clear
-action, is transient per home/hub, and is cleared when no longer valid.
+IDs; unnamed and unknown machines are labeled. **Reset** clears the filters (not
+the order); filters are transient per home/hub and cleared when no longer valid.
+The share picker reuses the list model with the base order.
+
+Each row's agent icon carries the web presence badge (one mark per state):
+solid green pulsing while working, solid blue pulsing when only background
+tasks run, a green ring when connected and waiting, and a power mark when
+stopped or archived. A running [attached job](../docs/guide/session-jobs.md)
+counts as working even when the agent is idle or disconnected, keeps the session
+under **Active only**, and adds a line under the meta line:
+`label · remaining or percent · elapsed` with a thin bar (determinate only for
+an honest fraction), amber with `no heartbeat` after 15 minutes. Job patches are
+versioned like web's: a lagged heartbeat cannot resurrect a cleared job.
 The home holder follows the active connection instance, releasing the previous
 store and filter even when switching back to a previously used hub URL.
 
