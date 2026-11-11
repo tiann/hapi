@@ -101,6 +101,12 @@ export interface SDKResultMessage extends SDKMessage {
     duration_api_ms: number
     is_error: boolean
     session_id: string
+    /**
+     * Set in-process by claudeRemote on the result of a manual /compact turn,
+     * so the log converter can skip tok/s fields for it: a compaction call is
+     * not an assistant round. Never present on the wire from Claude itself.
+     */
+    hapi_compact_turn?: boolean
 }
 
 export interface SDKControlResponse extends SDKMessage {

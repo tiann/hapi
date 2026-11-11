@@ -85,9 +85,9 @@ const PRESENCE_BADGE_CLASS = {
  * Presentational session row — same chrome as the sidebar SessionItem body
  * (flavor icon with presence badge, title, request/schedule symbols, todos,
  * relative time, path, optional attached-job meter). Visual language matches
- * the native apps: no dimmed rows or spinners; unread sessions have a
- * separate accent dot. Used by the session list and by rich-composer
- * mention chip tooltips.
+ * the native apps: no row spinners, and unread sessions have a separate accent
+ * dot. The title line dims when the session is not resident. Used by the
+ * session list and by rich-composer mention chip tooltips.
  */
 export function SessionRowSummary(props: {
     session: SessionSummary
@@ -184,6 +184,9 @@ export function SessionRowSummary(props: {
     // connected and waiting, power mark = stopped or archived. Blue is the
     // existing background-work state. An outliving attached job counts as
     // working even when the agent itself is idle or disconnected.
+    // The badge carries *which* state on inspection; the row-level residency
+    // fade below carries *which rows* at a glance. Same predicate (!active),
+    // two scales — a 10px mark doesn't survive a long-list scan on its own.
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
     const presence: 'working' | 'background' | 'waiting' | 'stopped' = isBackgroundOnly
@@ -227,7 +230,12 @@ export function SessionRowSummary(props: {
                 />
             ) : agentIcon}
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <div className="grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
+                {/* Residency fade: a non-resident session reads as a dimmer row, so
+                    "who is still in memory" survives a whole-list scan. It covers the
+                    title line only — the presence badge and the attached-job meter sit
+                    outside it and stay at full strength, because a job outliving its
+                    agent is exactly the case where the row is dim but the work is live. */}
+                <div className={`grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2 ${!s.active ? 'opacity-50' : ''}`}>
                     <div className="flex min-w-0 items-center gap-2">
                         <div
                             className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${isUnread ? 'font-semibold' : 'font-normal'}`}

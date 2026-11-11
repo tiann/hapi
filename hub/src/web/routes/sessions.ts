@@ -601,7 +601,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const result = await engine.forkConversation(
             sessionResult.sessionId,
             c.get('namespace'),
-            parsed.data.messageLocalId
+            parsed.data.messageLocalId,
+            parsed.data.latestCompleted
         )
         if (result.type === 'error') {
             return c.json({ error: result.message }, 409)
