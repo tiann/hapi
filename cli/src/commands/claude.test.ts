@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
     initializeTokenMock,
@@ -55,6 +58,7 @@ vi.mock('@/claude/runClaude', () => ({
 }))
 
 import { claudeCommand } from './claude'
+import { getProjectPath } from '@/claude/utils/path'
 
 function createCommandContext(commandArgs: string[]) {
     return {
@@ -156,11 +160,45 @@ describe('claudeCommand resume identity', () => {
         }
     }
 
+    // Resume targets need a local transcript; give each test its own Claude config dir.
+    const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+    let claudeConfigDir = ''
+
     beforeEach(() => {
         runClaudeMock.mockClear()
         getLocalResumeTargetByAgentSessionIdMock.mockReset()
         handoffSessionToLocalMock.mockClear()
         prepareSessionForLocalResumeMock.mockClear()
+        claudeConfigDir = mkdtempSync(join(tmpdir(), 'hapi-claude-resume-'))
+        process.env.CLAUDE_CONFIG_DIR = claudeConfigDir
+        const projectDir = getProjectPath(directory)
+        mkdirSync(projectDir, { recursive: true })
+        writeFileSync(join(projectDir, `${claudeId}.jsonl`), `${JSON.stringify({ uuid: 'm1' })}\n`)
+    })
+
+    afterEach(() => {
+        if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir
+        rmSync(claudeConfigDir, { recursive: true, force: true })
+    })
+
+    it('refuses an explicit resume whose transcript is gone instead of starting a fresh conversation', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+        rmSync(join(getProjectPath(directory), `${claudeId}.jsonl`))
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({ target: owner({ active: true }), historical: false })
+        try {
+            await expect(claudeCommand.run(createCommandContext(['--resume', claudeId]))).rejects.toThrow('process.exit:1')
+            expect(errorSpy).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('has no transcript'))
+            expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+            expect(prepareSessionForLocalResumeMock).not.toHaveBeenCalled()
+            expect(runClaudeMock).not.toHaveBeenCalled()
+        } finally {
+            errorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
     })
 
     it('reopens the owning HAPI session instead of creating a new one', async () => {
@@ -227,37 +265,23 @@ describe('claudeCommand resume identity', () => {
     })
 
     it('resolves --continue to the owner of the newest transcript and prepares it before reopening', async () => {
-        const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs')
-        const { tmpdir } = await import('node:os')
-        const { join } = await import('node:path')
-        const { getProjectPath } = await import('@/claude/utils/path')
-        const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-        const configDir = mkdtempSync(join(tmpdir(), 'hapi-claude-continue-'))
-        process.env.CLAUDE_CONFIG_DIR = configDir
         const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({ target: owner(), historical: false })
         try {
-            const projectDir = getProjectPath(directory)
-            mkdirSync(projectDir, { recursive: true })
-            writeFileSync(join(projectDir, `${claudeId}.jsonl`), `${JSON.stringify({ uuid: 'm1' })}\n`)
-            getLocalResumeTargetByAgentSessionIdMock.mockResolvedValue({ target: owner(), historical: false })
-
             await claudeCommand.run(createCommandContext(['--continue']))
-
-            expect(getLocalResumeTargetByAgentSessionIdMock).toHaveBeenCalledWith(claudeId, 'machine-1')
-            expect(prepareSessionForLocalResumeMock).toHaveBeenCalledWith('hapi-owner')
-            expect(runClaudeMock).toHaveBeenCalledWith(expect.objectContaining({
-                existingSessionId: 'hapi-owner',
-                resumeSessionId: claudeId
-            }))
-            expect(runClaudeMock).not.toHaveBeenCalledWith(expect.objectContaining({
-                claudeArgs: expect.arrayContaining(['--continue'])
-            }))
         } finally {
             logSpy.mockRestore()
-            if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-            else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-            rmSync(configDir, { recursive: true, force: true })
         }
+
+        expect(getLocalResumeTargetByAgentSessionIdMock).toHaveBeenCalledWith(claudeId, 'machine-1')
+        expect(prepareSessionForLocalResumeMock).toHaveBeenCalledWith('hapi-owner')
+        expect(runClaudeMock).toHaveBeenCalledWith(expect.objectContaining({
+            existingSessionId: 'hapi-owner',
+            resumeSessionId: claudeId
+        }))
+        expect(runClaudeMock).not.toHaveBeenCalledWith(expect.objectContaining({
+            claudeArgs: expect.arrayContaining(['--continue'])
+        }))
     })
 
     it('keeps the original resume args when no HAPI session owns the conversation', async () => {

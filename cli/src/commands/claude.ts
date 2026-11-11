@@ -16,6 +16,7 @@ import type { ClaudePermissionMode } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { parseClaudeResumeArgs, resolveClaudeResume } from '@/claude/resumeIdentity'
+import { claudeCheckSession } from '@/claude/utils/claudeCheckSession'
 import { prepareLocalResume, selectResumableSession } from './resume'
 
 /**
@@ -44,6 +45,15 @@ async function applyClaudeResumeIdentity(options: StartOptions, machineId: strin
     const { target, notice } = resolution
     if (target.flavor !== 'claude') {
         throw new Error(`HAPI session ${target.sessionId} is a ${target.flavor} session; use hapi resume ${target.sessionId}`)
+    }
+    // An explicit resume must never degrade into a fresh conversation under
+    // the existing HAPI id: the local launcher drops a resume id whose
+    // transcript is gone. Check before any handoff or archive change.
+    if (!claudeCheckSession(target.agentSessionId, target.directory)) {
+        throw new Error(
+            `Claude conversation ${target.agentSessionId} of HAPI session ${target.sessionId} `
+            + `has no transcript in ${target.directory}; nothing to resume`
+        )
     }
     await prepareLocalResume(api, target, machineId)
 
