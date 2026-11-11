@@ -15,8 +15,8 @@ import app.hapi.data.push.PushPayload
  *    heads-up + sound interruption is the point.
  *  - `input_requests` — HIGH: an agent needs an answer, not tool approval.
  *  - `ready` — DEFAULT: the agent finished and is waiting for input.
- *  - `task_notifications` — DEFAULT: task completed/failed; also the bucket
- *    for unknown types / contract versions (never heads-up for those).
+ *  - [PushPayload.CHANNEL_OTHER] — DEFAULT: the bucket for unknown types /
+ *    contract versions (never heads-up for those).
  *
  * minSdk is 26, so the channel APIs are unconditionally available. Importance
  * is only a creation-time default — operators can retune per channel in
@@ -50,11 +50,11 @@ object NotificationChannels {
                     description = context.getString(R.string.channel_ready_desc)
                 },
                 NotificationChannel(
-                    PushPayload.CHANNEL_TASK_NOTIFICATIONS,
-                    context.getString(R.string.channel_task_notifications),
+                    PushPayload.CHANNEL_OTHER,
+                    context.getString(R.string.channel_other),
                     NotificationManager.IMPORTANCE_DEFAULT,
                 ).apply {
-                    description = context.getString(R.string.channel_task_notifications_desc)
+                    description = context.getString(R.string.channel_other_desc)
                 },
             )
         )

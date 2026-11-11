@@ -21,8 +21,17 @@ function formatCompactTokenCount(value: number): string {
     return `${(Math.round((value / divisor) * 10) / 10).toString()}${suffix}`
 }
 
-function formatPercentage(value: number): string {
+function formatOneDecimal(value: number): string {
     return (Math.round(value * 10) / 10).toString()
+}
+
+function formatPercentage(value: number): string {
+    return formatOneDecimal(value)
+}
+
+function formatRoundDuration(durationMs: number): string {
+    if (durationMs < 60_000) return formatOneDecimal(durationMs / 1000) + 's'
+    return formatDuration(durationMs)
 }
 
 function formatUsd(value: number): string {
@@ -45,11 +54,48 @@ function getRoundUsage(summary: RoundSummary): UsageData | undefined {
     }), { input_tokens: 0, output_tokens: 0 })
 }
 
+function formatTokensPerSecond({ generationMs, generationOutputTokens }: RoundSummary): string | undefined {
+    if (generationMs === undefined || !Number.isSafeInteger(generationMs) || generationMs <= 0
+        || generationOutputTokens === undefined || !Number.isSafeInteger(generationOutputTokens) || generationOutputTokens <= 0) {
+        return undefined
+    }
+    const tokensPerSecond = generationOutputTokens / (generationMs / 1_000)
+    return Number.isFinite(tokensPerSecond) ? `${tokensPerSecond.toFixed(1)} tok/s` : undefined
+}
+
+function buildAgyRoundLabels(summary: RoundSummary): string[] {
+    const parts: string[] = []
+    const usage = summary.agyUsage
+    if (usage) {
+        const breakdown = [
+            usage.input_tokens !== undefined ? `${formatCompactTokenCount(usage.input_tokens)} in` : undefined,
+            usage.output_tokens !== undefined ? `${formatCompactTokenCount(usage.output_tokens)} out` : undefined,
+            usage.thinking_tokens !== undefined ? `${formatCompactTokenCount(usage.thinking_tokens)} thinking` : undefined
+        ].filter(Boolean).join(' · ')
+        const total = usage.total_tokens !== undefined ? formatCompactTokenCount(usage.total_tokens) : undefined
+        if (total || breakdown) parts.push(`Tokens: ${total ? total + (breakdown ? ` (${breakdown})` : '') : breakdown}`)
+        // agy's input excludes cache reads.
+        const input = usage.input_tokens
+        const cached = usage.cache_read_tokens
+        if (input !== undefined && cached !== undefined && cached > 0 && Number.isSafeInteger(input + cached)) {
+            parts.push(`Cached input: ${formatPercentage(cached / (input + cached) * 100)}%`)
+        }
+    }
+    const round: string[] = []
+    if (summary.durationMs !== undefined) round.push(formatRoundDuration(summary.durationMs))
+    const tokensPerSecond = formatTokensPerSecond(summary)
+    if (tokensPerSecond) round.push(tokensPerSecond)
+    if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
+    return parts
+}
+
 function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string | null): string[] {
     const parts: string[] = []
     const models = Object.keys(summary.modelUsage)
     const model = models.length > 0 ? models.join(', ') : fallbackModel
     if (model) parts.push(`${models.length > 1 ? 'Models' : 'Model'}: ${model}`)
+
+    if (summary.provider === 'agy') return [...parts, ...buildAgyRoundLabels(summary)]
 
     const isCodex = summary.provider === 'codex'
     const usage = isCodex && summary.usage ? summary.usage : getRoundUsage(summary)
@@ -80,10 +126,12 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
     }
 
     const round: string[] = []
-    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(formatDuration(summary.durationMs))
+    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(formatRoundDuration(summary.durationMs))
     if (summary.numTurns !== undefined && summary.numTurns > 0) {
         round.push(`${summary.numTurns} turn${summary.numTurns === 1 ? '' : 's'}`)
     }
+    const tokensPerSecond = formatTokensPerSecond(summary)
+    if (tokensPerSecond) round.push(tokensPerSecond)
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts
 }

@@ -372,6 +372,43 @@ function normalizeAcpToolContent(content: unknown): string | object | null {
     return diffBlock ?? parts.join('');
 }
 
+/**
+ * True when rawOutput is a plain object whose only key is `metadata`, i.e. it
+ * carries execution details but no output body. Agents such as OpenCode v2
+ * send the actual output in the ACP content array next to such a rawOutput.
+ */
+function isMetadataOnlyRawOutput(rawOutput: unknown): rawOutput is { metadata: unknown } {
+    if (!isObject(rawOutput)) return false;
+    const keys = Object.keys(rawOutput);
+    return keys.length === 1 && keys[0] === 'metadata';
+}
+
+/**
+ * Chooses the value reported as a tool result.
+ *
+ * rawOutput is preferred (Claude/Codex path). When absent, the ACP content
+ * array sent by agents such as Gemini and OpenCode is normalized. If content
+ * is not an array (normalizeAcpToolContent returns null), the original
+ * content value is used to avoid silent data loss.
+ *
+ * When rawOutput carries only `metadata` and content normalizes, the
+ * normalized content becomes the output and the metadata is kept next to it.
+ */
+function resolveToolResultOutput(rawOutput: unknown, content: unknown): unknown {
+    if (rawOutput !== undefined) {
+        if (isMetadataOnlyRawOutput(rawOutput)) {
+            const normalized = normalizeAcpToolContent(content);
+            if (normalized !== null) {
+                const body = typeof normalized === 'string' ? { output: normalized } : normalized;
+                return { ...body, metadata: rawOutput.metadata };
+            }
+        }
+        return rawOutput;
+    }
+    const normalized = normalizeAcpToolContent(content);
+    return normalized !== null ? normalized : content;
+}
+
 function normalizePlanEntries(entries: unknown): PlanItem[] {
     if (!Array.isArray(entries)) return [];
 
@@ -459,6 +496,9 @@ function mayBeUnfinishedControlEnvelope(text: string): boolean {
 
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
+    // The agent's own tool name and args by call id (agy sends `name`/`args`
+    // on every tool_call and tool_call_update).
+    private readonly nativeTools = new Map<string, { nativeName: string; nativeArgs: unknown }>();
     private acceptingUpdates = true;
     private bufferedText = '';
     // Stable stream id for a text segment that has already been emitted by an
@@ -906,6 +946,17 @@ export class AcpMessageHandler {
         return source;
     }
 
+    private nativeToolFields(toolCallId: string, update: Record<string, unknown>): { nativeName?: string; nativeArgs?: unknown } {
+        const nativeName = asString(update.name);
+        if (nativeName) {
+            this.nativeTools.set(toolCallId, {
+                nativeName,
+                nativeArgs: update.args !== undefined ? update.args : update.rawInput
+            });
+        }
+        return this.nativeTools.get(toolCallId) ?? {};
+    }
+
     private handleToolCall(update: Record<string, unknown>): void {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
@@ -956,7 +1007,8 @@ export class AcpMessageHandler {
             input,
             status,
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         });
     }
 
@@ -968,7 +1020,8 @@ export class AcpMessageHandler {
         const existing = this.toolCalls.get(toolCallId);
         const presentation = {
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         };
 
         if (isUsableRawInput(update.rawInput)) {
@@ -1063,17 +1116,7 @@ export class AcpMessageHandler {
                 }
             }
 
-            // Prefer rawOutput (Claude/Codex path). When absent, normalize the
-            // ACP content array sent by agents such as Gemini and OpenCode.
-            // If content is not an array (normalizeAcpToolContent returns null),
-            // fall back to the original content value to avoid silent data loss.
-            let output: unknown;
-            if (update.rawOutput !== undefined) {
-                output = update.rawOutput;
-            } else {
-                const normalized = normalizeAcpToolContent(update.content);
-                output = normalized !== null ? normalized : update.content;
-            }
+            const output = resolveToolResultOutput(update.rawOutput, update.content);
             this.onMessage({
                 type: 'tool_result',
                 id: toolCallId,
