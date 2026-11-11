@@ -33,10 +33,10 @@ The CLI is a wrapper around AI coding agents. It supports multiple agent flavors
 hapi              # Choose an agent interactively and start a session
 hapi <agent>      # Start a supported agent directly (required in scripts)
 hapi runner start # Run background service for remote session spawning
-hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
+hapi ping-peer --list  # Active peers with machine and cwd (prefer MCP list_peers in-session)
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message), `spawn_peer` (create with a required remit). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery). Never treat machine-spawn HTTP 200 as a working peer. In-session `spawn_peer` auto-stamps a durable Parent `[title](/sessions/<uuid>)` chip onto the remit (UUID is identity; titles are decoration). Runners that must keep agents out of other sessions' contexts can hide all four with `HAPI_DISABLE_PEER_TOOLS=1` - see [Installation → Disabling peer tools](./installation.md#disabling-peer-tools-on-a-runner).
+MCP peer tools (same hub/namespace as the session): `list_peers` (find active peers), `inspect_peer` (read), `ping_peer` (message), `spawn_peer` (create with a required remit); with `waitForReply`, `ping_peer` and `spawn_peer` post the peer's reply back when its turn ends. `ping_peer` refuses inactive sessions unless `wake: true` (CLI `--wake`), so finished or unrelated peers are not relaunched; agents are told to message only peers tied to their task and never broadcast. These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery). Never treat machine-spawn HTTP 200 as a working peer. In-session `spawn_peer` auto-stamps a durable Parent `[title](/sessions/<uuid>)` chip onto the remit (UUID is identity; titles are decoration). Runners that must keep agents out of other sessions' contexts can hide all four with `HAPI_DISABLE_PEER_TOOLS=1` - see [Installation → Disabling peer tools](./installation.md#disabling-peer-tools-on-a-runner).
 
 ### HAPI Hub
 

@@ -51,6 +51,14 @@ describe('extractTextFromResult', () => {
         expect(extractTextFromResult({ output: 'ok' })).toBe('ok')
     })
 
+    it('extracts output text from an output plus metadata result', () => {
+        expect(extractTextFromResult({ output: 'ok', metadata: { status: 'completed', exit: 0 } })).toBe('ok')
+    })
+
+    it('returns no text for a metadata-only result', () => {
+        expect(extractTextFromResult({ metadata: { status: 'completed', exit: 0 } })).toBeNull()
+    })
+
     it('extracts from object with error field', () => {
         expect(extractTextFromResult({ error: 'not found' })).toBe('not found')
     })
@@ -150,6 +158,18 @@ describe('getToolResultViewComponent registry', () => {
         expect(getToolResultViewComponent('CodexBash')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
     })
 
+    it('routes shell-shaped unknown cards to the Bash terminal result view', () => {
+        // OpenCode v2 names the card after the raw command ("ls"); its shell
+        // signal is the `execute` native kind on the wire.
+        const shellBlock = makeShellBlock()
+        expect(getToolResultViewComponent('ls', shellBlock)).toBe(getToolResultViewComponent('Bash'))
+        // Gemini ACP names shell calls after the command too.
+        expect(getToolResultViewComponent('cat /tmp/hello.txt', shellBlock)).toBe(getToolResultViewComponent('Bash'))
+        // Without the block (or for non-shell unknown tools) it stays generic.
+        expect(getToolResultViewComponent('ls')).toBe(getToolResultViewComponent('SomeUnknownTool'))
+        expect(getToolResultViewComponent('SomeUnknownTool', makeReadBlock())).toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+
     it('uses a dedicated result view for Codex agent tools', () => {
         expect(getToolResultViewComponent('spawn_agent')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
         expect(getToolResultViewComponent('wait_agent')).toBe(getToolResultViewComponent('spawn_agent'))
@@ -162,6 +182,63 @@ describe('getToolResultViewComponent registry', () => {
         const agentView = getToolResultViewComponent('Agent')
         const genericView = getToolResultViewComponent('SomeUnknownTool')
         expect(agentView).toBe(genericView)
+    })
+})
+
+describe('OpenCode lowercase tool names', () => {
+    it.each([
+        ['bash', 'Bash'],
+        ['glob', 'Glob'],
+        ['grep', 'Grep'],
+        ['list', 'LS'],
+        ['write', 'Write'],
+        ['edit', 'Edit'],
+        ['webfetch', 'WebFetch'],
+        ['websearch', 'WebSearch'],
+        ['task', 'Task']
+    ])('uses the %s result view of %s', (lowercase, canonical) => {
+        expect(getToolResultViewComponent(lowercase)).toBe(getToolResultViewComponent(canonical))
+        expect(getToolResultViewComponent(lowercase)).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
+    })
+
+    it.each(['skill', 'todowrite', 'patch', 'apply_patch', 'question'])(
+        'keeps %s on the generic view',
+        (name) => {
+            expect(getToolResultViewComponent(name)).toBe(getToolResultViewComponent('SomeUnknownTool'))
+        }
+    )
+
+    it('keeps multi-line shell output on separate lines in a code block', () => {
+        const ResultView = getToolResultViewComponent('bash')
+        const block: ToolCallBlock = {
+            id: 'tool-bash',
+            localId: null,
+            createdAt: 0,
+            kind: 'tool-call',
+            children: [],
+            tool: {
+                id: 'tool-bash',
+                name: 'bash',
+                state: 'completed',
+                input: { command: 'ls' },
+                result: { output: 'total 8\nnotes.txt\nmain.ts', metadata: { exit: 0 } },
+                createdAt: 0,
+                startedAt: null,
+                completedAt: 0,
+                execStartedAt: null,
+                execCompletedAt: null,
+                description: null
+            }
+        }
+
+        const { container } = render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+
+        const code = container.querySelector('pre code')
+        expect(code?.textContent).toBe('total 8\nnotes.txt\nmain.ts')
     })
 })
 
@@ -615,3 +692,38 @@ describe('unwrapOpencodeReadOutput', () => {
         expect(out.body).toBe('1: alpha\n2: beta\n\n')
     })
 })
+
+function makeResultBlock(overrides: Partial<ToolCallBlock['tool']> & { name: string }): ToolCallBlock {
+    return {
+        kind: 'tool-call',
+        id: 'tool-1',
+        localId: null,
+        createdAt: 0,
+        tool: {
+            id: 'tool-1',
+            state: 'completed',
+            input: {},
+            createdAt: 0,
+            startedAt: 0,
+            completedAt: 0,
+            execStartedAt: null,
+            execCompletedAt: null,
+            description: null,
+            result: 'ok',
+            ...overrides,
+        },
+        children: [],
+    }
+}
+
+function makeShellBlock(): ToolCallBlock {
+    return makeResultBlock({
+        name: 'ls',
+        nativeKind: 'execute',
+        input: { command: 'ls', description: 'List demo files' },
+    })
+}
+
+function makeReadBlock(): ToolCallBlock {
+    return makeResultBlock({ name: 'SomeUnknownTool', input: { file_path: 'src/a.ts' } })
+}

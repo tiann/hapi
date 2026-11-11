@@ -5,8 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const {
-    inputId, marker, botReviews, hasReview, prepareReview, validateResult,
-    changedLines, readDiff, renderReview, publishReview,
+    VERDICT_LABELS, inputId, marker, botReviews, hasReview, prepareReview, validateResult, verdict,
+    changedLines, readDiff, renderReview, publishReview, markReviewError,
 } = require('./pr-review.cjs');
 
 const HEAD = 'a'.repeat(40);
@@ -76,16 +76,41 @@ function review(overrides = {}) {
 function harness(t) {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'hapi-pr-review-test-'));
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
-    const state = { pull: pull(), reviews: [], posts: [], outputs: {}, diffReads: 0, getCalls: 0 };
+    const state = {
+        pull: pull(), reviews: [], posts: [], outputs: {}, diffReads: 0, getCalls: 0,
+        createdLabels: [], warnings: [], existingLabels: new Set(),
+    };
+    const labelNames = () => state.pull.labels.map(label => label.name);
     const env = { GITHUB_WORKSPACE: path.resolve(__dirname, '../..'), RUNNER_TEMP: temporary };
     const context = { repo: { owner: 'tiann', repo: 'hapi' }, payload: { pull_request: { number: 1842 } } };
     const core = {
         info: () => {},
+        warning: message => { state.warnings.push(message); },
         setOutput: (key, value) => { state.outputs[key] = value; },
         summary: { addRaw: () => ({ write: async () => {} }) },
     };
     const github = {
-        rest: { pulls: {
+        rest: { issues: {
+            removeLabel: async ({ issue_number, name }) => {
+                assert.equal(issue_number, 1842);
+                if (state.labelError) throw state.labelError;
+                if (!labelNames().includes(name)) throw Object.assign(new Error('Label does not exist'), { status: 404 });
+                state.pull.labels = state.pull.labels.filter(label => label.name !== name);
+            },
+            createLabel: async label => {
+                if (state.labelError) throw state.labelError;
+                if (state.existingLabels.has(label.name)) throw Object.assign(new Error('already_exists'), { status: 422 });
+                state.existingLabels.add(label.name);
+                state.createdLabels.push(label);
+            },
+            addLabels: async ({ issue_number, labels }) => {
+                assert.equal(issue_number, 1842);
+                if (state.labelError) throw state.labelError;
+                for (const name of labels) {
+                    if (!labelNames().includes(name)) state.pull.labels.push({ name });
+                }
+            },
+        }, pulls: {
             get: async () => {
                 state.getCalls++;
                 state.onGet?.();
@@ -118,6 +143,8 @@ function harness(t) {
                 return DIFF;
             } });
         },
+        markError: () => markReviewError({ github, context, core, env }),
+        labels: labelNames,
     };
 }
 
@@ -404,4 +431,109 @@ test('reads the fixed head against its merge base, including spaces, Unicode, re
     }
     assert.deepEqual(files.get('deleted.ts'), { LEFT: [[1, 5]], RIGHT: [] });
     assert.equal(files.has('base-only.ts'), false);
+});
+
+const label = key => VERDICT_LABELS[key].name;
+
+test('verdict passes with Minor/Nit findings and blocks on Blocker/Major or a non-passing stage', () => {
+    const withFindings = (...severities) => {
+        const value = result();
+        value.code.findings = severities.map(severity => finding({ severity }));
+        return value;
+    };
+    assert.equal(verdict(result()), 'pass');
+    assert.equal(verdict(withFindings('Minor', 'Nit')), 'pass');
+    assert.equal(verdict(withFindings('Nit', 'Major')), 'needs_changes');
+    assert.equal(verdict(withFindings('Blocker')), 'needs_changes');
+    assert.equal(verdict(result('needs_changes')), 'needs_changes');
+    assert.equal(verdict(result('needs_clarification')), 'needs_clarification');
+    assert.equal(verdict(result('pass', 'needs_changes')), 'needs_changes');
+    assert.equal(verdict(result('pass', 'needs_clarification')), 'needs_clarification');
+});
+
+test('leads the review with the verdict and finding counts', async t => {
+    const h = harness(t);
+    const snapshot = await h.prepare();
+    const value = result();
+    value.code.findings = [finding(), finding({ severity: 'Nit' }), finding()];
+    assert.ok(renderReview(value, snapshot).body.startsWith('**✅ All stages passed** (2 Minor, 1 Nit)\n\nReview mode: initial'));
+    assert.ok(renderReview(result(), snapshot).body.startsWith('**✅ All stages passed**\n\n'));
+    value.code.findings.push(finding({ severity: 'Major' }));
+    value.language = 'zh';
+    assert.ok(renderReview(value, snapshot).body.startsWith('**⚠️ 需要调整**（1 Major，2 Minor，1 Nit）\n\n评审模式'));
+    assert.ok(renderReview(result('needs_clarification'), snapshot).body.startsWith('**❓ Needs clarification**\n\n'));
+});
+
+for (const [requirement, approach, severity, key] of [
+    ['pass', 'pass', 'Minor', 'pass'],
+    ['pass', 'pass', 'Major', 'needs_changes'],
+    ['needs_changes', 'not_reviewed', null, 'needs_changes'],
+    ['pass', 'needs_clarification', null, 'needs_clarification'],
+]) {
+    test(`labels a published ${key} review (${requirement}/${approach}${severity ? `/${severity}` : ''})`, async t => {
+        const h = harness(t);
+        await h.prepare();
+        const value = result(requirement, approach);
+        if (severity) value.code.findings = [finding({ severity })];
+        await h.publish(value);
+        assert.equal(h.state.outputs.verdict, key);
+        assert.deepEqual(h.labels(), [label(key)]);
+        assert.deepEqual(h.state.createdLabels.map(created => created.name), [label(key)]);
+        assert.deepEqual(h.state.warnings, []);
+    });
+}
+
+test('a new review clears only the previous verdict label, then sets the new one', async t => {
+    const h = harness(t);
+    h.state.pull.labels = [{ name: label('pass') }, { name: 'cold-review-clean' }, { name: label('error') }];
+    h.state.existingLabels = new Set(Object.values(VERDICT_LABELS).map(item => item.name));
+    await h.prepare();
+    assert.deepEqual(h.labels(), ['cold-review-clean']);
+    const value = result();
+    value.code.findings = [finding({ severity: 'Blocker' })];
+    await h.publish(value);
+    assert.deepEqual(h.labels(), ['cold-review-clean', label('needs_changes')]);
+    assert.deepEqual(h.state.createdLabels, []);
+});
+
+test('already reviewed inputs keep their verdict label', async t => {
+    const h = harness(t);
+    const snapshot = await h.prepare();
+    h.state.reviews = [review({ body: renderReview(result(), snapshot).body })];
+    h.state.pull.labels = [{ name: label('pass') }];
+    assert.equal((await h.prepare()).skipped, true);
+    assert.deepEqual(h.labels(), [label('pass')]);
+});
+
+test('invalid output and stale inputs leave no verdict label', async t => {
+    const h = harness(t);
+    h.state.pull.labels = [{ name: label('pass') }];
+    await h.prepare();
+    await assert.rejects(h.publish('{}'));
+    h.state.pull.body += ' changed';
+    assert.equal((await h.publish(result())).skipped, true);
+    assert.deepEqual(h.labels(), []);
+});
+
+test('a label API failure warns without failing the published review', async t => {
+    const h = harness(t);
+    await h.prepare();
+    h.state.labelError = Object.assign(new Error('Resource not accessible by integration'), { status: 403 });
+    await h.publish(result());
+    assert.equal(h.state.outputs.published, 'true');
+    assert.equal(h.state.posts.length, 1);
+    assert.match(h.state.warnings[0], /Resource not accessible/);
+});
+
+test('a failed review is labeled only while its inputs are still current', async t => {
+    const h = harness(t);
+    h.state.pull.labels = [{ name: label('pass') }];
+    await h.prepare();
+    assert.deepEqual(await h.markError(), { labeled: label('error') });
+    assert.deepEqual(h.labels(), [label('error')]);
+
+    h.state.pull.labels = [];
+    h.state.pull.head.sha = 'c'.repeat(40);
+    assert.equal((await h.markError()).skipped, true);
+    assert.deepEqual(h.labels(), []);
 });

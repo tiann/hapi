@@ -35,7 +35,7 @@ describe('schema migration v29 to v31', () => {
 
         expect(table?.name).toBe('attachment_deletions')
         expect(columns.map((column) => column.name)).toEqual(['original_path'])
-        expect(version.user_version).toBe(32)
+        expect(version.user_version).toBe(35)
         migrated.close()
     })
 })
