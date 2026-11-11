@@ -1131,6 +1131,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             const lateWakeStart: { idx: number | null } = { idx: null };
             const shouldSurfaceLateStep = (step: AgyTranscriptStep): boolean => {
                 if (lateWakeStart.idx !== null && step.idx > lateWakeStart.idx) return true;
+                // A backgrounding record the skip hides still carries the
+                // task's identity: ingest the mapping without replaying the
+                // record or touching any counter, so its completion pairs with
+                // the right call.
+                if (step.kind === 'tool' && step.status === 'running') {
+                    const backgrounded = parseAgyBackgroundStart(step.content);
+                    if (backgrounded) pairing.backgrounding.set(backgrounded.taskId, backgrounded.description);
+                    return false;
+                }
                 if (step.kind !== 'system') return false;
                 const completion = parseAgyTaskCompletion(step.content);
                 if (!completion) return false;

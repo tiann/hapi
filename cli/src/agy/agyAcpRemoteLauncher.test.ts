@@ -3555,6 +3555,54 @@ describe('AgyAcpRemoteLauncher late continuation (delivered completions)', () =>
         source.latest = 5;
         await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
     });
+
+    it('pairs late-recorded commands by task id when completions land in reverse order', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        const source = new FakeWakeSource();
+        source.latest = 0;
+        const argsA = { CommandLine: 'sleep 10 && echo FIRST-OUT', WaitMsBeforeAsync: 5000 };
+        const argsB = { CommandLine: 'sleep 20 && echo SECOND-OUT', WaitMsBeforeAsync: 5000 };
+
+        backend.promptScripts.push(async (onUpdate) => {
+            backend.echo?.('run two checks');
+            onUpdate({ type: 'tool_call', id: 'bg-1', name: 'run first', input: argsA, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: argsA });
+            onUpdate({ type: 'tool_call', id: 'bg-2', name: 'run second', input: argsB, status: 'in_progress', kind: 'execute', nativeName: 'run_command', nativeArgs: argsB });
+            onUpdate({ type: 'text', text: 'Started both checks in the background.' });
+            // The transcript's parsed prefix when the window opens.
+            source.push(wakeStep(1, 'planner', 'Running both checks.'));
+            source.latest = 5;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('run two checks', REVIEW, 'a');
+        const { run } = launch(session, [backend], {
+            wakeTiming: WAKE_TIMING,
+            createWakeSource: () => source
+        });
+
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(0));
+        // Both backgrounding records parse late, below the DB baseline: the
+        // watcher skips them, but their task identities must still be ingested.
+        source.push(
+            { ...wakeStep(4, 'tool', 'Tool is running as a background task with task id: sample/task-1\nTask Description: sleep 10 && echo FIRST-OUT'), status: 'running' },
+            { ...wakeStep(5, 'tool', 'Tool is running as a background task with task id: sample/task-2\nTask Description: sleep 20 && echo SECOND-OUT'), status: 'running' }
+        );
+        source.latest = 5;
+        await vi.waitFor(() => expect(source.readNewCalls).toBeGreaterThan(1));
+        // The completions land in reverse order inside the window.
+        source.push(
+            wakeStep(6, 'system', 'Task id "sample/task-2" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSECOND-OUT'),
+            wakeStep(7, 'system', 'Task id "sample/task-1" finished with result:\nCommand exited with code 0.\n\nCommand output:\nFIRST-OUT')
+        );
+        source.latest = 7;
+
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }), { timeout: 2_000 });
+        const second = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-2') as Record<string, unknown> | undefined;
+        const first = agentRows(client).find((row) => row.type === 'tool-call-result' && row.callId === 'bg-1') as Record<string, unknown> | undefined;
+        expect(JSON.stringify(second)).toContain('SECOND-OUT');
+        expect(JSON.stringify(first)).toContain('FIRST-OUT');
+    });
 });
 
 describe('AgyAcpRemoteLauncher dequeue hold', () => {
