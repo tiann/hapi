@@ -1,0 +1,55 @@
+{
+    "description": "Codex completion without native summary/token facts remains a plain status.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "summary": "",
+                    "type": "compact-summary"
+                },
+                "id": "msg-codex-boundary",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "summary": "",
+                    "type": "compact-summary"
+                },
+                "id": "msg-codex-boundary",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "thread_id": "thread-42",
+                            "type": "context_compacted"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "msg-codex-boundary",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-context-compacted-boundary"
+}

@@ -7,6 +7,7 @@ import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/T
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
+import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import {
     getCodexAgentActivity,
     getCodexAgentPrompt,
@@ -57,6 +58,8 @@ export function formatTerminalCommandTitle(command: string | null): string | nul
     return `${executable} ${subcommand}`
 }
 
+type Translator = (key: string, params?: Record<string, string | number>) => string
+
 function getTerminalCommand(input: unknown): string | null {
     const command = getInputStringAny(input, ['command', 'cmd'])
     if (command) return command
@@ -67,8 +70,15 @@ function getTerminalCommand(input: unknown): string | null {
 
 function getTerminalTitle(opts: ToolOpts): string {
     const command = getTerminalCommand(opts.input)
-    if (opts.description && opts.description !== command) return opts.description
-    return formatTerminalCommandTitle(command) ?? opts.description ?? 'Terminal'
+    // A description that merely repeats the tool name carries no information:
+    // ACP titles can be the bare tool id ("bash") or the raw command.
+    const description = getInputStringAny(opts.input, ['description'])
+        ?? (opts.description && opts.description !== opts.toolName ? opts.description : null)
+    if (description && description !== command) return description
+    const formatted = formatTerminalCommandTitle(command)
+    if (formatted) return formatted
+    if (command) return opts.t?.('tool.semanticTitle.runShell') ?? 'Run shell'
+    return 'Terminal'
 }
 
 function getTerminalSubtitle(opts: ToolOpts): string | null {
@@ -118,6 +128,7 @@ type ToolOpts = {
     childrenCount: number
     description: string | null
     metadata: SessionMetadataSummary | null
+    t?: Translator
 }
 
 export const knownTools: Record<string, {
@@ -304,7 +315,15 @@ export const knownTools: Record<string, {
     Read: {
         icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
-            const file = getInputStringAny(opts.input, ['file_path', 'path', 'file'])
+            const file = getInputStringAny(opts.input, ['file_path', 'filePath', 'path', 'file'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Read file'
+        },
+        minimal: true
+    },
+    read: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['filePath', 'file_path', 'path', 'file'])
             return file ? resolveDisplayPath(file, opts.metadata) : 'Read file'
         },
         minimal: true
@@ -662,8 +681,6 @@ export const knownTools: Record<string, {
     }
 }
 
-type Translator = (key: string, params?: Record<string, string | number>) => string
-
 export function getToolPresentation(
     opts: Omit<ToolOpts, 'metadata'> & { metadata: SessionMetadataSummary | null },
     t?: Translator
@@ -677,15 +694,28 @@ export function getToolPresentation(
         }
     }
 
-    const goalName = getGoalToolName(opts.toolName)
-    const known = knownTools[goalName ?? opts.toolName]
+    // Exact names resolve to themselves, so other flavors' cards are untouched.
+    const canonicalName = resolveToolNameAlias(opts.toolName)
+    const goalName = getGoalToolName(canonicalName)
+    const known = knownTools[goalName ?? canonicalName]
     if (known) {
         const minimal = typeof known.minimal === 'function' ? known.minimal(opts) : (known.minimal ?? false)
         return {
             icon: known.icon(opts),
-            title: goalName && t ? t(`tool.goal.${goalName}`) : known.title(opts),
+            title: goalName && t ? t(`tool.goal.${goalName}`) : known.title({ ...opts, t }),
             subtitle: known.subtitle ? known.subtitle(opts) : null,
             minimal
+        }
+    }
+
+    // OpenCode v2 names running cards after the raw command ("ls"), so they
+    // never match the alias table; the input shape is the only shell signal.
+    if (getTerminalCommand(opts.input)) {
+        return {
+            icon: <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+            title: getTerminalTitle({ ...opts, t }),
+            subtitle: getTerminalSubtitle({ ...opts, t }),
+            minimal: true
         }
     }
 

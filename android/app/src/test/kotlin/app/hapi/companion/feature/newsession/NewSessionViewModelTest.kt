@@ -9,6 +9,7 @@ import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MachineDirectoryEntry
@@ -48,6 +49,7 @@ private class FakeGateway : NewSessionGateway {
     val spawnCalls = mutableListOf<Pair<String, SpawnSessionRequest>>()
     val codexCalls = mutableListOf<String>()
     val availabilityCalls = mutableListOf<String>()
+    val grokCalls = mutableListOf<Pair<String, String>>()
     val includeHiddenCalls = mutableListOf<Boolean>()
 
     var entries: List<MachineDirectoryEntry> = emptyList()
@@ -55,6 +57,8 @@ private class FakeGateway : NewSessionGateway {
     var spawnResult: SpawnResponse = SpawnResponse(type = "success", sessionId = "s-new")
     var codexResult: CodexModelsResponse = CodexModelsResponse(success = true, models = emptyList())
     var codexThrows: Exception? = null
+    var grokResult = GrokModelsResponse(success = true)
+    var grokThrows: Exception? = null
     var availabilityResult = AgentAvailabilityResponse(
         AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
     )
@@ -96,6 +100,12 @@ private class FakeGateway : NewSessionGateway {
         codexCalls.add(machineId)
         codexThrows?.let { throw it }
         return codexResult
+    }
+
+    override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse {
+        grokCalls.add(machineId to cwd)
+        grokThrows?.let { throw it }
+        return grokResult
     }
 }
 
@@ -405,8 +415,114 @@ class NewSessionLogicTest {
             NewSessionForm(agent = "codex", permissionMode = "safe-yolo"),
         )
         assertEquals("default", staleMode.permissionMode)
-        assertEquals(listOf("default", "read-only", "yolo"), app.hapi.protocol.catalog.PermissionModes.forLaunch("codex").map { it.wireId })
+        assertEquals(listOf("default", "read-only", "autoReview", "yolo"), app.hapi.protocol.catalog.PermissionModes.forFlavor("codex").map { it.wireId })
         assertEquals("safe-yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "kimi", permissionMode = "safe-yolo")).permissionMode)
+    }
+
+    @Test
+    fun `launch preference capture maps the form and gates permissionMode on shared-mode flavors`() {
+        // Claude is a shared-mode flavor: the picked mode is remembered.
+        assertEquals(
+            PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(agent = "claude", model = "opus", effort = "high", permissionMode = "plan"),
+            ),
+        )
+        // Grok renders the same native select but is NOT remembered.
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(agent = "grok", model = "auto", permissionMode = "plan"),
+            ),
+        )
+        // YOLO-toggle flavors (cursor) never carry a remembered mode either.
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(agent = "cursor", yolo = true, permissionMode = "plan"),
+            ),
+        )
+        // Codex remembers its model/reasoning pair.
+        assertEquals(
+            PreferredLaunchSettings(model = "gpt-5.2-codex", modelReasoningEffort = "high", permissionMode = "read-only"),
+            NewSessionLogic.launchPreferenceFrom(
+                NewSessionForm(
+                    agent = "codex",
+                    model = "gpt-5.2-codex",
+                    modelReasoningEffort = "high",
+                    permissionMode = "read-only",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `resolve preferred launch settings validates static lists and coerces stale values`() {
+        // Nothing stored → sentinels (shared-mode flavors resolve 'default').
+        assertEquals(
+            PreferredLaunchSettings(permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings("claude", null),
+        )
+
+        // Claude: valid static ids survive; stale ids fall back to sentinels.
+        assertEquals(
+            PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "claude",
+                PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+            ),
+        )
+        assertEquals(
+            PreferredLaunchSettings(permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "claude",
+                PreferredLaunchSettings(model = "removed-model", effort = "ultra", permissionMode = "bogus"),
+            ),
+        )
+
+        // Codex: the model comes from a dynamic machine catalog, so it passes
+        // through untouched (the settled-catalog reconciliation re-validates);
+        // a permission mode outside the launch list coerces to default.
+        assertEquals(
+            PreferredLaunchSettings(model = "gpt-5.2-codex", modelReasoningEffort = "high", permissionMode = "read-only"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "codex",
+                PreferredLaunchSettings(model = "gpt-5.2-codex", modelReasoningEffort = "high", permissionMode = "read-only"),
+            ),
+        )
+        assertEquals(
+            PreferredLaunchSettings(model = "gpt-5.2-codex", permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "codex",
+                PreferredLaunchSettings(model = "gpt-5.2-codex", permissionMode = "safe-yolo"),
+            ),
+        )
+
+        // Opencode's reasoning effort drops `xhigh` (web parity); opencode is a
+        // shared-mode flavor, so its mode resolves to the default.
+        assertEquals(
+            PreferredLaunchSettings(modelReasoningEffort = "default", permissionMode = "default"),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "opencode",
+                PreferredLaunchSettings(modelReasoningEffort = "xhigh"),
+            ),
+        )
+
+        // Grok / cursor never resolve a remembered mode, even if one leaked in.
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "grok",
+                PreferredLaunchSettings(permissionMode = "plan"),
+            ),
+        )
+        assertEquals(
+            PreferredLaunchSettings(),
+            NewSessionLogic.resolvePreferredLaunchSettings(
+                "cursor",
+                PreferredLaunchSettings(permissionMode = "yolo"),
+            ),
+        )
     }
 }
 
@@ -890,6 +1006,98 @@ class NewSessionViewModelTest {
     }
 
     @Test
+    fun `grok auto gate disables the option, resets selection and shows hint when unsupported`() = runTest {
+        val gateway = FakeGateway().apply {
+            grokResult = GrokModelsResponse(success = true, autoPermissionModeSupported = false)
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("grok")
+        vm.setPermissionMode("auto")
+        advanceUntilIdle()
+
+        // Probe fires once for the seeded, existing directory.
+        assertEquals(listOf("m1" to "/home/dev"), gateway.grokCalls)
+        val state = vm.uiState.value
+        val options = (state.permission as PermissionUi.NativeSelect).options
+        assertEquals(listOf("default", "auto", "plan", "bypassPermissions"), options.map { it.value })
+        val auto = options.single { it.value == "auto" }
+        assertFalse(auto.enabled)
+        assertEquals("Auto (unavailable)", auto.label)
+        assertTrue(options.filter { it.value != "auto" }.all { it.enabled })
+        assertTrue(state.grokAutoUnavailable)
+        // The `auto` selection the user made before the probe landed is reset.
+        assertEquals("default", state.form.permissionMode)
+
+        // A new directory re-probes: the capability is cwd-scoped.
+        vm.setDirectory("/home/dev/proj")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to "/home/dev", "m1" to "/home/dev/proj"), gateway.grokCalls)
+    }
+
+    @Test
+    fun `grok auto stays available when supported, unknown, failed or falsy payload`() = runTest {
+        fun vmWith(result: GrokModelsResponse, failure: Exception? = null): Pair<NewSessionViewModel, FakeGateway> {
+            val gateway = FakeGateway().apply {
+                grokResult = result
+                grokThrows = failure
+            }
+            val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
+            return vm to gateway
+        }
+
+        for ((label, result, failure) in listOf(
+            Triple("supported", GrokModelsResponse(success = true, autoPermissionModeSupported = true), null as Exception?),
+            // Field omitted: only a literal false gates (web `=== false`).
+            Triple("omitted", GrokModelsResponse(success = true), null),
+            Triple("falsy payload", GrokModelsResponse(success = false), null),
+            Triple("probe failure", GrokModelsResponse(success = true), RuntimeException("probe boom")),
+        )) {
+            val (vm, gateway) = vmWith(result, failure)
+            advanceUntilIdle()
+            vm.setAgent("grok")
+            vm.setPermissionMode("auto")
+            advanceUntilIdle()
+
+            assertEquals(listOf("m1" to "/home/dev"), gateway.grokCalls, label)
+            val state = vm.uiState.value
+            val auto = (state.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }
+            assertTrue(auto.enabled, label)
+            assertEquals("Auto", auto.label, label)
+            assertFalse(state.grokAutoUnavailable, label)
+            assertEquals("auto", state.form.permissionMode, label)
+        }
+    }
+
+    @Test
+    fun `grok probe is gated on agent and existing directory, claude auto never gates`() = runTest {
+        // Default claude agent with an existing directory: no probe, and the
+        // claude Auto option (same wire value) stays fully available.
+        val gateway = FakeGateway()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setPermissionMode("auto")
+        advanceUntilIdle()
+        assertEquals(emptyList(), gateway.grokCalls)
+        val claudeState = vm.uiState.value
+        val claudeAuto = (claudeState.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }
+        assertTrue(claudeAuto.enabled)
+        assertFalse(claudeState.grokAutoUnavailable)
+        assertEquals("auto", claudeState.form.permissionMode)
+
+        // Grok on a non-existent directory: positive-existence gate blocks the probe.
+        val missing = FakeGateway().apply { existsAnswer = { false } }
+        val vm2 = buildViewModel(missing, FakeMachineStore(listOf(machine("m1", homeDir = "/gone"))), FakePrefs())
+        advanceUntilIdle()
+        vm2.setAgent("grok")
+        advanceUntilIdle()
+        assertEquals(emptyList(), missing.grokCalls)
+        val missingState = vm2.uiState.value
+        assertTrue((missingState.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }.enabled)
+        assertFalse(missingState.grokAutoUnavailable)
+    }
+
+    @Test
     fun `agent switch resets dependent options but keeps yolo`() = runTest {
         val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), FakePrefs())
         advanceUntilIdle()
@@ -923,5 +1131,248 @@ class NewSessionViewModelTest {
         val toggle = vm.uiState.value.permission
         assertTrue(toggle is PermissionUi.YoloToggle)
         assertEquals("Yolo", (toggle as PermissionUi.YoloToggle).nativeModeLabel)
+    }
+
+    @Test
+    fun `spawn success remembers launch settings for the machine and agent dimension`() = runTest {
+        val gateway = FakeGateway()
+        val prefs = FakePrefs()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        vm.setModel("opus")
+        vm.setEffort("high")
+        vm.setPermissionMode("plan")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        vm.create()
+        advanceUntilIdle()
+
+        assertEquals(
+            mapOf(
+                "m1" to mapOf(
+                    "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                ),
+            ),
+            prefs.stored.launchSettings,
+        )
+    }
+
+    @Test
+    fun `remembered launch settings prefill a fresh form`() = runTest {
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                    ),
+                ),
+            ),
+        )
+        val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        val form = vm.uiState.value.form
+        assertEquals("m1", form.machineId)
+        assertEquals("opus", form.model)
+        assertEquals("high", form.effort)
+        assertEquals("plan", form.permissionMode)
+    }
+
+    @Test
+    fun `same machine heartbeat preserves manual launch choices while directory is blank`() = runTest {
+        val machines = FakeMachineStore(listOf(machine("m1")))
+        val prefs = FakePrefs(stored = NewSessionPrefsData(launchSettings = mapOf(
+            "m1" to mapOf("claude" to PreferredLaunchSettings(
+                model = "opus", effort = "high", permissionMode = "bypassPermissions",
+            )),
+        )))
+        val vm = buildViewModel(FakeGateway(), machines, prefs)
+        advanceUntilIdle()
+        assertEquals("opus", vm.uiState.value.form.model)
+        vm.setModel("sonnet")
+        vm.setEffort("low")
+        vm.setPermissionMode("plan")
+        advanceUntilIdle()
+        val edited = vm.uiState.value.form
+        assertEquals("", edited.directory)
+
+        machines.backing.value = listOf(machine("m1").copy(activeAt = 2))
+        advanceUntilIdle()
+        assertEquals(edited, vm.uiState.value.form)
+
+        // A later directory hint may fill the blank without restoring defaults.
+        machines.backing.value = listOf(machine("m1", homeDir = "/home/dev"))
+        advanceUntilIdle()
+        assertEquals(edited.copy(directory = "/home/dev"), vm.uiState.value.form)
+    }
+
+    @Test
+    fun `same machine heartbeat keeps codex reasoning effort and a stricter permission mode`() = runTest {
+        val machines = FakeMachineStore(listOf(machine("m1")))
+        val gateway = FakeGateway().apply {
+            codexResult = CodexModelsResponse(success = true, models = listOf(
+                CodexModelSummary(
+                    id = "codex-model", displayName = "Codex", isDefault = true,
+                    supportedReasoningEfforts = listOf("low", "high"), serviceTiers = listOf("standard"),
+                ),
+            ))
+        }
+        val prefs = FakePrefs(stored = NewSessionPrefsData(launchSettings = mapOf(
+            "m1" to mapOf("codex" to PreferredLaunchSettings(
+                model = "codex-model", modelReasoningEffort = "high", permissionMode = "yolo",
+            )),
+        )))
+        val vm = buildViewModel(gateway, machines, prefs)
+        advanceUntilIdle()
+        vm.setAgent("codex")
+        advanceUntilIdle()
+        assertEquals("yolo", vm.uiState.value.form.permissionMode)
+        vm.setModel("auto")
+        vm.setModelReasoningEffort("low")
+        vm.setPermissionMode("read-only")
+        advanceUntilIdle()
+        val edited = vm.uiState.value.form
+        assertEquals("", edited.directory)
+
+        machines.backing.value = listOf(machine("m1").copy(activeAt = 2))
+        advanceUntilIdle()
+        assertEquals(edited, vm.uiState.value.form)
+    }
+
+    @Test
+    fun `initial machine selection restores launch defaults before seeding its directory`() = runTest {
+        val prefs = FakePrefs(stored = NewSessionPrefsData(launchSettings = mapOf(
+            "m1" to mapOf("claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan")),
+        )))
+        val vm = buildViewModel(
+            FakeGateway(), FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), prefs,
+            initialMachineId = "m1",
+        )
+        advanceUntilIdle()
+        assertEquals("/home/dev", vm.uiState.value.form.directory)
+        assertEquals("opus", vm.uiState.value.form.model)
+        assertEquals("high", vm.uiState.value.form.effort)
+        assertEquals("plan", vm.uiState.value.form.permissionMode)
+    }
+
+    @Test
+    fun `a restored draft with a blank directory keeps its launch choices`() = runTest {
+        val draft = NewSessionForm(
+            machineId = "m1", model = "sonnet", effort = "low", permissionMode = "plan",
+        )
+        val prefs = FakePrefs(draft = draft)
+        val vm = buildViewModel(
+            FakeGateway(), FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), prefs,
+        )
+        advanceUntilIdle()
+        assertEquals(draft.copy(directory = "/home/dev"), vm.uiState.value.form)
+    }
+
+    @Test
+    fun `switching machine or agent re-applies each dimension's remembered defaults`() = runTest {
+        val gateway = FakeGateway().apply {
+            // Catalog contains the remembered codex model, so the settled
+            // catalog keeps it (an empty catalog would reconcile to auto).
+            codexResult = CodexModelsResponse(
+                success = true,
+                models = listOf(
+                    CodexModelSummary(
+                        id = "gpt-5.2-codex",
+                        displayName = "GPT-5.2 Codex",
+                        isDefault = true,
+                        supportedReasoningEfforts = listOf("low", "medium", "high"),
+                        serviceTiers = listOf("standard"),
+                    ),
+                ),
+            )
+        }
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                        "codex" to PreferredLaunchSettings(
+                            model = "gpt-5.2-codex",
+                            modelReasoningEffort = "high",
+                            permissionMode = "read-only",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"), machine("m2"))), prefs)
+        advanceUntilIdle()
+
+        // Fresh form, m1 preselected → the m1×claude defaults prefill.
+        assertEquals("opus", vm.uiState.value.form.model)
+        assertEquals("high", vm.uiState.value.form.effort)
+        assertEquals("plan", vm.uiState.value.form.permissionMode)
+
+        // Agent dimension: codex on m1 recalls its own model/effort/mode.
+        vm.setAgent("codex")
+        advanceUntilIdle()
+        val codexForm = vm.uiState.value.form
+        assertEquals("gpt-5.2-codex", codexForm.model)
+        assertEquals("high", codexForm.modelReasoningEffort)
+        assertEquals("read-only", codexForm.permissionMode)
+        assertEquals("auto", codexForm.effort)
+
+        // Machine dimension: m2 has nothing remembered → sentinels.
+        vm.setMachine("m2")
+        advanceUntilIdle()
+        val m2Form = vm.uiState.value.form
+        assertEquals("auto", m2Form.model)
+        assertEquals("default", m2Form.modelReasoningEffort)
+        assertEquals("default", m2Form.permissionMode)
+
+        // Switching back to m1 recalls the m1×codex defaults again.
+        vm.setMachine("m1")
+        advanceUntilIdle()
+        assertEquals("gpt-5.2-codex", vm.uiState.value.form.model)
+        assertEquals("read-only", vm.uiState.value.form.permissionMode)
+
+        // Grok is a native-select flavor but never remembers a mode: even a
+        // leaked stored entry leaves the reset default in place.
+        vm.setAgent("grok")
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+        assertEquals("default", vm.uiState.value.form.permissionMode)
+    }
+
+    @Test
+    fun `restored draft wins over remembered launch settings until the user switches`() = runTest {
+        val prefs = FakePrefs(
+            stored = NewSessionPrefsData(
+                launchSettings = mapOf(
+                    "m1" to mapOf(
+                        "claude" to PreferredLaunchSettings(model = "opus", effort = "high", permissionMode = "plan"),
+                    ),
+                ),
+            ),
+            draft = NewSessionForm(
+                machineId = "m1",
+                directory = "/wip",
+                agent = "claude",
+                model = "sonnet",
+                effort = "low",
+                permissionMode = "acceptEdits",
+            ),
+        )
+        val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+
+        // The draft's in-progress selections are not clobbered by prefs.
+        val form = vm.uiState.value.form
+        assertEquals("sonnet", form.model)
+        assertEquals("low", form.effort)
+        assertEquals("acceptEdits", form.permissionMode)
+
+        // First user agent switch drops the draft protection → sentinels
+        // (nothing remembered for m1×grok), not the draft's stale values.
+        vm.setAgent("grok")
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+        assertEquals("default", vm.uiState.value.form.permissionMode)
     }
 }

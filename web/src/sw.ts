@@ -9,6 +9,7 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
 
 const sharePath = shareTargetPathname()
 
@@ -32,11 +33,23 @@ type PushPayload = {
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(
+    ({ url }) => url.origin === self.location.origin && /\/assets\/shiki-[^/]+\.js$/.test(url.pathname),
+    new CacheFirst({
+        cacheName: 'syntax-grammars',
+        plugins: [
+            cacheJavaScriptOnly,
+            new ExpirationPlugin({ maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+        ],
+    }),
+)
+
+registerRoute(
     ({ url }) => url.pathname === '/api/sessions',
     new NetworkFirst({
         cacheName: 'api-sessions',
         networkTimeoutSeconds: 10,
         plugins: [
+            cacheOkResponsesOnly,
             new ExpirationPlugin({
                 maxEntries: 10,
                 maxAgeSeconds: 60 * 5
@@ -51,6 +64,7 @@ registerRoute(
         cacheName: 'api-session-detail',
         networkTimeoutSeconds: 10,
         plugins: [
+            cacheOkResponsesOnly,
             new ExpirationPlugin({
                 maxEntries: 20,
                 maxAgeSeconds: 60 * 5
@@ -65,6 +79,7 @@ registerRoute(
         cacheName: 'api-machines',
         networkTimeoutSeconds: 10,
         plugins: [
+            cacheOkResponsesOnly,
             new ExpirationPlugin({
                 maxEntries: 5,
                 maxAgeSeconds: 60 * 10

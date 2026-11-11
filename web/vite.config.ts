@@ -44,6 +44,9 @@ function getVendorChunkName(id: string): string | undefined {
         return undefined
     }
 
+    const grammar = id.match(/\/node_modules\/@shikijs\/(?:langs|themes)\/dist\/([^/]+)\.mjs$/)
+    if (grammar) return `shiki-${grammar[1]}`
+
     if (id.includes('/node_modules/@xterm/')) {
         return 'vendor-terminal'
     }
@@ -132,6 +135,30 @@ export default defineConfig({
                 start_url: base,
                 icons: [
                     {
+                        src: 'pwa-16x16.png',
+                        sizes: '16x16',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-24x24.png',
+                        sizes: '24x24',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-32x32.png',
+                        sizes: '32x32',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-48x48.png',
+                        sizes: '48x48',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
                         src: 'pwa-64x64.png',
                         sizes: '64x64',
                         type: 'image/png',
@@ -196,6 +223,8 @@ export default defineConfig({
             },
             injectManifest: {
                 globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+                // Optional syntax grammars are cached after use, not during PWA installation.
+                globIgnores: ['**/shiki-*.js'],
                 // The SPA entry contains the complete multi-agent control surface.
                 // Keep it available offline after adding Pi history import instead
                 // of silently dropping the entry chunk from the PWA precache.

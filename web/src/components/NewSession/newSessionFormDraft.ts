@@ -1,7 +1,7 @@
 import {
     CREATABLE_AGENT_FLAVORS,
     GROK_PERMISSION_MODES,
-    getLaunchPermissionModesForFlavor,
+    getPermissionModesForFlavor,
     normalizeCopilotAgentMode,
     resolveHapiYoloPermissionMode,
     type CodexCollaborationMode,
@@ -10,6 +10,7 @@ import {
     type PermissionMode
 } from '@hapi/protocol'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
+import { resolvePermissionModeForFlavor } from '@hapi/protocol/peerSpawnDefaults'
 import { LEGACY_YOLO_BRIDGE_AGENTS } from '@/lib/codexFamilyPermissionAgents'
 
 const DRAFT_STORAGE_KEY = 'hapi:new-session-form-draft'
@@ -75,7 +76,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 : 'interactive',
             yoloMode: Boolean(parsed.yoloMode),
             nativePermissionMode: (() => {
-                const modes = getLaunchPermissionModesForFlavor(restoredAgent)
+                const modes = getPermissionModesForFlavor(restoredAgent)
                 const parsedMode = parsed.nativePermissionMode as PermissionMode | undefined
                 if (agentPreserved && parsedMode && modes.includes(parsedMode)) {
                     return parsedMode
@@ -86,7 +87,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 if (agentPreserved && parsedMode === undefined && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
                     return yoloBridgeMode
                 }
-                return 'default'
+                return resolvePermissionModeForFlavor('default', restoredAgent)
             })(),
             grokPermissionMode: agentPreserved
                 && GROK_PERMISSION_MODES.includes(parsed.grokPermissionMode as GrokPermissionMode)

@@ -1,6 +1,27 @@
-import type { AgentState, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
+import type { AgentState, AttachedJob, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
+import type { SessionReadState } from './sessionReadState'
+import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
 import type { AgentFlavor } from './modes'
+
+export type ForkSessionSummary = {
+    text: string
+    updatedAt: number
+}
+
+/** Seed a fork's generated/native title without claiming manual-name ownership. */
+export function buildForkSessionSummary(
+    metadata: { name?: string; summary?: { text?: string } | null } | null | undefined,
+    updatedAt: number = Date.now()
+): ForkSessionSummary | undefined {
+    const sourceTitle = metadata?.name?.trim() || metadata?.summary?.text?.trim()
+    if (!sourceTitle) return undefined
+
+    return {
+        text: `Fork: ${sourceTitle}`,
+        updatedAt
+    }
+}
 
 export type PendingRequestKind = 'permission' | 'input'
 
@@ -28,30 +49,41 @@ export type PendingRequest = {
     since: number
 }
 
-function classifyKind(tool: string): PendingRequestKind {
+/** Whether a request asks the user to answer something (a question, a plan)
+ *  or to allow a tool. */
+export function classifyKind(tool: string): PendingRequestKind {
     return INPUT_REQUEST_TOOLS.has(tool) ? 'input' : 'permission'
 }
 
 export type SessionSummaryMetadata = {
     name?: string
+    titleLocked?: boolean
     path: string
     machineId?: string
     summary?: { text: string }
+    promptTitle?: string
     flavor?: string | null
     worktree?: WorktreeMetadata
     agentSessionId?: string
     lifecycleState?: string
+    conversationHistory?: ConversationHistoryCapabilities
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
 }
 
 export type SessionSummary = {
+    contentRevision?: number
+    readState?: SessionReadState
     hasConversationContent?: boolean
     id: string
     active: boolean
     thinking: boolean
     activeAt: number
     updatedAt: number
+    /** Creation time is the stable order key before the first user message. */
+    createdAt?: number
+    /** Original timestamp of the latest user message; absent before any input. */
+    lastUserMessageAt?: number
     pinned?: boolean
     globalPinned?: boolean
     metadata: SessionSummaryMetadata | null
@@ -72,6 +104,13 @@ export type SessionSummary = {
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
+    /**
+     * Primary running session-attached job (tiann/hapi#1404), or null.
+     * Independent of agent `active` / thinking — work that outlives the agent.
+     */
+    attachedJob: AttachedJob | null
+    /** Watermark for versioned `attachedJob` SSE patches (dual EventSource race). */
+    attachedJobUpdatedAt: number
     model: string | null
     modelReasoningEffort?: string | null
     effort: string | null
@@ -159,7 +198,8 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<AgentFlavor, keyof Metada
     cursor: 'cursorSessionId',
     kimi: 'kimiSessionId',
     copilot: 'copilotSessionId',
-    pi: 'piSessionId'
+    pi: 'piSessionId',
+    dsh: 'dshSessionId'
 }
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
@@ -183,6 +223,7 @@ function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
         ?? metadata.cursorSessionId
         ?? metadata.kimiSessionId
         ?? metadata.copilotSessionId
+        ?? metadata.dshSessionId
         ?? undefined
 }
 
@@ -192,18 +233,30 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
     }
     return {
         name: metadata.name,
+        titleLocked: metadata.titleLocked,
         path: metadata.path,
         machineId: metadata.machineId ?? undefined,
         summary: metadata.summary ? { text: metadata.summary.text } : undefined,
+        promptTitle: metadata.promptTitle,
         flavor: metadata.flavor ?? null,
         worktree: metadata.worktree,
         agentSessionId: getSummaryAgentSessionId(metadata),
         lifecycleState: metadata.lifecycleState,
+        conversationHistory: metadata.capabilities?.conversationHistory,
         hapiMcpUrl: metadata.hapiMcpUrl ?? undefined
     }
 }
 
-export function toSessionSummary(session: Session): SessionSummary {
+export function toSessionSummary(
+    session: Session,
+    extras?: {
+        attachedJob?: AttachedJob | null
+        /** Explicit SSE/list watermark; required when attachedJob is null so
+         *  a REST refetch does not reset the client gate to 0. */
+        attachedJobUpdatedAt?: number
+    }
+): SessionSummary {
+    const attachedJob = extras?.attachedJob ?? null
     return {
         hasConversationContent: session.hasConversationContent ?? false,
         id: session.id,
@@ -211,6 +264,10 @@ export function toSessionSummary(session: Session): SessionSummary {
         thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
+        contentRevision: session.contentRevision,
+        readState: session.readState,
+        createdAt: session.createdAt,
+        lastUserMessageAt: session.lastUserMessageAt,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
         metadata: toSessionSummaryMetadata(session.metadata),
@@ -224,6 +281,10 @@ export function toSessionSummary(session: Session): SessionSummary {
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob,
+        attachedJobUpdatedAt: extras?.attachedJobUpdatedAt
+            ?? attachedJob?.updatedAt
+            ?? 0,
         model: session.model,
         modelReasoningEffort: session.modelReasoningEffort,
         effort: session.effort

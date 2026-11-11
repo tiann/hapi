@@ -65,7 +65,11 @@ Yes. We support lightweight multi-account access via namespaces for shared team 
 
 ### Can I use HAPI without Telegram?
 
-Yes. Telegram is optional. You can use a native iOS/Android app, open the web app in a browser, or install the PWA.
+Yes. Telegram is optional. You can open the free web app in a browser, install it as a PWA, or use the paid native apps from the [App Store](https://apps.apple.com/app/id6805699104) or [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion).
+
+### Are the apps free?
+
+HAPI's CLI, hub and Web/PWA client are open source and free. The Web/PWA is full-featured, including the remote terminal and voice assistant. The native iOS and Android apps are paid downloads that add a native interface and native push notifications; see [Native apps](./native-apps.md).
 
 ## Usage
 
@@ -80,9 +84,9 @@ Yes. Telegram is optional. You can use a native iOS/Android app, open the web ap
 
 HAPI supports these notification channels:
 
-1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
+1. **PWA Push Notifications** - Enable in Settings → General; works even when the app is closed
 2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
-3. **Native app notifications** - Official Android and iOS apps use encrypted push delivery; pair your hub and allow notifications, with no push-provider setup required
+3. **Native app notifications** - App Store and Google Play apps use encrypted push delivery; pair your hub and allow notifications, with no push-provider setup required
 4. **ServerChan (Server酱)** - Send notifications to WeChat and other channels; see [ServerChan Setup](./notifications.md#serverchan-server酱-setup)
 
 ### Can I start sessions remotely?
@@ -109,6 +113,13 @@ Yes. Open any session and use the chat interface to send messages directly to th
 ### Why did my session look idle when the agent woke itself?
 
 Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI updates the session's thinking indicator when the agent resumes work or requests permission, so the list reflects that activity.
+
+### How do I show progress for a long batch that outlives the agent?
+
+Use session-attached jobs (`hapi job run --progress …`). The CLI babysitter registers a job on the session, heartbeats while the child runs, and marks completed/failed on exit. The session list shows remaining / fraction / or an indeterminate "running" meter even when the agent is idle. See [Session-attached jobs](./session-jobs.md). This is Layer 0 list chrome - not an A2A Layer 1 work advertisement ([#1332](https://github.com/tiann/hapi/discussions/1332)).
+
+Exception: when the previous turn already closed with an `AGENT_NOTIFY_SUMMARY` line whose `status` is `done`, Cursor's finished-shell *"Briefly inform the user…"* wake does not open a second spoken reply (assistant text/reasoning and thinking bumps are dropped). Tool activity from a follow-up wake still surfaces. A new message from you re-opens normal speech.
+
 
 ### Can I access a terminal remotely?
 

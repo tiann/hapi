@@ -2,8 +2,8 @@ import Foundation
 import HapiProtocol
 
 /// `order` query of `GET /api/sessions`. The default (absent) order is the
-/// hub's ranked one (globalPinned → pinned → active → pending requests →
-/// recency); `updatedAt` switches to pure recency.
+/// hub's ranked one (globalPinned → pinned → user-input recency);
+/// `updatedAt` explicitly requests pure activity recency.
 public enum SessionsListOrder: String, Sendable {
     case updatedAt
 }
@@ -11,6 +11,10 @@ public enum SessionsListOrder: String, Sendable {
 /// Session list, detail, and lifecycle endpoints
 /// (`docs/api/client-contract/rest.md`).
 extension APIClient {
+    public func updateSessionReadState(id: String, state: SessionReadStateRequest) async throws -> SessionReadStateResponse {
+        try await request(.put, "/api/sessions/\(encodePathComponent(id))/read-state", body: state)
+    }
+
     /// `GET /api/sessions`.
     public func listSessions(
         limit: Int? = nil,

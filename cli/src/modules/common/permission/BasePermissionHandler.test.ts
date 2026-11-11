@@ -62,6 +62,26 @@ describe('resolveToolAutoApprovalDecision ping_peer', () => {
     })
 })
 
+describe('resolveToolAutoApprovalDecision spawn_peer', () => {
+    it.each([
+        'spawn_peer',
+        'mcp__hapi__spawn_peer',
+        'hapi_spawn_peer',
+        'Spawn Peer Session'
+    ])('does not auto-approve %s in default mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
+    })
+
+    it.each([
+        'spawn_peer',
+        'mcp__hapi__spawn_peer',
+        'hapi_spawn_peer',
+        'Spawn Peer Session'
+    ])('does not auto-approve %s in read-only mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+    })
+})
+
 describe('resolveToolAutoApprovalDecision inspect_peer', () => {
     it.each([
         'inspect_peer',
@@ -99,5 +119,17 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
             'list_peers_and_write',
             'call-1'
         )).toBeNull()
+    })
+})
+
+describe('resolveToolAutoApprovalDecision session_job', () => {
+    it.each([
+        'session_job',
+        'hapi_session_job',
+        'mcp__hapi__session_job',
+        'Session-Attached Job'
+    ])('does not name-only auto-approve spoofable job tool %s', (toolName) => {
+        // Bridge / --allowedTools own the approve path; global title allowlist must not.
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
     })
 })

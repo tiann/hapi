@@ -13,6 +13,7 @@ import type {
     SDKResultMessage
 } from '@/claude/sdk'
 import type { RawJSONLines } from '@/claude/types'
+import { isClaudeModelPreset } from '@hapi/protocol'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
 import { logger } from '@/lib'
 
@@ -103,6 +104,10 @@ export class SDKToLogConverter {
     // — rather than a single sticky number — means a mid-session model switch picks up the
     // new model's own window immediately instead of inheriting the previous model's.
     private modelContextWindows = new Map<string, number>()
+    // Keys whose window came from Claude's get_context_usage. That value is the effective
+    // window (capped by DISABLE_1M / autoCompactWindow), so a result's raw contextWindow
+    // must not overwrite it.
+    private contextUsageKeys = new Set<string>()
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -148,6 +153,35 @@ export class SDKToLogConverter {
      */
     updateSelectedModel(model: string | null | undefined): void {
         this.context.selectedModel = model ?? null
+    }
+
+    /**
+     * Apply Claude's get_context_usage answer for the current session model.
+     */
+    applyContextUsage(model: string | undefined, maxTokens: number | undefined): void {
+        const key = this.resolvedContextWindowKey
+        if (!key || !this.resolvedModel || !model || typeof maxTokens !== 'number' || maxTokens <= 0) {
+            return
+        }
+        if (this.resolvedModel.replace(/\[1m\]$/, '') !== model.replace(/\[1m\]$/, '')) {
+            return
+        }
+        this.modelContextWindows.set(key, maxTokens)
+        this.contextUsageKeys.add(key)
+    }
+
+    /**
+     * The contextWindow currently resolved for this session's model — the
+     * same value `convert()` stamps onto relayed assistant usage. Undefined
+     * until a system/init or result message establishes it. The
+     * post-compaction usage refresh (claudeRemoteLauncher) uses this so its
+     * context-only sample doesn't erase the status bar's known window
+     * denominator (the reducer replaces latestUsage wholesale).
+     */
+    currentContextWindow(): number | undefined {
+        return this.resolvedContextWindowKey
+            ? this.modelContextWindows.get(this.resolvedContextWindowKey)
+            : undefined
     }
 
     /**
@@ -283,6 +317,7 @@ export class SDKToLogConverter {
                     logMessage.isMeta = true
                 }
 
+
                 // Check if this is a tool result and add mode if available
                 if (Array.isArray(userMsg.message.content)) {
                     for (const content of userMsg.message.content) {
@@ -327,7 +362,9 @@ export class SDKToLogConverter {
                     type: 'assistant',
                     message: assistantMsg.message,
                     // Assistant messages often have additional fields
-                    requestId: (assistantMsg as any).requestId
+                    requestId: (assistantMsg as any).requestId,
+                    // Set on synthetic API error messages; the web renders these as errors
+                    error: (assistantMsg as any).error
                 }
                 // if (assistantMsg.message.content && Array.isArray(assistantMsg.message.content)) {
                 //     for (const content of assistantMsg.message.content) {
@@ -370,7 +407,10 @@ export class SDKToLogConverter {
                         // first result lands. Guarding/seeding on resolvedContextWindowKey
                         // (not the bare init id) is what forces a re-seed when switching
                         // fable[1m] <-> fable, whose bare ids would otherwise be identical.
+                        // The bare preset aliases (opus/fable/sonnet/haiku) now resolve to models
+                        // with a native 1M window, so selecting one seeds 1M as well.
                         const seedIs1m = (this.context.selectedModel?.endsWith('[1m]') ?? false)
+                            || isClaudeModelPreset(this.context.selectedModel)
                             || systemMsg.model.endsWith('[1m]')
                         this.modelContextWindows.set(this.resolvedContextWindowKey, seedIs1m ? 1_000_000 : 200_000)
                     }
@@ -408,7 +448,9 @@ export class SDKToLogConverter {
                             const key = (this.resolvedModel && model === this.resolvedModel)
                                 ? (this.resolvedContextWindowKey ?? model)
                                 : model
-                            this.modelContextWindows.set(key, cw)
+                            if (!this.contextUsageKeys.has(key)) {
+                                this.modelContextWindows.set(key, cw)
+                            }
                         }
                     }
                 }
@@ -422,7 +464,8 @@ export class SDKToLogConverter {
                         modelUsage: resultMsg.modelUsage,
                         total_cost_usd: resultMsg.total_cost_usd,
                         num_turns: resultMsg.num_turns,
-                        duration_ms: resultMsg.duration_ms
+                        duration_ms: resultMsg.duration_ms,
+                        ...claudeGenerationFields(resultMsg)
                     }
                 }
                 break
@@ -575,4 +618,21 @@ export function convertSDKToLog(
 ): RawJSONLines | null {
     const converter = new SDKToLogConverter(context, responses)
     return converter.convert(sdkMessage)
+}
+
+/**
+ * tok/s fields straight from the result: `duration_api_ms` is Claude Code's
+ * own API-active time (tool execution and permission waits are already
+ * outside it), and the round's output tokens. Errored rounds and manual
+ * compaction turns have no meaningful generation rate, so they emit nothing
+ * rather than a wrong one.
+ */
+function claudeGenerationFields(resultMsg: SDKResultMessage): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
+    if (resultMsg.is_error || resultMsg.hapi_compact_turn === true) return {}
+    const generationMs = resultMsg.duration_api_ms
+    const outputTokens = resultMsg.usage?.output_tokens
+    const measurable = (value: unknown): value is number =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    if (!measurable(generationMs) || !measurable(outputTokens)) return {}
+    return { generation_ms: generationMs, generation_output_tokens: outputTokens }
 }

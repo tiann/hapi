@@ -16,3 +16,6 @@ export const getLoginUrl = () => {
 
   return url.toString();
 };
+
+export const APP_STORE_URL = "https://apps.apple.com/app/id6805699104";
+export const GOOGLE_PLAY_URL = "https://play.google.com/store/apps/details?id=run.hapi.companion";

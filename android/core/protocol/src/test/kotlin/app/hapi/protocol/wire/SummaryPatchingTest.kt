@@ -129,12 +129,14 @@ class SummaryPatchingTest {
         metadata: SessionMetadata? = null,
         agentState: AgentState? = null,
         todos: List<TodoItem>? = null,
+        hasConversationContent: Boolean = false,
     ): Session = Session(
         id = "session-1",
         namespace = "default",
         seq = 1,
         createdAt = 1_000,
         updatedAt = 2_000,
+        hasConversationContent = hasConversationContent,
         active = true,
         activeAt = 1_000,
         metadata = metadata,
@@ -163,11 +165,14 @@ class SummaryPatchingTest {
             ),
             agentState = AgentState(requests = mapOf("r1" to request("Bash", createdAt = 50))),
             todos = listOf(TodoItem(content = "a", status = "completed")),
+            hasConversationContent = true,
         )
         val summary = SummaryPatching.toSessionSummary(session)
         assertEquals("session-1", summary.id)
         assertTrue(summary.active)
         assertTrue(summary.thinking)
+        // Carried through for the sidebar's empty-stub hiding (web parity).
+        assertTrue(summary.hasConversationContent)
         assertEquals(false, summary.pinned)
         assertEquals(false, summary.globalPinned)
         assertEquals(3, summary.metadataVersion)
@@ -191,6 +196,14 @@ class SummaryPatchingTest {
         )
         assertNull(claude?.agentSessionId)
 
+        val dsh = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "dsh",
+                codexSessionId = "stale", dshSessionId = "  dsh-1  ",
+            )
+        )
+        assertEquals("dsh-1", dsh?.agentSessionId)
+
         // Unknown flavor: legacy fallback chain, codex first, untrimmed.
         val unknown = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(path = "/p", host = "h", flavor = "newagent", claudeSessionId = "cl", codexSessionId = "cx")
@@ -202,6 +215,11 @@ class SummaryPatchingTest {
             SessionMetadata(path = "/p", host = "h", flavor = null, piSessionId = "pi-1")
         )
         assertNull(piOnly?.agentSessionId)
+
+        val dshLegacy = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(path = "/p", host = "h", flavor = null, dshSessionId = "dsh-legacy")
+        )
+        assertEquals("dsh-legacy", dshLegacy?.agentSessionId)
     }
 
     // ------------------------------------------------- patch application --
@@ -253,6 +271,23 @@ class SummaryPatchingTest {
         assertEquals(1, next.pendingRequestsCount)
         assertEquals(listOf("permission"), next.pendingRequestKinds)
         assertEquals(5, next.agentStateVersion)
+    }
+
+    @Test
+    fun `metadata patch preserves DSH agentSessionId`() {
+        val current = makeSummary(metadataVersion = 1)
+        val next = SummaryPatching.applySessionSummaryPatch(
+            current,
+            SessionPatch(
+                metadata = VersionedValue(
+                    version = 2,
+                    value = SessionMetadata(
+                        path = "/p", host = "h", flavor = "dsh", dshSessionId = "dsh-1",
+                    ),
+                ),
+            ),
+        )
+        assertEquals("dsh-1", next.metadata?.agentSessionId)
     }
 
     @Test

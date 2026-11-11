@@ -1,6 +1,6 @@
 {
   "name": "@twsxtd/hapi",
-  "version": "0.30.7",
+  "version": "0.34.5",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
   "license": "AGPL-3.0-only",
@@ -25,13 +25,6 @@
       "default": "./src/runtime/embeddedAssets.stub.ts"
     }
   },
-  "optionalDependencies": {
-    "@twsxtd/hapi-darwin-arm64": "0.30.7",
-    "@twsxtd/hapi-darwin-x64": "0.30.7",
-    "@twsxtd/hapi-linux-arm64": "0.30.7",
-    "@twsxtd/hapi-linux-x64": "0.30.7",
-    "@twsxtd/hapi-win32-x64": "0.30.7"
-  },
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','hapi.cjs'),0o755)}catch(e){}\"",
     "typecheck": "tsc --noEmit",
@@ -50,7 +43,8 @@
     "dev": "bun src/index.ts",
     "dev:local-server": "bun --env-file .env.dev-local-server src/index.ts",
     "dev:integration-test-env": "bun --env-file .env.integration-test src/index.ts",
-    "release-all": "bun run scripts/release-all.ts"
+    "release-all": "bun run scripts/release-all.ts",
+    "publish-npm": "bun run scripts/publish-npm.ts"
   },
   "dependencies": {
     "@hapi/protocol": "workspace:*",
@@ -70,7 +64,7 @@
     "socket.io-client": "^4.8.3",
     "tar": "^7.5.2",
     "vscode-jsonrpc": "8.2.0",
-    "ws": "8.18.3",
+    "ws": "8.21.0",
     "yaml": "^2.8.2",
     "zod": "^4.2.1"
   },
@@ -80,7 +74,7 @@
     "bun-types": "1.4.0",
     "dotenv": "^17.2.3",
     "typescript": "^5",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.12"
   },
   "resolutions": {
     "whatwg-url": "14.2.0",

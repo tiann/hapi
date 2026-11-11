@@ -13,7 +13,10 @@ import type {
     CopilotAgentMode,
     FileSearchResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
+    OpencodeImportSessionsResponse,
+    OpencodeLocalSessionsResponse,
     PermissionMode,
     PiImportSessionsResponse,
     PiLocalSessionsResponse,
@@ -27,8 +30,10 @@ import type {
     HapiSessionExportResponse,
     HubHealthResponse,
     SessionResponse,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
-    SessionsResponse
+    SessionsResponse,
+    SessionContentSearchResponse
 } from '@/types/api'
 import type {
     AgyModelsResponse,
@@ -39,12 +44,15 @@ import type {
     CursorChatStoreStatus,
     CursorModelsResponse,
     DeleteUploadResponse,
+    DshModelsResponse,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
     KimiModelsResponse,
     CopilotModelsResponse,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     ListDirectoryResponse,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
@@ -52,6 +60,7 @@ import type {
     OpencodeModelVariantsResponse,
     OpencodeReasoningEffortResponse,
     PiModelsResponse,
+    ClaudeModelsResponse,
     QueuedStateResponse,
     ReopenSessionResponse,
     SqliteStorageUsageResponse,
@@ -60,7 +69,8 @@ import type {
     UsageSummaryResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import { fetchThroughAuthProxy } from '@/api/authProxy'
+import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -119,6 +129,58 @@ export interface TranscriptionCredentialsUpdate {
     qwenRealtime?: string | null
     /** null resets to the hub default (1800s) */
     elevenLabsMaxDurationSeconds?: number | null
+}
+
+// Keep scoped content-search bodies comfortably below the Hub's 256 KiB
+// request limit. The remaining space covers the query, limit, and JSON body
+// framing; callers still get one merged result set for large visible scopes.
+const CONTENT_SEARCH_SCOPE_CHUNK_BYTES = 192 * 1024
+
+function chunkContentSearchSessionIds(sessionIds: readonly string[]): string[][] {
+    if (sessionIds.length === 0) return []
+
+    const encoder = new TextEncoder()
+    const chunks: string[][] = []
+    let current: string[] = []
+    let currentBytes = 2 // []
+
+    for (const sessionId of sessionIds) {
+        const itemBytes = encoder.encode(JSON.stringify(sessionId)).byteLength
+        const separatorBytes = current.length > 0 ? 1 : 0
+        if (
+            current.length > 0
+            && currentBytes + separatorBytes + itemBytes > CONTENT_SEARCH_SCOPE_CHUNK_BYTES
+        ) {
+            chunks.push(current)
+            current = []
+            currentBytes = 2
+        }
+
+        current.push(sessionId)
+        currentBytes += (current.length > 1 ? 1 : 0) + itemBytes
+    }
+
+    if (current.length > 0) chunks.push(current)
+    return chunks
+}
+
+function mergeContentSearchResponses(
+    responses: SessionContentSearchResponse[],
+    limit: number
+): SessionContentSearchResponse {
+    const results = responses
+        .flatMap(response => response.results)
+        .sort((a, b) => (
+            b.session.updatedAt - a.session.updatedAt
+            || b.match.seq - a.match.seq
+            || b.match.createdAt - a.match.createdAt
+            || a.session.id.localeCompare(b.session.id)
+        ))
+
+    return {
+        results: results.slice(0, limit),
+        hasPotentiallyIncompleteResults: responses.some(response => response.hasPotentiallyIncompleteResults)
+    }
 }
 
 type ApiClientOptions = {
@@ -199,7 +261,7 @@ export class ApiClient {
             headers.set('content-type', 'application/json')
         }
 
-        const res = await fetch(this.buildUrl(path), {
+        const res = await fetchThroughAuthProxy(this.buildUrl(path), {
             ...init,
             headers
         })
@@ -230,7 +292,7 @@ export class ApiClient {
     }
 
     async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
-        const res = await fetch(this.buildUrl('/api/auth'), {
+        const res = await fetchThroughAuthProxy(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(auth)
@@ -247,7 +309,7 @@ export class ApiClient {
     }
 
     async bind(auth: { initData: string; accessToken: string }): Promise<AuthResponse> {
-        const res = await fetch(this.buildUrl('/api/bind'), {
+        const res = await fetchThroughAuthProxy(this.buildUrl('/api/bind'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(auth)
@@ -263,12 +325,86 @@ export class ApiClient {
         return await res.json() as AuthResponse
     }
 
+    getReadStateScope(): string | null {
+        try {
+            const token = this.getToken?.() ?? this.token
+            const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as { ns?: unknown }
+            if (typeof payload.ns !== 'string') return null
+            return JSON.stringify([this.baseUrl ?? window.location.origin, payload.ns])
+        } catch { return null }
+    }
+
+    async updateSessionReadState(sessionId: string, state: SessionReadStateRequest): Promise<{ readState: SessionReadState }> {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/read-state`, {
+            method: 'PUT', body: JSON.stringify(state)
+        })
+    }
+
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
     }
 
     async getHealth(): Promise<HubHealthResponse> {
         return await this.request<HubHealthResponse>('/health')
+    }
+
+    async searchSessionContent(
+        query: string,
+        limit: number = 50,
+        signal?: AbortSignal,
+        sessionIds?: readonly string[]
+    ): Promise<SessionContentSearchResponse> {
+        const normalizedQuery = query.trim()
+        if (sessionIds !== undefined) {
+            const normalizedSessionIds = [...new Set(sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean))]
+            const chunks = chunkContentSearchSessionIds(normalizedSessionIds)
+            if (chunks.length <= 1) {
+                return await this.request<SessionContentSearchResponse>(
+                    '/api/sessions/content-search',
+                    {
+                        method: 'POST',
+                        signal,
+                        body: JSON.stringify({
+                            query: normalizedQuery,
+                            limit,
+                            sessionIds: normalizedSessionIds
+                        })
+                    }
+                )
+            }
+
+            const responses = await Promise.all(chunks.map((chunk) => this.request<SessionContentSearchResponse>(
+                '/api/sessions/content-search',
+                {
+                    method: 'POST',
+                    signal,
+                    body: JSON.stringify({
+                        query: normalizedQuery,
+                        limit,
+                        sessionIds: chunk
+                    })
+                }
+            )))
+            return mergeContentSearchResponses(responses, limit)
+        }
+        const params = new URLSearchParams({ query: normalizedQuery, limit: String(limit) })
+        return await this.request<SessionContentSearchResponse>(
+            `/api/sessions/content-search?${params.toString()}`,
+            { signal }
+        )
+    }
+
+    async searchSessionContentMatches(
+        sessionId: string,
+        query: string,
+        limit: number = 500,
+        signal?: AbortSignal
+    ): Promise<SessionContentMatchesResponse> {
+        const params = new URLSearchParams({ query: query.trim(), limit: String(limit) })
+        return await this.request<SessionContentMatchesResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/content-search?${params.toString()}`,
+            { signal }
+        )
     }
 
     async getPushVapidPublicKey(): Promise<PushVapidPublicKeyResponse> {
@@ -308,6 +444,21 @@ export class ApiClient {
 
     async importPiSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<PiImportSessionsResponse> {
         return await this.request<PiImportSessionsResponse>('/api/pi/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getOpencodeSessions(cwd?: string | null, machineId?: string | null): Promise<OpencodeLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<OpencodeLocalSessionsResponse>(`/api/opencode/sessions${query}`)
+    }
+
+    async importOpencodeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; modelReasoningEffort?: string | null; permissionMode?: PermissionMode }): Promise<OpencodeImportSessionsResponse> {
+        return await this.request<OpencodeImportSessionsResponse>('/api/opencode/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
@@ -419,6 +570,12 @@ export class ApiClient {
         return await this.request<MessagesResponse>(url)
     }
 
+    async getMessageContext(sessionId: string, messageId: string): Promise<MessageContextResponse | null> {
+        return await this.request<MessageContextResponse | null>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/context`
+        )
+    }
+
     async getGitStatus(sessionId: string): Promise<GitCommandResponse> {
         return await this.request<GitCommandResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/git-status`)
     }
@@ -438,7 +595,7 @@ export class ApiClient {
         return await this.request<GitCommandResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/git-diff-file?${params.toString()}`)
     }
 
-    async searchSessionFiles(sessionId: string, query: string, limit?: number): Promise<FileSearchResponse> {
+    async searchSessionFiles(sessionId: string, query: string, limit?: number, signal?: AbortSignal): Promise<FileSearchResponse> {
         const params = new URLSearchParams()
         if (query) {
             params.set('query', query)
@@ -447,7 +604,7 @@ export class ApiClient {
             params.set('limit', `${limit}`)
         }
         const qs = params.toString()
-        return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`)
+        return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`, { signal })
     }
 
     async getGeneratedImageBlob(sessionId: string, imageId: string, attempt: number = 0, overrideToken?: string | null): Promise<Blob> {
@@ -460,11 +617,11 @@ export class ApiClient {
             headers.set('authorization', `Bearer ${authToken}`)
         }
         const url = this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`)
-        let res = await fetch(url, { headers })
+        let res = await fetchThroughAuthProxy(url, { headers })
         // Hub returns ETag + immutable Cache-Control (#927). Default fetch cache stores 200
         // responses so remounts avoid RPC; on 304 the body is empty — read from cache.
         if (res.status === 304) {
-            res = await fetch(url, { headers, cache: 'force-cache' })
+            res = await fetchThroughAuthProxy(url, { headers, cache: 'force-cache' })
         }
         if (res.status === 401 && attempt === 0 && this.onUnauthorized) {
             const refreshed = await this.onUnauthorized()
@@ -479,9 +636,10 @@ export class ApiClient {
         return await res.blob()
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<FileReadResponse> {
+    async readSessionFile(sessionId: string, path: string, maxBytes?: number): Promise<FileReadResponse> {
         const params = new URLSearchParams()
         params.set('path', path)
+        if (maxBytes !== undefined) params.set('maxBytes', String(maxBytes))
         return await this.request<FileReadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/file?${params.toString()}`)
     }
 
@@ -655,7 +813,7 @@ export class ApiClient {
             if (authToken) {
                 headers.set('authorization', `Bearer ${authToken}`)
             }
-            return fetch(this.buildUrl(path), { method: 'POST', headers, body: JSON.stringify(body) })
+            return fetchThroughAuthProxy(this.buildUrl(path), { method: 'POST', headers, body: JSON.stringify(body) })
         }
 
         let res = await tryOnce(null)
@@ -703,10 +861,14 @@ export class ApiClient {
         })
     }
 
-    async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
+    async setModel(
+        sessionId: string,
+        model: { provider: string; modelId: string } | string | null,
+        options?: { effort: string | null }
+    ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
-            body: JSON.stringify({ model })
+            body: JSON.stringify(options ? { model, effort: options.effort } : { model })
         })
     }
 
@@ -888,6 +1050,18 @@ export class ApiClient {
         )
     }
 
+    async getMachineClaudeModels(machineId: string): Promise<ClaudeModelsResponse> {
+        return await this.request<ClaudeModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/claude-models`
+        )
+    }
+
+    async getMachineDshModels(machineId: string): Promise<DshModelsResponse> {
+        return await this.request<DshModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/dsh-models`
+        )
+    }
+
     async getMachinePiModels(machineId: string): Promise<PiModelsResponse> {
         return await this.request<PiModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/pi-models`
@@ -974,6 +1148,12 @@ export class ApiClient {
         )
     }
 
+    async getSessionDshModels(sessionId: string): Promise<DshModelsResponse> {
+        return await this.request<DshModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dsh-models`
+        )
+    }
+
     async getSessionGrokModels(sessionId: string): Promise<GrokModelsResponse> {
         return await this.request<GrokModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/grok-models`
@@ -991,6 +1171,18 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ mode })
         })
+    }
+
+    async getSessionCopilotReasoningEffortOptions(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.request<CopilotReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/copilot-reasoning-effort-options`
+        )
+    }
+
+    async getSessionKimiReasoningEffortOptions(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.request<KimiReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/kimi-reasoning-effort-options`
+        )
     }
 
     async getSessionGrokReasoningEffortOptions(sessionId: string): Promise<GrokReasoningEffortResponse> {
@@ -1011,10 +1203,10 @@ export class ApiClient {
         )
     }
 
-    async renameSession(sessionId: string, name: string): Promise<void> {
+    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'PATCH',
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, titleLocked })
         })
     }
 
@@ -1025,10 +1217,10 @@ export class ApiClient {
         )
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
+    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
             method: 'PATCH',
-            body: JSON.stringify({ text })
+            body: JSON.stringify({ text, titleLocked })
         })
     }
 
@@ -1094,7 +1286,7 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        const response = await fetch(
+        const response = await fetchThroughAuthProxy(
             this.buildUrl(
                 `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/attachments/${encodeURIComponent(attachmentId)}`
             ),

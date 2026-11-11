@@ -1,6 +1,6 @@
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationChannel } from '../notifications/notificationTypes'
 import { shouldSuppressBackgroundNotification } from '../notifications/backgroundOnly'
 import { buildSessionUrl, getAgentName, getSessionName } from '../notifications/sessionInfo'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
@@ -94,27 +94,6 @@ export class WxPusherChannel implements NotificationChannel {
         await this.send(this.createMessage(
             `授权：${name}`,
             content,
-            url
-        ))
-    }
-
-    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
-        if (!session.active || this.shouldSuppress(session)) {
-            return
-        }
-
-        const status = notification.status?.trim().toLowerCase()
-        const isFailure = status === 'failed' || status === 'error' || status === 'killed' || status === 'aborted'
-        if (!isFailure) {
-            return
-        }
-
-        const agentName = getAgentName(session)
-        const name = getSessionName(session)
-        const url = buildSessionUrl(this.publicUrl, session.id)
-        await this.send(this.createMessage(
-            `失败：${name}`,
-            `${agentName} · ${name}\n\n${notification.summary}`,
             url
         ))
     }

@@ -1,3 +1,4 @@
+import { CodexRoundDuration } from './utils/roundDuration';
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 
@@ -603,7 +604,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const getCurrentCodexPermissionMode = () => {
             const mode = session.getPermissionMode();
-            return mode === 'default' || mode === 'read-only' || mode === 'safe-yolo' || mode === 'yolo'
+            return mode === 'default' || mode === 'read-only' || mode === 'yolo'
                 ? mode
                 : undefined;
         };
@@ -666,10 +667,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         });
         const reasoningProcessor = new ReasoningProcessor((message) => {
-            session.sendAgentMessage(message);
+            session.sendAgentMessage({ ...message, ...(this.currentTurnId ? { turn_id: this.currentTurnId } : {}) });
         });
         const diffProcessor = new DiffProcessor((message) => {
-            session.sendAgentMessage(message);
+            session.sendAgentMessage({ ...message, ...(this.currentTurnId ? { turn_id: this.currentTurnId } : {}) });
         });
         const mcpTitleByCallId = new Map<string, string>();
         const agentCardByAgentId = new Map<string, string>();
@@ -2710,9 +2711,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return true;
         };
 
+        const roundDuration = new CodexRoundDuration();
         let codexEventQueue: Promise<void> | null = null;
 
-        const handleCodexEvent = async (msg: Record<string, unknown>): Promise<void> => {
+        const handleCodexEvent = async (msg: Record<string, unknown>, receivedAt = Date.now()): Promise<void> => {
             const msgType = asString(msg.type);
             if (!msgType) return;
             const eventTurnId = asString(msg.turn_id ?? msg.turnId);
@@ -2812,6 +2814,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
 
+            const sendRootMessage = (message: Record<string, unknown>) => {
+                const turnId = eventTurnId ?? this.currentTurnId;
+                session.sendAgentMessage({ ...message, ...(turnId ? { turn_id: turnId } : {}) });
+            };
             const isStaleSameThreadRecoveryTerminal = msgType === 'task_complete'
                 && turnInFlight
                 && (sameThreadRetryAttempt > 0 || sameThreadCompactAttempt > 0)
@@ -2833,6 +2839,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (msgType === 'task_started') {
+                roundDuration.start(eventTurnId, receivedAt);
                 const turnId = eventTurnId;
                 agentMessageStartedForTurn = false;
                 dismissedSafetyBufferingKeys.clear();
@@ -3025,6 +3032,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 const finalizedTurnId = eventTurnId ?? this.currentTurnId;
+                const duration = roundDuration.finish(finalizedTurnId, receivedAt, msgType === 'task_complete');
+                if (duration) sendRootMessage(duration);
                 if (finalizedTurnId) {
                     lastFinalizedTurnId = finalizedTurnId;
                 }
@@ -3177,7 +3186,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'agent_message') {
                 const message = asString(msg.message);
                 if (message) {
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'message',
                         message,
                         id: randomUUID()
@@ -3197,7 +3206,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (!image) return;
 
                     messageBuffer.addMessage(`Generated image: ${image.fileName}`, 'assistant');
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'generated-image',
                         imageId: image.id,
                         sourceImageId,
@@ -3212,6 +3221,27 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     });
                 }
             }
+            if (msgType === 'viewed_image') {
+                const viewedPath = asString(msg.path);
+                if (viewedPath) {
+                    const image = await registerGeneratedImageFromPathWrapper({ id: randomUUID(), path: viewedPath });
+                    if (!image) return;
+
+                    sendRootMessage({
+                        type: 'generated-image',
+                        imageId: image.id,
+                        fileName: image.fileName,
+                        mimeType: image.mimeType,
+                        id: randomUUID(),
+                        source: {
+                            ingress: 'tool_result',
+                            flavor: 'codex',
+                            toolName: 'view_image',
+                            toolCallId: asString(msg.call_id ?? msg.callId),
+                        },
+                    });
+                }
+            }
             if (msgType === 'exec_command_begin' || msgType === 'exec_approval_request') {
                 const callId = asString(msg.call_id ?? msg.callId);
                 if (callId) {
@@ -3220,7 +3250,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     delete inputs.call_id;
                     delete inputs.callId;
 
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call',
                         name: 'CodexBash',
                         callId: callId,
@@ -3239,7 +3269,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     output.stdout = output.output;
                     delete output.output;
 
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call-result',
                         callId: callId,
                         output,
@@ -3249,7 +3279,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
             if (msgType === 'token_count') {
                 const threadId = eventThreadId ?? this.currentThreadId;
-                session.sendAgentMessage({
+                sendRootMessage({
                     ...addCodexEventScope(msg, 'parent', threadId),
                     flavor: 'codex',
                     model: asString(msg.model) ?? usageModel,
@@ -3258,7 +3288,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
             if (msgType === 'context_compacted') {
                 const threadId = eventThreadId ?? this.currentThreadId;
-                session.sendAgentMessage({
+                sendRootMessage({
                     ...addCodexEventScope({
                         type: 'context_compacted',
                         ...(eventTurnId ? { turn_id: eventTurnId } : {})
@@ -3278,19 +3308,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (msgType === 'plan_update') {
-                session.sendAgentMessage({
+                const turnId = eventTurnId ?? this.currentTurnId;
+                const callId = turnId ? `codex-plan-state:${turnId}` : 'codex-plan-state';
+                sendRootMessage({
                     type: 'tool-call',
                     name: 'update_plan',
-                    callId: 'codex-plan-state',
+                    callId,
                     input: {
                         plan: Array.isArray(msg.plan) ? msg.plan : [],
                         source: 'codex'
                     },
                     id: randomUUID()
                 });
-                session.sendAgentMessage({
+                sendRootMessage({
                     type: 'tool-call-result',
-                    callId: 'codex-plan-state',
+                    callId,
                     output: {
                         plan: Array.isArray(msg.plan) ? msg.plan : [],
                         source: 'codex',
@@ -3307,7 +3339,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     const filesMsg = changeCount === 1 ? '1 file' : `${changeCount} files`;
                     messageBuffer.addMessage(`Modifying ${filesMsg}...`, 'tool');
 
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call',
                         name: 'CodexPatch',
                         callId: callId,
@@ -3334,7 +3366,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         messageBuffer.addMessage(`Error: ${errorMsg.substring(0, 200)}`, 'result');
                     }
 
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call-result',
                         callId: callId,
                         output: {
@@ -3360,7 +3392,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (isHapiChangeTitleToolName(name) && requestedTitle) {
                         mcpTitleByCallId.set(callId, requestedTitle);
                     }
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call',
                         name,
                         callId,
@@ -3391,7 +3423,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         sendTitleSummary(title);
                     }
 
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call-result',
                         callId,
                         output,
@@ -3433,7 +3465,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         }
                         return;
                     }
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call',
                         name,
                         callId,
@@ -3450,7 +3482,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         handleAgentToolEnd(callId, name, msg.output, Boolean(msg.is_error ?? msg.isError));
                         return;
                     }
-                    session.sendAgentMessage({
+                    sendRootMessage({
                         type: 'tool-call-result',
                         callId,
                         output: msg.output,
@@ -3520,6 +3552,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 });
                 return;
             }
+            const receivedAt = Date.now();
             const events = appServerEventConverter.handleNotification(method, params);
             for (const event of events) {
                 const eventRecord = asRecord(event) ?? { type: undefined };
@@ -3529,7 +3562,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (codexEventQueue || hasGeneratedImagePath) {
                     const previousQueue = codexEventQueue ?? Promise.resolve();
                     const nextQueue = previousQueue
-                        .then(() => handleCodexEvent(eventRecord))
+                        .then(() => handleCodexEvent(eventRecord, receivedAt))
                         .catch((error) => logger.debug('[Codex] Failed to handle app-server event:', error instanceof Error ? error.message : String(error)));
                     const queued = nextQueue.finally(() => {
                         if (codexEventQueue === queued) {
@@ -3538,7 +3571,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     });
                     codexEventQueue = queued;
                 } else {
-                    void handleCodexEvent(eventRecord).catch((error) => {
+                    void handleCodexEvent(eventRecord, receivedAt).catch((error) => {
                         logger.debug('[Codex] Failed to handle app-server event:', error instanceof Error ? error.message : String(error));
                     });
                 }
@@ -3563,7 +3596,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             // leak into the parent HAPI session. Defer the side effect until
             // parent-thread mcp_tool_call_end reaches this launcher; child
             // events are filtered above by thread id.
-            emitTitleSummary: false
+            emitTitleSummary: false,
+            workingDirectory: session.path,
         });
         this.happyServer = happyServer;
         let mcpServers: CodexMcpServersConfig = hapiMcpServers;

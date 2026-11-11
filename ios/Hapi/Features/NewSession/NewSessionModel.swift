@@ -41,11 +41,34 @@ enum CodexModelsState: Equatable {
     case failed(String)
 }
 
+/// Discovered model catalog of the selected non-Claude/Codex agent.
+enum AgentModelsState: Equatable {
+    case hidden
+    case loading
+    case loaded(AgentModelsResponse)
+    /// Runner has no catalog RPC (`rpc_target_missing`) — hide the picker.
+    case unsupported
+    case failed(String)
+}
+
+/// What the discovered-model picker fetches: per machine, plus the target
+/// directory for directory-scoped flavors (`AgentModelCatalog.Scope`).
+struct AgentModelsRequest: Hashable {
+    let flavor: AgentFlavor
+    let machineId: String
+    let cwd: String?
+}
+
 /// Installed/static-configured Agent catalog for the selected machine.
 enum AgentAvailabilityState: Equatable {
     case loading
     case loaded([AgentAvailabilityEntry])
     case failed(message: String, upgradeRequired: Bool)
+}
+
+private struct CachedAgentModels {
+    let response: AgentModelsResponse
+    let variants: [String: [String]]?
 }
 
 // MARK: - Persistence
@@ -110,12 +133,13 @@ struct NewSessionPrefsStore {
 /// this model orchestrates debounce, caching, fetches, and persistence.
 /// Web reference: `web/src/components/NewSession/index.tsx`.
 ///
-/// v1 notes (deliberate cuts, mirrored from the Android/web option matrix):
-/// - model pickers: claude (static presets) + codex (machine catalog; hidden
-///   when the runner lacks the RPC). agy/opencode/grok/copilot/cursor/pi
-///   model discovery is TODO — spawn omits `model` so the agent default
-///   applies.
-/// - effort: claude static levels; codex reasoning effort from the catalog.
+/// Option matrix (web create form):
+/// - model pickers: claude (static presets), codex (machine catalog; hidden
+///   when the runner lacks the RPC) and the `AgentModelCatalog` flavors —
+///   agy/cursor/dsh/pi per machine, copilot/grok/kimi/opencode once the
+///   directory exists. Cursor is a flat list of ACP ids (no variant drill-down).
+/// - effort: claude static levels, grok per-model efforts, pi thinking
+///   levels; reasoning effort: codex catalog, opencode variants.
 /// - `startingMode` stays unset → the runner spawns `'remote'` (pty deferred).
 @MainActor @Observable
 final class NewSessionModel {
@@ -144,6 +168,9 @@ final class NewSessionModel {
     let directoryInput: NewSessionDirectoryModel
     var suggestions: [String] { directoryInput.suggestions }
     private(set) var codexModels: CodexModelsState = .hidden
+    private(set) var agentModels: AgentModelsState = .hidden
+    /// OpenCode variants keyed `provider/model`; nil until loaded.
+    private(set) var opencodeVariants: [String: [String]]?
     private(set) var agentAvailability: AgentAvailabilityState = .loading
     private(set) var isSpawning = false
     private(set) var spawnError: String?
@@ -163,6 +190,9 @@ final class NewSessionModel {
     @ObservationIgnored private var availabilityTask: Task<Void, Never>?
     @ObservationIgnored private var defaultDirectoryTask: Task<Void, Never>?
     @ObservationIgnored private var codexFetchedForMachine: String?
+    @ObservationIgnored private var agentModelsTask: Task<Void, Never>?
+    @ObservationIgnored private var agentModelsFetched: AgentModelsRequest??
+    @ObservationIgnored private var agentModelsCache: [AgentModelsRequest: CachedAgentModels] = [:]
     @ObservationIgnored private var availabilityFetchedForMachine: String?
     @ObservationIgnored private var suppressSuggestions = false
     @ObservationIgnored private var spawnInFlight = false
@@ -206,6 +236,7 @@ final class NewSessionModel {
         reconcileMachineSelection()
         refreshAgentAvailability()
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded()
         scheduleDirectoryWork()
 
         do {
@@ -238,6 +269,7 @@ final class NewSessionModel {
             refreshAgentAvailability()
             refreshCodexModelsIfNeeded()
         }
+        refreshAgentModelsIfNeeded()
         scheduleDirectoryWork()
     }
 
@@ -323,7 +355,7 @@ final class NewSessionModel {
         }
     }
 
-    /// Nil hides the model picker (v1: only claude + supported codex).
+    /// Nil hides the model picker.
     var modelOptions: [NewSessionOption]? {
         switch (form.agent, codexModels) {
         case (.claude, _):
@@ -333,30 +365,62 @@ final class NewSessionModel {
                 + models.map { NewSessionOption(value: $0.id, label: $0.displayName) }
         case (.codex, .loading), (.codex, .failed):
             return [NewSessionOption(value: "auto", label: "Default")]
+        case (.codex, _):
+            return nil // `.unsupported` (old runner)
         default:
-            // codex `.unsupported` (old runner) and every other flavor: hidden.
+            break
+        }
+        switch agentModels {
+        case .loaded(let response):
+            return AgentModelCatalog.newSessionModelOptions(flavor: form.agent, response: response)
+        case .loading, .failed:
+            return AgentModelCatalog.newSessionModelOptions(
+                flavor: form.agent,
+                response: AgentModelsResponse(success: true)
+            )
+        case .hidden, .unsupported:
             return nil
         }
     }
 
     var modelsLoading: Bool {
-        form.agent == .codex && codexModels == .loading
+        (form.agent == .codex && codexModels == .loading) || agentModels == .loading
     }
 
     var modelsError: String? {
         if case .failed(let message) = codexModels {
             return String(format: String(localized: "Failed to load models: %@"), message)
         }
+        if case .failed(let message) = agentModels {
+            return String(format: String(localized: "Failed to load models: %@"), message)
+        }
         return nil
     }
 
-    /// Claude launch-effort options; nil hides the field.
-    var effortOptions: [NewSessionOption]? {
-        form.agent == .claude ? NewSessionCatalogs.claudeEfforts : nil
+    private var loadedAgentModels: AgentModelsResponse? {
+        if case .loaded(let response) = agentModels { return response }
+        return nil
     }
 
-    /// Codex reasoning-effort options; nil hides the field.
+    /// Claude effort, grok effort or pi thinking level; nil hides the field.
+    var effortOptions: [NewSessionOption]? {
+        switch form.agent {
+        case .claude: return NewSessionCatalogs.claudeEfforts
+        case .grok: return AgentModelCatalog.grokEffortOptions(response: loadedAgentModels, model: form.model)
+        case .pi: return AgentModelCatalog.piEffortOptions(response: loadedAgentModels, model: form.model)
+        default: return nil
+        }
+    }
+
+    /// Codex reasoning effort or opencode variant; nil hides the field.
     var reasoningEffortOptions: [NewSessionOption]? {
+        if form.agent == .opencode {
+            return AgentModelCatalog.opencodeReasoningEffortOptions(
+                variants: opencodeVariants,
+                response: loadedAgentModels,
+                model: form.model
+            )
+        }
         guard form.agent == .codex, codexModels != .unsupported else { return nil }
         if case .loaded(let models) = codexModels,
            let advertised = NewSessionLogic.codexReasoningEfforts(models: models, model: form.model) {
@@ -374,9 +438,32 @@ final class NewSessionModel {
             return .managed
         }
         if NewSessionLogic.usesNativePermissionSelect(agent) {
-            return .nativeSelect(agent.launchPermissionModes.map { PermissionModeOption(mode: $0) })
+            return .nativeSelect(permissionModes.map { PermissionModeOption(mode: $0) })
         }
         return .yoloToggle(nativeModeLabel: NewSessionLogic.hapiYoloNativeMode(for: agent)?.label)
+    }
+
+    /// Grok probes report whether its `auto` mode works in this directory.
+    private var permissionModes: [PermissionMode] {
+        let modes = form.agent.permissionModes
+        guard form.agent == .grok, loadedAgentModels?.autoPermissionModeSupported == false else { return modes }
+        return modes.filter { $0 != .auto }
+    }
+
+    /// The discovered-model fetch the form needs now; nil when the flavor
+    /// has no catalog, no machine is selected, or a directory-scoped catalog
+    /// has no existing directory to probe yet.
+    var agentModelsRequest: AgentModelsRequest? {
+        guard let scope = AgentModelCatalog.scope(for: form.agent),
+              let machineId = selectedMachine?.id else { return nil }
+        switch scope {
+        case .machine:
+            return AgentModelsRequest(flavor: form.agent, machineId: machineId, cwd: nil)
+        case .directory:
+            let cwd = normalizedDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cwd.isEmpty, directoryExists == true, !directoryOutsideWorkspaceRoots else { return nil }
+            return AgentModelsRequest(flavor: form.agent, machineId: machineId, cwd: cwd)
+        }
     }
 
     var showCollaborationMode: Bool {
@@ -412,6 +499,7 @@ final class NewSessionModel {
             && selectedAgentAvailable
             && worktreeNameError == nil
             && !codexValidationPending
+            && !agentModelsValidationPending
     }
 
     private var selectedMachine: Machine? {
@@ -453,6 +541,13 @@ final class NewSessionModel {
             && (form.model != "auto"
                 || form.modelReasoningEffort != "default"
                 || form.serviceTier == .fast)
+    }
+
+    /// A restored non-default model/effort must not spawn before the
+    /// discovered catalog validated it (web `isLaunchPreferenceValidationPending`).
+    private var agentModelsValidationPending: Bool {
+        agentModels == .loading
+            && (form.model != "auto" || form.effort != "auto" || form.modelReasoningEffort != "default")
     }
 
     // MARK: - Actions
@@ -512,6 +607,7 @@ final class NewSessionModel {
         form.copilotAgentMode = .interactive
         persistDraft()
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded()
     }
 
     func setModel(_ model: String) {
@@ -519,6 +615,7 @@ final class NewSessionModel {
         if form.agent == .codex {
             form = reconcileCodexSelections(form)
         }
+        form = reconcileAgentModelSelections(form)
         persistDraft()
     }
 
@@ -568,9 +665,10 @@ final class NewSessionModel {
         persistDraft()
     }
 
-    func retryCodexModels() {
+    func retryModels() {
         codexFetchedForMachine = nil
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded(force: true)
     }
 
     func retryAgentAvailability() {
@@ -701,6 +799,7 @@ final class NewSessionModel {
         }
         refreshAgentAvailability(force: true)
         refreshCodexModelsIfNeeded()
+        refreshAgentModelsIfNeeded()
         scheduleDirectoryWork()
     }
 
@@ -843,6 +942,77 @@ final class NewSessionModel {
                 self.persistDraft()
             }
         }
+    }
+
+    /// Fetches (or reuses) the catalog for ``agentModelsRequest``. The view
+    /// calls this whenever the request changes — including when a typed
+    /// directory turns out to exist.
+    func refreshAgentModelsIfNeeded(force: Bool = false) {
+        let request = agentModelsRequest
+        guard force || agentModelsFetched != .some(request) else { return }
+        agentModelsTask?.cancel()
+        agentModelsFetched = .some(request)
+        guard let request else {
+            agentModels = .hidden
+            opencodeVariants = nil
+            return
+        }
+        if !force, let cached = agentModelsCache[request] {
+            agentModels = .loaded(cached.response)
+            opencodeVariants = cached.variants
+            form = reconcileAgentModelSelections(form)
+            persistDraft()
+            return
+        }
+        agentModels = .loading
+        opencodeVariants = nil
+        agentModelsTask = Task { [weak self] in
+            guard let self else { return }
+            let api = self.session.api
+            let state: AgentModelsState
+            var variants: [String: [String]]?
+            do {
+                let response = try await api.machineAgentModels(
+                    machineId: request.machineId,
+                    flavor: request.flavor,
+                    cwd: request.cwd
+                )
+                // agy pairs `success` with an error for a stale catalog.
+                state = response.success
+                    ? .loaded(response)
+                    : .failed(response.error ?? String(localized: "Failed to load models"))
+                if request.flavor == .opencode, response.success, let cwd = request.cwd,
+                   let answer = try? await api.machineOpencodeModelVariants(machineId: request.machineId, cwd: cwd),
+                   answer.success {
+                    variants = answer.variants
+                }
+            } catch let error as APIError where error.code == "rpc_target_missing" {
+                state = .unsupported
+            } catch is CancellationError {
+                return
+            } catch {
+                state = .failed(
+                    (error as? LocalizedError)?.errorDescription ?? String(localized: "Failed to load models")
+                )
+            }
+            guard !Task.isCancelled, self.agentModelsFetched == .some(.some(request)) else { return }
+            self.agentModels = state
+            self.opencodeVariants = variants
+            if case .loaded(let response) = state {
+                self.agentModelsCache[request] = CachedAgentModels(response: response, variants: variants)
+                self.form = self.reconcileAgentModelSelections(self.form)
+                self.persistDraft()
+            }
+        }
+    }
+
+    private func reconcileAgentModelSelections(_ current: NewSessionForm) -> NewSessionForm {
+        guard let response = loadedAgentModels else { return current }
+        var next = NewSessionLogic.reconcileAgentModelSelections(current, response: response, variants: opencodeVariants)
+        if next.agent == .grok, next.permissionMode == .auto, !permissionModes.contains(.auto) {
+            next.permissionMode = .default
+        }
+        return next
     }
 
     private func reconcileCodexSelections(_ current: NewSessionForm) -> NewSessionForm {

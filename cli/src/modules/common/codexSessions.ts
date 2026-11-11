@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
@@ -403,10 +403,51 @@ export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION
 export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): LocalCodexSessionWithMessages[] {
     if (ids.size === 0) return []
     const sessionIndexTitles = readCodexSessionIndexTitles()
-    return listLocalCodexSessionSummaries(Number.MAX_SAFE_INTEGER)
-        .filter((session) => ids.has(session.id))
-        .map((session) => parseCodexLocalSession(session.file, true, sessionIndexTitles))
-        .filter((session): session is LocalCodexSessionWithMessages => Boolean(session))
+    const files: string[] = []
+    for (const root of getCodexSessionRoots()) collectJsonlFiles(root, files)
+    const candidates = new Map<string, Array<{ file: string; modifiedAt: number }>>()
+    for (const file of files) {
+        let fd: number | undefined
+        let identity: string | null = null
+        let rejected = false
+        try {
+            // 先读取有限的元数据，再完整加载被选中的会话记录。
+            fd = openSync(file, 'r')
+            const buffer = Buffer.alloc(1024 * 1024)
+            const size = readSync(fd, buffer, 0, buffer.length, 0)
+            const prefix = buffer.subarray(0, size).toString('utf8')
+            const lines = prefix.split(/\r?\n/)
+            if (size === buffer.length && !prefix.endsWith('\n')) lines.pop()
+            for (const line of lines.filter(Boolean).slice(0, 200)) {
+                try {
+                    const record = asRecord(JSON.parse(line))
+                    if (record?.type !== 'session_meta') continue
+                    const payload = asRecord(record.payload)
+                    if (isCodexSubagentSource(payload?.source)) { rejected = true; break }
+                    if (!identity && typeof payload?.id === 'string') identity = payload.id
+                } catch { continue }
+            }
+            if (!identity && !rejected) {
+                // 对异常或过大的文件头保留原有解析行为。
+                const fallback = parseCodexLocalSession(file, false, sessionIndexTitles)
+                identity = fallback?.id ?? null
+            }
+            if (!identity || rejected || !ids.has(identity)) continue
+            const entries = candidates.get(identity) ?? []
+            entries.push({ file, modifiedAt: statSync(file).mtimeMs })
+            candidates.set(identity, entries)
+        } catch { continue }
+        finally { if (fd !== undefined) closeSync(fd) }
+    }
+    const result: LocalCodexSessionWithMessages[] = []
+    for (const [id, entries] of candidates) {
+        entries.sort((a, b) => b.modifiedAt - a.modifiedAt)
+        for (const entry of entries) {
+            const session = parseCodexLocalSession(entry.file, true, sessionIndexTitles)
+            if (session && session.id === id && 'messages' in session) { result.push(session); break }
+        }
+    }
+    return result.sort((a, b) => b.modifiedAt - a.modifiedAt)
 }
 
 

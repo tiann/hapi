@@ -5,8 +5,11 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.appendSharedText
+import app.hapi.companion.feature.share.ShareInbox
 import kotlinx.coroutines.flow.first
 
 /**
@@ -46,7 +49,31 @@ class DataStoreChatDrafts(
             val draft = prefs[key(fromSessionId)] ?: return@edit
             prefs.remove(key(fromSessionId))
             // Never clobber a draft already typed in the target session.
-            if (prefs[key(toSessionId)].isNullOrEmpty()) prefs[key(toSessionId)] = draft
+            if (prefs[key(toSessionId)].isNullOrEmpty()) {
+                prefs[key(toSessionId)] = draft
+                val prefix = "draftShare:$hubKey:$fromSessionId:"
+                prefs.asMap().filter { it.key.name.startsWith(prefix) }.forEach { (receipt, timestamp) ->
+                    prefs[longPreferencesKey("draftShare:$hubKey:$toSessionId:${receipt.name.removePrefix(prefix)}")] = timestamp as Long
+                    prefs.remove(receipt)
+                }
+            }
         }
+    }
+
+    override suspend fun appendSharedText(sessionId: String, requestId: String, currentText: String, text: String): String {
+        var result = currentText
+        dataStore.edit { prefs ->
+            val now = System.currentTimeMillis()
+            prefs.asMap().filter {
+                it.key.name.startsWith("draftShare:$hubKey:") && (it.value as? Long ?: Long.MAX_VALUE) < now - ShareInbox.RETENTION_MS
+            }.keys.forEach { prefs.remove(it) }
+            val receipt = longPreferencesKey("draftShare:$hubKey:$sessionId:$requestId")
+            if (prefs[receipt] == null) {
+                result = appendSharedText(currentText, text)
+                prefs[key(sessionId)] = result
+                prefs[receipt] = now
+            }
+        }
+        return result
     }
 }

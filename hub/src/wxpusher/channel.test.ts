@@ -219,7 +219,7 @@ describe('WxPusherChannel', () => {
         }
     })
 
-    it('sends ready, permission, failed task, and session error notifications', async () => {
+    it('sends ready, permission, and session error notifications', async () => {
         const fetchMock = mock(async () => new Response(JSON.stringify({ code: 1000 }), { status: 200 }))
         const originalFetch = globalThis.fetch
         globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -241,11 +241,9 @@ describe('WxPusherChannel', () => {
 
             await channel.sendReady(session)
             await channel.sendPermissionRequest(permissionSession)
-            await channel.sendTaskNotification(session, { status: 'failed', summary: 'failed' })
-            await channel.sendTaskNotification(session, { status: 'completed', summary: 'done' })
             await channel.sendSessionError(session, 'error' satisfies SessionEndReason)
 
-            expect(fetchMock).toHaveBeenCalledTimes(4)
+            expect(fetchMock).toHaveBeenCalledTimes(3)
             const summaries = fetchMock.mock.calls.map((call) => {
                 const init = (call as unknown[])[1] as RequestInit | undefined
                 return (JSON.parse(String(init?.body)) as { summary: string }).summary
@@ -253,7 +251,6 @@ describe('WxPusherChannel', () => {
             expect(summaries).toEqual([
                 '就绪：WxPusher review',
                 '授权：WxPusher review',
-                '失败：WxPusher review',
                 '异常：WxPusher review'
             ])
         } finally {
@@ -286,10 +283,6 @@ describe('WxPusherChannel', () => {
                     }
                 }
             }))
-            await channel.sendTaskNotification(createSession(), {
-                status: 'failed',
-                summary: 'Subtask failed'
-            })
             await channel.sendSessionError(createSession(), 'error' satisfies SessionEndReason)
             await channel.sendSessionCompletion(createSession(), 'completed' satisfies SessionEndReason)
 

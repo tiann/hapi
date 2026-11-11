@@ -6,15 +6,18 @@ import { io, type Socket } from 'socket.io-client'
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { logger } from '@/ui/logger'
+import { ForkArchivedCodexRequestSchema } from '@hapi/protocol/apiTypes'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
 import {
     ArchiveCodexSessionRpcRequestSchema,
     ListCodexSessionsRpcRequestSchema,
+    ListOpencodeSessionsRpcRequestSchema,
     ListPiSessionsRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
     type AgentAvailabilityResponse,
     type ListCodexSessionsRpcResponse,
+    type ListOpencodeSessionsRpcResponse,
     type ListPiSessionsRpcResponse,
     type MachineDirectoryEntry,
     type MachineListDirectoryResponse,
@@ -29,12 +32,17 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { registerWorkspaceFileHandlers } from '../modules/common/workspaceFileHandlers'
 import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
     type ListOpencodeModelsForCwdRequest,
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
+import {
+    listLocalOpencodeSessionSummaries,
+    listLocalOpencodeSessionsWithMessagesByIds
+} from '../modules/common/opencodeSessions'
 import {
     listOpencodeModelVariants,
     type ListOpencodeModelVariantsResponse
@@ -44,6 +52,10 @@ import {
     type ListGrokModelsForCwdRequest,
     type ListGrokModelsForCwdResponse
 } from '../modules/common/grokModels'
+import {
+    listDshModelsForMachine,
+    type ListDshModelsForMachineResponse
+} from '../modules/common/dshModels'
 import {
     listCopilotModelsForCwd,
     type ListCopilotModelsForCwdRequest,
@@ -129,6 +141,10 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+        registerWorkspaceFileHandlers(this.rpcHandlerManager, {
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+        })
 
         // Only the machine daemon answers `<machineId>:listAgyModels`, so it is
         // the one process that can tell the hub its catalog moved.
@@ -299,6 +315,15 @@ export class ApiMachineClient {
             }
         )
 
+        // DSH models are machine-global, so unlike the cwd-scoped probes above
+        // this handler takes no parameters.
+        this.rpcHandlerManager.registerHandler<undefined, ListDshModelsForMachineResponse>(
+            RPC_METHODS.ListDshModelsForMachine,
+            async () => {
+                return await listDshModelsForMachine()
+            }
+        )
+
         this.rpcHandlerManager.registerHandler<ListCopilotModelsForCwdRequest, ListCopilotModelsForCwdResponse>(
             RPC_METHODS.ListCopilotModelsForCwd,
             async (params) => {
@@ -392,6 +417,35 @@ export class ApiMachineClient {
                 return { success: true, sessions }
             }
         )
+
+        this.rpcHandlerManager.registerHandler<unknown, ListOpencodeSessionsRpcResponse>(
+            RPC_METHODS.ListOpencodeSessions,
+            async (params) => {
+                const parsed = ListOpencodeSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Opencode sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = parsed.data.sessionIds ? new Set(parsed.data.sessionIds) : null
+                let allSessions
+                try {
+                    allSessions = requestedIds
+                        ? await listLocalOpencodeSessionsWithMessagesByIds(requestedIds)
+                        : await listLocalOpencodeSessionSummaries()
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : 'Failed to read local OpenCode sessions' }
+                }
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)
+                }
+                return { success: true, sessions }
+            }
+        )
     }
 
     private async isLocalSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
@@ -403,6 +457,11 @@ export class ApiMachineClient {
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.ForkArchivedCodex, async (raw: unknown) => {
+            const request = ForkArchivedCodexRequestSchema.parse(raw)
+            const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
+            return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
+        })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
             const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
 
@@ -543,6 +602,27 @@ export class ApiMachineClient {
                 errorMessage: 'Machine state update failed',
                 versionMismatchMessage: 'Runner state version mismatch'
             })
+        })
+    }
+
+    /**
+     * Tell the hub a runner-owned child died without the CLI's normal
+     * session-end handshake. Best effort: the hub also has the child socket
+     * and its keep-alive expiry as a backstop if this frame is lost.
+     */
+    reportSessionChildExited(payload: {
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time?: number
+    }): void {
+        if (!this.socket) return
+        this.socket.emit('session-child-exited', {
+            machineId: this.machine.id,
+            sid: payload.sid,
+            pid: payload.pid,
+            ...(payload.processStartMarker ? { processStartMarker: payload.processStartMarker } : {}),
+            time: payload.time ?? Date.now()
         })
     }
 
