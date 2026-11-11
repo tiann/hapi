@@ -4,7 +4,7 @@ import type { AgentMessage } from '@/agent/types';
 import { logger } from '@/ui/logger';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
-import { buildAcpStdioSpawnOptions } from './AcpStdioTransport';
+import { ACP_INDETERMINATE_SYMBOL, buildAcpStdioSpawnOptions } from './AcpStdioTransport';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 
 function sleep(ms: number): Promise<void> {
@@ -1417,6 +1417,74 @@ describe('AcpSdkBackend', () => {
                 mcpServers: []
             }
         }]);
+    });
+
+    it('does not retry a terminal session/resume rejection (dsh: mismatched cwd / active session)', async () => {
+        // dsh answers a resume whose cwd does not realpath-match the stored
+        // session (or one that is still active elsewhere) with a TERMINAL
+        // invalidParams JSON-RPC error. Retrying it would only delay the
+        // caller's fresh-session fallback by the full backoff chain.
+        const backend = new AcpSdkBackend({ command: 'dsh' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                throw new Error('Session cwd mismatch: session belongs to /other/path (-32602 invalidParams)');
+            },
+            close: async () => {}
+        };
+
+        await expect(backend.resumeSession({
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        })).rejects.toThrow('invalidParams');
+
+        // Exactly one session/resume request — no retry of the terminal error.
+        expect(calls.filter((call) => call.method === 'session/resume')).toHaveLength(1);
+    });
+
+    it('retries a transport-indeterminate session/resume failure and then succeeds', async () => {
+        // The child process died mid-request: the failure carries the
+        // transport's indeterminate marker (after a respawn the same request
+        // can succeed, so retrying it is correct).
+        const backend = new AcpSdkBackend({ command: 'dsh' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        let attempts = 0;
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                attempts += 1;
+                if (attempts === 1) {
+                    const error = new Error('ACP process exited (code=1, signal=null)');
+                    Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+                    throw error;
+                }
+                return { configOptions: [] };
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.resumeSession({
+            sessionId: 'dsh-stored-1',
+            cwd: '/tmp',
+            mcpServers: []
+        });
+
+        expect(sessionId).toBe('dsh-stored-1');
+        expect(calls.filter((call) => call.method === 'session/resume')).toHaveLength(2);
     });
 
     it('setMode falls back to session/set_config_option when session/set_mode is missing', async () => {

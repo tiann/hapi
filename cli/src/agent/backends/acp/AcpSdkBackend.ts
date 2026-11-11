@@ -1,7 +1,7 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
-import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
+import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
@@ -368,6 +368,19 @@ export class AcpSdkBackend implements AgentBackend {
         return Boolean(capabilities && Object.prototype.hasOwnProperty.call(capabilities, 'resume'));
     }
 
+    /**
+     * Whether the initialize result advertises inline image prompt content
+     * (`agentCapabilities.promptCapabilities.image`, e.g. DSH 0.2.2+).
+     *
+     * Callers must gate image content blocks on this: sending
+     * `{type:'image'}` blocks to an agent that never advertised the
+     * capability rejects the whole session/prompt.
+     */
+    supportsImagePrompts(): boolean {
+        const promptCapabilities = this.initializeResult?.agentCapabilities?.promptCapabilities;
+        return isObject(promptCapabilities) && promptCapabilities.image === true;
+    }
+
     getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
         return this.sessionConfigOptions.get(sessionId);
     }
@@ -489,6 +502,13 @@ export class AcpSdkBackend implements AgentBackend {
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                // Only transport-indeterminate failures (child exited,
+                // transport closed, failed stdin write) are worth retrying.
+                // dsh answers a mismatched cwd (compared by realpath) or an
+                // already-active session with a TERMINAL invalidParams
+                // rejection; retrying it just delays the caller's
+                // fresh-session fallback by the full backoff chain.
+                shouldRetry: isAcpIndeterminateError,
                 onRetry: (error, attempt, nextDelayMs) => {
                     logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
                 }

@@ -114,7 +114,10 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            startingMode: 'remote'
+            startingMode: 'remote',
+            // Spawn-time sandbox preset only (dsh has no runtime mode RPC):
+            // read-only/yolo pin DSH_PERMISSION_MODE on the respawned child.
+            permissionMode: base.permissionMode as string | undefined
         })
         return
     }
