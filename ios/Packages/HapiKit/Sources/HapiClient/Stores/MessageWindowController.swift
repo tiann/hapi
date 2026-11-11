@@ -390,6 +390,15 @@ public actor MessageWindowController {
                         next.preferLatestOnActivation = false
                         return next
                     }
+                } else if stateValue.requiresLatestReset {
+                    // The catch-up overflowed the window's history budget:
+                    // the prepend trim dropped the newer caught-up rows and
+                    // marked the window for a reset. Reconciling the latest
+                    // page on top would strand the rows between the
+                    // reset-marked window and the page — unreachable from
+                    // either cursor — so leave the reset requirement and the
+                    // recovery flags intact: the next authoritative
+                    // replacement closes the hole and consumes the flags.
                 } else {
                     // The cursor phase caught the window up without error.
                     // Only now may the recovery advance to the latest page:

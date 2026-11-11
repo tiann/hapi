@@ -383,6 +383,51 @@ struct MessageWindowControllerTests {
             == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
         #expect(state.warning == nil)
     }
+    @Test func recoveryCatchUpOverflowingTheHistoryBudgetStaysResetMarked() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "gap-overflow")
+        initial.viewMode = .history
+        initial.epoch = 1
+        initial.hasMore = true
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        initial.newestPosition = MessagePosition(at: 600_000, seq: 600)
+        initial.messages = (1...600).map { WindowMessage(wire: agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000)) }
+        let controller = MessageWindowController(sessionId: "gap-overflow", provider: provider, initialState: initial)
+        await provider.release(afterPage(
+            (601...800).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (800_000, 800), hasMore: true
+        ))
+        await provider.release(latestPage(
+            (901...1100).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+
+        await controller.recoverAfterGapResume()
+
+        // The catch-up page overflowed the 600-row history budget: the
+        // prepend trim kept rows 1-600, dropped the caught-up 601-800, and
+        // marked the window for a reset. The recovery must not reconcile the
+        // latest page on top — rows 601-900 would sit between the two
+        // cursors, unreachable from either — and must not consume the
+        // recovery flags.
+        let overflowed = await controller.state
+        #expect(overflowed.messages.map(\.id) == (1...600).map { "r-\($0)" })
+        #expect(overflowed.requiresLatestReset)
+        #expect(overflowed.pendingGapRecovery)
+        #expect(overflowed.warning == nil)
+
+        // Returning to the tail view applies the authoritative replacement
+        // and closes the hole.
+        await controller.setViewMode(.tail)
+        await controller.syncTail()
+
+        let replaced = await controller.state
+        #expect(replaced.messages.map(\.id) == (901...1100).map { "r-\($0)" })
+        #expect(!replaced.requiresLatestReset)
+        #expect(!replaced.pendingGapRecovery)
+        #expect(replaced.oldestPosition?.seq == 901)
+        #expect(replaced.warning == nil)
+    }
 
     @Test func stalledOlderCursorDoesNotApplyOrPretendHistoryIsExhausted() async {
         let provider = GatedMessagesProvider()
