@@ -437,7 +437,7 @@ function FixtureThread() {
         () => buildVisibleChatBlocks(threadBlocks, { hasMoreMessages: hasMore }),
         [threadBlocks, hasMore]
     )
-    const unseenCount = useUnseenBlockCount(viewMode, visibleBlocks)
+    const unseenCount = useUnseenBlockCount(viewMode, visibleBlocks, tailEvictedWhileFollowing)
 
     const runtime = useHappyRuntime({
         session: activeSession,

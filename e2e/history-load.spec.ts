@@ -807,12 +807,14 @@ test('concise view reaches preceding conversation and finishes loading when 900 
 
     // Delivering an SSE final reply while auto-follow is still enabled must
     // append and render the reply rather than discarding it under the 600-row
-    // user-selected history prepend budget, and must advance + acknowledge its
-    // readThroughRevision.
+    // user-selected history prepend budget, must advance + acknowledge its
+    // readThroughRevision, and must not display a new-message pill.
     await page.evaluate(() => {
         window.__probe.deliverLiveFinalReply('Live final reply 1201')
     })
     await expect(page.getByText('Live final reply 1201', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: /new message/i })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Scroll to bottom', exact: true })).toBeVisible()
     await expect.poll(async () => await page.evaluate(() => {
         const state = window.__probe.windowState()
         return {

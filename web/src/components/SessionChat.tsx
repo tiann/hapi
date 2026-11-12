@@ -1746,10 +1746,17 @@ function SessionChatInner(props: SessionChatProps) {
         visibleGroupsRef.current = visibleBlocks.filter(isToolGroupBlock)
     }, [toolGroupingMode, visibleBlocks])
 
+    const effectiveTailEvictedWhileFollowing = props.tailEvictedWhileFollowing
+        ?? Boolean(getMessageWindowState(props.session.id).tailEvictedWhileFollowing)
+
     // "N new messages" counts rendered blocks, not raw messages: a subagent run
     // is dozens of sidechain messages but a single Task card, and a tool_use +
     // tool_result pair is one card.
-    const unseenCount = useUnseenBlockCount(props.viewMode, visibleBlocks)
+    const unseenCount = useUnseenBlockCount(
+        props.viewMode,
+        visibleBlocks,
+        effectiveTailEvictedWhileFollowing
+    )
 
     const outlineItems = useMemo(
         () => buildConversationOutline(reconciled.blocks),
@@ -2214,8 +2221,7 @@ function SessionChatInner(props: SessionChatProps) {
                         readThroughRevision={resolveRenderedReadThroughRevision({
                             terminalVisible,
                             viewMode: props.viewMode,
-                            tailEvictedWhileFollowing: props.tailEvictedWhileFollowing
-                                ?? Boolean(getMessageWindowState(props.session.id).tailEvictedWhileFollowing),
+                            tailEvictedWhileFollowing: effectiveTailEvictedWhileFollowing,
                             readThroughRevision: props.readThroughRevision
                         })}
                         isSyncingTail={props.isSyncingTail}

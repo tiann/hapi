@@ -1627,6 +1627,8 @@ describe('concise view history coverage', () => {
                 type: 'read',
                 readRevision: 903
             }))
+            expect(result.queryByRole('button', { name: /new message/i })).toBeNull()
+            expect(result.getByRole('button', { name: 'Scroll to bottom' })).toBeTruthy()
 
             // Once the user scrolls up into user-selected history, subsequent live replies must not be acknowledged.
             fireEvent.wheel(viewport, { deltaY: -120 })
