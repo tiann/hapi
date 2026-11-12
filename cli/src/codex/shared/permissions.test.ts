@@ -213,7 +213,17 @@ describe('shared request arbitration', () => {
 
     it('marks attachment approved when execution evidence arrives through observeExecution', () => {
         const f = fixture();
-        f.permissions.observeExecution('read_file', { path: '/workspace/executed.txt' });
+        f.permissions.observeExecution('read_file', { path: '/workspace/executed.txt', status: 'completed' });
         expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/executed.txt');
+    });
+
+    it('does not mark attachment approved when execution completed with failure or error', () => {
+        const f = fixture();
+        f.permissions.observeExecution('read_file', { path: '/workspace/failed.txt', status: 'failed' });
+        f.permissions.observeExecution('read_file', { path: '/workspace/errored.txt', is_error: true });
+        f.permissions.observeExecution('read_file', { path: '/workspace/cancelled.txt', status: 'cancelled' });
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/failed.txt');
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/errored.txt');
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/cancelled.txt');
     });
 });

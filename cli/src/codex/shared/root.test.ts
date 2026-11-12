@@ -84,6 +84,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady: sessionReady,
+        markAttachmentApproved: vi.fn(), markAttachmentDenied: vi.fn(),
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
@@ -183,6 +184,41 @@ describe('async question delivery', () => {
         await f.root.refresh();
         expect(f.state().requests![q.id]).toBeDefined();
         expect(f.state().completedRequests?.[q.id]).toBeUndefined();
+    });
+});
+
+describe('attachment execution reconciliation in SharedCodexRoot', () => {
+    it('observes execution only on successful item/completed on the owning thread', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const markAttachmentApproved = (f.session as any).markAttachmentApproved as ReturnType<typeof vi.fn>;
+
+        // Sibling thread completion -> ignored
+        f.native.notify('item/completed', {
+            threadId: 'sibling-thread',
+            turnId: 'turn',
+            item: { type: 'read_file', status: 'completed', path: '/workspace/sibling.txt' }
+        });
+        await f.drain();
+        expect(markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/sibling.txt');
+
+        // Failed completion on owning thread -> ignored
+        f.native.notify('item/completed', {
+            threadId: 'thread',
+            turnId: 'turn',
+            item: { type: 'read_file', status: 'failed', path: '/workspace/failed.txt' }
+        });
+        await f.drain();
+        expect(markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/failed.txt');
+
+        // Successful completion on owning thread -> approved!
+        f.native.notify('item/completed', {
+            threadId: 'thread',
+            turnId: 'turn',
+            item: { type: 'read_file', status: 'completed', path: '/workspace/success.txt' }
+        });
+        await f.drain();
+        expect(markAttachmentApproved).toHaveBeenCalledWith('/workspace/success.txt');
     });
 });
 

@@ -153,8 +153,12 @@ export class SharedCodexPermissions {
     }
 
     observeExecution(tool: string, item: unknown): void {
+        const recordItem = record(item);
+        const status = string(recordItem.status);
+        const isError = recordItem.is_error === true || recordItem.error !== undefined || status === 'failed' || status === 'cancelled';
+        if (isError) return;
+
         if (isDisplayOrReadFileTool(tool)) {
-            const recordItem = record(item);
             const targetPaths = extractTargetFilePaths(recordItem.arguments ?? recordItem.input ?? recordItem.toolParams ?? item);
             for (const targetPath of targetPaths) {
                 this.session.markAttachmentApproved?.(targetPath);
