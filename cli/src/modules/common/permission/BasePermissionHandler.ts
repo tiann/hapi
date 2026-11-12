@@ -110,6 +110,28 @@ export function resolveToolAutoApprovalDecision(
     return null;
 }
 
+function isDisplayToolName(tool?: string | null): boolean {
+    if (!tool) return false;
+    const lower = tool.toLowerCase();
+    return lower.includes('display_media') || lower.includes('display_image') || lower.includes('display_video');
+}
+
+function extractDisplayToolPath(input: unknown): string | null {
+    if (!input || typeof input !== 'object') return null;
+    const record = input as Record<string, unknown>;
+    if (typeof record.path === 'string') return record.path;
+    // Codex MCP approval arguments nest parameters under toolParams
+    if (record.toolParams && typeof record.toolParams === 'object') {
+        const nested = record.toolParams as Record<string, unknown>;
+        if (typeof nested.path === 'string') return nested.path;
+    }
+    if (record.arguments && typeof record.arguments === 'object') {
+        const nested = record.arguments as Record<string, unknown>;
+        if (typeof nested.path === 'string') return nested.path;
+    }
+    return null;
+}
+
 export type PermissionHandlerClient = {
     rpcHandlerManager: RpcHandlerManagerLike;
     updateAgentState: (handler: (state: AgentState) => AgentState) => void;
@@ -212,11 +234,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 || completion.decision === 'denied'
                 || completion.decision === 'abort'
             ) {
-                const tool = String(request.tool || '').toLowerCase();
-                if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
-                    const args = request.arguments;
-                    if (args && typeof args === 'object' && typeof (args as { path?: unknown }).path === 'string') {
-                        this.client.markAttachmentDenied?.((args as { path: string }).path);
+                if (isDisplayToolName(request.tool)) {
+                    const targetPath = extractDisplayToolPath(request.arguments);
+                    if (targetPath) {
+                        this.client.markAttachmentDenied?.(targetPath);
                     }
                 }
             }
@@ -249,11 +270,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
         for (const [id, pending] of this.pendingRequests.entries()) {
             if (filter && !filter(pending.toolName)) continue;
-            const tool = String(pending.toolName || '').toLowerCase();
-            if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
-                const args = pending.input;
-                if (args && typeof args === 'object' && typeof (args as { path?: unknown }).path === 'string') {
-                    this.client.markAttachmentDenied?.((args as { path: string }).path);
+            if (isDisplayToolName(pending.toolName)) {
+                const targetPath = extractDisplayToolPath(pending.input);
+                if (targetPath) {
+                    this.client.markAttachmentDenied?.(targetPath);
                 }
             }
             pending.reject(new Error(options.rejectMessage));
@@ -310,11 +330,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 || completion.decision === 'denied'
                 || completion.decision === 'abort'
             ) {
-                const tool = String(pending.toolName || '').toLowerCase();
-                if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
-                    const args = pending.input;
-                    if (args && typeof args === 'object' && typeof (args as { path?: unknown }).path === 'string') {
-                        this.client.markAttachmentDenied?.((args as { path: string }).path);
+                if (isDisplayToolName(pending.toolName)) {
+                    const targetPath = extractDisplayToolPath(pending.input);
+                    if (targetPath) {
+                        this.client.markAttachmentDenied?.(targetPath);
                     }
                 }
             }

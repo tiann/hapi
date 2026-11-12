@@ -173,6 +173,13 @@ export class LocalPermissionBridge {
         let decision: LocalPermissionDecision
         if (!response.approved) {
             decision = { behavior: 'deny', message: response.reason ?? 'The user declined this request.' }
+            const tool = String(pending.entry.tool || '').toLowerCase()
+            if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
+                const args = pending.entry.arguments
+                if (isObject(args) && typeof args.path === 'string') {
+                    this.client.markAttachmentDenied?.(args.path)
+                }
+            }
         } else if (pending.entry.tool === 'AskUserQuestion') {
             const questions = questionsSchema.parse(input.questions)
             const answers = response.answers ?? {}
@@ -224,6 +231,15 @@ export class LocalPermissionBridge {
         this.pending.delete(id)
         pending.detach()
         pending.resolve(null)
+        if (status === 'denied' || status === 'canceled') {
+            const tool = String(pending.entry.tool || '').toLowerCase()
+            if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
+                const args = pending.entry.arguments
+                if (isObject(args) && typeof args.path === 'string') {
+                    this.client.markAttachmentDenied?.(args.path)
+                }
+            }
+        }
         // Prefer actual native answers (including when the terminal won), not
         // the verdict we merely sent. Never parse comma-separated free text.
         let answers: Record<string, string[]> | undefined

@@ -1167,6 +1167,26 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterDeniedReq).toHaveLength(1) // denied.pdf was safely blocked
+
+                // Codex nested toolParams approval denial (appServerPermissionAdapter shape)
+                await writeFile(join(workspace, 'codex-denied.pdf'), 'codex denied file')
+                const codexReq = permHandler.triggerRequest('req-codex-1', 'mcp__hapi__display_media', {
+                    message: 'Allow MCP tool call?',
+                    toolParams: { path: './codex-denied.pdf' }
+                })
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: 'req-codex-1', approved: false, decision: 'denied', reason: 'Declined' })
+                })
+                await expect(codexReq).rejects.toThrow()
+
+                // Different spelling (bare name, relative, absolute) of the denied file are all blocked
+                client.sendAgentMessage({ type: 'message', message: '[codex](codex-denied.pdf) [abs](' + join(workspace, 'codex-denied.pdf') + ')' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterCodex = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterCodex).toHaveLength(1) // codex-denied.pdf blocked across spellings
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

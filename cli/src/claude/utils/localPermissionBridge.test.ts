@@ -128,6 +128,47 @@ describe('LocalPermissionBridge', () => {
         expect(await decision).toBeNull()
     })
 
+    it('records denied attachment path when display tool is declined via web or finished denied', async () => {
+        const deniedPaths: string[] = []
+        let state: AgentState = { controlledByUser: true }
+        let reply: (data: unknown) => unknown = () => { throw new Error('No handler') }
+        const client: PermissionHandlerClient = {
+            updateAgentState: update => { state = update(state) },
+            markAttachmentDenied: path => deniedPaths.push(path),
+            rpcHandlerManager: {
+                registerHandler: <TRequest, TResponse>(_method: string, handler: (data: TRequest) => TResponse | Promise<TResponse>) => {
+                    reply = data => handler(data as TRequest)
+                }
+            }
+        }
+        const bridge = new LocalPermissionBridge(client)
+        bridge.start('native-1')
+
+        // Case 1: Web declines display_media
+        const mediaHook: PermissionRequestHook = {
+            hook_event_name: 'PermissionRequest', session_id: 'native-1', prompt_id: 'prompt-1',
+            tool_name: 'mcp__hapi__display_media', tool_input: { path: '/workspace/chart.png' }
+        }
+        bridge.onHook({ ...mediaHook, hook_event_name: 'PreToolUse', tool_use_id: 'tool-display-1' })
+        const decision = bridge.request(mediaHook, new AbortController().signal)
+        const id = Object.keys(state.requests ?? {})[0]!
+        reply({ id, approved: false, reason: 'No chart needed' })
+        expect(await decision).toEqual({ behavior: 'deny', message: 'No chart needed' })
+        expect(deniedPaths).toContain('/workspace/chart.png')
+
+        // Case 2: Native finish resolves as canceled/error
+        const videoHook: PermissionRequestHook = {
+            hook_event_name: 'PermissionRequest', session_id: 'native-1', prompt_id: 'prompt-2',
+            tool_name: 'mcp__hapi__display_video', tool_input: { path: '/workspace/video.mp4' }
+        }
+        bridge.onHook({ ...videoHook, hook_event_name: 'PreToolUse', tool_use_id: 'tool-display-2' })
+        bridge.request(videoHook, new AbortController().signal)
+        bridge.onTranscript({ sessionId: 'native-1', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-display-2', is_error: true, content: 'User denied' }] } })
+        expect(deniedPaths).toContain('/workspace/video.mp4')
+
+        bridge.stop()
+    })
+
     it('does not intercept plan transitions or unsupported question shapes', async () => {
         const h = setup()
         const unsupported = [

@@ -1251,7 +1251,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     markAttachmentDenied(path: string): void {
-        this.attachmentCompatibility.markDenied(path)
+        this.attachmentCompatibility.markDenied(path, this.metadata?.path ?? undefined)
     }
 
     keepAlive(
