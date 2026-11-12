@@ -17,6 +17,7 @@ import {
     assertCreateProgressMode,
     assertNumericSleepUsesUntil,
     commandLooksLikeNumericSleep,
+    computeNumericSleepSeconds,
     type JobProgressMode,
     parseUntilTimestamp,
     stampUntilProgress
@@ -422,17 +423,18 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
     }
 
     if (result.action === 'run' || result.action === 'set') {
-        // Auto-infer until mode when running `sleep N` without explicit --progress or --until
+        // Auto-infer until mode when running `sleep N [M...]` without explicit --progress or --until
         if (
             result.action === 'run'
             && result.command
-            && commandLooksLikeNumericSleep(result.command)
             && result.progress === undefined
             && result.untilMs === undefined
         ) {
-            const sleepSec = Number(result.command[1]!.trim())
-            result.progress = 'until'
-            result.untilMs = Date.now() + sleepSec * 1000
+            const sleepSec = computeNumericSleepSeconds(result.command)
+            if (sleepSec !== null && sleepSec > 0) {
+                result.progress = 'until'
+                result.untilMs = Date.now() + sleepSec * 1000
+            }
         }
 
         assertCreateProgressMode(result.action, {

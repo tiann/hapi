@@ -68,11 +68,13 @@ export function attachmentLinks(text: string): string[] {
 export function assistantAttachmentText(body: unknown): string | null {
     if (!body || typeof body !== 'object') return null
     const value = body as Record<string, unknown>
-    if (value.streamSnapshot === true) return null
+    if (value.streamSnapshot === true || value.isSidechain === true) return null
     if (value.type === 'message' && typeof value.message === 'string') return value.message
     if (value.type === 'agy_message' && typeof value.content === 'string') return value.content
     if (value.type !== 'assistant' || !value.message || typeof value.message !== 'object') return null
-    const content = (value.message as Record<string, unknown>).content
+    const assistantMsg = value.message as Record<string, unknown>
+    if (assistantMsg.isSidechain === true) return null
+    const content = assistantMsg.content
     if (typeof content === 'string') return content
     if (!Array.isArray(content)) return null
     return content.filter(block => block?.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n')
@@ -84,12 +86,15 @@ export class AttachmentCompatibility {
     private seen = new Set<string>()
     private deniedPaths = new Set<string>()
 
-    markDenied(path: string): void {
+    markDenied(path: string, cwd?: string): void {
         this.deniedPaths.add(path)
+        if (cwd && !isAbsolute(path)) {
+            this.deniedPaths.add(resolve(cwd, path))
+        }
     }
 
-    isDenied(path: string): boolean {
-        return this.deniedPaths.has(path)
+    isDenied(path: string, canonicalPath?: string): boolean {
+        return this.deniedPaths.has(path) || (canonicalPath !== undefined && this.deniedPaths.has(canonicalPath))
     }
 
     enqueue(
@@ -122,7 +127,7 @@ export class AttachmentCompatibility {
             for (const path of paths) {
                 try {
                     const canonical = await realpath(resolve(root, path))
-                    if (this.deniedPaths.has(canonical) || this.deniedPaths.has(path)) continue
+                    if (this.isDenied(path, canonical)) continue
                     const local = relative(root, canonical)
                     if (!local || local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) continue
                     const info = await stat(canonical)

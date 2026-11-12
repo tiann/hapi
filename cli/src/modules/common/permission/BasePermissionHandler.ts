@@ -113,6 +113,7 @@ export function resolveToolAutoApprovalDecision(
 export type PermissionHandlerClient = {
     rpcHandlerManager: RpcHandlerManagerLike;
     updateAgentState: (handler: (state: AgentState) => AgentState) => void;
+    markAttachmentDenied?: (path: string) => void;
 };
 
 export type PendingPermissionRequest<TResult> = {
@@ -202,6 +203,24 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             const request = currentState.requests?.[id];
             if (!request) return currentState;
 
+            // When a display tool permission request is denied or canceled by the user,
+            // register the path with the attachment compatibility layer so subsequent
+            // assistant Markdown links cannot bypass the user's rejection.
+            if (
+                completion.status === 'denied'
+                || completion.status === 'canceled'
+                || completion.decision === 'denied'
+                || completion.decision === 'abort'
+            ) {
+                const tool = String(request.tool || '').toLowerCase();
+                if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
+                    const args = request.arguments;
+                    if (args && typeof args === 'object' && typeof (args as { path?: unknown }).path === 'string') {
+                        this.client.markAttachmentDenied?.((args as { path: string }).path);
+                    }
+                }
+            }
+
             const nextRequests = { ...currentState.requests };
             delete nextRequests[id];
 
@@ -230,6 +249,13 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
         for (const [id, pending] of this.pendingRequests.entries()) {
             if (filter && !filter(pending.toolName)) continue;
+            const tool = String(pending.toolName || '').toLowerCase();
+            if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
+                const args = pending.input;
+                if (args && typeof args === 'object' && typeof (args as { path?: unknown }).path === 'string') {
+                    this.client.markAttachmentDenied?.((args as { path: string }).path);
+                }
+            }
             pending.reject(new Error(options.rejectMessage));
             this.pendingRequests.delete(id);
         }
@@ -274,6 +300,25 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             this.pendingRequests.delete(response.id);
 
             const completion = await this.handlePermissionResponse(response, pending);
+
+            // When a display tool permission request is denied or canceled by the user,
+            // register the path with the attachment compatibility layer so subsequent
+            // assistant Markdown links cannot bypass the user's rejection.
+            if (
+                completion.status === 'denied'
+                || completion.status === 'canceled'
+                || completion.decision === 'denied'
+                || completion.decision === 'abort'
+            ) {
+                const tool = String(pending.toolName || '').toLowerCase();
+                if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
+                    const args = pending.input;
+                    if (args && typeof args === 'object' && typeof (args as { path?: unknown }).path === 'string') {
+                        this.client.markAttachmentDenied?.((args as { path: string }).path);
+                    }
+                }
+            }
+
             this.finalizeRequest(response.id, completion);
         });
     }

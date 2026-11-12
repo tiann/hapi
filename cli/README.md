@@ -46,6 +46,14 @@ the workspace and other formats still require the explicit display tools. Attach
 storage and retention are the same as for those tools. Native agent-specific artifact
 protocols and Markdown reference-style links are not inferred by this fallback.
 
+### Authorization and permissions
+
+Automatic attachment fallback respects session authorization boundaries:
+- In autonomous/auto-approved modes (`yolo`, `bypassPermissions`, `always-proceed`), workspace links are automatically rendered as attachments.
+- In restrictive modes (`default`, `read-only`, `plan`, `ask`), automatic file reads are withheld by default so they do not bypass user approval. Local files must be delivered via user-approved display tools (`display_media`, `display_image`).
+- Set `HAPI_AUTO_ATTACHMENT_LINKS=1` to explicitly opt into automatic workspace attachment reads regardless of permission mode.
+- Files previously denied by the user via permission approval are tracked and will never be delivered by the fallback.
+
 ## Commands
 
 ### Session commands

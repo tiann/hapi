@@ -34,7 +34,11 @@ vi.mock('socket.io-client', () => ({
             trigger: () => {},
             triggerConnect: () => {},
             triggerConnectError: () => {},
-            emitWithAckImpl: async () => ({})
+            emitWithAckImpl: async (event: string, payload?: any) => {
+                if (event === 'update-state') return { result: 'success', version: 1, agentState: payload?.agentState ?? {} }
+                if (event === 'update-metadata') return { result: 'success', version: 1, metadata: payload?.metadata ?? {} }
+                return {}
+            }
         }
         state.trigger = (event: string, ...args: any[]) => {
             for (const listener of state.listeners.get(event) ?? []) {
@@ -1052,6 +1056,9 @@ describe('ApiSessionClient durable status identity', () => {
 });
 
 
+import { BasePermissionHandler, type PermissionCompletion } from '@/modules/common/permission/BasePermissionHandler'
+import { RPC_METHODS } from '@hapi/protocol'
+
 describe('ApiSessionClient attachment links', () => {
     it('flushes link attachments from each assistant ingress in authorized permission modes', async () => {
         const workspace = await mkdtemp(join(tmpdir(), 'hapi-session-attachment-'))
@@ -1109,15 +1116,60 @@ describe('ApiSessionClient attachment links', () => {
             }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
             expect(mediaInYolo).toHaveLength(1)
 
-            // Explicitly denied file must not be delivered even in YOLO
-            await writeFile(join(workspace, 'denied.pdf'), 'denied')
-            client.markAttachmentDenied(join(workspace, 'denied.pdf'))
-            client.sendAgentMessage({ type: 'message', message: '[denied](denied.pdf)' })
+            // Subagent / sidechain transcripts are excluded from emitting top-level attachments
+            await writeFile(join(workspace, 'subnotes.txt'), 'subagent notes')
+            client.sendClaudeSessionMessage({
+                type: 'assistant',
+                uuid: 'subagent-msg',
+                isSidechain: true,
+                message: { role: 'assistant', content: [{ type: 'text', text: '[subnotes](subnotes.txt)' }] }
+            })
             expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
-            const mediaAfterDenial = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+            const mediaAfterSidechain = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
                 message: { content: { data: Record<string, unknown> } }
             }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
-            expect(mediaAfterDenial).toHaveLength(1) // still only report.pdf
+            expect(mediaAfterSidechain).toHaveLength(1) // subnotes.txt excluded
+
+            // Real permission boundary denial: when a display tool is rejected by the user,
+            // the denied path is recorded and subsequent links with fallback enabled never upload it.
+            class TestPermHandler extends BasePermissionHandler<{ id: string; approved: boolean; decision?: 'denied'; reason?: string }, any> {
+                constructor(c: any) { super(c) }
+                triggerRequest(id: string, tool: string, input: unknown) {
+                    return new Promise((resolve, reject) => {
+                        this.addPendingRequest(id, tool, input, { resolve, reject })
+                    })
+                }
+                protected async handlePermissionResponse(resp: any, pending: any) {
+                    if (!resp.approved) pending.reject(new Error('User denied'))
+                    else pending.resolve(true)
+                    return { status: resp.approved ? 'approved' : 'denied', decision: resp.decision } as PermissionCompletion
+                }
+                protected handleMissingPendingResponse() {}
+            }
+
+            const permHandler = new TestPermHandler(client)
+            await writeFile(join(workspace, 'denied.pdf'), 'denied file')
+            const pendingReq = permHandler.triggerRequest('req-display-1', 'mcp__hapi__display_media', { path: join(workspace, 'denied.pdf') })
+
+            // Simulate user clicking "Deny" in UI via RPC
+            await client.rpcHandlerManager.handleRequest({
+                method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                params: JSON.stringify({ id: 'req-display-1', approved: false, decision: 'denied', reason: 'User denied display' })
+            })
+            await expect(pendingReq).rejects.toThrow()
+
+            // Even with explicit opt-in (HAPI_AUTO_ATTACHMENT_LINKS=1), the denied file must NOT be delivered
+            process.env.HAPI_AUTO_ATTACHMENT_LINKS = '1'
+            try {
+                client.sendAgentMessage({ type: 'message', message: '[denied](denied.pdf)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterDeniedReq = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterDeniedReq).toHaveLength(1) // denied.pdf was safely blocked
+            } finally {
+                delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
+            }
         } finally {
             client.close()
             await rm(workspace, { recursive: true, force: true })

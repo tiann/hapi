@@ -192,6 +192,21 @@ describe('parseJobArgs', () => {
         expect(parsed.total).toBe(60)
         expect(parsed.unit).toBe('s')
         expect(parsed.untilMs).toBeDefined()
+
+        // Multi-argument sleep: sleep 5 60 -> 65s
+        const multiParsed = parseJobArgs([
+            'run',
+            'sid',
+            'wait',
+            '--label=wait',
+            '--',
+            'sleep',
+            '5',
+            '60'
+        ])
+        expect(multiParsed.progress).toBe('until')
+        expect(multiParsed.remaining).toBe(65)
+        expect(multiParsed.total).toBe(65)
     })
 
     it('rejects --started-at on update', () => {

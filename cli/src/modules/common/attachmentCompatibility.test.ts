@@ -11,10 +11,13 @@ it('recognizes common delivery links', () => {
 it('ignores external links, citations, and code', () => {
     expect(attachmentLinks('[web](https://example.org/a.pdf) [source](a.md:12) [bad](javascript:a.pdf) [unc](//host/a.pdf) `[inline](a.pdf)`\n```md\n[example](a.pdf)\n```')).toEqual([])
 })
-it('only extracts settled assistant prose', () => {
+it('only extracts settled assistant prose and excludes sidechain output', () => {
     expect(assistantAttachmentText({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }, { type: 'thinking', text: 'secret' }] } })).toBe('hello')
     expect(assistantAttachmentText({ type: 'message', message: 'hello' })).toBe('hello')
     expect(assistantAttachmentText({ type: 'agy_message', content: 'hello' })).toBe('hello')
+    // Exclude subagent / sidechain transcripts
+    expect(assistantAttachmentText({ type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'sidechain notes' }] } })).toBeNull()
+    expect(assistantAttachmentText({ type: 'assistant', message: { isSidechain: true, content: [{ type: 'text', text: 'sidechain notes' }] } })).toBeNull()
     for (const type of ['user', 'reasoning', 'tool-call-result', 'generated-image']) expect(assistantAttachmentText({ type, message: 'hello' })).toBeNull()
     expect(assistantAttachmentText({ type: 'message', message: 'partial', streamSnapshot: true })).toBeNull()
 })

@@ -157,9 +157,17 @@ export function commandLooksLikeNumericSleep(command: string[]): boolean {
     if (command.length < 2) return false
     const bin = basename(command[0]!)
     if (bin !== 'sleep') return false
-    const arg = command[1]!.trim()
-    if (!/^\d+$/.test(arg)) return false
-    return Number(arg) > 0
+    const args = command.slice(1)
+    return args.length > 0 && args.every((arg) => /^\d+$/.test(arg.trim()) && Number(arg) > 0)
+}
+
+/**
+ * Compute the total seconds for a numeric sleep command.
+ * Supports multi-argument forms like `sleep 5 60` (65 seconds on GNU sleep).
+ */
+export function computeNumericSleepSeconds(command: string[]): number | null {
+    if (!commandLooksLikeNumericSleep(command)) return null
+    return command.slice(1).reduce((sum, arg) => sum + Number(arg.trim()), 0)
 }
 
 export function assertNumericSleepUsesUntil(

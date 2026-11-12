@@ -4,6 +4,7 @@ import {
     assertCreateProgressMode,
     assertNumericSleepUsesUntil,
     commandLooksLikeNumericSleep,
+    computeNumericSleepSeconds,
     parseUntilTimestamp,
     stampUntilProgress
 } from './jobProgressMode'
@@ -12,10 +13,19 @@ describe('commandLooksLikeNumericSleep', () => {
     it('detects sleep N and rejects infinity / bare sleep', () => {
         expect(commandLooksLikeNumericSleep(['sleep', '150747'])).toBe(true)
         expect(commandLooksLikeNumericSleep(['/bin/sleep', '60'])).toBe(true)
+        expect(commandLooksLikeNumericSleep(['sleep', '5', '60'])).toBe(true)
         expect(commandLooksLikeNumericSleep(['sleep', '999999'])).toBe(true)
         expect(commandLooksLikeNumericSleep(['sleep', 'infinity'])).toBe(false)
         expect(commandLooksLikeNumericSleep(['sleep'])).toBe(false)
         expect(commandLooksLikeNumericSleep(['./beets-import.sh'])).toBe(false)
+    })
+
+    it('computes total seconds across multiple numeric sleep arguments', () => {
+        expect(computeNumericSleepSeconds(['sleep', '60'])).toBe(60)
+        expect(computeNumericSleepSeconds(['sleep', '5', '60'])).toBe(65)
+        expect(computeNumericSleepSeconds(['sleep', '1', '2', '3'])).toBe(6)
+        expect(computeNumericSleepSeconds(['sleep', 'infinity'])).toBeNull()
+        expect(computeNumericSleepSeconds(['sleep'])).toBeNull()
     })
 })
 
