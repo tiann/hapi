@@ -100,6 +100,27 @@ describe('Claude context details', () => {
         })
     })
 
+    it('persists the effective context callback after an earlier base limit', () => {
+        const updates: Array<(metadata: Metadata) => Metadata> = []
+        const client = {
+            updateMetadata: (handler: (metadata: Metadata) => Metadata) => updates.push(handler)
+        }
+
+        publishContextDetails(client, buildClaudeContextDetails({
+            contextUsage: { model: 'claude-opus', total_tokens: 26_000, raw_max_tokens: 262_144 }
+        })!)
+        publishContextDetails(client, buildClaudeContextDetails({
+            contextUsage: { model: 'claude-opus', context_window: 1_000_000 }
+        })!)
+
+        let metadata = {} as Metadata
+        for (const update of updates) metadata = update(metadata)
+        expect(metadata.contextDetails).toMatchObject({
+            model: 'claude-opus',
+            contextWindow: 1_000_000,
+            usage: { contextTokens: 26_000 }
+        })
+    })
     it('prefers the effective result context limit over the base context-usage limit', () => {
         const details = buildClaudeContextDetails({
             updatedAt: 100,
