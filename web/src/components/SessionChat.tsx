@@ -59,6 +59,7 @@ import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
 import { assignThreadMessageIds, findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
+import { resolveAssistantForkPointsForCanonicalBlocks } from '@/lib/assistant-fork-points'
 import {
     getRestoredComposerSendIntent,
     resolveMessageDeliveryMode,
@@ -1721,6 +1722,20 @@ function SessionChatInner(props: SessionChatProps) {
             isRunning: props.session.thinking }
     )
 
+    const assistantForkPoints = useMemo(
+        // Resolve against the canonical thread: concise filtering hides
+        // compact-summary/system/CLI boundaries and would bridge an
+        // assistant fork point across them.
+        () => resolveAssistantForkPointsForCanonicalBlocks(reconciled.blocks, {
+            hasMoreMessages: props.hasMoreMessages,
+            previousGroups: visibleGroupsRef.current,
+            previousGroupingMode: visibleGroupsModeRef.current,
+            groupingMode: toolGroupingMode,
+            codexExplorationCollapsed
+        }, props.session.metadata?.conversationHistoryPoints),
+        [reconciled.blocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed,
+            props.session.metadata?.conversationHistoryPoints]
+    )
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId
     }, [latestCompletedBoundaryId])
@@ -2193,6 +2208,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
+                        assistantForkPoints={assistantForkPoints}
                         onViewModeChange={props.onViewModeChange}
                         onJumpToTail={props.onJumpToTail}
                         readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
