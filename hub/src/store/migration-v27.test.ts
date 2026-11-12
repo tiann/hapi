@@ -46,7 +46,7 @@ describe('schema migration v26 through v32', () => {
         const index = indexStatement.get()
         indexStatement.finalize()
         expect(index).not.toBeNull()
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
         migrated.close()
     })
 })
