@@ -692,28 +692,59 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (session.queue.size() > 0) {
                     if (this.emittedWakeupThrough) {
                         const stepsSoFar = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
-                        const slice = convertAgyParkedWakeupSlice(
+                        const firstSystemIdx = stepsSoFar.findIndex(
+                            (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
+                        );
+                        const reactiveSoFar = firstSystemIdx >= 0 ? stepsSoFar.slice(firstSystemIdx) : stepsSoFar;
+                        // Forward the completed result (and any other finished steps already on disk)
+                        // before yielding to the queued user message, so the original pending card
+                        // receives its output and replay deduplication matches what HAPI actually showed.
+                        const delta = convertAgyReactiveSteps(
                             acpSessionId,
-                            stepsSoFar,
-                            this.emittedWakeupThrough,
-                            [],
+                            reactiveSoFar,
+                            this.backgroundCommands,
                             this.emittedWakeupThrough
                         );
-                        const completedEmitted = {
-                            callId: slice.parkedCallId,
-                            toolName: this.emittedWakeupThrough.toolName,
-                            decodedArgs: this.emittedWakeupThrough.decodedArgs,
-                            backgrounded: this.backgroundCommands.some((entry) => entry.callId === slice.parkedCallId)
-                        };
+                        for (const msg of delta.messages) {
+                            this.forwardAgentMessage(this.showQuestionCard(msg));
+                        }
+
+                        const fullProbeBg: AgyOpenBackgroundCommand[] = [];
+                        const fullEmitted = convertAgyReactiveSteps(acpSessionId, reactiveSoFar, fullProbeBg, null);
+                        const fullBgIds = new Set([
+                            ...this.backgroundCommands.map((entry) => entry.callId),
+                            ...fullProbeBg.map((entry) => entry.callId)
+                        ]);
+                        const preEmittedTexts = new Map<string, number>();
+                        const remainingPrefixCalls: AgyPreEmittedWakeupCall[] = [];
+                        for (const msg of fullEmitted.messages) {
+                            if (msg.type === 'text') {
+                                const trimmed = msg.text.trim();
+                                if (trimmed) {
+                                    preEmittedTexts.set(trimmed, (preEmittedTexts.get(trimmed) ?? 0) + 1);
+                                }
+                            } else if (msg.type === 'tool_call') {
+                                remainingPrefixCalls.push({
+                                    callId: msg.id,
+                                    toolName: msg.nativeName ?? msg.name,
+                                    decodedArgs: msg.nativeArgs && typeof msg.nativeArgs === 'object' && !Array.isArray(msg.nativeArgs)
+                                        ? (msg.nativeArgs as Record<string, unknown>)
+                                        : {},
+                                    backgrounded: fullBgIds.has(msg.id)
+                                });
+                            }
+                        }
+
+                        const parkedCallId = `agy-wakeup-${acpSessionId}-${this.emittedWakeupThrough.stepIndex}-${this.emittedWakeupThrough.callIndex}`;
                         this.pendingParkedResolution = {
-                            parkedCallId: slice.parkedCallId,
+                            parkedCallId,
                             toolName: this.emittedWakeupThrough.toolName,
                             decodedArgs: this.emittedWakeupThrough.decodedArgs,
                             aliasedLiveId: null,
                             decisionConsumed: true,
                             decision: 'denied',
-                            preEmittedTexts: slice.preEmittedTexts,
-                            remainingPrefixCalls: [...slice.preEmittedCalls, completedEmitted],
+                            preEmittedTexts,
+                            remainingPrefixCalls,
                             suppressedPrefixLiveIds: new Set()
                         };
                         this.emittedWakeupThrough = null;

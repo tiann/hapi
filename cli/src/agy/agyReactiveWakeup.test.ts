@@ -4375,4 +4375,138 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('preserves and delivers the completed tool result when a user message preempts after native completion before final planner response', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Armed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Armed.' }
+            ]);
+        });
+
+        // User's interrupting prompt replays the finished read_file before answering the user's message
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Checking file...' });
+            onUpdate({
+                type: 'tool_call',
+                id: 'replayed-read-1',
+                name: 'read_file',
+                title: 'read_file',
+                status: 'completed',
+                input: { Path: `${session.path}/notes.txt` },
+                nativeName: 'read_file',
+                nativeArgs: { Path: `${session.path}/notes.txt` }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'replayed-read-1',
+                status: 'completed',
+                output: 'NOTES_BODY_OK'
+            });
+            onUpdate({ type: 'text', text: 'Handled user interruption with notes context.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 30,
+            reactiveSlowToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Slow in-workspace read_file heuristically parks first
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const notesPath = `${session.path}/notes.txt`;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Checking file...',
+                    tool_calls: [{ name: 'read_file', args: { Path: JSON.stringify(notesPath) } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticReadId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeDefined();
+        });
+
+        // Native read_file completes in transcript.jsonl (retiring the approval), and BEFORE any final
+        // PLANNER_RESPONSE is written, the user queues a chat message!
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 4,
+                source: 'MODEL',
+                type: 'READ_FILE',
+                status: 'DONE',
+                content: 'NOTES_BODY_OK'
+            })}\n`,
+            'utf8'
+        );
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeUndefined();
+        });
+
+        queue.push('actually summarize that for me', { permissionMode: 'request-review' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const msgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        // Original card exists once AND receives its completed result without duplicate replayed cards!
+        expect(msgs.filter((m) => (m as { type?: string }).type === 'tool-call')).toEqual([
+            expect.objectContaining({
+                type: 'tool-call',
+                callId: syntheticReadId
+            })
+        ]);
+        expect(msgs.filter((m) => (m as { type?: string }).type === 'tool-call-result')).toEqual([
+            expect.objectContaining({
+                type: 'tool-call-result',
+                callId: syntheticReadId,
+                is_error: false,
+                output: 'NOTES_BODY_OK'
+            })
+        ]);
+        const texts = msgs
+            .filter((m) => (m as { type?: string }).type === 'message')
+            .map((m) => (m as { message?: string }).message);
+        expect(texts).toEqual([
+            'Checking file...',
+            'Handled user interruption with notes context.'
+        ]);
+
+        queue.close();
+        await runPromise;
+    });
 });
