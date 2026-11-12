@@ -18,6 +18,18 @@ export interface ListSkillsRequest {
     flavor?: string;
 }
 
+/** Session-scoped skill lookup context. `berryDataDir` is the data dir the
+ * spawned berry child actually runs on (its BERRY_AGENT_DATA_DIR): berry's
+ * own user-skills layer is `<dataDir>/skills`, so when the session's
+ * isolated dir is known it takes precedence over the interactive profile
+ * fallback — the listing then mirrors exactly what that session's agent
+ * discovers (the isolated dir is seeded from the interactive one on first
+ * creation, so a fresh session starts with the same skills). */
+export interface SkillLookupOptions {
+    flavor?: string;
+    berryDataDir?: string;
+}
+
 export interface ListSkillsResponse {
     success: boolean;
     skills?: SkillSummary[];
@@ -66,7 +78,7 @@ function getAgentConfigDir(flavor?: string): string {
     }
 }
 
-function getUserSkillsRoots(flavor?: string): string[] {
+function getUserSkillsRoots(flavor?: string, options: Pick<SkillLookupOptions, 'berryDataDir'> = {}): string[] {
     const home = getHomeDirectory();
     const roots = [join(home, '.agents', 'skills')];
     switch (normalizeFlavor(flavor)) {
@@ -88,10 +100,19 @@ function getUserSkillsRoots(flavor?: string): string[] {
             break;
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
-        case 'berry':
-            // Mirrors Berry's user skills layer: <data dir>/skills.
-            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+        case 'berry': {
+            // Mirrors Berry's user skills layer: <dataDir>/skills. The
+            // session's isolated data dir (what the spawned child's
+            // BERRY_AGENT_DATA_DIR points at) wins over the interactive
+            // profile: this process's own env never carries the child's
+            // override, and the isolated dir — seeded from the interactive
+            // one on first creation — is the only tree that session's
+            // agent actually discovers. The env fallback stays correct for
+            // a machine-wide BERRY_AGENT_DATA_DIR an operator pinned.
+            const dataDir = options.berryDataDir ?? getAgentConfigDir(flavor);
+            roots.push(join(dataDir, 'skills'));
             break;
+        }
     }
     return roots;
 }
@@ -306,10 +327,10 @@ async function listPluginCacheSkillsRoots(flavor?: string): Promise<string[]> {
         .map((installPath) => join(installPath, 'skills'));
 }
 
-async function discoverSkills(workingDirectory?: string, options: { flavor?: string } = {}): Promise<DiscoveredSkill[]> {
+async function discoverSkills(workingDirectory?: string, options: SkillLookupOptions = {}): Promise<DiscoveredSkill[]> {
     const flavor = normalizeFlavor(options.flavor);
     const projectRoots = await listProjectSkillsRoots(workingDirectory, flavor);
-    const userRoots = getUserSkillsRoots(flavor);
+    const userRoots = getUserSkillsRoots(flavor, options);
     const pluginRoots = await listPluginCacheSkillsRoots(flavor);
     const adminRoot = getAdminSkillsRoot();
     const includeAdminRoots = flavor === 'codex';
@@ -342,7 +363,7 @@ async function discoverSkills(workingDirectory?: string, options: { flavor?: str
     return [...dedupedSkills.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function listSkills(workingDirectory?: string, options: { flavor?: string } = {}): Promise<SkillSummary[]> {
+export async function listSkills(workingDirectory?: string, options: SkillLookupOptions = {}): Promise<SkillSummary[]> {
     const skills = await discoverSkills(workingDirectory, options);
     return skills.map(({ name, description }) => ({ name, description }));
 }
@@ -366,7 +387,7 @@ function validateSkillName(name: string): string {
 export async function resolveSkill(
     name: string,
     workingDirectory?: string,
-    options: { flavor?: string } = {}
+    options: SkillLookupOptions = {}
 ): Promise<ResolvedSkill | null> {
     const skillName = validateSkillName(name);
     const skills = await discoverSkills(workingDirectory, options);
