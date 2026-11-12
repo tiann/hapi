@@ -9,6 +9,8 @@ import type {
     CodexDesktopStatusResponse,
     CodexArchiveSessionResponse,
     DecryptedMessage,
+    ForkBoundary,
+    ForkPreviewResponse,
     CodexCollaborationMode,
     CopilotAgentMode,
     FileSearchResponse,
@@ -763,22 +765,36 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false, boundary?: ForkBoundary): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify({
+                    ...(latestCompleted ? { latestCompleted: true } : {}),
+                    ...(messageLocalId ? { messageLocalId } : {}),
+                    ...(boundary ? { boundary } : {})
+                })
             }
         )
     }
 
-    async rewindConversation(sessionId: string, messageLocalId: string): Promise<{ success: true }> {
+    async forkPreview(sessionId: string, intent: 'current' | 'message' | 'rewind', messageLocalId?: string): Promise<ForkPreviewResponse> {
+        return await this.request<ForkPreviewResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/fork-preview`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ intent, ...(messageLocalId ? { messageLocalId } : {}) })
+            }
+        )
+    }
+
+    async rewindConversation(sessionId: string, messageLocalId: string, boundary?: ForkBoundary): Promise<{ success: true }> {
         return await this.request<{ success: true }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
             {
                 method: 'POST',
-                body: JSON.stringify({ messageLocalId })
+                body: JSON.stringify({ messageLocalId, ...(boundary ? { boundary } : {}) })
             }
         )
     }

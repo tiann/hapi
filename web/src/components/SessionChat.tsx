@@ -135,6 +135,8 @@ import { queryKeys } from '@/lib/query-keys'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
+import { useForkFlow } from '@/hooks/useForkFlow'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
@@ -741,20 +743,21 @@ function SessionChatInner(props: SessionChatProps) {
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
-
-    const onForkConversation = useCallback(async (messageLocalId?: string) => {
-        setHistoryActionPending(true)
-        try {
-            const result = await props.api.forkConversation(props.session.id, messageLocalId)
-            await navigate({
+    const forkFlow = useForkFlow({
+        session: props.session,
+        api: props.api,
+        onForked: (childSessionId) => {
+            void navigate({
                 to: '/sessions/$sessionId',
-                params: { sessionId: result.sessionId },
+                params: { sessionId: childSessionId },
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
-        } finally {
-            setHistoryActionPending(false)
         }
-    }, [navigate, props.api, props.session.id])
+    })
+
+    const onForkConversation = useCallback(async (messageLocalId?: string) => {
+        forkFlow.openFork(messageLocalId)
+    }, [forkFlow])
 
     const onRewindConversation = useCallback(async (messageLocalId: string) => {
         setHistoryActionPending(true)
@@ -2159,6 +2162,29 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                {forkFlow.preview ? (
+                    <ForkPreviewDialog
+                        isOpen
+                        view={forkFlow.preview.view}
+                        prefixMayHaveMore={props.hasMoreMessages || forkFlow.preview.view.prefixTruncated}
+                        stale={forkFlow.stale}
+                        onCancel={forkFlow.closePreview}
+                        onConfirm={forkFlow.confirmPreview}
+                    />
+                ) : null}
+                {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent !== 'rewind' ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={forkFlow.closePreview}
+                        title={t('message.fork.confirmTitle')}
+                        description={t('message.fork.confirmDescription')}
+                        confirmLabel={t('message.fork')}
+                        confirmingLabel={t('message.fork.confirming')}
+                        isPending={forkFlow.loading}
+                        centerTitle
+                        onConfirm={forkFlow.confirmLegacy}
+                    />
+                ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
