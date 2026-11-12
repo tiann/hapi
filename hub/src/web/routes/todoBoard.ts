@@ -732,6 +732,23 @@ function repoHasNoIssueTemplateDir(response: GhIssueTemplateDirResponse): boolea
 // distinguishes them). Fail closed: if visibility can't be determined,
 // treat it as ineligible rather than risk inheriting from a repo GitHub
 // itself wouldn't use as a fallback.
+//
+// Known residual gap (review finding, third pass): this treats ANY
+// INTERNAL repo as eligible, but GitHub's inheritance behavior for an
+// internal `.github` repo is specifically an EMU-org policy, not a
+// general Enterprise-Cloud one — an ordinary Enterprise org's internal
+// `.github` repo could be used as a fallback here even though GitHub's
+// own UI might not honor it. No API field distinguishes EMU from
+// ordinary Enterprise (checked GraphQL Organization/Enterprise types
+// and REST /orgs/{org}; that detail sits behind enterprise-admin scopes
+// a repo token won't have). The one observable signal — EMU user logins
+// carry an enterprise shortcode suffix with an underscore, otherwise
+// invalid in GitHub usernames — is a *user* property, not an org one;
+// using it means enumerating org members and pattern-matching logins,
+// well beyond what this token should be doing for a heuristic. Accepted
+// as a documented limitation: the residual risk is a cosmetic
+// template/policy mismatch, not a data-loss or leak concern like the
+// private-repo case above.
 function isEligibleIssueTemplateFallback(response: GhIssueTemplateDirResponse): boolean {
     const visibility = response.data?.repository?.visibility
     return visibility === 'PUBLIC' || visibility === 'INTERNAL'
