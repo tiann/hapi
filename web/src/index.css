@@ -639,9 +639,40 @@ html:has(.chat-scroll-y) #root {
 }
 
 /*
- * Keep message layout fully realized while scrolling. `content-visibility: auto`
- * made Chromium replace rough intrinsic heights as older messages entered view,
- * which could change scrollTop and bounce the chat away from the user's target.
+ * Long threads mount every windowed row at once, but only a viewport's worth
+ * is ever visible. `content-visibility: auto` lets the browser skip layout,
+ * style and paint for off-screen rows, which is what freezes the tab when a
+ * large session opens.
+ *
+ * Scroll-safety history: a previous attempt (#311) was reverted in #567
+ * because Chromium replaced the rough intrinsic estimate as never-rendered
+ * rows entered view, changing scrollHeight mid-scroll and bouncing the chat
+ * away from the user's target. Two things make the retry safe:
+ *
+ *   1. `contain-intrinsic-size: auto 120px` keeps the *remembered* rendered
+ *      height of each row once it has been laid out, so re-entering a
+ *      previously rendered row no longer changes its height. Only the very
+ *      first render of a row can shift (estimate -> real height).
+ *   2. Those first-render shifts must be compensated, so native scroll
+ *      anchoring stays enabled (the `overflow-anchor: none` rule below only
+ *      applies where content-visibility is unsupported, where layout is fully
+ *      realized and nothing shifts lazily).
+ *
+ * The app's own scroll restore reads post-layout geometry and is unaffected
+ * either way.
+ */
+@supports (content-visibility: auto) and (contain-intrinsic-size: auto 120px) {
+    .happy-thread-messages > * {
+        content-visibility: auto;
+        contain-intrinsic-size: auto 120px;
+        overflow-anchor: auto;
+    }
+}
+
+/*
+ * Fallback for engines without content-visibility: layout is fully realized,
+ * so keep the manual scroll-restore system free of native anchoring side
+ * effects (#567).
  */
 .happy-thread-messages > * {
     overflow-anchor: none;

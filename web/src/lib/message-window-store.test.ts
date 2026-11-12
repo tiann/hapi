@@ -385,31 +385,39 @@ it('fetches one older context page before first paint when the cold page is tool
         ])
     })
 
-    it('releases a tool-only cold page when the context page exceeds the wait budget', async () => {
-        vi.useFakeTimers()
-        try {
-            const id = sessionId('cold-tool-only-timeout')
-            const tools = makeToolMessages(INITIAL_PAGE_SIZE, 10)
-            const getMessages = vi.fn()
-                .mockResolvedValueOnce(latestResponse(tools, {
-                    epoch: 1,
-                    hasMore: true,
-                    nextBeforeAt: 10_000,
-                    nextBeforeSeq: 10
-                }))
-                .mockReturnValueOnce(new Promise(() => {}))
+    it('awaits a slow context page instead of discarding it at a fixed budget', async () => {
+        const id = sessionId('cold-tool-only-slow-context')
+        const tools = makeToolMessages(INITIAL_PAGE_SIZE, 10)
+        const context = makeAgentMessage({ id: 'context', seq: 9, at: 9_000 })
+        const older = deferred<MessagesResponse>()
+        const getMessages = vi.fn()
+            .mockResolvedValueOnce(latestResponse(tools, {
+                epoch: 1,
+                hasMore: true,
+                nextBeforeAt: 10_000,
+                nextBeforeSeq: 10
+            }))
+            .mockReturnValueOnce(older.promise)
 
-            const syncing = syncTailMessages(createApi(getMessages), id)
-            await vi.advanceTimersByTimeAsync(500)
-            await syncing
+        const syncing = syncTailMessages(createApi(getMessages), id)
+        await vi.waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2))
+        // No fixed wait budget: the sync stays pending and the window stays
+        // empty until the context page settles, however long it takes.
+        expect(getMessageWindowState(id)).toMatchObject({ isSyncingTail: true, messages: [] })
 
-            const state = getMessageWindowState(id)
-            expect(state.isSyncingTail).toBe(false)
-            expect(state.messages).toHaveLength(INITIAL_PAGE_SIZE)
-        } finally {
-            vi.useRealTimers()
-        }
+        older.resolve(beforeResponse([context], {
+            epoch: 1,
+            hasMore: true,
+            nextBeforeAt: 9_000,
+            nextBeforeSeq: 9
+        }))
+        await syncing
+
+        const state = getMessageWindowState(id)
+        expect(state.isSyncingTail).toBe(false)
+        expect(state.messages.map((message) => message.id)[0]).toBe('context')
     })
+
 
     it('ignores queued prompts when classifying a tool-only cold page', async () => {
         const id = sessionId('cold-tool-only-queued')

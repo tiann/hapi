@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
@@ -10,7 +11,9 @@ import { MessageActions } from '@/components/AssistantChat/messages/MessageActio
 import { useTranslation } from '@/lib/use-translation'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
-export function HappyUserMessage() {
+// See AssistantMessage.tsx: prop-less row rendered per message id; memo()
+// keeps unrelated thread re-renders from walking every user row.
+export const HappyUserMessage = memo(function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
@@ -197,4 +200,4 @@ export function HappyUserMessage() {
             />
         </MessagePrimitive.Root>
     )
-}
+})

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
@@ -22,7 +23,11 @@ const MESSAGE_PART_COMPONENTS = {
     tools: TOOL_COMPONENTS
 } as const
 
-export function HappyAssistantMessage() {
+// Message rows are rendered with no props (assistant-ui resolves data via
+// context), so memo() makes each row bail out when the surrounding thread
+// re-renders for unrelated reasons (scroll state, dialogs, polling). Data
+// updates still flow through the useAuiState subscriptions below.
+export const HappyAssistantMessage = memo(function HappyAssistantMessage() {
     const ctx = useHappyChatContext()
     const showSessionSummaryInChat = useSessionSummaryInChat()
     const messageId = useAuiState((s) => s.message.id)
@@ -113,4 +118,4 @@ export function HappyAssistantMessage() {
             />
         </MessagePrimitive.Root>
     )
-}
+})
