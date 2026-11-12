@@ -29,7 +29,7 @@ import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
-import type { OlderLoadOutcome } from '@/lib/message-window-store'
+import { OLDER_LOAD_WINDOW_SIZE, PAGE_SIZE, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -157,6 +157,10 @@ const HISTORY_PRELOAD_MARGIN_PX = 200
 const COVERAGE_FAILURE_RETRY_DELAY_MS = 1000
 const MAX_COVERAGE_LOAD_RETRIES = 3
 const MAX_CONCISE_COVERAGE_PAGES = 10
+// Prepending a full older page trims the window to OLDER_LOAD_WINDOW_SIZE from
+// the newest end. Stop automatic concise coverage before a prepend would evict
+// an already-visible reply at the session tail.
+const CONCISE_TAIL_PRESERVE_RAW_LIMIT = OLDER_LOAD_WINDOW_SIZE - PAGE_SIZE
 // Show feedback early, but require a deliberate pull before release loads.
 const TOP_PULL_FEEDBACK_PX = 16
 const TOP_PULL_TRIGGER_PX = 64
@@ -840,6 +844,8 @@ export function HappyThread(props: {
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
     const renderedMessagesCount = props.visibleBlocksCount ?? props.normalizedMessagesCount
     const conciseViewActive = props.conciseViewActive === true
+    const rawMessagesCountRef = useRef(props.rawMessagesCount)
+    rawMessagesCountRef.current = props.rawMessagesCount
     const renderedMessagesCountRef = useRef(renderedMessagesCount)
     renderedMessagesCountRef.current = renderedMessagesCount
     const normalizedMessagesCountRef = useRef(props.normalizedMessagesCount)
@@ -1039,9 +1045,11 @@ export function HappyThread(props: {
         const wasConcise = prevConciseViewActiveRef.current
         prevConciseViewActiveRef.current = conciseViewActive
         if (conciseViewActive && !wasConcise) {
-            initialConciseCoverageDoneRef.current = false
+            const wouldEvictVisibleTail = renderedMessagesCountRef.current > 0
+                && rawMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+            initialConciseCoverageDoneRef.current = wouldEvictVisibleTail
             conciseCoveragePagesRef.current = 0
-            if (historyLoaderRef.current.autoPaused) {
+            if (historyLoaderRef.current.autoPaused && !wouldEvictVisibleTail) {
                 historyLoaderRef.current = {
                     ...historyLoaderRef.current,
                     autoPaused: false
@@ -2096,7 +2104,13 @@ export function HappyThread(props: {
         if (
             conciseViewActiveRef.current
             && !initialConciseCoverageDoneRef.current
-            && renderedMessagesCountRef.current <= 1
+            && (
+                renderedMessagesCountRef.current === 0
+                || (
+                    renderedMessagesCountRef.current <= 1
+                    && rawMessagesCountRef.current <= CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                )
+            )
         ) {
             return true
         }
@@ -2305,6 +2319,16 @@ export function HappyThread(props: {
         let state = historyLoaderRef.current
         if (source === 'coverage') {
             if (state.autoPaused) {
+                return Promise.resolve('terminal-stop')
+            }
+            if (
+                conciseViewActiveRef.current
+                && atBottomRef.current
+                && renderedMessagesCountRef.current > 0
+                && rawMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+            ) {
+                initialConciseCoverageDoneRef.current = true
+                historyLoaderRef.current = { ...state, autoPaused: true }
                 return Promise.resolve('terminal-stop')
             }
             if (isCoverageBlockedByInitialSettling() || !needsViewportCoverage()) {
@@ -2518,8 +2542,11 @@ export function HappyThread(props: {
                 const addedRenderable = pending.addedRenderableCount !== null
                     ? pending.addedRenderableCount > 0
                     : normalizedMessagesCountRef.current > pending.normalizedMessagesCount
+                const wouldEvictVisibleTail = renderedMessagesCountRef.current > 0
+                    && rawMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
                 const canContinueConcisePaging = hasMoreMessagesRef.current
                     && addedRenderable
+                    && !wouldEvictVisibleTail
                     && conciseCoveragePagesRef.current < MAX_CONCISE_COVERAGE_PAGES
                 const stillNeedsInitialConciseCoverage = !initialConciseCoverageDoneRef.current
                     && needsViewportCoverage()

@@ -71,7 +71,7 @@ export const HISTORY_WINDOW_SIZE = 600
 export const INITIAL_PAGE_SIZE = 20
 const AGENT_RUN_WINDOW_SIZE = 800
 export const OLDER_LOAD_WINDOW_SIZE = 800
-const PAGE_SIZE = 200
+export const PAGE_SIZE = 200
 const CACHED_REENTRY_PAGE_SIZE = 20
 // ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
 const INITIAL_CONTEXT_WAIT_MS = 500

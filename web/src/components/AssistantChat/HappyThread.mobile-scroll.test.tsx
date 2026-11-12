@@ -1209,4 +1209,104 @@ describe('concise view history coverage', () => {
 
         expect(onLoadMore).toHaveBeenCalledTimes(2)
     })
+
+    it('stops automatic concise paging before prepend eviction drops a visible tail reply', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }),
+            getMachines: vi.fn().mockResolvedValue({ machines: [] })
+        } as unknown as ApiClient
+
+        const state = {
+            sessionId: 'concise-eviction-session',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 20,
+            normalizedMessagesCount: 20,
+            visibleBlocksCount: 1,
+            conciseViewActive: true,
+            messagesVersion: 1,
+            historyVersion: 0
+        }
+
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderEvictionThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId={state.sessionId}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={state.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        const result = render(renderEvictionThread())
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        // Pages 1..3 take rawMessagesCount 20 -> 220 -> 420 -> 620 while the
+        // 900 intermediate messages remain hidden (visibleBlocksCount stays 1).
+        for (let page = 1; page <= 3; page += 1) {
+            state.rawMessagesCount = 20 + page * 200
+            state.normalizedMessagesCount = state.rawMessagesCount
+            state.historyVersion = page
+            searchTargetTestState.extras = { messagesVersion: 1, historyVersion: page }
+            act(() => {
+                result.rerender(renderEvictionThread())
+            })
+            act(() => {
+                vi.advanceTimersByTime(16)
+            })
+            await act(async () => {
+                await Promise.resolve()
+            })
+        }
+
+        // At 620 raw messages, a 4th 200-message page would cross the 800-row
+        // prepend window cap and evict the newest 20 rows (the final reply).
+        // Automatic concise coverage must stop at 3 pages.
+        expect(state.rawMessagesCount).toBe(620)
+        expect(state.visibleBlocksCount).toBe(1)
+        expect(onLoadMore).toHaveBeenCalledTimes(3)
+    })
 })

@@ -725,3 +725,29 @@ test('concise view automatically pages past tool-only tail and older pages when 
         window.__probe.requests.filter((r) => r.direction === 'before').length
     )).toBe(2)
 })
+
+test('concise view preserves the latest reply when more than 800 hidden tool messages precede it', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=900&conciseFinalReply=1')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    // The latest 20 messages contain 19 hidden tool calls and the final reply
+    // (`Fixture final reply 1200`). Automatic coverage loads 3 older pages
+    // (taking the window to 620 rows) and stops before a 4th 200-row page
+    // would cross the 800-row prepend cap and evict the final reply.
+    await expect(page.getByText('Fixture final reply 1200', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => ({
+        beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+        messageCount: window.__probe.windowState().messageCount
+    }))).toEqual({
+        beforeReqs: 3,
+        messageCount: 620
+    })
+
+    // Ensure no 4th request is fired after settling.
+    await page.waitForTimeout(500)
+    await expect(page.getByText('Fixture final reply 1200', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() =>
+        window.__probe.requests.filter((r) => r.direction === 'before').length
+    )).toBe(3)
+})

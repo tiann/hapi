@@ -119,6 +119,7 @@ const slowBefore = fixtureParams.has('slowBefore')
 const cachedReentry = fixtureParams.has('cachedReentry')
 const holdLatest = fixtureParams.has('holdLatest')
 const initialConcise = fixtureParams.has('concise')
+const conciseFinalReply = fixtureParams.has('conciseFinalReply')
 const conciseToolTailCount = Number(fixtureParams.get('conciseToolTail') ?? (initialConcise ? '220' : '0'))
 if (holdLatest) {
     latestResponseGate = new Promise<void>((resolve) => {
@@ -130,7 +131,11 @@ let beforeAttempts = 0
 const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
-    const isConciseHiddenWork = conciseToolTailCount > 0 && seq > TOTAL_MESSAGES - conciseToolTailCount
+    const isFinalReply = conciseFinalReply && seq === TOTAL_MESSAGES
+    const hiddenTailEnd = conciseFinalReply ? TOTAL_MESSAGES - 1 : TOTAL_MESSAGES
+    const isConciseHiddenWork = conciseToolTailCount > 0
+        && seq > hiddenTailEnd - conciseToolTailCount
+        && seq <= hiddenTailEnd
     return {
         id: `m-${seq}`,
         seq,
@@ -142,6 +147,17 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
                     type: 'codex',
                     data: { type: 'generated-image', imageId: `img-${seq}`, fileName: `image-${seq}.svg`, mimeType: 'image/svg+xml' },
                 },
+            }
+            : isFinalReply
+            ? {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'message',
+                        message: `Fixture final reply ${seq}`
+                    }
+                }
             }
             : isConciseHiddenWork
             ? {
