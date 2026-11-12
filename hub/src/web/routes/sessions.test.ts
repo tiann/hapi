@@ -70,6 +70,7 @@ function createApp(session: Session, opts?: {
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
+    forkPreview?: SyncEngine['forkPreview']
     clearConversation?: SyncEngine['clearConversation']
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
@@ -192,6 +193,16 @@ function createApp(session: Session, opts?: {
             commands: []
         })),
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
+        forkPreview: opts?.forkPreview ?? (async () => ({
+            type: 'success' as const,
+            preview: {
+                mode: 'current' as const,
+                boundary: { v: 1 as const, mode: 'current' as const, epoch: 3, tailSeq: 7 },
+                keptTail: [],
+                excluded: [],
+                counts: { kept: 0, excluded: 0 }
+            }
+        })),
         clearConversation: opts?.clearConversation,
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
@@ -1876,6 +1887,90 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({ sessionId: 'forked-child' })
         expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', messageLocalId: undefined }])
+    })
+
+    it('answers fork previews via POST /sessions/:id/fork-preview', async () => {
+        const calls: Array<{ sessionId: string; namespace: string; intent: string; messageLocalId?: string }> = []
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex',
+                capabilities: { conversationHistory: { forkCurrent: true } }
+            }
+        })
+        const preview = {
+            mode: 'current' as const,
+            boundary: { v: 1 as const, mode: 'current' as const, epoch: 3, tailSeq: 7 },
+            keptTail: [{ id: 'm1', seq: 7, localId: 'u2', content: {}, createdAt: 1, invokedAt: 1 }],
+            excluded: [],
+            counts: { kept: 1, excluded: 0 }
+        }
+        const { app } = createApp(session, {
+            forkPreview: async (sessionId, namespace, intent, messageLocalId) => {
+                calls.push({ sessionId, namespace, intent, messageLocalId })
+                return { type: 'success', preview }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'current' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(preview)
+        expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', intent: 'current', messageLocalId: undefined }])
+    })
+
+    it('returns 409 with the guard message when the preview is refused', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: {} }
+        })
+        const { app } = createApp(session, {
+            forkPreview: async () => ({ type: 'error', message: 'Session is busy' })
+        })
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'current' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Session is busy' })
+    })
+
+    it('rejects fork previews with an invalid body', async () => {
+        const { app } = createApp(createSession())
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'message' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('passes the confirm boundary to the engine and returns boundary_moved as a coded 409', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true } } }
+        })
+        const boundary = { v: 1, mode: 'current', epoch: 3, tailSeq: 7 }
+        const { app } = createApp(session, {
+            forkConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'New conversation rows appeared since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ boundary })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'New conversation rows appeared since the preview',
+            code: 'boundary_moved'
+        })
+        expect(calls[0]?.[4]).toEqual(boundary)
     })
 
     it('rewinds via POST /sessions/:id/rewind', async () => {

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ForkBoundarySchema } from './forkBoundary'
 import {
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
@@ -660,7 +661,9 @@ export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
-    latestCompleted: z.boolean().optional()
+    latestCompleted: z.boolean().optional(),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 }).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
@@ -682,7 +685,9 @@ export type ImplementCodexPlanResult = { ok: true } | {
 }
 
 export const RewindConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1)
+    messageLocalId: z.string().min(1),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 })
 
 export type RewindConversationRequest = z.infer<typeof RewindConversationRequestSchema>
@@ -721,6 +726,7 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+    | 'boundary_moved'
 
 export type RewindConversationRpcResult = {
     success: true
