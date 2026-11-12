@@ -151,6 +151,44 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         const update = client.updateAgentState.mock.calls[0]![0] as (state: object) => { requests: Record<string, unknown> }
         expect(update({}).requests['perm-1']).toBeDefined()
     })
+
+    it('records denied attachment path when an ACP read with absent rawInput is denied via RPC', async () => {
+        let onRequest: ((request: PermissionRequest) => void) | null = null
+        let rpcHandler: ((data: any) => Promise<any>) | null = null
+        const markAttachmentDenied = vi.fn()
+        const backend = {
+            onPermissionRequest: vi.fn((h) => { onRequest = h }),
+            respondToPermission: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {})
+        }
+        const client = {
+            updateAgentState: vi.fn(),
+            markAttachmentDenied,
+            rpcHandlerManager: { registerHandler: vi.fn((_method, h) => { rpcHandler = h }) }
+        }
+        new AcpPermissionHandler(
+            client as unknown as ApiSessionClient,
+            backend as unknown as AgentBackend,
+            () => 'default'
+        )
+
+        onRequest!({
+            id: 'perm-acp-read-1',
+            sessionId: 'acp-1',
+            toolCallId: 'call_read_1',
+            title: 'Read: private.txt',
+            kind: 'read',
+            rawInput: null,
+            options: [
+                { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        })
+
+        // Simulate RPC denial
+        await rpcHandler!({ id: 'perm-acp-read-1', approved: false, decision: 'denied' })
+        expect(markAttachmentDenied).toHaveBeenCalledWith('private.txt')
+    })
 })
 
 describe('AcpPermissionHandler questions for the user', () => {
