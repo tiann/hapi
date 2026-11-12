@@ -20,6 +20,7 @@ describe('StatusBar pending requests', () => {
         })
         fireEvent.click(screen.getByRole('button', { name: 'Awaiting your answer' }))
         expect(onClick).toHaveBeenCalledExactlyOnceWith('question')
+        expect(screen.getByText('Awaiting your answer')).toHaveClass('text-[var(--app-badge-warning-text)]')
     })
 
     it('labels Cursor questions as awaiting an answer', () => {

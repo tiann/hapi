@@ -89,8 +89,8 @@ function getConnectionStatus(
     if (pendingText) {
         return {
             text: pendingText,
-            color: 'text-[#FF9500]',
-            dotColor: 'bg-[#FF9500]',
+            color: 'text-[var(--app-badge-warning-text)]',
+            dotColor: 'bg-[var(--app-badge-warning-text)]',
             isPulsing: true,
             hasPendingRequests: true
         }
