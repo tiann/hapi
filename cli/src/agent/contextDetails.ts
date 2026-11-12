@@ -102,6 +102,9 @@ function buildClaudeSkills(value: unknown): ClaudeContextDetails['skills'] {
     return skills
 }
 
+export function sameClaudeModelID(left: string, right: string): boolean {
+    return left.replace(/\[1m\]$/, '') === right.replace(/\[1m\]$/, '')
+}
 function buildClaudeMcpTools(value: unknown): ClaudeContextDetails['mcpTools'] {
     if (!Array.isArray(value)) return undefined
     const tools = value.flatMap((item) => {

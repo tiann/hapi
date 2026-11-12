@@ -4,10 +4,15 @@ import {
     buildClaudeContextDetails,
     buildCodexContextDetails,
     mergeContextDetails,
-    publishContextDetails
+    publishContextDetails,
+    sameClaudeModelID
 } from './contextDetails'
 
 describe('Claude context details', () => {
+    it('matches bare and 1M-suffixed Claude model IDs', () => {
+        expect(sameClaudeModelID('claude-opus[1m]', 'claude-opus')).toBe(true)
+        expect(sameClaudeModelID('claude-opus', 'claude-sonnet')).toBe(false)
+    })
     it('keeps detailed SDK init lists when no /context payload is available', () => {
         const details = buildClaudeContextDetails({
             updatedAt: 100,

@@ -23,7 +23,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
-import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
+import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID } from '@/agent/contextDetails';
 
 interface PermissionsField {
     date: number;
