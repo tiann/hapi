@@ -887,3 +887,41 @@ it('reports batch dequeues using original members only after the native submissi
     expect(queue.state('original-B')).toBe('unknown');
     expect(consumed).not.toHaveBeenCalled();
 });
+
+it('rolls back to the applied version when consecutive appends are rejected, before a member cancel', async () => {
+    const { queue, native, calls, overrides } = await fixture();
+    await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
+    await queue.enqueue('original-B', text('MARKER-B'), false, 'same-mode');
+    expect(native).toHaveLength(1);
+
+    // Two consecutive appends, each definitely rejected by the native side.
+    overrides.set('thread/queue/update', () => { throw new Error('definite update rejection'); });
+    await expect(queue.enqueue('original-C', text('MARKER-C'), false, 'same-mode')).rejects.toThrow('definite update rejection');
+    await expect(queue.enqueue('original-D', text('MARKER-D'), false, 'same-mode')).rejects.toThrow('definite update rejection');
+    overrides.delete('thread/queue/update');
+
+    // The rollback must land on the applied [A,B] version, not a rejected proposal.
+    expect(await queue.cancel('original-B')).toBe(true);
+    const update = calls.filter(call => call.method === 'thread/queue/update').at(-1);
+    expect(update?.params.input).toEqual(text('MARKER-A'));
+    expect(native[0].input).toEqual(text('MARKER-A'));
+    expect(queue.state('original-B')).toBe('canceled');
+    expect(queue.state('original-C')).toBe('rejected');
+    expect(queue.state('original-D')).toBe('rejected');
+});
+
+it('restores the applied baseline when consecutive native edits are rejected', async () => {
+    const { queue, native, calls, overrides } = await fixture();
+    await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
+    await queue.enqueue('original-B', text('MARKER-B'), false, 'same-mode');
+
+    overrides.set('thread/queue/update', () => { throw new Error('definite edit rejection'); });
+    await expect(queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: native[0].id, input: text('EDITED-1') })).rejects.toThrow('definite edit rejection');
+    await expect(queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: native[0].id, input: text('EDITED-2') })).rejects.toThrow('definite edit rejection');
+    overrides.delete('thread/queue/update');
+
+    expect(await queue.cancel('original-B')).toBe(true);
+    const update = calls.filter(call => call.method === 'thread/queue/update').at(-1);
+    expect(update?.params.input).toEqual(text('MARKER-A'));
+    expect(native[0].input).toEqual(text('MARKER-A'));
+});

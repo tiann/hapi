@@ -434,6 +434,7 @@ export class SharedCodexQueue {
         const batch = nativeId ? Object.values(this.batches).find(candidate => candidate.nativeId === nativeId) : undefined;
         if (!batch) return await this.client.request('thread/queue/update', values);
         // Persist the edit proposal before the RPC so an event arriving first can prove replacement.
+        const previousCurrent = batch.current;
         const applied = this.currentVersion(batch);
         const first = applied?.members.find(member => {
             const entry = this.entries[member.id];
@@ -464,7 +465,7 @@ export class SharedCodexQueue {
             return response;
         } catch (error) {
             if (indeterminate(error)) { proposal.status = 'eligible'; batch.state = 'unknown'; }
-            else { proposal.status = 'superseded'; batch.current = batch.versions.length - 2; }
+            else { proposal.status = 'superseded'; batch.current = previousCurrent; }
             await this.save();
             throw error;
         }
@@ -534,6 +535,7 @@ export class SharedCodexQueue {
     private async extendBatch(batch: Batch, version: Version, entry: Entry, id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {
         entry.batchId = batch.clientId;
         const proposal = this.version([...version.input, ...input], [...version.members, { id, input }]);
+        const previousCurrent = batch.current;
         batch.versions.push(proposal); batch.current = batch.versions.length - 1;
         await this.save();
         try {
@@ -557,7 +559,7 @@ export class SharedCodexQueue {
                 return;
             }
             if (indeterminate(error)) { entry.state = 'unknown'; batch.state = 'unknown'; this.uncertain([id]); }
-            else { entry.state = 'rejected'; proposal.status = 'superseded'; batch.current = batch.versions.length - 2; }
+            else { entry.state = 'rejected'; proposal.status = 'superseded'; batch.current = previousCurrent; }
             await this.save();
             throw error;
         }
@@ -638,6 +640,7 @@ export class SharedCodexQueue {
             } catch { if (this.state(id) === 'consumed') return 'consumed'; this.uncertain([id]); return 'indeterminate'; }
         }
         // Keep the surviving members; the removed member is withdrawn after success.
+        const previousCurrent = batch.current;
         const proposal = this.version(this.memberInput(survivors), survivors,
             [...(version.removed ?? []), { id, input: member.input, intent: 'cancel' }]);
         batch.versions.push(proposal); batch.current = batch.versions.length - 1;
@@ -655,7 +658,7 @@ export class SharedCodexQueue {
                 batch.state = 'unknown'; this.uncertain([id]); return 'indeterminate';
             }
             // Definite rejection: the proposal was not applied, so do not ACK it.
-            proposal.status = 'superseded'; batch.current = batch.versions.length - 2;
+            proposal.status = 'superseded'; batch.current = previousCurrent;
             entry.state = 'queued'; await this.save();
             this.uncertain([id]); return 'indeterminate';
         }
@@ -714,6 +717,7 @@ export class SharedCodexQueue {
         const input = member.input;
         const survivors = version.members.filter(candidate => candidate.id !== id);
         let proposal: Version | undefined;
+        const previousCurrent = batch.current;
         if (survivors.length === 0) {
             entry.state = 'unknown'; batch.state = 'unknown'; await this.save();
             try {
@@ -736,7 +740,7 @@ export class SharedCodexQueue {
                 if (indeterminate(error) || queuedSubmissionNotFound(error)) {
                     batch.state = 'unknown'; this.uncertain([id]); return { steered: false, indeterminate: true };
                 }
-                proposal.status = 'superseded'; batch.current = batch.versions.length - 2;
+                proposal.status = 'superseded'; batch.current = previousCurrent;
                 entry.state = 'queued'; await this.save();
                 return { steered: false, error: error instanceof Error ? error.message : String(error) };
             }
