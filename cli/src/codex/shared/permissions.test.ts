@@ -222,8 +222,14 @@ describe('shared request arbitration', () => {
         f.permissions.observeExecution('read_file', { path: '/workspace/failed.txt', status: 'failed' });
         f.permissions.observeExecution('read_file', { path: '/workspace/errored.txt', is_error: true });
         f.permissions.observeExecution('read_file', { path: '/workspace/cancelled.txt', status: 'cancelled' });
+        f.permissions.observeExecution('read_file', { path: '/workspace/mcp-err.txt', status: 'completed', result: { Err: 'permission denied' } });
+        f.permissions.observeExecution('read_file', { path: '/workspace/mcp-iserror.txt', status: 'completed', result: { isError: true } });
+        f.permissions.observeExecution('read_file', { path: '/workspace/mcp-ok-iserror.txt', status: 'completed', result: { Ok: { isError: true } } });
         expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/failed.txt');
         expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/errored.txt');
         expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/cancelled.txt');
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/mcp-err.txt');
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/mcp-iserror.txt');
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/mcp-ok-iserror.txt');
     });
 });

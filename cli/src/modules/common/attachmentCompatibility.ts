@@ -3,7 +3,7 @@ import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
-import { detectDisplayMediaMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage } from './generatedImages'
+import { detectDisplayMediaMimeType, detectImageMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage } from './generatedImages'
 
 /**
  * Determine if a permission mode permits autonomous/auto-approved execution.
@@ -172,9 +172,10 @@ export class AttachmentCompatibility {
         const authorized = options?.isAuthorized ?? isAttachmentFallbackAuthorized(options?.permissionMode)
         if (!authorized) return
 
+        const MAX_INLINE_WEB_IMAGE_BYTES = 10 * 1024 * 1024
+        const SUPPORTED_INLINE_IMAGE_EXTS = /\.(?:png|jpe?g|gif|webp|svg|bmp|ico|apng|avif|tiff?)$/i
         this.queue = this.queue.then(async () => {
             const root = await realpath(cwd)
-            const MAX_INLINE_WEB_IMAGE_BYTES = 10 * 1024 * 1024
             for (const item of paths) {
                 const path = item.path
                 try {
@@ -190,7 +191,7 @@ export class AttachmentCompatibility {
                     if (this.seen.has(digest)) continue
                     const media = registerGeneratedImage({ id: randomUUID(), path: canonical, bytes, mimeType: detectDisplayMediaMimeType(bytes) })
                     // ChatMarkdownImage rejects sandbox:, file:, parent-relative ('..'),
-                    // and files exceeding 10 MiB through resolveMarkdownFileImage / normalizeLocalPath.
+                    // non-image files, and files exceeding 10 MiB through resolveMarkdownFileImage / normalizeLocalPath.
                     // Evaluate the decoded target to catch percent-encoded parent traversals (%2e%2e).
                     let decodedTarget = item.rawTarget.trim()
                     try {
@@ -198,8 +199,14 @@ export class AttachmentCompatibility {
                     } catch {}
                     decodedTarget = decodedTarget.replaceAll('\\', '/')
 
+                    const isSupportedInlineImage =
+                        SUPPORTED_INLINE_IMAGE_EXTS.test(canonical)
+                        || SUPPORTED_INLINE_IMAGE_EXTS.test(decodedTarget)
+                        || Boolean(detectImageMimeType(bytes))
+
                     const suppressWebCard =
                         item.isMarkdownImage
+                        && isSupportedInlineImage
                         && !item.rawTarget.startsWith('sandbox:')
                         && !item.rawTarget.startsWith('file:')
                         && !decodedTarget.startsWith('sandbox:')

@@ -155,7 +155,19 @@ export class SharedCodexPermissions {
     observeExecution(tool: string, item: unknown): void {
         const recordItem = record(item);
         const status = string(recordItem.status);
-        const isError = recordItem.is_error === true || recordItem.error !== undefined || status === 'failed' || status === 'cancelled';
+        const rawResult = recordItem.result ?? recordItem.output;
+        const resultRecord = record(rawResult);
+        const hasResultError =
+            'Err' in resultRecord
+            || resultRecord.isError === true
+            || resultRecord.is_error === true
+            || (record(resultRecord.Ok).isError === true || record(resultRecord.Ok).is_error === true);
+        const isError =
+            recordItem.is_error === true
+            || recordItem.error !== undefined
+            || status === 'failed'
+            || status === 'cancelled'
+            || hasResultError;
         if (isError) return;
 
         if (isDisplayOrReadFileTool(tool)) {

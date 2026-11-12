@@ -150,6 +150,17 @@ it('preserves authorization boundaries: withholds reads in restrictive modes and
             fileName: 'inline.png',
             source: expect.objectContaining({ ingress: 'attachment-fallback', isMarkdownImage: true, suppressWebCard: true })
         })
+
+        // Non-image target marked with Markdown image syntax (![doc](doc.pdf)) retains the card
+        await writeFile(join(workspace, 'non-image.pdf'), 'pdf content not an image')
+        compat.enqueue({ type: 'message', message: '![doc](./non-image.pdf)' }, workspace, message => messages.push(message), { permissionMode: 'yolo' })
+        await compat.flush()
+        expect(messages).toHaveLength(7)
+        expect(messages[6]).toMatchObject({
+            type: 'generated-image',
+            fileName: 'non-image.pdf',
+            source: expect.objectContaining({ ingress: 'attachment-fallback', isMarkdownImage: true, suppressWebCard: false })
+        })
     } finally {
         await rm(root, { recursive: true, force: true })
     }
