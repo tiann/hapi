@@ -110,7 +110,13 @@ describe('Claude context details', () => {
             contextUsage: { model: 'claude-opus', total_tokens: 26_000, raw_max_tokens: 262_144 }
         })!)
         publishContextDetails(client, buildClaudeContextDetails({
-            contextUsage: { model: 'claude-opus', context_window: 1_000_000 }
+            contextUsage: { model: 'claude-opus', context_window: 1_000_000 },
+            effectiveContextWindow: 1_000_000
+        })!)
+        publishContextDetails(client, buildClaudeContextDetails({
+            result: { modelUsage: { 'claude-opus': { contextWindow: 262_144 } } },
+            model: 'claude-opus',
+            effectiveContextWindow: 1_000_000
         })!)
 
         let metadata = {} as Metadata

@@ -276,6 +276,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         let planModeToolCalls = new Set<string>();
         let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();
         let lastSystemModel = session.getModel();
+        let effectiveContextModel: string | undefined;
+        let effectiveContextWindow: number | undefined;
+        const effectiveLimitFor = (model: string | null | undefined): number | undefined => {
+            if (effectiveContextWindow === undefined) return undefined;
+            if (!effectiveContextModel || !model) return effectiveContextWindow;
+            return effectiveContextModel.replace(/\\[1m\\]$/, '') === model.replace(/\\[1m\\]$/, '')
+                ? effectiveContextWindow
+                : undefined;
+        };
 
         function onMessage(message: SDKMessage) {
             const rawPayload = message as unknown as Record<string, unknown>;
@@ -310,10 +319,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 } else if (message.type === 'result') {
                     const resultMessage = message as SDKResultMessage;
                     if (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage)) {
+                        const resultModel = resultMessage.model ?? lastSystemModel;
                         const details = buildClaudeContextDetails({
                             result: resultMessage,
                             messageUsage: resultMessage.usage,
-                            model: resultMessage.model ?? lastSystemModel
+                            model: resultModel,
+                            effectiveContextWindow: effectiveLimitFor(resultModel)
                         });
                         if (details) {
                             publishContextDetails(session.client, details, { preserveUsageSnapshot: true });
@@ -680,11 +691,16 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onMessage,
                         onContextUsage: (usage) => {
                             sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens);
+                            if (usage.maxTokens !== undefined && usage.maxTokens > 0) {
+                                effectiveContextModel = usage.model;
+                                effectiveContextWindow = usage.maxTokens;
+                            }
                             const details = buildClaudeContextDetails({
                                 contextUsage: {
                                     model: usage.model,
                                     context_window: usage.maxTokens
-                                }
+                                },
+                                effectiveContextWindow: usage.maxTokens
                             });
                             if (details) publishContextDetails(session.client, details);
                         },
