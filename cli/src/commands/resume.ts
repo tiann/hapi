@@ -29,7 +29,7 @@ function formatSessionLine(session: ResumableSession, index: number): string {
     return `${index + 1}. ${session.flavor.padEnd(8)} ${state.padEnd(8)} ${name}  ${session.directory}`
 }
 
-async function selectSession(sessions: ResumableSession[]): Promise<string> {
+export async function selectResumableSession(sessions: ResumableSession[]): Promise<string> {
     return await new Promise<string>((resolve, reject) => {
         let settled = false
         const complete = (callback: () => void) => {
@@ -240,7 +240,53 @@ async function resolveSessionId(api: ApiClient, machineId: string, args: string[
         throw new Error('Run: hapi resume <session-id>')
     }
 
-    return await selectSession(sessions)
+    return await selectResumableSession(sessions)
+}
+
+/**
+ * Checks and control handoff shared by `hapi resume` and `hapi claude --resume`
+ * before the local launcher reopens `target.sessionId`. Rejects targets that
+ * cannot be reopened here; hands an active remote session over to this
+ * terminal so only one process ever drives the conversation.
+ */
+export async function prepareLocalResume(api: ApiClient, target: LocalResumeTarget, machineId: string): Promise<void> {
+    assertTargetMachine(target, machineId)
+    assertDirectoryExists(target)
+
+    // Gemini CLI is no longer launchable (Google sunset the consumer
+    // Gemini CLI on 2026-06-18). Reject BEFORE the handoff below so an
+    // active Gemini session is left running/readable rather than being
+    // stopped by handoffSessionToLocal and then failing locally.
+    if (target.flavor === 'gemini') {
+        throw new Error('Gemini CLI is no longer supported and cannot be resumed (Google sunset the consumer Gemini CLI on 2026-06-18). The session history remains viewable in the web UI.')
+    }
+
+    // Shared Codex sessions support concurrent clients; no ownership handoff.
+    if (target.flavor === 'codex') {
+        return
+    }
+
+    if (target.active && target.controlledByUser) {
+        throw new Error(`Session is already controlled by a local terminal (/sessions/${target.sessionId})`)
+    }
+
+    // AGY is remote-only with per-turn spawns: an in-flight turn cannot
+    // be handed off (the whole-session abort would discard the prompt
+    // without the interrupt handler's consume+restore recovery). Reject
+    // while ACTIVE, not just thinking: keepalive-delivered thinking is a
+    // volatile snapshot, and a turn can start (or its update be missed)
+    // between the fetch above and the handoff request below.
+    if (target.flavor === 'agy' && target.active) {
+        throw new Error('Antigravity is active. Stop it before resuming.')
+    }
+
+    if (target.active) {
+        await api.handoffSessionToLocal(target.sessionId)
+    } else {
+        // An inactive row may carry a hub archive that existing-session
+        // bootstrap refuses; the hub clears it for this intentional revive.
+        await api.prepareSessionForLocalResume(target.sessionId)
+    }
 }
 
 export const resumeCommand: CommandDefinition = {
@@ -255,40 +301,7 @@ export const resumeCommand: CommandDefinition = {
             const sessionId = await resolveSessionId(api, machineId, commandArgs)
             const target = await api.getLocalResumeTarget(sessionId)
 
-            assertTargetMachine(target, machineId)
-            assertDirectoryExists(target)
-
-            // Gemini CLI is no longer launchable (Google sunset the consumer
-            // Gemini CLI on 2026-06-18). Reject BEFORE the handoff below so an
-            // active Gemini session is left running/readable rather than being
-            // stopped by handoffSessionToLocal and then failing locally.
-            if (target.flavor === 'gemini') {
-                throw new Error('Gemini CLI is no longer supported and cannot be resumed (Google sunset the consumer Gemini CLI on 2026-06-18). The session history remains viewable in the web UI.')
-            }
-
-            if (target.flavor === 'codex') {
-                await dispatchLocalResume(target)
-                return
-            }
-
-            if (target.active && target.controlledByUser) {
-                throw new Error('Session is already controlled by a local terminal')
-            }
-
-            // AGY is remote-only with per-turn spawns: an in-flight turn cannot
-            // be handed off (the whole-session abort would discard the prompt
-            // without the interrupt handler's consume+restore recovery). Reject
-            // while ACTIVE, not just thinking: keepalive-delivered thinking is a
-            // volatile snapshot, and a turn can start (or its update be missed)
-            // between the fetch above and the handoff request below.
-            if (target.flavor === 'agy' && target.active) {
-                throw new Error('Antigravity is active. Stop it before resuming.')
-            }
-
-            if (target.active) {
-                await api.handoffSessionToLocal(target.sessionId)
-            }
-
+            await prepareLocalResume(api, target, machineId)
             await dispatchLocalResume(target)
         } catch (error) {
             console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

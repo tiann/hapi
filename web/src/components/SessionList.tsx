@@ -366,8 +366,10 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
         result.push(winner)
         // Hub skips merge when two rows stay active — keep job-bearing losers so the
         // outliving meter is not hidden behind a jobless duplicate winner.
+        // A second live Claude row is a real process the hub will not merge;
+        // hiding it would leave no way to reach (or stop) it.
         for (const duplicate of group.slice(1)) {
-            if (hasRunningAttachedJob(duplicate)) {
+            if (hasRunningAttachedJob(duplicate) || (duplicate.active && duplicate.metadata?.flavor === 'claude')) {
                 result.push(duplicate)
             }
         }
