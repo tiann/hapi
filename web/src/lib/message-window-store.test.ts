@@ -3459,4 +3459,77 @@ describe('gap recovery', () => {
         expect(replaced.oldestSeq).toBe(901)
         expect(replaced.warning).toBeNull()
     })
+
+    it('advances readThroughRevision on live SSE replies after automatic tail eviction until user selects history', async () => {
+        const id = sessionId('automatic-tail-eviction-read-revision')
+        const all = Array.from({ length: 820 }, (_, i) => {
+            const seq = i + 1
+            return {
+                ...makeUserMessage({ id: `m-${seq}`, seq, invokedAt: seq * 10, createdAt: seq * 10 }),
+                contentRevision: seq
+            }
+        })
+        const initialTail = all.slice(-20)
+        const olderPages = [
+            all.slice(600, 800),
+            all.slice(400, 600),
+            all.slice(200, 400),
+            all.slice(0, 200)
+        ]
+        let beforeIndex = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.beforeAt !== undefined) {
+                const page = olderPages[beforeIndex] ?? []
+                beforeIndex += 1
+                const oldest = page[0]
+                return beforeResponse(page, {
+                    epoch: 1,
+                    hasMore: beforeIndex < olderPages.length,
+                    nextBeforeAt: oldest ? (oldest.invokedAt ?? oldest.createdAt) : null,
+                    nextBeforeSeq: oldest?.seq ?? null
+                })
+            }
+            return latestResponse(initialTail, {
+                epoch: 1,
+                hasMore: true,
+                nextBeforeAt: 8_010,
+                nextBeforeSeq: 801
+            })
+        })
+
+        await syncTailMessages(api, id)
+        expect(getMessageWindowState(id).readThroughRevision).toBe(820)
+
+        for (let i = 0; i < 4; i += 1) {
+            await fetchOlderMessages(api, id)
+        }
+
+        const evicted = getMessageWindowState(id)
+        expect(evicted.requiresLatestReset).toBe(true)
+        expect(evicted.viewMode).toBe('history')
+        expect(evicted.tailEvictedWhileFollowing).toBe(true)
+        expect(evicted.readThroughRevision).toBe(820)
+
+        const liveReply = {
+            ...makeUserMessage({ id: 'm-821', seq: 821, invokedAt: 8_210, createdAt: 8_210 }),
+            contentRevision: 821
+        }
+        ingestIncomingMessages(id, [liveReply])
+
+        const afterLive = getMessageWindowState(id)
+        expect(afterLive.messages.at(-1)?.id).toBe('m-821')
+        expect(afterLive.readThroughRevision).toBe(821)
+
+        // Switching to user-selected history clears tailEvictedWhileFollowing
+        // and suppresses further readThroughRevision advances while requiresLatestReset holds.
+        setMessageViewMode(id, 'history')
+        expect(getMessageWindowState(id).tailEvictedWhileFollowing).toBe(false)
+
+        const suppressedReply = {
+            ...makeUserMessage({ id: 'm-822', seq: 822, invokedAt: 8_220, createdAt: 8_220 }),
+            contentRevision: 822
+        }
+        ingestIncomingMessages(id, [suppressedReply])
+        expect(getMessageWindowState(id).readThroughRevision).toBe(821)
+    })
 })

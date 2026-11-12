@@ -12,6 +12,7 @@ import {
     resolvePiContextWindow,
     resolveEffortForModelChange,
     resolveLatestCompletedBoundaryIdForView,
+    resolveRenderedReadThroughRevision,
     shouldAutoClearPendingSchedule,
     shouldClearReasoningEffortForModelChange,
     shouldRouteToScratchlist,
@@ -614,6 +615,40 @@ describe('resolveEffortForModelChange', () => {
             currentEffort: 'xhigh',
             model: { provider: 'p', modelId: 'haiku' },
             claudeModels
+        })).toBeUndefined()
+    })
+})
+
+describe('resolveRenderedReadThroughRevision', () => {
+    it('passes readThroughRevision in tail mode and while following after automatic tail eviction', () => {
+        expect(resolveRenderedReadThroughRevision({
+            terminalVisible: false,
+            viewMode: 'tail',
+            tailEvictedWhileFollowing: false,
+            readThroughRevision: 42
+        })).toBe(42)
+
+        expect(resolveRenderedReadThroughRevision({
+            terminalVisible: false,
+            viewMode: 'history',
+            tailEvictedWhileFollowing: true,
+            readThroughRevision: 42
+        })).toBe(42)
+    })
+
+    it('suppresses readThroughRevision in user-selected history mode or when terminal is visible', () => {
+        expect(resolveRenderedReadThroughRevision({
+            terminalVisible: false,
+            viewMode: 'history',
+            tailEvictedWhileFollowing: false,
+            readThroughRevision: 42
+        })).toBeUndefined()
+
+        expect(resolveRenderedReadThroughRevision({
+            terminalVisible: true,
+            viewMode: 'tail',
+            tailEvictedWhileFollowing: true,
+            readThroughRevision: 42
         })).toBeUndefined()
     })
 })

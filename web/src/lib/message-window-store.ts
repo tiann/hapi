@@ -52,6 +52,10 @@ export type MessageWindowState = {
     // cursor is invalid. Consumers must treat that window as provisional
     // until the next tail reconciliation completes.
     requiresLatestReset: boolean
+    // True when older-page prepend trimming evicted the tail while the window
+    // was still following the tail (e.g. automatic concise coverage across >800
+    // hidden tool rows), as opposed to user-selected history mode.
+    tailEvictedWhileFollowing?: boolean
     // Gap-recovery pending: the next tail sync must catch up the missed
     // interval and then reconcile an authoritative latest page as an upsert.
     pendingGapRecovery: boolean
@@ -816,6 +820,7 @@ function applyLatestResponse(
         tailRevision: previous.tailRevision + 1,
         requiresLatestReset: false,
         tailEvictedWhileFollowing: false,
+        ...(previous.tailEvictedWhileFollowing ? { viewMode: 'tail' as const } : {}),
         // An authoritative latest window replaces the context entirely.
         ...(options.replaceServerRows
             ? { contextNewestAt: null, contextNewestSeq: null, hasMoreNewer: false }
@@ -1863,8 +1868,16 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
         let merged = mergeIntoWindow(previous, incoming, {
             advanceTailRevision: true
         })
-        if (merged.epoch === null || merged.requiresLatestReset) {
+        if (merged.epoch === null) {
             return merged
+        }
+        const nextReadThroughRevision = merged.readThroughRevision === undefined
+            ? undefined
+            : Math.max(merged.readThroughRevision, ...incoming.map(message => message.contentRevision ?? 0))
+        if (merged.requiresLatestReset) {
+            return merged.tailEvictedWhileFollowing && nextReadThroughRevision !== merged.readThroughRevision
+                ? buildState(merged, { readThroughRevision: nextReadThroughRevision })
+                : merged
         }
         const incomingNewest = derivePosition(incoming, 'newest')
         const currentNewest = getNewestCursor(merged)
@@ -1872,8 +1885,7 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
             ? incomingNewest
             : currentNewest
         merged = buildState(merged, {
-            readThroughRevision: merged.readThroughRevision === undefined ? undefined
-                : Math.max(merged.readThroughRevision, ...incoming.map(message => message.contentRevision ?? 0)),
+            readThroughRevision: nextReadThroughRevision,
             newestPositionAt: newest?.at ?? null,
             newestPositionSeq: newest?.seq ?? null
         })

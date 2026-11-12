@@ -2226,6 +2226,10 @@ export function HappyThread(props: {
         clearFailureRetryTimer()
         if (state.source === 'user') {
             initialConciseCoverageDoneRef.current = true
+            if (conciseTailEvictedRef.current && atBottomRef.current) {
+                atBottomRef.current = false
+                onViewModeChangeRef.current('history')
+            }
         }
         if (retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT) {
             if (

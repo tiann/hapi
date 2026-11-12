@@ -19,6 +19,8 @@ import type { ChatBlock } from '../src/chat/types'
 import { getMessageWindowState, getRegularPrependBudgetCount, ingestIncomingMessages } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
 import { useUnseenBlockCount } from '../src/hooks/useUnseenBlockCount'
+import { resolveRenderedReadThroughRevision } from '../src/components/SessionChat'
+import { configureSessionReadState, getSessionLastSeenAt } from '../src/lib/sessionLastSeen'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -46,6 +48,8 @@ type Probe = {
         isLoadingMore: boolean
         viewMode: 'tail' | 'history'
         requiresLatestReset: boolean
+        readThroughRevision: number | null
+        acknowledgedReadRevision: number
     }
 }
 
@@ -59,6 +63,14 @@ let releaseLatestResponse = () => {}
 let latestResponseGate: Promise<void> | null = null
 let beforeResponseGate: Promise<void> | null = null
 let releaseBeforeResponse = () => {}
+
+configureSessionReadState('history-load-fixture-scope', async (_id, request) => ({
+    readState: {
+        readRevision: request.type === 'read' ? request.readRevision : 0,
+        manualUnread: request.type === 'unread',
+        version: request.expectedVersion + 1
+    }
+}))
 
 window.__probe = {
     requests: [],
@@ -81,6 +93,7 @@ window.__probe = {
         const message = {
             id: `m-${seq}`,
             seq,
+            contentRevision: seq,
             localId: null,
             content: {
                 role: 'agent',
@@ -106,7 +119,9 @@ window.__probe = {
             newestSeq: state.newestSeq,
             isLoadingMore: state.isLoadingMore,
             viewMode: state.viewMode,
-            requiresLatestReset: state.requiresLatestReset
+            requiresLatestReset: state.requiresLatestReset,
+            readThroughRevision: state.readThroughRevision ?? null,
+            acknowledgedReadRevision: getSessionLastSeenAt(activeSessionIdForProbe)
         }
     }
 }
@@ -170,6 +185,7 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
     return {
         id: `m-${seq}`,
         seq,
+        contentRevision: seq,
         localId: null,
         content: navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
             ? {
@@ -365,11 +381,13 @@ function FixtureThread() {
     const activeSession = useMemo(() => ({ ...fakeSession, id: sessionId }), [sessionId])
     const {
         messages,
+        readThroughRevision,
         warning,
         isSyncingTail,
         isLoadingMore,
         hasMore,
         viewMode,
+        tailEvictedWhileFollowing,
         messagesVersion,
         historyVersion,
         loadMore,
@@ -454,6 +472,12 @@ function FixtureThread() {
                         onRefresh={() => {}}
                         onViewModeChange={setViewMode}
                         onJumpToTail={jumpToTail}
+                        readThroughRevision={resolveRenderedReadThroughRevision({
+                            terminalVisible: false,
+                            viewMode,
+                            tailEvictedWhileFollowing,
+                            readThroughRevision
+                        })}
                         isSyncingTail={isSyncingTail}
                         messagesWarning={warning}
                         hasMoreMessages={hasMore}

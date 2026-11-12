@@ -13,12 +13,33 @@ vi.mock('@/hooks/queries/useMachines', () => ({
     useMachines: () => ({ machines: [] })
 }))
 
+vi.mock('@tanstack/react-router', () => ({
+    useNavigate: () => vi.fn()
+}))
+
+vi.mock('@/components/SessionHeader', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/SessionHeader')>()
+    return {
+        ...actual,
+        SessionHeader: () => null
+    }
+})
+
+vi.mock('@/components/AssistantChat/HappyComposer', () => ({
+    HappyComposer: () => null
+}))
+
+vi.mock('@/components/AssistantChat/QueuedMessagesBar', () => ({
+    QueuedMessagesBar: () => null
+}))
+
 vi.mock('@assistant-ui/react', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@assistant-ui/react')>()
     return {
         ...actual,
         useAuiState: (selector: (state: unknown) => unknown) => selector({
-            thread: { extras: searchTargetTestState.extras }
+            thread: { extras: searchTargetTestState.extras },
+            composer: { text: '' }
         }),
         unstable_useThreadMessageIds: () => ['target-message'],
         ThreadPrimitive: {
@@ -34,9 +55,14 @@ vi.mock('@assistant-ui/react', async (importOriginal) => {
 })
 
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { SessionChat } from '@/components/SessionChat'
+import { useConciseChatMode } from '@/hooks/useConciseChatMode'
+import { useMessages } from '@/hooks/queries/useMessages'
+import { clearMessageWindow, ingestIncomingMessages } from '@/lib/message-window-store'
+import { configureSessionReadState, getSessionLastSeenAt, hasUnseenContent } from '@/lib/sessionLastSeen'
 import type { ApiClient } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
-import type { Session } from '@/types/api'
+import type { DecryptedMessage, MessagesResponse, Session } from '@/types/api'
 
 const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo')
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
@@ -1418,5 +1444,230 @@ describe('concise view history coverage', () => {
         })
 
         expect(onViewModeChange).not.toHaveBeenCalledWith('tail')
+    })
+
+    it('acknowledges post-eviction live replies through SessionChat while automatically following and suppresses user-selected history', async () => {
+        const sessionId = 'session-chat-concise-eviction-read-ack'
+        clearMessageWindow(sessionId)
+
+        const sendReadState = vi.fn(async (_id: string, request: { type: 'read'; readRevision: number; expectedVersion: number } | { type: 'unread'; expectedVersion: number }) => ({
+            readState: {
+                readRevision: request.type === 'read' ? request.readRevision : 0,
+                manualUnread: request.type === 'unread',
+                version: request.expectedVersion + 1
+            }
+        }))
+        const cleanupReadState = configureSessionReadState('session-chat-concise-eviction-scope', sendReadState)
+
+        const allMessages: DecryptedMessage[] = Array.from({ length: 902 }, (_, index) => {
+            const seq = index + 1
+            const isHiddenTool = seq > 2
+            return {
+                id: `m-${seq}`,
+                seq,
+                contentRevision: seq,
+                localId: null,
+                createdAt: 1_000_000 + seq,
+                invokedAt: 1_000_000 + seq,
+                content: isHiddenTool
+                    ? {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: {
+                                type: 'tool-call',
+                                callId: `call-${seq}`,
+                                name: 'Bash',
+                                input: { command: `echo ${seq}` },
+                                status: 'completed'
+                            }
+                        }
+                    }
+                    : {
+                        role: 'user',
+                        content: { type: 'text', text: `User message ${seq}` }
+                    }
+            } as DecryptedMessage
+        })
+
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }),
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [], migratedFromLocal: false }),
+            getMessages: vi.fn(async (_id: string, query?: { limit?: number; beforeSeq?: number | null }) => {
+                const limit = query?.limit ?? 200
+                const beforeSeq = query?.beforeSeq ?? null
+                const slice = beforeSeq === null
+                    ? allMessages.slice(-limit)
+                    : allMessages.filter((m) => (m.seq ?? 0) < beforeSeq).slice(-limit)
+                const oldest = slice[0] ?? null
+                const newest = slice.at(-1) ?? null
+                return {
+                    messages: slice,
+                    page: {
+                        direction: beforeSeq === null ? 'latest' : 'before',
+                        limit,
+                        epoch: 1,
+                        reset: false,
+                        nextBeforeAt: oldest ? (oldest.invokedAt ?? oldest.createdAt) : null,
+                        nextBeforeSeq: oldest?.seq ?? null,
+                        nextAfterAt: null,
+                        nextAfterSeq: null,
+                        snapshotHeadAt: newest ? (newest.invokedAt ?? newest.createdAt) : null,
+                        snapshotHeadSeq: newest?.seq ?? null,
+                        hasMore: (oldest?.seq ?? 1) > 1,
+                        readThroughRevision: beforeSeq === null ? (newest?.contentRevision ?? 0) : undefined
+                    }
+                } satisfies MessagesResponse
+            })
+        } as unknown as ApiClient
+
+        function SessionChatHarness() {
+            const { setConciseChatMode } = useConciseChatMode()
+            const msg = useMessages(api, sessionId)
+            searchTargetTestState.extras = {
+                messagesVersion: msg.messagesVersion,
+                historyVersion: msg.historyVersion
+            }
+            return (
+                <div>
+                    <button type="button" onClick={() => setConciseChatMode(true)}>Enable concise</button>
+                    <SessionChat
+                        api={api}
+                        session={{ id: sessionId, active: true, thinking: false, agentState: null, metadata: {} } as Session}
+                        messages={msg.messages}
+                        readThroughRevision={msg.readThroughRevision}
+                        messagesWarning={msg.warning}
+                        hasMoreMessages={msg.hasMore}
+                        hasMoreNewerMessages={msg.hasMoreNewer}
+                        isSyncingTail={msg.isSyncingTail}
+                        isLoadingMoreMessages={msg.isLoadingMore}
+                        isSending={false}
+                        viewMode={msg.viewMode}
+                        tailEvictedWhileFollowing={msg.tailEvictedWhileFollowing}
+                        messagesVersion={msg.messagesVersion}
+                        historyVersion={msg.historyVersion}
+                        tailRevision={msg.tailRevision}
+                        onBack={vi.fn()}
+                        onRefresh={ msg.refetch }
+                        onLoadMore={msg.loadMore}
+                        onCancelLoadMore={msg.cancelLoadMore}
+                        onSend={vi.fn(async () => false as const)}
+                        onViewModeChange={msg.setViewMode}
+                        onJumpToTail={msg.jumpToTail}
+                    />
+                </div>
+            )
+        }
+
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+
+        try {
+            const result = render(
+                <QueryClientProvider client={queryClient}>
+                    <I18nProvider>
+                        <SessionChatHarness />
+                    </I18nProvider>
+                </QueryClientProvider>
+            )
+
+            const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
+            if (!viewport) throw new Error('Expected chat viewport')
+            let scrollHeight = 530
+            Object.defineProperties(viewport, {
+                scrollHeight: { configurable: true, get: () => scrollHeight },
+                clientHeight: { configurable: true, value: 530 },
+                scrollTop: { configurable: true, writable: true, value: 0 }
+            })
+
+            fireEvent.click(result.getByRole('button', { name: 'Enable concise' }))
+
+            // Flush initial tail sync and automatic concise coverage across 5 older pages (900 hidden tool messages).
+            for (let step = 0; step < 8; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+
+            // Deliver a live final reply (seq 903, contentRevision 903) while still auto-following after hidden-tail eviction.
+            scrollHeight = 900
+            viewport.scrollTop = 370
+            act(() => {
+                ingestIncomingMessages(sessionId, [{
+                    id: 'm-903',
+                    seq: 903,
+                    contentRevision: 903,
+                    localId: null,
+                    createdAt: 1_000_903,
+                    invokedAt: 1_000_903,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: { type: 'message', message: 'Final live reply 903' }
+                        }
+                    }
+                } as DecryptedMessage])
+            })
+
+            for (let step = 0; step < 4; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+
+            expect(getSessionLastSeenAt(sessionId)).toBe(903)
+            expect(hasUnseenContent({ id: sessionId, contentRevision: 903 }, getSessionLastSeenAt(sessionId))).toBe(false)
+            expect(sendReadState).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+                type: 'read',
+                readRevision: 903
+            }))
+
+            // Once the user scrolls up into user-selected history, subsequent live replies must not be acknowledged.
+            fireEvent.wheel(viewport, { deltaY: -120 })
+            viewport.scrollTop = 100
+            fireEvent.scroll(viewport)
+            await act(async () => {
+                vi.advanceTimersByTime(200)
+                await Promise.resolve()
+            })
+
+            act(() => {
+                ingestIncomingMessages(sessionId, [{
+                    id: 'm-904',
+                    seq: 904,
+                    contentRevision: 904,
+                    localId: null,
+                    createdAt: 1_000_904,
+                    invokedAt: 1_000_904,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: { type: 'message', message: 'Unread live reply 904' }
+                        }
+                    }
+                } as DecryptedMessage])
+            })
+
+            for (let step = 0; step < 4; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+
+            expect(getSessionLastSeenAt(sessionId)).toBe(903)
+            expect(hasUnseenContent({ id: sessionId, contentRevision: 904 }, getSessionLastSeenAt(sessionId))).toBe(true)
+        } finally {
+            cleanupReadState()
+            clearMessageWindow(sessionId)
+            localStorage.removeItem('hapi-concise-chat-mode')
+        }
     })
 })

@@ -31,6 +31,7 @@ export const EMPTY_STATE: MessageWindowState = {
     pendingGapRecovery: false,
     viewMode: 'tail',
     requiresLatestReset: false,
+    tailEvictedWhileFollowing: false,
     hasMoreNewer: false,
     messagesVersion: 0,
     historyVersion: 0,
@@ -50,6 +51,7 @@ export function useMessages(
     hasMore: boolean
     hasMoreNewer: boolean
     viewMode: MessageViewMode
+    tailEvictedWhileFollowing: boolean
     messagesVersion: number
     historyVersion: number
     tailRevision: number
@@ -174,6 +176,7 @@ export function useMessages(
         hasMore: state.hasMore,
         hasMoreNewer: state.hasMoreNewer,
         viewMode: state.viewMode,
+        tailEvictedWhileFollowing: Boolean(state.tailEvictedWhileFollowing),
         messagesVersion: state.messagesVersion,
         historyVersion: state.historyVersion,
         tailRevision: state.tailRevision,
