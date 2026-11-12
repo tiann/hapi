@@ -756,13 +756,12 @@ function SessionChatInner(props: SessionChatProps) {
     const { conciseChatMode, setConciseChatMode } = useConciseChatMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
-    const [forkPreviewRequest, setForkPreviewRequest] = useState<{ messageLocalId?: string; latestCompleted?: boolean } | null>(null)
+    const [forkPreviewRequest, setForkPreviewRequest] = useState<{ messageLocalId?: string } | null>(null)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
 
-    const executeForkConversation = useCallback(async (messageLocalId?: string) => {
+    const executeForkConversation = useCallback(async (call: { sessionId: string; messageLocalId?: string; latestCompleted: boolean }) => {
         setHistoryActionPending(true)
         try {
-            const call = forkConversationCallArgs(props.session, messageLocalId)
             const result = call.latestCompleted
                 ? await props.api.forkConversation(call.sessionId, undefined, true)
                 : await props.api.forkConversation(call.sessionId, call.messageLocalId)
@@ -775,11 +774,19 @@ function SessionChatInner(props: SessionChatProps) {
         } finally {
             setHistoryActionPending(false)
         }
-    }, [navigate, props.api, props.session])
+    }, [navigate, props.api])
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
-        setForkPreviewRequest({ messageLocalId, latestCompleted: forkConversationCallArgs(props.session, messageLocalId).latestCompleted })
-    }, [props.session])
+        setForkPreviewRequest({ messageLocalId })
+    }, [])
+
+    // One live fork decision drives both the preview and the confirm call: a
+    // source that starts running while the dialog is open re-cuts the preview
+    // to the last completed turn, and confirm sends exactly what was shown.
+    const forkDecision = useMemo(
+        () => forkPreviewRequest ? forkConversationCallArgs(props.session, forkPreviewRequest.messageLocalId) : null,
+        [forkPreviewRequest, props.session]
+    )
 
     const onRewindConversation = useCallback(async (messageLocalId: string) => {
         setHistoryActionPending(true)
@@ -1747,10 +1754,10 @@ function SessionChatInner(props: SessionChatProps) {
     )
 
     const forkPreview = useMemo(
-        () => forkPreviewRequest ? buildForkPreview(reconciled.blocks, forkPreviewRequest.messageLocalId,
-            { latestCompleted: forkPreviewRequest.latestCompleted === true, isRunning: props.session.thinking,
+        () => forkDecision ? buildForkPreview(reconciled.blocks, forkDecision.messageLocalId,
+            { latestCompleted: forkDecision.latestCompleted, isRunning: props.session.thinking,
                 activeTurnStartedAt: props.session.activeTurnStartedAt ?? null }) : null,
-        [forkPreviewRequest, reconciled.blocks, props.session.thinking, props.session.activeTurnStartedAt]
+        [forkDecision, reconciled.blocks, props.session.thinking, props.session.activeTurnStartedAt]
     )
 
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
@@ -2191,7 +2198,7 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
-                {forkPreviewRequest && forkPreview ? (
+                {forkDecision && forkPreview ? (
                     <ForkPreviewDialog
                         isOpen
                         kind={forkPreview.kind}
@@ -2199,7 +2206,7 @@ function SessionChatInner(props: SessionChatProps) {
                         boundaryText={forkPreview.boundaryText}
                         prefixMayHaveMore={props.hasMoreMessages || forkPreview.prefixTruncated}
                         onCancel={() => setForkPreviewRequest(null)}
-                        onConfirm={() => executeForkConversation(forkPreviewRequest.messageLocalId)}
+                        onConfirm={() => executeForkConversation(forkDecision)}
                     />
                 ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
