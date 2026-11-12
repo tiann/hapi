@@ -1107,9 +1107,12 @@ export class AcpSdkBackend implements AgentBackend {
         try {
             return await fn();
         } finally {
+            // A load/compact can finish before its first notification. Measure
+            // quiet from completion too, not only the previous prompt's idle time.
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
-                AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
+                AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS,
+                Date.now()
             );
             if (this.messageHandler === null) {
                 this.messageHandler = previousHandler;
@@ -1527,7 +1530,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
     }
 
-    private async waitForSessionUpdateQuiet(quietMs: number, timeoutMs: number): Promise<void> {
+    private async waitForSessionUpdateQuiet(quietMs: number, timeoutMs: number, quietBaseline = 0): Promise<void> {
         if (quietMs <= 0 || timeoutMs <= 0) {
             return;
         }
@@ -1535,7 +1538,7 @@ export class AcpSdkBackend implements AgentBackend {
         const deadline = Date.now() + timeoutMs;
 
         while (Date.now() < deadline) {
-            const elapsedSinceUpdate = Date.now() - this.lastSessionUpdateAt;
+            const elapsedSinceUpdate = Date.now() - Math.max(this.lastSessionUpdateAt, quietBaseline);
             if (elapsedSinceUpdate >= quietMs) {
                 return;
             }
