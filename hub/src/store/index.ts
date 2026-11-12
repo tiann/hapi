@@ -1736,40 +1736,6 @@ export class Store {
         if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
     }
 
-    /** v31→v32: journal durable attachment creation before filesystem writes. */
-    private migrateFromV34ToV35(): void {
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS attachments (
-                id TEXT PRIMARY KEY,
-                namespace TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                sha256 TEXT NOT NULL,
-                original_path TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
-                ON attachments(namespace, session_id, created_at);
-
-            CREATE TABLE IF NOT EXISTS attachment_deletions (
-                original_path TEXT PRIMARY KEY
-            );
-            CREATE TABLE IF NOT EXISTS attachment_creations (
-                id TEXT PRIMARY KEY,
-                namespace TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                original_path TEXT NOT NULL,
-                temp_path TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('pending', 'committed', 'reconciled')),
-                created_at INTEGER NOT NULL,
-                resolved_at INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_attachment_creations_state
-                ON attachment_creations(state, created_at);
-        `)
-    }
 
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
@@ -1857,8 +1823,41 @@ export class Store {
      * v34→v35: durable redirects from merged-away session ids to the surviving
      * row, so links and peer references to a merged session keep resolving.
      */
+    /**
+     * v34→v35: journal durable attachments and add durable session redirects.
+     */
     private migrateFromV34ToV35(): void {
         this.db.exec(`
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
+                ON attachments(namespace, session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS attachment_deletions (
+                original_path TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS attachment_creations (
+                id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                original_path TEXT NOT NULL,
+                temp_path TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending', 'committed', 'reconciled')),
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_attachment_creations_state
+                ON attachment_creations(state, created_at);
+
             CREATE TABLE IF NOT EXISTS session_redirects (
                 old_id TEXT PRIMARY KEY,
                 new_id TEXT NOT NULL,
