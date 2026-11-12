@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
+import { PermissionFooter, permissionFooterContent } from '@/components/ToolCard/PermissionFooter'
 import { CodexPlanFooter } from '@/components/ToolCard/CodexPlanFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
@@ -19,23 +19,24 @@ import { getToolResultViewComponent } from '@/components/ToolCard/views/_results
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
 import { toolDurationMs } from '@/components/ToolCard/toolDuration'
 import { formatDuration, formatMessageTimestampTitle } from '@/chat/presentation'
-import { getToolGroupActionKind } from '@/chat/toolGroups'
+import { getToolGroupActionKind, isTerminalToolBlock } from '@/chat/toolGroups'
 import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { TraceSection } from '@/components/ToolCard/trace'
 import { isSubagentToolName } from '@/chat/subagentTool'
 
 const ELAPSED_INTERVAL_MS = 1000
+// Canonical spellings only; flavor ids resolve through resolveToolNameAlias.
 const TERMINAL_RELATED_TOOL_NAMES = new Set([
     'Bash',
     'CodexBash',
     'shell_command',
     'run_shell_command',
     'Shell',
-    'bash',
     'run_command',
     'execute_command',
     'terminal',
@@ -44,7 +45,7 @@ const TERMINAL_RELATED_TOOL_NAMES = new Set([
 export function shouldUseCompactTerminalToolCard(
     toolName: string,
     terminalToolDisplayMode: TerminalToolDisplayMode,
-    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(toolName)
+    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(resolveToolNameAlias(toolName))
 ): boolean {
     return terminalTool && terminalToolDisplayMode === 'compact'
 }
@@ -53,7 +54,7 @@ export function shouldShowInlineToolCardBody(
     toolName: string,
     presentationMinimal: boolean,
     terminalToolDisplayMode: TerminalToolDisplayMode,
-    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(toolName)
+    terminalTool = TERMINAL_RELATED_TOOL_NAMES.has(resolveToolNameAlias(toolName))
 ): boolean {
     if (isSubagentToolName(toolName)) return false
     if (terminalTool) {
@@ -62,9 +63,7 @@ export function shouldShowInlineToolCardBody(
     return !presentationMinimal
 }
 
-export function isTerminalToolBlock(block: ToolCallBlock): boolean {
-    return block.tool.name === 'CodexBash' || getToolGroupActionKind(block) === 'command'
-}
+export { isTerminalToolBlock }
 
 export function getToolTimingDetails(tool: ChatToolCall, now: number): {
     startedAt: number | null
@@ -104,26 +103,24 @@ export function ToolTimingSummary(props: {
     startedAt: number | null
     completedAt: number | null
     durationMs: number | null
-    typography?: 'detail' | 'group'
 }) {
     const { t } = useTranslation()
-    const items = [
-        props.startedAt != null ? { label: t('tool.startedAt'), value: formatCompactToolTimestamp(props.startedAt) } : null,
-        props.completedAt != null ? { label: t('tool.completedAt'), value: formatCompactToolTimestamp(props.completedAt) } : null,
-        props.durationMs != null ? { label: t('tool.duration'), value: formatDuration(props.durationMs) } : null,
-    ].filter((item): item is { label: string; value: string } => item !== null)
+    if (props.durationMs == null) return null
 
-    if (items.length === 0) return null
+    // Collapsed headers carry only the duration — a wall-clock start and
+    // finish read like progress-report noise next to the tool name. They stay
+    // reachable on hover (title tooltip) and in the detail dialog, which
+    // renders the full timing grid.
+    const tooltip = [
+        props.startedAt != null ? `${t('tool.startedAt')} ${formatCompactToolTimestamp(props.startedAt)}` : null,
+        props.completedAt != null ? `${t('tool.completedAt')} ${formatCompactToolTimestamp(props.completedAt)}` : null,
+        `${t('tool.duration')} ${formatDuration(props.durationMs)}`,
+    ].filter((item): item is string => item !== null).join(' · ')
 
     return (
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-            {items.map((item) => (
-                <span key={item.label} className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
-                    <span className={props.typography === 'group' ? undefined : 'font-medium'}>{item.label}</span>
-                    <span className={props.typography === 'group' ? undefined : 'font-mono'}>{item.value}</span>
-                </span>
-            ))}
-        </div>
+        <span className="text-xs text-[var(--app-hint)]" title={tooltip}>
+            {formatDuration(props.durationMs)}
+        </span>
     )
 }
 
@@ -138,6 +135,10 @@ function ToolCardTimingSummary(props: { tool: ChatToolCall }) {
         return () => clearInterval(id)
     }, [active, props.tool.startedAt, props.tool.createdAt])
 
+    // A pending question card stays in the 'running' tool state until its
+    // reply lands, so this counts the elapsed waiting time live — the same
+    // treatment as any running tool. The waiting sentence itself lives in the
+    // open answer area (the question footers), not in the header.
     return <ToolTimingSummary {...getToolTimingDetails(props.tool, now)} />
 }
 
@@ -306,7 +307,7 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     }
 
     const commandArray = isObject(input) && Array.isArray(input.command) ? input.command : null
-    if ((toolName === 'CodexBash' || toolName === 'Bash') && (typeof commandArray?.[0] === 'string' || typeof input === 'object')) {
+    if (isTerminalToolBlock(block)) {
         const cmd = Array.isArray(commandArray)
             ? commandArray.filter((part) => typeof part === 'string').join(' ')
             : getInputStringAny(input, ['command', 'cmd'])
@@ -393,7 +394,7 @@ export function ToolDetailDialogContent(props: {
     const { t } = useTranslation()
     const toolName = props.block.tool.name
     const FullToolView = getToolFullViewComponent(toolName)
-    const ResultToolView = getToolResultViewComponent(toolName)
+    const ResultToolView = getToolResultViewComponent(toolName, props.block)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
@@ -434,7 +435,8 @@ function ToolCardInner(props: ToolCardProps) {
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
         description: props.block.tool.nativeTitle ?? props.block.tool.description,
-        metadata: props.metadata
+        metadata: props.metadata,
+        pending: props.block.tool.permission?.status === 'pending'
     }, t), [
         props.block.tool.name,
         props.block.tool.input,
@@ -443,6 +445,7 @@ function ToolCardInner(props: ToolCardProps) {
         props.block.tool.nativeTitle,
         props.block.tool.description,
         props.metadata,
+        props.block.tool.permission?.status,
         t
     ])
 
@@ -459,15 +462,12 @@ function ToolCardInner(props: ToolCardProps) {
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
     const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
     const compactViewOwnsInteractions = toolName === 'CodexDiff'
-    const ResultToolView = getToolResultViewComponent(toolName)
+    const ResultToolView = getToolResultViewComponent(toolName, props.block)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
-    const showsPermissionFooter = Boolean(permission && (
-        permission.status === 'resolved' || permission.status === 'pending'
-        || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
-    ))
+    const showsPermissionFooter = permissionFooterContent(permission, toolName, props.block.tool.input) !== null
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
     // Header/content padding already supplies 12-16px below timing; add only
     // the remainder needed to match the detail dialog's 16px section gap.
@@ -515,13 +515,13 @@ function ToolCardInner(props: ToolCardProps) {
                         {truncate(subtitle, 160)}
                     </CardDescription>
                 ) : null}
-                <ToolCardTimingSummary tool={props.block.tool} />
             </div>
 
             <div className={cn(
                 'flex shrink-0 items-center gap-2 self-center text-[var(--app-hint)]',
                 subtitle ? '-translate-y-0.5' : null
             )}>
+                <ToolCardTimingSummary tool={props.block.tool} />
                 {subagentModel ? (
                     <span
                         className="inline-block max-w-28 truncate rounded-full bg-[var(--app-subtle-bg)] px-1.5 py-px font-mono text-[10px] leading-tight text-[var(--app-hint)] sm:max-w-40"

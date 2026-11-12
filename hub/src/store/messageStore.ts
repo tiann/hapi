@@ -6,6 +6,7 @@ import { decodeMessageContent } from './contentCodec'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    upsertToolCallMessage,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -31,6 +32,7 @@ import {
     countMessages,
     markMessagesInvoked,
     markMessagesIndeterminate,
+    markDispatchingMessagesIndeterminate,
     setMessagesDeliveryState,
     markUninvokedImmediateMessages,
     mergeSessionMessages,
@@ -48,6 +50,7 @@ import {
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
+    type UpsertToolCallResult,
 } from './messages'
 import {
     hasPotentiallyIncompleteMessageContent,
@@ -66,6 +69,10 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
+        return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {
@@ -243,6 +250,10 @@ export class MessageStore {
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
         return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    }
+
+    markDispatchingMessagesIndeterminate(sessionId: string): string[] {
+        return markDispatchingMessagesIndeterminate(this.db, sessionId)
     }
 
     markMessagesIndeterminate(sessionId: string, localIds: string[]): number {

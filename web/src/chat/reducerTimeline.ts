@@ -572,21 +572,35 @@ export function reduceTimeline(
                     && !(block.kind === 'cli-output' && block.source === 'user')
                 let firstIndex = -1
                 for (let index = blocks.length - 1; index >= 0; index -= 1) {
-                    if (!isSummaryTarget(blocks[index])) break
+                    const block = blocks[index]
+                    if (block.kind === 'user-text' || (block.kind === 'cli-output' && block.source === 'user')) break
+                    // Ignore trailing notices, but never cross a rendered response
+                    // boundary after locating the latest assistant group.
+                    if (block.kind === 'agent-event') {
+                        if (firstIndex !== -1) break
+                        continue
+                    }
+                    if (!isSummaryTarget(block)) break
                     firstIndex = index
                 }
                 if (firstIndex !== -1) {
-                    const firstBlock = blocks[firstIndex]
-                    if (isSummaryTarget(firstBlock)) {
-                        firstBlock.roundSummary = summary
-                    }
+                    const summaryTarget = blocks[firstIndex]
+                    if (isSummaryTarget(summaryTarget)) summaryTarget.roundSummary = summary
                 }
                 continue
             }
             if (msg.content.type === 'turn-duration') {
                 if (msg.content.provider === 'codex') {
+                    // The pair rides conditionally: a later usage summary must
+                    // not wipe a duration summary's generation fields.
+                    const durationContent = msg.content as { generationMs?: unknown; generationOutputTokens?: unknown }
+                    const generationMs = typeof durationContent.generationMs === 'number' ? durationContent.generationMs : undefined
+                    const generationOutputTokens = typeof durationContent.generationOutputTokens === 'number' ? durationContent.generationOutputTokens : undefined
+                    const generation = generationMs !== undefined && generationOutputTokens !== undefined
+                        ? { generationMs, generationOutputTokens } : {}
                     attachCodexRoundSummaryToLatestGroup(blocks, {
-                        provider: 'codex', turnId: msg.content.turnId as string, modelUsage: {}, numTurns: 1, durationMs: msg.content.durationMs as number
+                        provider: 'codex', turnId: msg.content.turnId as string, modelUsage: {}, numTurns: 1, durationMs: msg.content.durationMs as number,
+                        ...generation
                     })
                     continue
                 }
@@ -946,6 +960,11 @@ export function reduceTimeline(
                             continue
                         }
                     }
+
+                    // Claude Code stores thinking with an empty body when the
+                    // content is not displayed. An empty block renders nothing
+                    // but still splits adjacent tool calls out of their group.
+                    if (c.text.trim().length === 0) continue
 
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',

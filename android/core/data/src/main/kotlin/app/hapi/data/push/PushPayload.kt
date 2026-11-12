@@ -12,8 +12,7 @@ import kotlinx.serialization.Serializable
 enum class PushType(val wire: String) {
     READY("ready"),
     PERMISSION_REQUEST("permission-request"),
-    INPUT_REQUEST("input-request"),
-    TASK_NOTIFICATION("task-notification");
+    INPUT_REQUEST("input-request");
 
     companion object {
         fun fromWire(value: String): PushType? = entries.firstOrNull { it.wire == value }
@@ -23,9 +22,7 @@ enum class PushType(val wire: String) {
 /** `data.severity` — visual urgency accent (`hub/src/fcm/fcmService.ts`). */
 enum class PushSeverity(val wire: String) {
     INFO("info"),
-    SUCCESS("success"),
-    WARNING("warning"),
-    ERROR("error");
+    WARNING("warning");
 
     companion object {
         fun fromWire(value: String?): PushSeverity? =
@@ -96,23 +93,23 @@ data class PushPayload(
         get() = isKnownContractVersion && when (type) {
             PushType.PERMISSION_REQUEST -> requestId != null
             PushType.INPUT_REQUEST -> false // Answer in the session, not via approval or message Reply.
-            PushType.READY, PushType.TASK_NOTIFICATION -> true
+            PushType.READY -> true
             null -> false
         }
 
     /**
      * Notification channel routing: `permission_requests` / `input_requests` (HIGH) /
-     * `ready` (DEFAULT) / `task_notifications` (DEFAULT). Unknown types and
+     * `ready` (DEFAULT) / [CHANNEL_OTHER] (DEFAULT). Unknown types and
      * unknown contract versions land in the default-importance
-     * `task_notifications` bucket — never in the heads-up channel.
+     * [CHANNEL_OTHER] bucket — never in the heads-up channel.
      */
     val channelId: String
         get() = when {
-            !isKnownContractVersion -> CHANNEL_TASK_NOTIFICATIONS
+            !isKnownContractVersion -> CHANNEL_OTHER
             type == PushType.PERMISSION_REQUEST -> CHANNEL_PERMISSION_REQUESTS
             type == PushType.INPUT_REQUEST -> CHANNEL_INPUT_REQUESTS
             type == PushType.READY -> CHANNEL_READY
-            else -> CHANNEL_TASK_NOTIFICATIONS
+            else -> CHANNEL_OTHER
         }
 
     /**
@@ -155,7 +152,12 @@ data class PushPayload(
         const val CHANNEL_PERMISSION_REQUESTS = "permission_requests"
         const val CHANNEL_INPUT_REQUESTS = "input_requests"
         const val CHANNEL_READY = "ready"
-        const val CHANNEL_TASK_NOTIFICATIONS = "task_notifications"
+        /**
+         * Fallback bucket for unknown types / contract versions. The ID is
+         * kept from the former task-notification channel so operators'
+         * per-channel system settings survive.
+         */
+        const val CHANNEL_OTHER = "task_notifications"
 
         private const val DEFAULT_TITLE = "HAPI"
 

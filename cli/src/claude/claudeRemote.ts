@@ -91,6 +91,7 @@ export async function claudeRemote(opts: {
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
+    onAccountIdentity?: (accountIdentity: string | null) => void,
     onFirstResult?: (initialMessage: string) => void,
     /**
      * The delivered input finished at the SDK boundary although onReady is
@@ -509,6 +510,8 @@ export async function claudeRemote(opts: {
                 specialCommand = nextSpecialCommand;
                 pushUserMessage(next.message);
                 setSteerable(nextSpecialCommand.type === null);
+                // A follow-up prompt starts a new turn; only the first turn gets system/init.
+                updateThinking(true);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
                     `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
@@ -638,8 +641,18 @@ export async function claudeRemote(opts: {
                 message.type === 'system' && message.subtype === 'compact_boundary'
                     ? (message as any).compact_metadata
                     : undefined;
+            // The result of the manual /compact turn describes the compaction
+            // call, not an assistant round: mark it so the log converter skips
+            // tok/s fields for it (everything else flows as before). The
+            // pending-compaction state alone is not enough — the result
+            // handler below treats only the first result AFTER the compaction
+            // signal as the compact result, so an autonomous round completing
+            // between /compact and the signal must stay unmarked.
+            const isCompactTurnResult = compactState.active !== null
+                && compactState.active.sawCompactSignal === true
+                && message.type === 'result';
             if (!isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
-                opts.onMessage(message);
+                opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }
 
             // Handle special system messages
@@ -672,6 +685,15 @@ export async function claudeRemote(opts: {
                     // Older CLIs may not support get_context_usage; the converter's seed stays.
                     response.getContextUsage().then(opts.onContextUsage, (e) => {
                         logger.debug('[claudeRemote] get_context_usage failed', e);
+                    });
+                }
+
+                if (
+                    opts.onAccountIdentity
+                    && typeof (response as { getAccountIdentity?: () => Promise<string | null> }).getAccountIdentity === 'function'
+                ) {
+                    response.getAccountIdentity().then(opts.onAccountIdentity, (e) => {
+                        logger.debug('[claudeRemote] getAccountIdentity failed', e);
                     });
                 }
 

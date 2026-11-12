@@ -227,7 +227,8 @@ export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionM
 
 export const CursorChatStoreStatusSchema = z.object({
     onDisk: z.boolean(),
-    store: z.enum(['legacy', 'acp']).nullable()
+    // 'empty': ACP thread dir exists but no store.db, i.e. no chat was ever persisted.
+    store: z.enum(['legacy', 'acp', 'empty']).nullable()
 })
 
 export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
@@ -658,8 +659,9 @@ export const SendMessageRequestSchema = z.object({
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 export const ForkConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1).optional()
-})
+    messageLocalId: z.string().min(1).optional(),
+    latestCompleted: z.boolean().optional()
+}).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
 
@@ -691,6 +693,7 @@ export type RewindConversationResponse = {
 
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
+    completedTurnId?: string
     nativeSessionId: string
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
     sessionId?: string
@@ -746,6 +749,8 @@ export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
 export type QueuedStateResponse = {
     queuedLocalIds: string[]
     indeterminateLocalIds?: string[]
+    /** Subset of indeterminateLocalIds still awaiting delivery confirmation. */
+    dispatchingLocalIds?: string[]
     invokedLocalMessages: Array<{
         localId: string
         invokedAt: number
@@ -797,6 +802,66 @@ export const AgentAvailabilityResponseSchema = z.object({
     agents: z.array(AgentAvailabilityEntrySchema)
 })
 export type AgentAvailabilityResponse = z.infer<typeof AgentAvailabilityResponseSchema>
+
+export const AgentQuotaStatusSchema = z.enum([
+    'ok',
+    'custom_provider',
+    'unauthenticated',
+    'unavailable',
+    'error'
+])
+export type AgentQuotaStatus = z.infer<typeof AgentQuotaStatusSchema>
+
+export const AgentQuotaBucketSchema = z.object({
+    id: z.string(),
+    label: z.string(),
+    group: z.string().nullable().optional(),
+    window: z.string().nullable().optional(),
+    usedPercent: z.number().min(0).max(100),
+    remainingPercent: z.number().min(0).max(100),
+    resetsAt: z.number().nullable().optional()
+})
+export type AgentQuotaBucket = z.infer<typeof AgentQuotaBucketSchema>
+
+export const AgentQuotaAccountSchema = z.object({
+    agent: AgentFlavorSchema,
+    available: z.boolean(),
+    status: AgentQuotaStatusSchema,
+    accountLabel: z.string().nullable().optional(),
+    planLabel: z.string().nullable().optional(),
+    creditsLabel: z.string().nullable().optional(),
+    buckets: z.array(AgentQuotaBucketSchema),
+    note: z.string().nullable().optional(),
+    updatedAt: z.number()
+})
+export type AgentQuotaAccount = z.infer<typeof AgentQuotaAccountSchema>
+
+export const AgentQuotasRequestSchema = z.object({
+    refresh: z.boolean().optional()
+})
+export type AgentQuotasRequest = z.infer<typeof AgentQuotasRequestSchema>
+
+export const AgentQuotasResponseSchema = z.object({
+    accounts: z.array(AgentQuotaAccountSchema),
+    fetchedAt: z.number()
+})
+export type AgentQuotasResponse = z.infer<typeof AgentQuotasResponseSchema>
+
+export const UsageMachineQuotasEntrySchema = z.object({
+    machineId: z.string(),
+    machineName: z.string(),
+    supported: z.boolean(),
+    accounts: z.array(AgentQuotaAccountSchema),
+    fetchedAt: z.number().nullable(),
+    error: z.string().optional()
+})
+export type UsageMachineQuotasEntry = z.infer<typeof UsageMachineQuotasEntrySchema>
+
+export const UsageQuotasResponseSchema = z.object({
+    machines: z.array(UsageMachineQuotasEntrySchema),
+    updatedAt: z.number()
+})
+export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
 
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
@@ -1049,6 +1114,12 @@ export type GrokReasoningEffortResponse = {
     currentValue?: string | null
     error?: string
 }
+
+/** Copilot's ACP `thought_level` option for the active model. */
+export type CopilotReasoningEffortResponse = GrokReasoningEffortResponse
+
+/** Kimi's ACP `thought_level` (`thinking`) option for the active model. */
+export type KimiReasoningEffortResponse = GrokReasoningEffortResponse
 
 export type OpencodeReasoningEffortOption = {
     value: string
