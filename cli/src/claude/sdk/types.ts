@@ -221,6 +221,11 @@ export interface QueryOptions {
      * existing Claude session id.
      */
     forkSession?: boolean
+    /**
+     * Resume the session truncated to the entry with this uuid (everything
+     * after it is discarded, no drops guard). Requires Claude Code v2.1.223+.
+     */
+    resumeSessionAt?: string
     model?: string
     effort?: string
     fallbackModel?: string

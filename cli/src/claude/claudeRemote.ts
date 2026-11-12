@@ -154,6 +154,24 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
+    // One-shot rewind/fork-at-message boundary (set by the runner's history
+    // RPCs) passes through claudeArgs; filterCatalogAffectingClaudeArgs strips
+    // it from additionalArgs, so it is parsed here into the first-class SDK
+    // option. --resume-session-at alone truncates unconditionally; claude's
+    // --resume-drops-turn guard is not used (single-uuid option, refuses
+    // multi-turn ranges).
+    let resumeSessionAt: string | undefined;
+    if (opts.claudeArgs) {
+        for (let i = 0; i < opts.claudeArgs.length; i++) {
+            if (opts.claudeArgs[i] === '--resume-session-at' && i + 1 < opts.claudeArgs.length) {
+                resumeSessionAt = opts.claudeArgs[++i];
+            }
+        }
+    }
+    if (resumeSessionAt) {
+        logger.debug(`[claudeRemote] --resume-session-at ${resumeSessionAt}`);
+    }
+
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
     const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
@@ -167,6 +185,14 @@ export async function claudeRemote(opts: {
     // not opts.sessionId which can be stale for forked sessions.
     let currentSessionId = startFrom;
     let awaitingForkInit = forkSession;
+    // A resume-at spawn (fork-at-message child, or a rewind restart) must start
+    // query() immediately: the native truncation materializes once the new
+    // process starts with the resume flags. Like --fork-session, stream-json
+    // input stays open for later turns.
+    let awaitingResumeAtInit = resumeSessionAt !== undefined;
+    if (awaitingResumeAtInit && !startFrom) {
+        throw new Error('Pending resume-at request has no native session to resume');
+    }
 
     const messages = new PushableAsyncIterable<SDKUserMessage>();
     // Every stdin message carries a uuid that `--replay-user-messages` echoes
@@ -329,6 +355,28 @@ export async function claudeRemote(opts: {
         return next;
     };
 
+    // One shared unlock for spawn-gated first delivery: a --fork-session child
+    // or a --resume-at respawn starts query() before any prompt exists, and the
+    // SDK only emits `init` after the first prompt is sent. The SessionStart
+    // hooks (fork / resume) are the boot signal that the native state
+    // (fork branch or resume-at truncation) materialized, so the first queued
+    // prompt is accepted there instead of deadlocking on an `init` that will
+    // not arrive until the prompt below is sent. Clears BOTH waits so a spawn
+    // carrying both flags consumes the queue exactly once.
+    const unlockInitialDelivery = async (): Promise<boolean> => {
+        if (!awaitingForkInit && !awaitingResumeAtInit) {
+            return true;
+        }
+        awaitingForkInit = false;
+        awaitingResumeAtInit = false;
+        const first = await applyInitialTurn();
+        if (!first) {
+            return false;
+        }
+        initial = first;
+        return true;
+    };
+
     // Prepare SDK options. For --fork-session, start query() before waiting for the
     // first child prompt so the native fork materializes at the clicked source state.
     const hapiSystemPrompt = getSystemPrompt();
@@ -337,6 +385,7 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         forkSession,
+        ...(resumeSessionAt ? { resumeSessionAt } : {}),
         mcpServers: opts.mcpServers,
         permissionMode: nativePermissionMode(bootstrapMode.permissionMode),
         model: bootstrapMode.model,
@@ -361,7 +410,7 @@ export async function claudeRemote(opts: {
         replayUserMessages: true,
     }
 
-    if (!awaitingForkInit) {
+    if (!awaitingForkInit && !awaitingResumeAtInit) {
         const first = await applyInitialTurn();
         if (!first) {
             return;
@@ -666,20 +715,12 @@ export async function claudeRemote(opts: {
             if (
                 message.type === 'system'
                 && message.subtype === 'hook_response'
-                && (message as { hook_name?: string }).hook_name === 'SessionStart:fork'
-                && awaitingForkInit
+                && typeof (message as { hook_name?: string }).hook_name === 'string'
+                && ((message as { hook_name?: string }).hook_name ?? '').startsWith('SessionStart:')
             ) {
-                // A forked child starts query() before any prompt exists, and the
-                // SDK only emits `init` after the first prompt is sent. The fork
-                // itself materializes on the SessionStart:fork hook, so accept the
-                // first child prompt from that signal instead of deadlocking on
-                // an `init` that will not arrive until the prompt below is sent.
-                awaitingForkInit = false;
-                const first = await applyInitialTurn();
-                if (!first) {
+                if (!(await unlockInitialDelivery())) {
                     return;
                 }
-                initial = first;
             }
 
             if (message.type === 'system' && message.subtype === 'init') {
@@ -733,14 +774,10 @@ export async function claudeRemote(opts: {
                     opts.onSessionFound(systemInit.session_id, extras);
                 }
 
-                // Fork: only accept the first child prompt after the native branch exists.
-                if (awaitingForkInit) {
-                    awaitingForkInit = false;
-                    const first = await applyInitialTurn();
-                    if (!first) {
-                        return;
-                    }
-                    initial = first;
+                // Fallback unlock when no SessionStart hook ran: only accept
+                // the first prompt once the native branch exists (init).
+                if (!(await unlockInitialDelivery())) {
+                    return;
                 }
             }
 

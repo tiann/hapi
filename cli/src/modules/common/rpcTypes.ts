@@ -27,6 +27,8 @@ export interface SpawnSessionOptions {
     startingMode?: 'remote' | 'pty'
     /** Claude: spawn with --fork-session after --resume. */
     forkSession?: boolean
+    /** Claude: resume truncated to the entry with this uuid (v2.1.223+). */
+    resumeSessionAt?: string
     /** Runner-internal post-create containment revalidation. Never serialized. */
     validateDirectory?: (path: string) => Promise<boolean>
 }

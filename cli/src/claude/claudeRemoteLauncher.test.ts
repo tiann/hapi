@@ -201,6 +201,35 @@ describe('claudeRemoteLauncher resume anchor', () => {
         }
     })
 
+    it('delivers the queued prompt after a resume-at respawn truncates native history', async () => {
+        const client = createClientStub()
+        // The runner arms the one-shot boundary on the live session before the
+        // restart (rewind); the respawned claudeRemote must start query()
+        // immediately and deliver the queued message once init arrives.
+        const { session, queue } = createSession(client, ['--resume', 'native-session-id', '--resume-session-at', 'keep-boundary-uuid'])
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => {
+            client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+
+        try {
+            queue.push('what was the last thing I asked you?', { permissionMode: 'default' }, 'local-1')
+
+            await claudeRemoteLauncher(session as any)
+
+            // The attempt started query() with the truncation flag and then
+            // consumed the queued message as its first turn.
+            expect(harness.initialMessages).toEqual(['what was the last thing I asked you?'])
+            expect(harness.inputSubmittedCalls).toContain('native-uuid-1')
+            const entryWrites = (harness.metadataWrites as Record<string, any>[]).filter(
+                (metadata: Record<string, any>) => metadata.conversationHistoryEntryIds?.['local-1'] === 'native-uuid-1'
+            )
+            expect(entryWrites.length).toBeGreaterThan(0)
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
     it('keeps --resume available for the launch that actually captures the session id', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, [...RESUME_ARGS])

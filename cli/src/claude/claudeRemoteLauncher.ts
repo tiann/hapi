@@ -57,6 +57,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
     /** The running plain turn that can take a steered queue row, if any. */
+    // One-shot respawn requested by a history RPC (rewind): abort the current
+    // attempt so the main loop relaunches Claude with the fresh flags.
+    private restartRequested = false;
     private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal } | null = null;
 
     constructor(session: Session) {
@@ -121,6 +124,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         await this.handleSwitchRequest();
     }
 
+    /**
+     * Abort the current SDK attempt (without an exit reason) so the main loop
+     * respawns Claude with fresh one-shot args. Used by history RPCs that need
+     * a process restart to apply --resume-session-at.
+     */
+    public async requestRestart(): Promise<void> {
+        logger.debug('[remote]: doRestart');
+        this.restartRequested = true;
+        await this.abort();
+    }
+
     public async launch(): Promise<RemoteLauncherExitReason> {
         return this.start({
             onExit: () => this.handleExitFromUi(),
@@ -134,6 +148,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+
+        session.requestRemoteRestart = () => this.requestRestart();
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbortRequest(),
@@ -444,6 +460,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 previousSessionId = session.sessionId;
+                // A restart flag only concerns the attempt that was aborted; the
+                // fresh attempt must classify its own aborts normally.
+                this.restartRequested = false;
                 const controller = new AbortController();
                 this.abortController = controller;
                 this.abortFuture = new Future<void>();
@@ -744,7 +763,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     });
 
                     if (!this.exitReason && controller.signal.aborted) {
-                        session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        if (this.restartRequested) {
+                            this.restartRequested = false;
+                        } else {
+                            session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        }
                     }
 
                     // A full attempt completed without throwing. Clear the
@@ -809,7 +832,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             immediateFailureCount += 1;
                         }
 
-                        if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
+                        if (this.restartRequested) {
+                            // Intentional restart (history RPC): the aborted
+                            // in-flight turn belongs to the pre-rewind history.
+                            // Re-delivering it into the respawned process would
+                            // diverge native history from the hub transcript.
+                            for (const item of inFlightMessage?.items ?? []) {
+                                if (item.localId) {
+                                    session.client.discardPendingHubPromptEcho(item.localId)
+                                }
+                            }
+                            if (inFlightMessage?.deliveredText) {
+                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
+                            }
+                            inFlightMessage = null;
+                            this.restartRequested = false;
+                        } else if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
                             // Give up on retrying *this message*, not the
                             // whole session. Restoring it here would feed it
                             // straight back into another immediate failure on
@@ -882,6 +920,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.requestRemoteRestart = null;
         this.steerTarget = null;
 
         if (this.handleSessionFound) {

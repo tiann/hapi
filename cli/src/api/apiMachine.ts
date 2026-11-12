@@ -517,7 +517,7 @@ export class ApiMachineClient {
             return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
         })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
+            const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession, resumeSessionAt } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -556,6 +556,7 @@ export class ApiMachineClient {
                 worktreeName,
                 startingMode,
                 forkSession: forkSession === true,
+                resumeSessionAt: typeof resumeSessionAt === 'string' ? resumeSessionAt : undefined,
                 validateDirectory: async (path) => await this.pathPolicy.allowsSpawn(path),
             })
 
