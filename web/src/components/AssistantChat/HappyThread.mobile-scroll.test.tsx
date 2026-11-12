@@ -1317,4 +1317,103 @@ describe('concise view history coverage', () => {
         expect(state.visibleBlocksCount).toBe(1)
         expect(onLoadMore).toHaveBeenCalledTimes(3)
     })
+
+    it('transitions to history mode before evicting an entirely hidden tail and stays in history mode when preceding conversation renders', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }),
+            getMachines: vi.fn().mockResolvedValue({ machines: [] })
+        } as unknown as ApiClient
+
+        const state = {
+            sessionId: 'concise-hidden-tail-eviction-session',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 620,
+            retainedMessagesCount: 620,
+            normalizedMessagesCount: 620,
+            visibleBlocksCount: 0,
+            conciseViewActive: true,
+            messagesVersion: 1,
+            historyVersion: 2
+        }
+
+        const onViewModeChange = vi.fn()
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderHiddenTailThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId={state.sessionId}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={onViewModeChange}
+                        isSyncingTail={state.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        retainedMessagesCount={state.retainedMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 2 }
+        const result = render(renderHiddenTailThread())
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+        expect(onViewModeChange).toHaveBeenLastCalledWith('history')
+
+        // When the older page renders visible preceding messages, initial
+        // scroll settling must not re-enter tail mode (which would reset back
+        // to the evicted tool-only tail).
+        onViewModeChange.mockClear()
+        state.rawMessagesCount = 800
+        state.retainedMessagesCount = 800
+        state.normalizedMessagesCount = 800
+        state.visibleBlocksCount = 50
+        state.messagesVersion = 2
+        state.historyVersion = 3
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 3 }
+        act(() => {
+            result.rerender(renderHiddenTailThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(500)
+        })
+
+        expect(onViewModeChange).not.toHaveBeenCalledWith('tail')
+    })
 })

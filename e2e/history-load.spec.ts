@@ -772,3 +772,34 @@ test('concise view preserves the latest reply when more than 800 hidden tool mes
         window.__probe.requests.filter((r) => r.direction === 'before').length
     )).toBe(3)
 })
+
+test('concise view reaches preceding conversation and finishes loading when 900 hidden tool messages have no final reply', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=900')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    // An interrupted session ending in 900 hidden tool messages (m-301..m-1200)
+    // has 0 visible messages in the initial 800-row window. Automatic coverage
+    // must transition the window into history mode before prepend eviction sets
+    // requiresLatestReset, so useMessages does not report a stuck isSyncingTail
+    // state and paging continues until the preceding user message (`m-300`)
+    // renders and loading finishes.
+    await expect(page.getByText('Fixture message 300', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => {
+        const state = window.__probe.windowState()
+        return {
+            isLoadingMore: state.isLoadingMore,
+            viewMode: state.viewMode,
+            requiresLatestReset: state.requiresLatestReset,
+            oldestSeq: state.oldestSeq
+        }
+    })).toEqual({
+        isLoadingMore: false,
+        viewMode: 'history',
+        requiresLatestReset: true,
+        oldestSeq: 181
+    })
+
+    await page.waitForTimeout(500)
+    await expect(page.getByText('Fixture message 300', { exact: true })).toBeVisible()
+})

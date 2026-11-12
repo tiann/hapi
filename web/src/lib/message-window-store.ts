@@ -1489,6 +1489,7 @@ export async function fetchOlderMessages(
             // mergeIntoWindow, so every path that trims from the newest end
             // behaves the same.
             return buildState(merged, {
+                ...(merged.requiresLatestReset ? { viewMode: 'history' as const } : {}),
                 hasMore: response.page.hasMore,
                 epoch: response.page.epoch,
                 oldestPositionAt: response.page.nextBeforeAt,

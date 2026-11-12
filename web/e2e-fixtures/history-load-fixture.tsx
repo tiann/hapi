@@ -42,6 +42,8 @@ type Probe = {
         oldestSeq: number | null
         newestSeq: number | null
         isLoadingMore: boolean
+        viewMode: 'tail' | 'history'
+        requiresLatestReset: boolean
     }
 }
 
@@ -78,7 +80,9 @@ window.__probe = {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
             newestSeq: state.newestSeq,
-            isLoadingMore: state.isLoadingMore
+            isLoadingMore: state.isLoadingMore,
+            viewMode: state.viewMode,
+            requiresLatestReset: state.requiresLatestReset
         }
     }
 }
