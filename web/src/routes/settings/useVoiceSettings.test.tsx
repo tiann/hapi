@@ -69,11 +69,15 @@ describe('useVoiceSettings', () => {
         const { result } = renderHook(() => useVoiceSettings(), { wrapper: Wrapper })
 
         await waitFor(() => expect(result.current.backend).toBe('gemini-live'))
+        const refreshSpy = vi.fn()
+        window.addEventListener('hapi-voice-backends-refresh', refreshSpy)
         act(() => result.current.setBackend('elevenlabs'))
 
         expect(result.current.backend).toBe('elevenlabs')
         expect(result.current.voiceId).toBe('eleven-1')
         expect(localStorage.getItem('hapi-voice-backend')).toBe('elevenlabs')
+        expect(refreshSpy).toHaveBeenCalled()
+        window.removeEventListener('hapi-voice-backends-refresh', refreshSpy)
     })
 
     it('stops a playing preview when the picker unmounts', async () => {
@@ -87,6 +91,18 @@ describe('useVoiceSettings', () => {
         expect(play).toHaveBeenCalledOnce()
         unmount()
         expect(pause).toHaveBeenCalled()
+    })
+
+    it('selects the previewed ElevenLabs voice so runtime matches what you heard', async () => {
+        fetchVoices.mockResolvedValue([
+            { id: 'jessica-x', name: 'JessicaX', previewUrl: 'https://example.test/jess.mp3', category: 'cloned' },
+        ])
+        const { result } = renderHook(() => useVoiceSettings(), { wrapper: Wrapper })
+        await waitFor(() => expect(result.current.voices[0]?.id).toBe('jessica-x'))
+
+        act(() => result.current.previewVoice(result.current.voices[0]))
+        expect(result.current.voiceId).toBe('jessica-x')
+        expect(localStorage.getItem('hapi-voice-elevenlabs')).toBe('jessica-x')
     })
 
     it('uses realtime for the realtime-only browser provider', async () => {

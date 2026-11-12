@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -134,6 +134,14 @@ export type ReopenSessionResult =
 export type LocalResumeTargetResult =
     | { type: 'success'; target: LocalResumeTarget }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' }
+
+export type LocalResumeTargetByAgentResult =
+    | { type: 'success'; target: LocalResumeTarget | null; historical: boolean }
+    | { type: 'error'; message: string; code: 'resume_unavailable' }
+
+export type LocalResumePrepareResult =
+    | { type: 'success'; revived: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' }
 
 export type LocalHandoffResult =
     | { type: 'success' }
@@ -552,11 +560,20 @@ export class SyncEngine {
         return session
     }
 
+    /**
+     * Session lookup for route handlers. With `followRedirects`, a merged-away
+     * id resolves to its surviving session and callers must continue with the
+     * returned `sessionId`; only clients that rebind to that id opt in (CLI
+     * REST always; web via FOLLOW_SESSION_REDIRECTS_HEADER).
+     */
     resolveSessionAccess(
         sessionId: string,
-        namespace: string
+        namespace: string,
+        opts?: { followRedirects?: boolean }
     ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
-        return this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        return opts?.followRedirects
+            ? this.sessionCache.resolveSessionAccessFollowingRedirects(sessionId, namespace)
+            : this.sessionCache.resolveSessionAccess(sessionId, namespace)
     }
 
     /** Follow job-owner redirects after merge/dedup (tiann/hapi#1404 cold review). */
@@ -3791,6 +3808,68 @@ export class SyncEngine {
             .sort((a, b) => b.updatedAt - a.updatedAt)
     }
 
+    /**
+     * Intentional terminal revive of an inactive session (`hapi resume`,
+     * `hapi claude --resume`): clear a hub-authored archive before the CLI
+     * reopens the row with `--existing-session-id`, the same way hub reopen
+     * does before spawning. The #1911 guard still rejects CLI metadata writes
+     * that try to un-archive on their own.
+     */
+    async prepareLocalResume(sessionId: string, namespace: string): Promise<LocalResumePrepareResult> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return access.reason === 'access-denied'
+                ? { type: 'error', message: 'Session access denied', code: 'access_denied' }
+                : { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        }
+        if (access.session.active) {
+            return { type: 'error', message: 'Session is active; hand it off before reopening locally', code: 'session_active' }
+        }
+        const metadata = access.session.metadata
+        if (metadata?.lifecycleState !== 'archived' || metadata.archivedBy !== 'hub') {
+            return { type: 'success', revived: false }
+        }
+        await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
+        return { type: 'success', revived: true }
+    }
+
+    /**
+     * Find the HAPI session that owns a native Claude session id (current or
+     * rotated-away), so a terminal `hapi claude --resume <id>` reopens that
+     * session instead of minting a duplicate HAPI id. `target: null` means no
+     * HAPI session owns the id yet.
+     */
+    resolveLocalResumeTargetByAgentSessionId(
+        agentSessionId: string,
+        namespace: string,
+        opts?: { machineId?: string }
+    ): LocalResumeTargetByAgentResult {
+        const candidates: Array<{ session: Session; match: 'current' | 'historical' }> = []
+        for (const session of this.getSessionsByNamespace(namespace)) {
+            if (this.resolveFlavor(session) !== 'claude') continue
+            const metadata = session.metadata
+            if (opts?.machineId && metadata?.machineId && metadata.machineId !== opts.machineId) continue
+            const match = matchesClaudeSessionId(metadata, agentSessionId)
+            if (match) candidates.push({ session, match })
+        }
+        if (candidates.length === 0) {
+            return { type: 'success', target: null, historical: false }
+        }
+
+        // Current-id owners beat historical ones; then the live row; then recency.
+        candidates.sort((a, b) => {
+            if (a.match !== b.match) return a.match === 'current' ? -1 : 1
+            if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
+            return b.session.updatedAt - a.session.updatedAt
+        })
+        const best = candidates[0]!
+        const result = this.resolveLocalResumeTarget(best.session.id, namespace)
+        if (result.type === 'error') {
+            return { type: 'error', message: result.message, code: 'resume_unavailable' }
+        }
+        return { type: 'success', target: result.target, historical: best.match === 'historical' }
+    }
+
     private resolveFirstUserMessage(sessionId: string): string | undefined {
         for (const message of this.store.messages.getFirstMessages(sessionId, 50)) {
             const roleWrapped = unwrapRoleWrappedRecordEnvelope(message.content)
@@ -5304,6 +5383,10 @@ export class SyncEngine {
 
     async getAgentAvailability(machineId: string): ReturnType<RpcGateway['getAgentAvailability']> {
         return await this.rpcGateway.getAgentAvailability(machineId)
+    }
+
+    async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): ReturnType<RpcGateway['getAgentQuotas']> {
+        return await this.rpcGateway.getAgentQuotas(machineId, options)
     }
 
     async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {
