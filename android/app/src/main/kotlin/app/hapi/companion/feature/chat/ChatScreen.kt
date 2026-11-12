@@ -274,7 +274,7 @@ internal fun ChatScreen(
         if (granted) launchCamera() else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    val interactions = remember(state.flavor, state.permissionOverrides, codexPlanActions, viewModel) {
+    val interactions = remember(state.flavor, state.permissionOverrides, codexPlanActions, state.historyGate, viewModel) {
         ChatInteractions(
             flavor = state.flavor,
             permissionOverrides = state.permissionOverrides,
@@ -283,6 +283,10 @@ internal fun ChatScreen(
             codexPlanActions = codexPlanActions,
             implementCodexPlan = viewModel::implementCodexPlan,
             continueCodexPlan = viewModel::continueCodexPlan,
+            historyGate = state.historyGate,
+            requestForkCurrent = viewModel::requestForkCurrent,
+            requestForkAtMessage = viewModel::requestForkAtMessage,
+            requestRewind = viewModel::requestRewind,
         )
     }
 
@@ -475,6 +479,23 @@ internal fun ChatScreen(
                 onDismiss = { messageInfoBlock = null },
             )
         }
+    }
+
+    val conversationHistory by viewModel.conversationHistory.collectAsState()
+    conversationHistory.dialog?.let { action ->
+        HistoryActionConfirmDialog(
+            action = action,
+            pending = conversationHistory.opPending,
+            onConfirm = viewModel::confirmHistoryAction,
+            onDismiss = viewModel::dismissHistoryDialog,
+        )
+    }
+    if (conversationHistory.rewindFallbackLocalId != null) {
+        RewindFallbackDialog(
+            pending = conversationHistory.opPending,
+            onConfirm = viewModel::confirmRewindFallback,
+            onDismiss = viewModel::dismissRewindFallback,
+        )
     }
 }
 
@@ -710,4 +731,7 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
     is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
+    is ChatNotice.ForkFailed -> notice.detail ?: context.getString(R.string.chat_notice_fork_failed)
+    is ChatNotice.RewindFailed -> notice.detail ?: context.getString(R.string.chat_notice_rewind_failed)
+    ChatNotice.RewindDiverged -> context.getString(R.string.chat_notice_rewind_diverged)
 }
