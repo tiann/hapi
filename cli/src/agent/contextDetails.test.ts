@@ -416,6 +416,7 @@ describe('mergeContextDetails', () => {
         publishContextDetails(client, buildClaudeContextDetails({
             updatedAt: 100,
             contextUsage: { total_tokens: 26_697 },
+            messageUsage: { cached_input_tokens: 15_000 },
             model: 'claude-opus'
         })!)
         publishContextDetails(client, buildClaudeContextDetails({
@@ -424,14 +425,14 @@ describe('mergeContextDetails', () => {
                 usage: { input_tokens: 90_000, cache_read_input_tokens: 20_000 },
                 model: 'claude-opus'
             }
-        })!, { preserveContextTokens: true })
+        })!, { preserveUsageSnapshot: true })
 
         let metadata = {} as Metadata
         for (const update of updates) metadata = update(metadata)
 
         expect(metadata.contextDetails?.usage).toEqual({
             contextTokens: 26_697,
-            cacheReadTokens: 20_000
+            cacheReadTokens: 15_000
         })
     })
     it('merges from the metadata value when queued publishers are applied later', () => {

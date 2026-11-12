@@ -362,8 +362,8 @@ export interface ContextDetailsClient {
 }
 
 export interface PublishContextDetailsOptions {
-    /** Result totals cover the whole conversation; keep the latest actual context size. */
-    preserveContextTokens?: boolean
+    /** Result totals cover the whole conversation; keep the latest actual usage snapshot. */
+    preserveUsageSnapshot?: boolean
 }
 
 export function publishContextDetails(
@@ -375,10 +375,14 @@ export function publishContextDetails(
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
         let merged = mergeContextDetails(current, next)
-        if (options.preserveContextTokens && current?.provider === 'claude' && current.usage?.contextTokens !== undefined) {
+        if (options.preserveUsageSnapshot && current?.provider === 'claude' && current.usage) {
             merged = {
                 ...merged,
-                usage: { ...merged.usage, contextTokens: current.usage.contextTokens }
+                usage: {
+                    ...merged.usage,
+                    ...(current.usage.contextTokens !== undefined ? { contextTokens: current.usage.contextTokens } : {}),
+                    ...(current.usage.cacheReadTokens !== undefined ? { cacheReadTokens: current.usage.cacheReadTokens } : {})
+                }
             }
         }
         return merged === current

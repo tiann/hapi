@@ -316,7 +316,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             model: resultMessage.model ?? lastSystemModel
                         });
                         if (details) {
-                            publishContextDetails(session.client, details, { preserveContextTokens: true });
+                            publishContextDetails(session.client, details, { preserveUsageSnapshot: true });
                         }
                     }
                 }
