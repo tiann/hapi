@@ -17,6 +17,7 @@ type LocalLaunchFailure = {
 export class AgySession extends AgentSessionBase<AgyMode> {
     readonly startedBy: 'runner' | 'terminal';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    onPermissionModeChanged: ((mode: PermissionMode) => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -61,7 +62,11 @@ export class AgySession extends AgentSessionBase<AgyMode> {
     }
 
     setPermissionMode = (mode: PermissionMode): void => {
+        const changed = this.permissionMode !== mode;
         this.permissionMode = mode;
+        if (changed) {
+            this.onPermissionModeChanged?.(mode);
+        }
     };
 
     setModel = (model: SessionModel): void => {

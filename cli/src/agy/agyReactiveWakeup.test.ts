@@ -2,16 +2,16 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { AgentMessage, PermissionRequest, PromptContent } from '@/agent/types';
+import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { AgySession } from './session';
 import type { AgyMode } from './types';
 import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
 import {
-    AGY_WAKEUP_CONTINUE_PROMPT,
     advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
     convertAgyReactiveSteps,
@@ -65,6 +65,7 @@ class WakeupTestBackend {
     readonly permissionResponses: unknown[] = [];
     promptScripts: Array<(onUpdate: (message: AgentMessage) => void) => Promise<void>> = [];
     permissionHandler: ((request: PermissionRequest) => void) | null = null;
+    formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
     currentModelId = 'gemini-4-argon-medium';
     promptInFlight = false;
     alive = true;
@@ -129,7 +130,9 @@ class WakeupTestBackend {
     setSessionInfoUpdateListener(): void {}
     setUserMessageChunkListener(): void {}
     onStderrError(): void {}
-    onFormElicitation(): void {}
+    onFormElicitation(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void {
+        this.formElicitationHandler = handler;
+    }
     onPermissionRequest(handler: (request: PermissionRequest) => void): void {
         this.permissionHandler = handler;
     }
@@ -144,8 +147,10 @@ class WakeupTestBackend {
 function makeHarness(permissionMode: AgyMode['permissionMode'] = 'always-proceed') {
     const queue = new MessageQueue2<AgyMode>((mode) => hashObject(mode));
     const handlers = new Map<string, (payload?: unknown) => Promise<unknown>>();
+    let agentState: { requests?: Record<string, unknown>; completedRequests?: Record<string, unknown> } = {};
     const client = {
         sessionId: 'hapi-session',
+        getAgentState: () => agentState,
         rpcHandlerManager: {
             handlers,
             registerHandler: vi.fn((method: string, handler: (payload?: unknown) => Promise<unknown>) => {
@@ -154,9 +159,13 @@ function makeHarness(permissionMode: AgyMode['permissionMode'] = 'always-proceed
             unregisterHandler: vi.fn()
         },
         updateMetadata: vi.fn(),
-        updateAgentState: vi.fn(),
+        updateAgentState: vi.fn((updater: (state: typeof agentState) => typeof agentState) => {
+            agentState = updater(agentState);
+            return agentState;
+        }),
         sendSessionEvent: vi.fn(),
         sendAgentMessage: vi.fn(),
+        sendUserMessage: vi.fn(),
         sendClaudeSessionMessage: vi.fn(),
         emitMessagesConsumed: vi.fn(),
         emitSteerIndeterminate: vi.fn(),
@@ -268,7 +277,8 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(inspectAgyReactiveSteps(finalTextSteps, '/srv/work/projects', 160, 100, TIMINGS))
             .toMatchObject({ state: 'completed', latestStepIndex: 5 });
 
-        // Gated run_command -> parked_on_tool once toolParkMs elapses.
+        // Gated run_command -> parked_on_tool once toolParkMs elapses in non-skip modes,
+        // but stays running in skipPermissions mode (--dangerously-skip-permissions).
         const gatedCommandSteps: AgyTranscriptStep[] = [
             systemStep,
             {
@@ -282,7 +292,36 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(inspectAgyReactiveSteps(gatedCommandSteps, '/srv/work/projects', 200, 100, TIMINGS))
             .toEqual({ state: 'running', latestStepIndex: 5 });
         expect(inspectAgyReactiveSteps(gatedCommandSteps, '/srv/work/projects', 310, 100, TIMINGS))
-            .toEqual({ state: 'parked_on_tool', latestStepIndex: 5 });
+            .toMatchObject({
+                state: 'parked_on_tool',
+                latestStepIndex: 5,
+                parkedCall: {
+                    stepIndex: 5,
+                    callIndex: 0,
+                    toolName: 'run_command',
+                    decodedArgs: { CommandLine: 'git status' }
+                }
+            });
+        expect(inspectAgyReactiveSteps(gatedCommandSteps, '/srv/work/projects', 2_500, 100, TIMINGS, { skipPermissions: true }))
+            .toEqual({ state: 'running', latestStepIndex: 5 });
+
+        // ask_question still parks even under skipPermissions=true.
+        const questionSteps: AgyTranscriptStep[] = [
+            systemStep,
+            {
+                step_index: 5,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'ask_question', args: { questions: '[{"question":"Pick?","options":["A","B"]}]' } }]
+            }
+        ];
+        expect(inspectAgyReactiveSteps(questionSteps, '/srv/work/projects', 200, 100, TIMINGS, { skipPermissions: true }))
+            .toMatchObject({
+                state: 'parked_on_tool',
+                latestStepIndex: 5,
+                parkedCall: { stepIndex: 5, callIndex: 0, toolName: 'ask_question' }
+            });
 
         // In-workspace read_file waits for slowToolParkMs, while outside-workspace read_file parks at toolParkMs.
         const inWorkspaceRead: AgyTranscriptStep[] = [
@@ -308,10 +347,16 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(inspectAgyReactiveSteps(inWorkspaceRead, '/srv/work/projects', 400, 100, TIMINGS))
             .toEqual({ state: 'running', latestStepIndex: 5 });
         expect(inspectAgyReactiveSteps(outWorkspaceRead, '/srv/work/projects', 400, 100, TIMINGS))
-            .toEqual({ state: 'parked_on_tool', latestStepIndex: 5 });
+            .toMatchObject({
+                state: 'parked_on_tool',
+                latestStepIndex: 5,
+                parkedCall: { stepIndex: 5, callIndex: 0, toolName: 'read_file', decodedArgs: { Path: '/etc/hosts' } }
+            });
+        expect(inspectAgyReactiveSteps(outWorkspaceRead, '/srv/work/projects', 2_500, 100, TIMINGS, { skipPermissions: true }))
+            .toEqual({ state: 'running', latestStepIndex: 5 });
 
         // Partially completed mixed batch: allowed read_file finishes (step 6 READ_FILE DONE),
-        // while second tool call (gated run_command) waits on permission.
+        // while second tool call (gated run_command) waits on permission in non-skip modes.
         const mixedBatch: AgyTranscriptStep[] = [
             systemStep,
             {
@@ -335,7 +380,16 @@ describe('agyReactiveWakeup pure helpers', () => {
         expect(inspectAgyReactiveSteps(mixedBatch, '/srv/work/projects', 200, 100, TIMINGS))
             .toEqual({ state: 'running', latestStepIndex: 6 });
         expect(inspectAgyReactiveSteps(mixedBatch, '/srv/work/projects', 310, 100, TIMINGS))
-            .toEqual({ state: 'parked_on_tool', latestStepIndex: 6 });
+            .toMatchObject({
+                state: 'parked_on_tool',
+                latestStepIndex: 6,
+                parkedCall: {
+                    stepIndex: 5,
+                    callIndex: 1,
+                    toolName: 'run_command',
+                    decodedArgs: { CommandLine: 'git status' }
+                }
+            });
     });
 
     it('converts background task completion, allowed tool calls, reasoning, text, and usage', () => {
@@ -670,11 +724,136 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
-    it('reattaches with an internal ACP prompt when a reactive wakeup parks on a gated run_command', async () => {
+    it('never sends hidden wakeup prompts under always-proceed even when a wakeup run_command executes slowly', async () => {
         const backend = new WakeupTestBackend();
         const { session, queue, client } = makeHarness('always-proceed');
 
-        // Turn 1 launches subagents and ends turn.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Scheduled timer, waiting...' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run timer' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Scheduled timer, waiting...' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 30,
+            reactiveSlowToolParkMs: 50
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('run timer', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.keepAlive.mockClear();
+
+        // Timer wakes up and starts `run_command` in transcript.jsonl; command runs slower than both park thresholds.
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    created_at: '2026-11-11T12:15:00Z',
+                    content: '<SYSTEM_MESSAGE>Timer fired</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    created_at: '2026-11-11T12:15:01Z',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"date +%T"' } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.keepAlive).toHaveBeenCalledWith(true, 'remote', expect.anything());
+        });
+        await new Promise((resolve) => setTimeout(resolve, 90));
+
+        // Still only Turn 1's user prompt — no hidden wakeup prompt was sent and session stays thinking!
+        expect(backend.prompts).toHaveLength(1);
+        expect(client.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' });
+
+        // Command finishes autonomously under --dangerously-skip-permissions and agy writes result + reply.
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'DONE',
+                    created_at: '2026-11-11T12:15:02Z',
+                    content: 'Command exited with code 0.\n\nCommand output:\n12:15:02'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    created_at: '2026-11-11T12:15:03Z',
+                    content: 'Timer timestamp: 12:15:02.',
+                    input_tokens: 90,
+                    output_tokens: 18
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(backend.resumeCalls).toEqual([backend.sessionIdToCreate]);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        expect(backend.prompts).toHaveLength(1);
+        expect(client.sendUserMessage).not.toHaveBeenCalled();
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+            name: 'Bash',
+            input: expect.objectContaining({ command: 'date +%T' })
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`,
+            output: expect.objectContaining({ exit_code: 0 })
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'Timer timestamp: 12:15:02.'
+        }));
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({
+                provider: 'agy',
+                agy_usage: expect.objectContaining({ input_tokens: 90, output_tokens: 18 })
+            })
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('surfaces waiting-for-approval without hidden messages when a request-review wakeup parks on run_command, and continues on user approval', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('request-review');
+
         backend.promptScripts.push(async (onUpdate) => {
             onUpdate({ type: 'text', text: 'Launched subagents, waiting...' });
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
@@ -684,8 +863,18 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             ]);
         });
 
-        // Internal wakeup continuation prompt unblocks SetPendingToolPermission -> auto-approves in always-proceed -> streams final answer!
+        // Only runs AFTER the user explicitly approves the parked card!
         backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-parked-1',
+                name: 'tail -n 3 report.txt',
+                title: 'tail -n 3 report.txt',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'tail -n 3 report.txt' }
+            });
             backend.permissionHandler?.({
                 id: 'perm-1',
                 sessionId: backend.sessionIdToCreate,
@@ -699,7 +888,13 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             await vi.waitFor(() => {
                 expect(backend.permissionResponses).toHaveLength(1);
             });
-            onUpdate({ type: 'text', text: 'Audit complete after subagent wakeup.' });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call-parked-1',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nOK_LINE', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Audit complete after user approval.' });
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
         });
 
@@ -712,7 +907,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         });
         const runPromise = launcher.launch();
 
-        queue.push('audit homelab', { permissionMode: 'always-proceed' }, 'msg-1');
+        queue.push('audit homelab', { permissionMode: 'request-review' }, 'msg-1');
         await vi.waitFor(() => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
@@ -741,25 +936,163 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             'utf8'
         );
 
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        // While waiting on user approval: zero extra ACP prompts sent, thinking is false, pending Bash card emitted!
+        expect(backend.prompts).toHaveLength(1);
+        expect(client.sendUserMessage).not.toHaveBeenCalled();
+        expect(client.keepAlive).toHaveBeenLastCalledWith(false, 'remote', expect.anything());
+
+        // User clicks Approve on the parked Bash card in HAPI.
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        expect(permHandler).toBeDefined();
+        await permHandler!({ id: parkedCallId, approved: true, decision: 'approved' });
+
         await vi.waitFor(() => {
             expect(backend.prompts).toHaveLength(2);
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
 
-        // Internal reattach prompt was sent without calling resumeSession first (so agy replays unstreamed steps).
-        expect(backend.resumeCalls).toEqual([]);
-        expect(backend.prompts[1]).toEqual([{ type: 'text', text: AGY_WAKEUP_CONTINUE_PROMPT }]);
+        expect(client.sendUserMessage).toHaveBeenCalledWith('Approved: tail -n 3 report.txt');
+        expect(backend.prompts[1]).toEqual([{ type: 'text', text: 'Approved: tail -n 3 report.txt' }]);
         expect(backend.permissionResponses[0]).toEqual({ outcome: 'selected', optionId: 'allow_once' });
 
-        // Internal prompt never leaks into abort-restore events.
-        const events = client.sendSessionEvent.mock.calls.map(([e]) => e);
-        expect(events).not.toContainEqual(expect.objectContaining({ type: 'abort-restore' }));
-
         const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        // Live tool_call/tool_result aliased onto parkedCallId rather than opening a second Bash card.
+        expect(sentMessages.filter((m) => (m as { type?: string; callId?: string }).type === 'tool-call' && (m as { callId?: string }).callId === parkedCallId)).toHaveLength(1);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: parkedCallId
+        }));
         expect(sentMessages).toContainEqual(expect.objectContaining({
             type: 'message',
-            message: 'Audit complete after subagent wakeup.'
+            message: 'Audit complete after user approval.'
         }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('surfaces AskUserQuestion card without hidden prompts when a wakeup calls ask_question under always-proceed, and resumes with user answer', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Checking in background...' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'deploy' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Checking in background...' }
+            ]);
+        });
+
+        let elicitationResponse: FormElicitationResponse | null = null;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-ask-live-1',
+                name: 'ask_question',
+                title: 'ask_question',
+                status: 'pending',
+                input: {
+                    questions: [{ question: 'Which slot?', options: ['GREEN', 'BLUE'] }]
+                },
+                nativeName: 'ask_question',
+                nativeArgs: {
+                    questions: [{ question: 'Which slot?', options: ['GREEN', 'BLUE'] }]
+                }
+            });
+            elicitationResponse = await backend.formElicitationHandler!({
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'call-ask-live-1',
+                message: 'Please answer the question(s):',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {
+                        q1: {
+                            type: 'string',
+                            title: 'Which slot?',
+                            oneOf: [
+                                { const: '1', title: 'GREEN' },
+                                { const: '2', title: 'BLUE' }
+                            ]
+                        }
+                    },
+                    required: ['q1']
+                }
+            });
+            onUpdate({ type: 'text', text: 'Deploying to BLUE.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('deploy', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Precheck done</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{
+                        name: 'ask_question',
+                        args: {
+                            questions: JSON.stringify([{ question: 'Which slot?', options: ['GREEN', 'BLUE'] }])
+                        }
+                    }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        expect(backend.prompts).toHaveLength(1);
+        expect(client.sendUserMessage).not.toHaveBeenCalled();
+
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({
+            id: parkedCallId,
+            approved: true,
+            decision: 'approved',
+            answers: { '0': ['BLUE'] }
+        });
+
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        expect(client.sendUserMessage).toHaveBeenCalledWith('Answered question: BLUE');
+        expect(elicitationResponse).toEqual({ action: 'accept', content: { q1: '2' } });
 
         queue.close();
         await runPromise;
@@ -969,9 +1302,9 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
-    it('reattaches when a wakeup completes an in-workspace read_file and then parks on a gated run_command in the same batch', async () => {
+    it('surfaces completed Read card plus pending Bash approval when a request-review wakeup parks mid-batch, and continues on user approval', async () => {
         const backend = new WakeupTestBackend();
-        const { session, queue, client } = makeHarness('always-proceed');
+        const { session, queue, client } = makeHarness('request-review');
 
         backend.promptScripts.push(async (onUpdate) => {
             onUpdate({ type: 'text', text: 'Waiting on subagent...' });
@@ -982,6 +1315,29 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             ]);
         });
         backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-git-status-live',
+                name: 'git status',
+                title: 'git status',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'git status' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-git-1',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'call-git-status-live',
+                title: 'git status',
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
             onUpdate({ type: 'text', text: 'Mixed batch continued cleanly.' });
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
         });
@@ -996,7 +1352,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         });
         const runPromise = launcher.launch();
 
-        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
         await vi.waitFor(() => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
@@ -1034,12 +1390,29 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             'utf8'
         );
 
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-1`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        // No hidden prompt sent while waiting; completed Read card is already shown!
+        expect(backend.prompts).toHaveLength(1);
+        const midMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(midMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: `agy-wakeup-${backend.sessionIdToCreate}-3-0`
+        }));
+
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({ id: parkedCallId, approved: true, decision: 'approved' });
+
         await vi.waitFor(() => {
             expect(backend.prompts).toHaveLength(2);
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
 
-        expect(backend.prompts[1]).toEqual([{ type: 'text', text: AGY_WAKEUP_CONTINUE_PROMPT }]);
+        expect(client.sendUserMessage).toHaveBeenCalledWith('Approved: git status');
+        expect(backend.prompts[1]).toEqual([{ type: 'text', text: 'Approved: git status' }]);
         const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
         expect(sentMessages).toContainEqual(expect.objectContaining({
             type: 'message',
@@ -1634,7 +2007,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
     it('associates task ID when a parked wakeup run_command is approved, backgrounds, and completes in a later wakeup', async () => {
         const backend = new WakeupTestBackend();
-        const { session, queue, client } = makeHarness('always-proceed');
+        const { session, queue, client } = makeHarness('request-review');
 
         // Turn 1 starts a subagent and ends.
         backend.promptScripts.push(async (onUpdate) => {
@@ -1646,8 +2019,31 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             ]);
         });
 
-        // Internal wakeup reattach approves the parked `run_command`, which then backgrounds (`task-9`) before end_turn!
+        // User approval unblocks the parked `run_command`, which then backgrounds (`task-9`) before end_turn!
         backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-replayed-bg',
+                name: 'sleep 20 && echo REPLAYED_BG_DONE',
+                title: 'sleep 20 && echo REPLAYED_BG_DONE',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'sleep 20 && echo REPLAYED_BG_DONE' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-bg-1',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'call-replayed-bg',
+                title: 'sleep 20 && echo REPLAYED_BG_DONE',
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
             onUpdate({
                 type: 'tool_call',
                 id: 'call-replayed-bg',
@@ -1692,7 +2088,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         });
         const runPromise = launcher.launch();
 
-        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
         await vi.waitFor(() => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
@@ -1721,6 +2117,15 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             'utf8'
         );
 
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+        expect(backend.prompts).toHaveLength(1);
+
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({ id: parkedCallId, approved: true, decision: 'approved' });
+
         await vi.waitFor(() => {
             expect(backend.prompts).toHaveLength(2);
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
@@ -1728,7 +2133,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         client.sendSessionEvent.mockClear();
         client.sendAgentMessage.mockClear();
 
-        // Later autonomous wakeup completes `task-9` -> must replace `call-replayed-bg` placeholder!
+        // Later autonomous wakeup completes `task-9` -> must replace `parkedCallId` placeholder!
         appendFileSync(
             compactPath,
             [
@@ -1757,7 +2162,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
         expect(sentMessages).toContainEqual(expect.objectContaining({
             type: 'tool-call-result',
-            callId: 'call-replayed-bg',
+            callId: parkedCallId,
             is_error: false,
             output: { stdout: 'REPLAYED_BG_DONE', exit_code: 0 }
         }));
@@ -3416,6 +3821,1004 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         const allMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
         expect(allMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('retires heuristic parked request and completes wakeup when transcript progresses during approval wait', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Scheduled check armed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Scheduled check armed.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35,
+            reactiveSlowToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Autonomous wakeup invokes a slow in-workspace `read_file` with no action row yet
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const slowReadPath = `${session.path}/large-log.txt`;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>',
+                    created_at: '2026-11-12T03:00:00Z'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Reading log...',
+                    input_tokens: 120,
+                    output_tokens: 15,
+                    created_at: '2026-11-12T03:00:01Z',
+                    tool_calls: [
+                        {
+                            name: 'read_file',
+                            args: { Path: JSON.stringify(slowReadPath) }
+                        }
+                    ]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticReadId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeDefined();
+        });
+        expect(backend.prompts).toHaveLength(1);
+
+        // Now the slow in-workspace read finishes natively in agy and writes its reply — without user input!
+        const resumeBefore = backend.resumeCalls.length;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'READ_FILE',
+                    status: 'DONE',
+                    content: 'LOG_CONTENT_OK',
+                    created_at: '2026-11-12T03:00:03Z'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Finished reading log without needing approval.',
+                    input_tokens: 160,
+                    output_tokens: 20,
+                    created_at: '2026-11-12T03:00:04Z'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // Stale approval request was retired cleanly without a canceled completion or prompt!
+        expect(client.getAgentState().requests?.[syntheticReadId]).toBeUndefined();
+        expect(client.getAgentState().completedRequests?.[syntheticReadId]).toBeUndefined();
+        expect(backend.prompts).toHaveLength(1);
+        expect(backend.resumeCalls.length).toBeGreaterThan(resumeBefore);
+
+        const wakeupMsgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        const readCalls = wakeupMsgs.filter(
+            (msg) => (msg as { type?: string; callId?: string }).type === 'tool-call'
+                && (msg as { callId?: string }).callId === syntheticReadId
+        );
+        expect(readCalls).toHaveLength(1);
+        expect(wakeupMsgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: syntheticReadId,
+            is_error: false
+        }));
+        const assistantTexts = wakeupMsgs
+            .filter((msg) => (msg as { type?: string }).type === 'message')
+            .map((msg) => (msg as { message?: string }).message);
+        expect(assistantTexts).toEqual([
+            'Reading log...',
+            'Finished reading log without needing approval.'
+        ]);
+        expect(wakeupMsgs).toContainEqual(expect.objectContaining({
+            type: 'round-summary'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('matches parked call by identity across earlier same-tool prefix replay and preserves approved_for_session', async () => {
+        const { session, client, queue } = makeHarness('auto');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Armed in auto mode.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Armed in auto mode.' }
+            ]);
+        });
+
+        // Reattachment replays the completed safe `run_command` BEFORE the parked irreversible `run_command`!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-prefix-safe-1',
+                name: 'echo SAFE_PREFIX',
+                title: 'echo SAFE_PREFIX',
+                status: 'completed',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'echo SAFE_PREFIX' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-prefix-safe-1',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nSAFE_PREFIX', exit_code: 0 }
+            });
+
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-parked-rm-2',
+                name: 'rm -rf ./staging',
+                title: 'rm -rf ./staging',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'rm -rf ./staging' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-rm-2',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'live-parked-rm-2',
+                title: 'rm -rf ./staging',
+                rawInput: { CommandLine: 'rm -rf ./staging' },
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'allow_always', name: 'Allow for session', kind: 'allow_always' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-parked-rm-2',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nCLEANED_STAGING', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Staging cleaned.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'auto' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Wakeup in auto mode completes safe `echo SAFE_PREFIX` (steps 3-4), then parks on `rm -rf ./staging` (step 5)
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('echo SAFE_PREFIX') } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'DONE',
+                    content: 'Command exited with code 0.\n\nCommand output:\nSAFE_PREFIX'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('rm -rf ./staging') } }
+                    ]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const prefixCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-5-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        // User explicitly clicks "Allow for session" (`approved_for_session`) on the parked card
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        expect(permHandler).toBeDefined();
+        await permHandler!({
+            id: parkedCallId,
+            approved: true,
+            decision: 'approved_for_session'
+        });
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // Pre-decided explicit session grant was preserved (`allow_always`), NOT downgraded to `allow_once`,
+        // and no second approval was requested!
+        expect(backend.permissionResponses).toEqual([
+            { outcome: 'selected', optionId: 'allow_always' }
+        ]);
+        expect(client.getAgentState().requests).toEqual({});
+
+        const allMsgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        const toolCalls = allMsgs.filter((msg) => (msg as { type?: string }).type === 'tool-call');
+        expect(toolCalls.map((msg) => (msg as { callId?: string }).callId)).toEqual([
+            prefixCallId,
+            parkedCallId
+        ]);
+
+        const parkedResults = allMsgs.filter(
+            (msg) => (msg as { type?: string; callId?: string }).type === 'tool-call-result'
+                && (msg as { callId?: string }).callId === parkedCallId
+        );
+        expect(parkedResults).toEqual([
+            expect.objectContaining({
+                type: 'tool-call-result',
+                callId: parkedCallId,
+                is_error: false,
+                output: { stdout: 'CLEANED_STAGING', exit_code: 0 }
+            })
+        ]);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('keeps pending approval intact when an unrelated SYSTEM_MESSAGE arrives during approval wait', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Waiting on timers.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Waiting on timers.' }
+            ]);
+        });
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-gated-after-sys',
+                name: 'echo GATED_CMD',
+                title: 'echo GATED_CMD',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'echo GATED_CMD' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-gated-sys',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'live-gated-after-sys',
+                title: 'echo GATED_CMD',
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-gated-after-sys',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nGATED_CMD', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Handled gated command and second notification.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35,
+            reactiveMaxIdleMs: 120
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // First timer wakes agy and parks on gated `run_command` (step 3, no action step)
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nFirst timer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('echo GATED_CMD') } }
+                    ]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        // While still waiting on user approval, a second timer/background task appends an unrelated SYSTEM_MESSAGE!
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 4,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: '<SYSTEM_MESSAGE>\nSecond unrelated background notification\n</SYSTEM_MESSAGE>'
+            })}\n`,
+            'utf8'
+        );
+
+        // Wait past reactivePollMs + reactiveMaxIdleMs to prove the approval request is NOT retired or timed out!
+        await new Promise((resolve) => setTimeout(resolve, 160));
+        expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        expect(client.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' });
+        expect(backend.prompts).toHaveLength(1);
+
+        // User approves the still-pending card -> resumes cleanly!
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({ id: parkedCallId, approved: true, decision: 'approved' });
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        expect(backend.permissionResponses).toEqual([
+            { outcome: 'selected', optionId: 'allow_once' }
+        ]);
+        expect(client.getAgentState().requests?.[parkedCallId]).toBeUndefined();
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('delivers completed unforwarded wakeup output before restarting backend on an overlapping permission-mode change', async () => {
+        const { session, client, queue } = makeHarness('always-proceed');
+        const b1 = new WakeupTestBackend();
+        const b2 = new WakeupTestBackend();
+        b2.sessionIdToCreate = b1.sessionIdToCreate;
+        const createdSkipFlags: Array<boolean | undefined> = [];
+        let backendIdx = 0;
+
+        b1.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Timer armed in always-proceed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, b1.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Timer armed in always-proceed.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: (opts) => {
+                createdSkipFlags.push(opts?.skipPermissions);
+                const chosen = backendIdx === 0 ? b1 : b2;
+                backendIdx += 1;
+                return chosen as unknown as AcpSdkBackend;
+            },
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Autonomous wakeup completes in transcript.jsonl at the exact moment the user switches
+        // permission mode out of `always-proceed` -> `request-review` (which restarts agy & calls session/resume).
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, b1.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>',
+                    created_at: '2026-11-12T04:00:00Z'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    input_tokens: 90,
+                    output_tokens: 15,
+                    created_at: '2026-11-12T04:00:01Z',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('date +%T') } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'DONE',
+                    content: 'Command exited with code 0.\n\nCommand output:\n04:00:01',
+                    created_at: '2026-11-12T04:00:01Z'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Wakeup finished right before mode switch.',
+                    input_tokens: 110,
+                    output_tokens: 18,
+                    created_at: '2026-11-12T04:00:02Z'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+        session.setPermissionMode('request-review');
+
+        await vi.waitFor(() => {
+            expect(createdSkipFlags).toEqual([true, false]);
+            expect(b2.resumeCalls).toEqual([b1.sessionIdToCreate]);
+            expect(b2.setModeCalls).toContain('default');
+        });
+
+        const sentMsgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        const wakeupCallId = `agy-wakeup-${b1.sessionIdToCreate}-3-0`;
+        expect(sentMsgs.filter((m) => (m as { type?: string; callId?: string }).type === 'tool-call' && (m as { callId?: string }).callId === wakeupCallId)).toHaveLength(1);
+        expect(sentMsgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: wakeupCallId,
+            is_error: false,
+            output: { stdout: '04:00:01', exit_code: 0 }
+        }));
+        expect(sentMsgs).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'Wakeup finished right before mode switch.'
+        }));
+        expect(sentMsgs).toContainEqual(expect.objectContaining({
+            type: 'round-summary'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('preserves and delivers the completed tool result when a user message preempts after native completion before final planner response', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Armed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Armed.' }
+            ]);
+        });
+
+        // User's interrupting prompt replays the finished read_file before answering the user's message
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Checking file...' });
+            onUpdate({
+                type: 'tool_call',
+                id: 'replayed-read-1',
+                name: 'read_file',
+                title: 'read_file',
+                status: 'completed',
+                input: { Path: `${session.path}/notes.txt` },
+                nativeName: 'read_file',
+                nativeArgs: { Path: `${session.path}/notes.txt` }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'replayed-read-1',
+                status: 'completed',
+                output: 'NOTES_BODY_OK'
+            });
+            onUpdate({ type: 'text', text: 'Handled user interruption with notes context.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 30,
+            reactiveSlowToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Slow in-workspace read_file heuristically parks first
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const notesPath = `${session.path}/notes.txt`;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Checking file...',
+                    tool_calls: [{ name: 'read_file', args: { Path: JSON.stringify(notesPath) } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticReadId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeDefined();
+        });
+
+        // Native read_file completes in transcript.jsonl (retiring the approval), and BEFORE any final
+        // PLANNER_RESPONSE is written, the user queues a chat message!
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 4,
+                source: 'MODEL',
+                type: 'READ_FILE',
+                status: 'DONE',
+                content: 'NOTES_BODY_OK'
+            })}\n`,
+            'utf8'
+        );
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeUndefined();
+        });
+
+        queue.push('actually summarize that for me', { permissionMode: 'request-review' }, 'msg-2');
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const msgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        // Original card exists once AND receives its completed result without duplicate replayed cards!
+        expect(msgs.filter((m) => (m as { type?: string }).type === 'tool-call')).toEqual([
+            expect.objectContaining({
+                type: 'tool-call',
+                callId: syntheticReadId
+            })
+        ]);
+        expect(msgs.filter((m) => (m as { type?: string }).type === 'tool-call-result')).toEqual([
+            expect.objectContaining({
+                type: 'tool-call-result',
+                callId: syntheticReadId,
+                is_error: false,
+                output: 'NOTES_BODY_OK'
+            })
+        ]);
+        const texts = msgs
+            .filter((m) => (m as { type?: string }).type === 'message')
+            .map((m) => (m as { message?: string }).message);
+        expect(texts).toEqual([
+            'Checking file...',
+            'Handled user interruption with notes context.'
+        ]);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('never transfers a heuristically parked read_file approval to a subsequent gated run_command when read completes before reattachment', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Armed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Armed.' }
+            ]);
+        });
+
+        // Between the user's approval click and reattachment, `read_file` already finished natively!
+        // Reattachment replays `read_file` as `in_progress` -> `completed` -> `tool_result`, and then proposes a gated `run_command`!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'replayed-finished-read',
+                name: 'read_file',
+                title: 'read_file',
+                status: 'in_progress',
+                input: { Path: `${session.path}/config.json` },
+                nativeName: 'read_file',
+                nativeArgs: { Path: `${session.path}/config.json` }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'replayed-finished-read',
+                name: 'read_file',
+                title: 'read_file',
+                status: 'completed',
+                input: { Path: `${session.path}/config.json` },
+                nativeName: 'read_file',
+                nativeArgs: { Path: `${session.path}/config.json` }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'replayed-finished-read',
+                status: 'completed',
+                output: '{"deploy":true}'
+            });
+
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-gated-deploy-cmd',
+                name: 'rm -rf ./prod-cache',
+                title: 'rm -rf ./prod-cache',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'rm -rf ./prod-cache' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-deploy-cmd',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'live-gated-deploy-cmd',
+                kind: 'execute',
+                title: 'rm -rf ./prod-cache',
+                rawInput: { CommandLine: 'rm -rf ./prod-cache' },
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+
+            // Must wait on explicit user decision for `perm-deploy-cmd` (NOT auto-approved from `read_file`!)
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
+            onUpdate({ type: 'text', text: 'Stopped before touching prod-cache.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 30,
+            reactiveSlowToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Slow in-workspace read_file heuristically parks
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const configPath = `${session.path}/config.json`;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'read_file', args: { Path: JSON.stringify(configPath) } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticReadId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeDefined();
+        });
+
+        // User approves the `read_file` card just as `read_file` finishes natively before reattachment
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        const approvalDone = permHandler!({ id: syntheticReadId, approved: true, decision: 'approved' });
+
+        // `perm-deploy-cmd` MUST NOT be auto-approved; it must surface in `agentState.requests` for explicit user choice!
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.['perm-deploy-cmd']).toBeDefined();
+        });
+        expect(backend.permissionResponses).toEqual([]);
+
+        // User explicitly denies `perm-deploy-cmd`!
+        await permHandler!({ id: 'perm-deploy-cmd', approved: false, decision: 'denied' });
+        await approvalDone;
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        expect(backend.permissionResponses).toEqual([
+            { outcome: 'selected', optionId: 'reject_once' }
+        ]);
+
+        // Replayed completed `read_file` populated the original `syntheticReadId` card without duplicating it
+        const msgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(
+            msgs.filter(
+                (m) => (m as { type?: string; callId?: string }).type === 'tool-call'
+                    && (m as { callId?: string }).callId === syntheticReadId
+            )
+        ).toHaveLength(1);
+        expect(msgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: syntheticReadId,
+            is_error: false,
+            output: '{"deploy":true}'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('preserves saved parked question answer when reattachment replays in_progress before pending and elicitation', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Checking in background...' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'deploy' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Checking in background...' }
+            ]);
+        });
+
+        let elicitationResponse: FormElicitationResponse | null = null;
+        backend.promptScripts.push(async (onUpdate) => {
+            const questionPayload = [{
+                is_multi_select: false,
+                options: ['(Recommended) RED', 'BLUE'],
+                question: 'Do you prefer RED or BLUE?'
+            }];
+            // Mirrors agy-question-turn.json: initial `in_progress` tool_call followed by `pending` update and elicitation!
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_q',
+                name: 'ask_question',
+                title: 'Run ask_question',
+                status: 'in_progress',
+                input: { questions: questionPayload },
+                nativeName: 'ask_question',
+                nativeArgs: { questions: questionPayload }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_q',
+                name: 'ask_question',
+                title: 'Run ask_question',
+                status: 'pending',
+                input: { questions: questionPayload },
+                nativeName: 'ask_question',
+                nativeArgs: { questions: questionPayload }
+            });
+            elicitationResponse = await backend.formElicitationHandler!({
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'call_q',
+                message: 'The agent has a question.',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {
+                        q1: {
+                            type: 'string',
+                            title: 'Do you prefer RED or BLUE?',
+                            oneOf: [
+                                { const: '1', title: '1. (Recommended) RED' },
+                                { const: '2', title: '2. BLUE' }
+                            ]
+                        }
+                    },
+                    required: ['q1']
+                }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call_q',
+                status: 'completed',
+                output: 'BLUE'
+            });
+            onUpdate({ type: 'text', text: 'Proceeding with BLUE.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('deploy', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Precheck done</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{
+                        name: 'ask_question',
+                        args: {
+                            questions: JSON.stringify([{
+                                is_multi_select: false,
+                                options: ['(Recommended) RED', 'BLUE'],
+                                question: 'Do you prefer RED or BLUE?'
+                            }])
+                        }
+                    }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticQuestionId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticQuestionId]).toBeDefined();
+        });
+
+        // User answers the parked question ONCE — reattachment must consume the saved answer without re-prompting!
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({
+            id: syntheticQuestionId,
+            approved: true,
+            decision: 'approved',
+            answers: { '0': ['BLUE'] }
+        });
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        expect(elicitationResponse).toEqual({
+            action: 'accept',
+            content: { q1: '2' }
+        });
+        // No second question card or live `call_q` request was ever opened!
+        expect(client.getAgentState().requests?.call_q).toBeUndefined();
+        const msgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(msgs.filter((m) => (m as { type?: string }).type === 'tool-call')).toHaveLength(1);
+        expect(msgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: syntheticQuestionId,
+            is_error: false,
+            output: 'BLUE'
+        }));
 
         queue.close();
         await runPromise;

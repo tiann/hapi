@@ -75,6 +75,7 @@ export function PermissionField(props: PermissionFieldProps) {
                 >
                     {options.map((mode) => {
                         const unavailable = mode === 'auto'
+                            && props.agent === 'grok'
                             && props.autoPermissionModeSupported === false
                         return (
                             <option key={mode} value={mode} disabled={unavailable}>
@@ -83,7 +84,7 @@ export function PermissionField(props: PermissionFieldProps) {
                         )
                     })}
                 </SelectControl>
-                {props.autoPermissionModeSupported === false ? (
+                {props.agent === 'grok' && props.autoPermissionModeSupported === false ? (
                     <span className="text-xs text-[var(--app-hint)]">
                         {t('newSession.grokAutoUnavailableDesc')}
                     </span>

@@ -15,12 +15,15 @@ interface PermissionResponseMessage {
     id: string
     approved: boolean
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+    mode?: string
     reason?: string
     answers?: Record<string, string[]>
 }
 
 export type UserAnswer = {
     decision: NonNullable<PermissionResponseMessage['decision']>
+    mode?: string
+    reason?: string
     answers?: Record<string, string[]>
 }
 
@@ -70,6 +73,9 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             autoApproveOnce?: boolean
             // Questions need the user's answer in every mode.
             requiresUser?: (request: PermissionRequest) => boolean
+            // Resolves a live ACP permission request using an explicit user
+            // decision captured before the prompt stream reattached.
+            resolvePreDecided?: (request: PermissionRequest) => 'approved' | 'approved_for_session' | 'denied' | null
             // Called when a request starts waiting for the user; the returned
             // callback runs once it is answered (agents timing their own work).
             onUserWait?: () => () => void
@@ -80,6 +86,15 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     }
 
     private handlePermissionRequest(request: PermissionRequest): void {
+        const preDecided = this.options.resolvePreDecided?.(request) ?? null
+        if (preDecided) {
+            void this.backend.respondToPermission(
+                request.sessionId,
+                request,
+                mapDecisionToOutcome(request, preDecided)
+            )
+            return
+        }
         const toolName = deriveToolName({
             title: request.title,
             kind: request.kind,
@@ -158,11 +173,17 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             this.userQuestions.delete(response.id)
             const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
             this.endUserWait(response.id)
-            question(response.answers ? { decision, answers: response.answers } : { decision })
+            question({
+                decision,
+                ...(response.mode ? { mode: response.mode } : {}),
+                ...(response.reason ? { reason: response.reason } : {}),
+                ...(response.answers ? { answers: response.answers } : {})
+            })
             pending.resolve()
             return {
                 status: response.approved ? 'approved' : 'denied',
                 decision,
+                mode: response.mode,
                 reason: response.reason,
                 answers: response.answers
             }
@@ -205,6 +226,32 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     /** Whether a request with this id is open or was already shown. */
     isUsed(id: string): boolean {
         return this.usedIds.has(id) || this.pendingRequests.has(id)
+    }
+
+    /**
+     * Retires an `askUser` request when the underlying tool completed natively
+     * without requiring user approval, removing `requests[id]` cleanly without
+     * recording a canceled/aborted completion entry.
+     */
+    retireUserQuestion(id: string): void {
+        const hadQuestion = this.userQuestions.delete(id)
+        const pending = this.pendingRequests.get(id)
+        if (pending) {
+            pending.resolve()
+            this.pendingRequests.delete(id)
+        }
+        if (hadQuestion || pending) {
+            this.endUserWait(id)
+        }
+        this.client.updateAgentState((currentState) => {
+            if (!currentState.requests?.[id]) return currentState
+            const nextRequests = { ...currentState.requests }
+            delete nextRequests[id]
+            return {
+                ...currentState,
+                requests: nextRequests
+            }
+        })
     }
 
     hasPendingRequests(): boolean {
