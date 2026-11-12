@@ -832,6 +832,7 @@ function SessionChatInner(props: SessionChatProps) {
             ? { requestId: props.initialPendingRequestId, version: 1, fromRoute: true }
             : null
     )
+    const [livePendingRequestId, setLivePendingRequestId] = useState<string | null>(props.initialPendingRequestId ?? null)
     const [pendingMessageTarget, setPendingMessageTarget] = useState<PendingRequestTarget | null>(null)
     const [pendingAsyncTarget, setPendingAsyncTarget] = useState<PendingRequestNavigation | null>(null)
     useEffect(() => {
@@ -844,6 +845,7 @@ function SessionChatInner(props: SessionChatProps) {
 
     useEffect(() => {
         if (!props.initialPendingRequestId) return
+        setLivePendingRequestId(props.initialPendingRequestId)
         pendingRequestSequenceRef.current += 1
         setPendingRequestNavigation({
             requestId: props.initialPendingRequestId,
@@ -860,6 +862,7 @@ function SessionChatInner(props: SessionChatProps) {
     }, [props.onInitialPendingRequestConsumed])
 
     const locatePendingRequest = useCallback((requestId: string) => {
+        setLivePendingRequestId(requestId)
         pendingRequestSequenceRef.current += 1
         setPendingRequestNavigation({
             requestId,
@@ -897,6 +900,7 @@ function SessionChatInner(props: SessionChatProps) {
         if (!pendingRequestNavigation) return
         const request = props.session.agentState?.requests?.[pendingRequestNavigation.requestId]
         if (!request) {
+            setLivePendingRequestId(null)
             consumePendingRequestNavigation(pendingRequestNavigation.fromRoute)
             return
         }
@@ -917,6 +921,11 @@ function SessionChatInner(props: SessionChatProps) {
             fromRoute: pendingRequestNavigation.fromRoute,
         })
     }, [consumePendingRequestNavigation, pendingRequestNavigation, props.session.agentState?.requests])
+    useEffect(() => {
+        if (livePendingRequestId && !props.session.agentState?.requests?.[livePendingRequestId]) {
+            setLivePendingRequestId(null)
+        }
+    }, [livePendingRequestId, props.session.agentState?.requests])
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     // Serialize Cursor setModel RPCs so drill-down default apply cannot finish
     // after a later explicit variant click and overwrite it.
@@ -1732,9 +1741,10 @@ function SessionChatInner(props: SessionChatProps) {
 
     const reduced = useMemo(
         () => reduceChatBlocks(normalizedMessages, props.session.agentState, {
-            goalStateMessages: normalizedGoalStateMessages
+            goalStateMessages: normalizedGoalStateMessages,
+            pendingRequestTargetId: livePendingRequestId ?? undefined
         }),
-        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState]
+        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState, livePendingRequestId]
     )
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),

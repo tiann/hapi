@@ -44,6 +44,16 @@ describe('getPendingRequestKinds', () => {
         expect(kinds).toEqual(['input'])
     })
 
+    it('classifies Cursor questions as input', () => {
+        const kinds = getPendingRequestKinds(makeSession({
+            agentState: {
+                requests: {
+                    req1: { tool: 'CursorAskQuestion', arguments: {} }
+                }
+            }
+        }))
+        expect(kinds).toEqual(['input'])
+    })
     it('classifies other pending tools as permission', () => {
         const kinds = getPendingRequestKinds(makeSession({
             agentState: {

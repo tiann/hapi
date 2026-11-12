@@ -22,6 +22,12 @@ describe('StatusBar pending requests', () => {
         expect(onClick).toHaveBeenCalledExactlyOnceWith('question')
     })
 
+    it('labels Cursor questions as awaiting an answer', () => {
+        renderStatus({
+            cursor: { tool: 'CursorAskQuestion', arguments: { prompt: 'Choose one' }, createdAt: 1 },
+        })
+        expect(screen.getByText('Awaiting your answer')).toBeInTheDocument()
+    })
     it('uses an approval label for permission requests', () => {
         renderStatus({
             approval: { tool: 'Bash', arguments: {}, createdAt: 1 },

@@ -428,6 +428,21 @@ describe('reduceChatBlocks', () => {
         expect(reduced.blocks.some(b => b.kind === 'tool-call' && b.id === 'ask-done')).toBe(false)
     })
 
+    it('synthesizes the selected live-only request even when it predates the window', () => {
+        const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
+        const agentState = {
+            requests: {
+                'cursor-old': { tool: 'CursorAskQuestion', arguments: { prompt: 'Pick one' }, createdAt: 1_600_000_000_000 },
+                'other-old': { tool: 'Bash', arguments: {}, createdAt: 1_600_000_000_100 }
+            },
+            completedRequests: {}
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState, { pendingRequestTargetId: 'cursor-old' })
+        const rendered = reduced.blocks.filter((block) => block.kind === 'tool-call').map((block) => block.kind === 'tool-call' ? block.id : null)
+        expect(rendered).toContain('cursor-old')
+        expect(rendered).not.toContain('other-old')
+    })
     it('still synthesizes a card for a pending request with no message in the window', () => {
         const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
         const agentState = {

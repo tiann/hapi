@@ -64,6 +64,11 @@ describe('pending request helpers', () => {
                 createdAt: 20,
                 arguments: { command: 'git status --short', description: 'Inspect the worktree' },
             },
+            cursor: {
+                tool: 'CursorAskQuestion',
+                createdAt: 30,
+                arguments: { prompt: 'Choose a Cursor path' },
+            },
         })
 
         expect(getPendingRequestDetail(entries[0]!)).toEqual({
@@ -72,6 +77,11 @@ describe('pending request helpers', () => {
         })
         expect(getPendingRequestDetail(entries[1]!)).toEqual({
             text: 'git status --short',
+            moreCount: 0,
+        })
+        expect(entries[2]).toMatchObject({ kind: 'input', tool: 'CursorAskQuestion' })
+        expect(getPendingRequestDetail(entries[2]!)).toEqual({
+            text: 'Choose a Cursor path',
             moreCount: 0,
         })
     })
