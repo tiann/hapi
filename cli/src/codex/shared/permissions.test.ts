@@ -147,4 +147,22 @@ describe('shared request arbitration', () => {
         await f.handlers.get('permission')!({ id, approved: false, decision: 'denied' });
         expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/private.txt');
     });
+
+    it('marks attachment denied when a file request is canceled or resolved via native terminal', () => {
+        const f = fixture();
+        const request = {
+            id: 3,
+            method: 'item/tool/requestApproval',
+            params: {
+                threadId: 'thread',
+                turnId: 'turn',
+                itemId: 'call-read-terminal',
+                tool: 'mcp__filesystem__read_file',
+                input: { path: '/workspace/terminal-denied.txt' }
+            }
+        };
+        f.permissions.receive(request);
+        f.permissions.resolved('thread', 3, 'canceled');
+        expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/terminal-denied.txt');
+    });
 });

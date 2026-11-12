@@ -1234,6 +1234,28 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterSharedCodex).toHaveLength(1) // codex-shared-denied.txt blocked
+
+                // Qualified tool name + native terminal cancellation in SharedCodexPermissions
+                await writeFile(join(workspace, 'terminal-codex.txt'), 'terminal secret')
+                sharedCodex.receive({
+                    id: 102,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-qualified',
+                        tool: 'mcp__filesystem__read_file',
+                        input: { path: join(workspace, 'terminal-codex.txt') }
+                    }
+                })
+                sharedCodex.resolved('thread-1', 102, 'canceled')
+
+                client.sendAgentMessage({ type: 'message', message: '[term](terminal-codex.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterTerminal = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterTerminal).toHaveLength(1) // terminal-codex.txt also blocked!
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

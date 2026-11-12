@@ -14,7 +14,7 @@ const ReplySchema = z.object({
 });
 export type PermissionReply = z.infer<typeof ReplySchema>;
 type Reply = PermissionReply;
-type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; userInput: boolean; input: unknown; submitted: boolean; answer(reply: Reply): void; cancel(error: Error): void };
+type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; toolName: string; userInput: boolean; input: unknown; submitted: boolean; answer(reply: Reply): void; cancel(error: Error): void };
 
 /** No winner is inferred from submitting a Web candidate: only native resolution closes it. */
 export class SharedCodexPermissions {
@@ -68,6 +68,7 @@ export class SharedCodexPermissions {
         const ask = (tool: string, input: unknown): Promise<Reply> => new Promise((answer, cancel) => {
             const pending: Pending = { nativeId: request.id, threadId, turnId: string(record(request.params).turnId),
                 toolCallId: string(record(request.params).itemId) ?? key,
+                toolName: tool,
                 userInput: request.method === 'item/tool/requestUserInput', input, answer, cancel, submitted: false };
             this.pending.set(key, pending);
             // requestUserInput is a server request, not a native transcript item.
@@ -81,16 +82,26 @@ export class SharedCodexPermissions {
             client: { registerRequestHandler: (method, handler) => { handlers.set(method, handler); } },
             shared: true,
             permissionHandler: { handleToolCall: async (_id, name, input) => {
-                const reply = await ask(name, input);
-                if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
+                try {
+                    const reply = await ask(name, input);
+                    if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
+                        if (isDisplayOrReadFileTool(name)) {
+                            const targetPath = extractTargetFilePath(input);
+                            if (targetPath) {
+                                this.session.markAttachmentDenied(targetPath);
+                            }
+                        }
+                    }
+                    return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
+                } catch (error) {
                     if (isDisplayOrReadFileTool(name)) {
                         const targetPath = extractTargetFilePath(input);
                         if (targetPath) {
                             this.session.markAttachmentDenied(targetPath);
                         }
                     }
+                    throw error;
                 }
-                return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
             } },
             onUserInputRequest: async ({ input }) => {
                 const reply = await ask('request_user_input', input);
@@ -128,6 +139,12 @@ export class SharedCodexPermissions {
         for (const [key, request] of this.pending) {
             if (request.threadId !== threadId || request.nativeId !== nativeId) continue;
             this.pending.delete(key);
+            if (isDisplayOrReadFileTool(request.toolName)) {
+                const targetPath = extractTargetFilePath(request.input);
+                if (targetPath) {
+                    this.session.markAttachmentDenied(targetPath);
+                }
+            }
             request.cancel(new Error('Resolved by Codex'));
             if (request.userInput) this.questionEvent(request, status);
             this.session.updateAgentState(state => {

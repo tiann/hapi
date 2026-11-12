@@ -112,20 +112,31 @@ export function resolveToolAutoApprovalDecision(
 
 /**
  * Detect tools that display or read a local file.
- * Recognizes canonical names, snake_case variants, and ACP human-readable titles.
+ * Recognizes canonical names, snake_case variants, namespaced MCP tools
+ * (e.g. mcp__filesystem__read_file, functions.read_file, filesystem_read_file),
+ * and ACP human-readable titles (e.g. "Display Media", "Read: private.txt").
  */
 export function isDisplayOrReadFileTool(toolName?: string | null, kind?: string | null): boolean {
     if (kind === 'read') return true;
     if (!toolName) return false;
-    const normalized = toolName.toLowerCase().replace(/[_-]/g, ' ').trim();
+    let name = toolName.toLowerCase();
+    // Strip namespaces: "mcp__server__read_file" -> "read_file", "functions.read_file" -> "read_file"
+    const mcpMatch = /^mcp__[^_]+__(.+)$/.exec(name);
+    if (mcpMatch && mcpMatch[1]) {
+        name = mcpMatch[1];
+    } else {
+        name = name.replace(/^(functions\.|tools\.[^.]+\.|tools\.)/, '');
+    }
+    const normalized = name.replace(/[_-]/g, ' ').trim();
     return (
         normalized.includes('display media')
         || normalized.includes('display image')
         || normalized.includes('display video')
+        || normalized.includes('read file')
+        || normalized.includes('view file')
         || normalized.startsWith('read')
         || normalized === 'view'
-        || normalized.startsWith('view file')
-        || normalized.startsWith('read file')
+        || normalized.endsWith('read')
         || normalized === 'cat'
     );
 }
