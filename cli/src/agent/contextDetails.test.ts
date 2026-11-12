@@ -405,6 +405,35 @@ describe('mergeContextDetails', () => {
         expect(merged.claude?.systemTools).toEqual(['Read'])
     })
 
+    it('preserves the current context size when publishing aggregate result totals', () => {
+        const updates: Array<(metadata: Metadata) => Metadata> = []
+        const client = {
+            updateMetadata: (handler: (metadata: Metadata) => Metadata) => {
+                updates.push(handler)
+            }
+        }
+
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 100,
+            contextUsage: { total_tokens: 26_697 },
+            model: 'claude-opus'
+        })!)
+        publishContextDetails(client, buildClaudeContextDetails({
+            updatedAt: 200,
+            result: {
+                usage: { input_tokens: 90_000, cache_read_input_tokens: 20_000 },
+                model: 'claude-opus'
+            }
+        })!, { preserveContextTokens: true })
+
+        let metadata = {} as Metadata
+        for (const update of updates) metadata = update(metadata)
+
+        expect(metadata.contextDetails?.usage).toEqual({
+            contextTokens: 26_697,
+            cacheReadTokens: 20_000
+        })
+    })
     it('merges from the metadata value when queued publishers are applied later', () => {
         const updates: Array<(metadata: Metadata) => Metadata> = []
         const client = {

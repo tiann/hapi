@@ -361,11 +361,26 @@ export interface ContextDetailsClient {
     updateMetadata?: (handler: (metadata: Metadata) => Metadata) => void
 }
 
-export function publishContextDetails(client: ContextDetailsClient, next: ContextDetails): void {
+export interface PublishContextDetailsOptions {
+    /** Result totals cover the whole conversation; keep the latest actual context size. */
+    preserveContextTokens?: boolean
+}
+
+export function publishContextDetails(
+    client: ContextDetailsClient,
+    next: ContextDetails,
+    options: PublishContextDetailsOptions = {}
+): void {
     if (!client.updateMetadata) return
     client.updateMetadata((metadata) => {
         const current = metadata.contextDetails
-        const merged = mergeContextDetails(current, next)
+        let merged = mergeContextDetails(current, next)
+        if (options.preserveContextTokens && current?.provider === 'claude' && current.usage?.contextTokens !== undefined) {
+            merged = {
+                ...merged,
+                usage: { ...merged.usage, contextTokens: current.usage.contextTokens }
+            }
+        }
         return merged === current
             ? metadata
             : {
