@@ -14,7 +14,8 @@ const ENV_KEYS = [
     'HAPI_BOARD_STATUS_FIELD',
     'HAPI_BOARD_DONE_VALUES',
     'HAPI_BOARD_LABEL',
-    'HAPI_BOARD_ALLOWED_HOSTS'
+    'HAPI_BOARD_ALLOWED_HOSTS',
+    'HAPI_BOARD_ALLOW_INTERNAL_GITHUB_FALLBACK'
 ] as const
 
 // A dev machine actually configured to use this feature plausibly has one or
@@ -1828,7 +1829,46 @@ body:
     // organization's internal .github repo — GitHub's own default-community-
     // files docs require inheriting from it for those orgs. visibility is
     // the field that actually distinguishes PRIVATE from INTERNAL.
-    it('inherits from an internal .github repo (GitHub Enterprise Managed User org)', async () => {
+    //
+    // Review finding (third pass): internal-repo inheritance is an EMU-org
+    // policy, not a general Enterprise-Cloud one, and nothing distinguishes
+    // the two via API — so this defaults to ineligible and requires an
+    // explicit operator opt-in for the EMU case (see the sibling test
+    // below for that case).
+    it('does not inherit from an internal .github repo by default (ordinary Enterprise org)', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'INTERNAL',
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    it('inherits from an internal .github repo when the operator opts in (GitHub Enterprise Managed User org)', async () => {
+        process.env.HAPI_BOARD_ALLOW_INTERNAL_GITHUB_FALLBACK = '1'
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,

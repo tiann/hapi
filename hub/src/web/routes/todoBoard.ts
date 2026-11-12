@@ -723,35 +723,34 @@ function repoHasNoIssueTemplateDir(response: GhIssueTemplateDirResponse): boolea
 // is; PRIVATE never is, even for repos the same owner controls (review
 // finding: the hub's gh account can often read an org's private `.github`
 // repo, which must not leak its templates/blank-issues policy into a board
-// whose own repo has none). INTERNAL is also eligible — GitHub's own
-// default-community-files docs require it for GitHub Enterprise Managed
-// User organizations, whose repos are internal rather than public by
-// policy (review finding, second pass: an earlier `isPrivate` boolean check
-// rejected this case too, since GraphQL's `isPrivate` is true for both
-// private AND internal repos — `visibility` is the field that actually
-// distinguishes them). Fail closed: if visibility can't be determined,
+// whose own repo has none). Fail closed: if visibility can't be determined,
 // treat it as ineligible rather than risk inheriting from a repo GitHub
 // itself wouldn't use as a fallback.
 //
-// Known residual gap (review finding, third pass): this treats ANY
-// INTERNAL repo as eligible, but GitHub's inheritance behavior for an
-// internal `.github` repo is specifically an EMU-org policy, not a
-// general Enterprise-Cloud one — an ordinary Enterprise org's internal
-// `.github` repo could be used as a fallback here even though GitHub's
-// own UI might not honor it. No API field distinguishes EMU from
-// ordinary Enterprise (checked GraphQL Organization/Enterprise types
-// and REST /orgs/{org}; that detail sits behind enterprise-admin scopes
-// a repo token won't have). The one observable signal — EMU user logins
-// carry an enterprise shortcode suffix with an underscore, otherwise
-// invalid in GitHub usernames — is a *user* property, not an org one;
-// using it means enumerating org members and pattern-matching logins,
-// well beyond what this token should be doing for a heuristic. Accepted
-// as a documented limitation: the residual risk is a cosmetic
-// template/policy mismatch, not a data-loss or leak concern like the
-// private-repo case above.
+// INTERNAL is eligible only when the operator opts in (HAPI_BOARD_ALLOW_
+// INTERNAL_GITHUB_FALLBACK=1/true/yes). GitHub's docs require inheriting
+// from an internal `.github` repo specifically for GitHub Enterprise
+// Managed User (EMU) organizations — but no API field distinguishes an
+// EMU org from an ordinary Enterprise-Cloud one that merely happens to
+// have an internal `.github` repo (checked GraphQL Organization/Enterprise
+// types and REST /orgs/{org}; that distinction sits behind enterprise-
+// admin scopes a repo token won't have — the one observable signal, an
+// underscore suffix on EMU user logins, is a *user* property that would
+// require enumerating org members to use, well beyond what this check
+// should be doing). Defaulting INTERNAL to ineligible avoids that cosmetic
+// risk (an ordinary Enterprise org's internal repo being used as a
+// template/policy source GitHub's own UI might not honor) for the common
+// case; an operator who knows their own org is EMU can opt in explicitly.
 function isEligibleIssueTemplateFallback(response: GhIssueTemplateDirResponse): boolean {
     const visibility = response.data?.repository?.visibility
-    return visibility === 'PUBLIC' || visibility === 'INTERNAL'
+    if (visibility === 'PUBLIC') return true
+    if (visibility === 'INTERNAL') return isInternalGithubFallbackAllowed()
+    return false
+}
+
+function isInternalGithubFallbackAllowed(): boolean {
+    const raw = process.env.HAPI_BOARD_ALLOW_INTERNAL_GITHUB_FALLBACK?.trim().toLowerCase()
+    return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
 function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; blankIssuesEnabled: boolean } {
