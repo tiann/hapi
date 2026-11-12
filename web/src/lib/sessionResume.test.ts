@@ -214,6 +214,42 @@ describe('sessionResume', () => {
         }), 4)).toBe(true)
     })
 
+    it('uses hermesSessionId and ignores stale cross-flavor metadata', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'hermes',
+            claudeSessionId: 'stale-claude-id',
+            hermesSessionId: 'hermes-gateway-1'
+        })).toBe('hermes-gateway-1')
+    })
+
+    it('allows inactive Hermes sessions with a native resume id', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'hermes',
+                hermesSessionId: 'hermes-gateway-1'
+            }
+        }), 4)).toBe(true)
+    })
+
+    it('rejects hermes with messages but no hermesSessionId (no claude fallback)', () => {
+        // Pre-fix behavior: hermes fell through to the claude default case, so
+        // a stale cross-flavor claudeSessionId leaked in — and, with none, the
+        // resume gate stayed false for archived Hermes sessions forever.
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'hermes',
+            claudeSessionId: 'stale-claude-id'
+        })).toBe(undefined)
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'hermes' }
+        }), 3)).toBe(false)
+    })
+
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },
