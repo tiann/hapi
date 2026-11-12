@@ -1341,7 +1341,7 @@ describe('ApiSessionClient attachment links', () => {
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterCodexMulti).toHaveLength(2) // neither codex-multi1 nor codex-multi2 was delivered
 
-                // Terminal approval reconciled by native execution evidence
+                // Terminal approval reconciled by native execution evidence (item/started / item/completed)
                 await writeFile(join(workspace, 'terminal-approved.txt'), 'terminal approved')
                 sharedCodex.receive({
                     id: 106,
@@ -1355,7 +1355,7 @@ describe('ApiSessionClient attachment links', () => {
                     }
                 })
                 sharedCodex.resolved('thread-1', 106) // serverRequest/resolved without web reply
-                sharedCodex.recordApproved(join(workspace, 'terminal-approved.txt')) // execution evidence reconciles outcome
+                sharedCodex.observeExecution('read_file', { path: join(workspace, 'terminal-approved.txt') }) // native execution evidence reconciles outcome
 
                 client.sendAgentMessage({ type: 'message', message: '[term-appr](terminal-approved.txt)' })
                 expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
@@ -1363,6 +1363,33 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterTermAppr).toHaveLength(3) // terminal-approved.txt was delivered!
+
+                // Web denial followed by native resolution: web declined, then serverRequest/resolved arrives with status=resolved
+                await writeFile(join(workspace, 'codex-web-denied.txt'), 'web denied secret')
+                sharedCodex.receive({
+                    id: 107,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-web-denied',
+                        tool: 'read_file',
+                        input: { path: join(workspace, 'codex-web-denied.txt') }
+                    }
+                })
+                const webDeniedReqId = 'gen-1:thread-1:number:107'
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: webDeniedReqId, approved: false, decision: 'denied' })
+                })
+                sharedCodex.resolved('thread-1', 107, 'resolved') // serverRequest/resolved arrives with resolved status
+
+                client.sendAgentMessage({ type: 'message', message: '[web-denied](codex-web-denied.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterWebDenial = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterWebDenial).toHaveLength(3) // codex-web-denied.txt stays blocked!
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

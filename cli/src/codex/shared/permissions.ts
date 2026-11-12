@@ -14,7 +14,7 @@ const ReplySchema = z.object({
 });
 export type PermissionReply = z.infer<typeof ReplySchema>;
 type Reply = PermissionReply;
-type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; toolName: string; userInput: boolean; input: unknown; submitted: boolean; answer(reply: Reply): void; cancel(error: Error): void };
+type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; toolName: string; userInput: boolean; input: unknown; submitted: boolean; webApproved?: boolean; answer(reply: Reply): void; cancel(error: Error): void };
 
 /** No winner is inferred from submitting a Web candidate: only native resolution closes it. */
 export class SharedCodexPermissions {
@@ -49,6 +49,7 @@ export class SharedCodexPermissions {
                 }
             }
             request.submitted = true;
+            request.webApproved = reply.approved === true;
             if (request.userInput && !reply.approved) {
                 if (!request.turnId) { request.submitted = false; throw new Error('Cannot cancel a question without its native turn ID'); }
                 try { await this.client.request('turn/interrupt', { threadId: request.threadId, turnId: request.turnId }); }
@@ -132,7 +133,7 @@ export class SharedCodexPermissions {
             if (isDisplayOrReadFileTool(request.toolName)) {
                 const targetPaths = extractTargetFilePaths(request.input);
                 for (const targetPath of targetPaths) {
-                    if (request.submitted && status === 'resolved') {
+                    if (request.webApproved === true && status === 'resolved') {
                         this.session.markAttachmentApproved?.(targetPath);
                     } else {
                         this.session.markAttachmentDenied(targetPath);
@@ -148,6 +149,16 @@ export class SharedCodexPermissions {
                     ...(prior ? { [key]: { ...prior, completedAt: Date.now(), status } } : {})
                 } };
             });
+        }
+    }
+
+    observeExecution(tool: string, item: unknown): void {
+        if (isDisplayOrReadFileTool(tool)) {
+            const recordItem = record(item);
+            const targetPaths = extractTargetFilePaths(recordItem.arguments ?? recordItem.input ?? recordItem.toolParams ?? item);
+            for (const targetPath of targetPaths) {
+                this.session.markAttachmentApproved?.(targetPath);
+            }
         }
     }
 

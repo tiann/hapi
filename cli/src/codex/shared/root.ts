@@ -88,6 +88,11 @@ export class SharedCodexRoot {
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
             }
+            if (method === 'item/started' || method === 'item/completed') {
+                const item = record(record(params).item);
+                const tool = string(item.tool) ?? string(item.name) ?? string(item.type) ?? '';
+                this.permissions?.observeExecution(tool, item);
+            }
             if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings));
             if (record(params).threadId === this.threadId) {
                 if (method === 'turn/started') {

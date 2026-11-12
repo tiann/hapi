@@ -188,4 +188,32 @@ describe('shared request arbitration', () => {
         f.permissions.resolved('thread', 4, 'resolved');
         expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/web-approved.txt');
     });
+
+    it('preserves web denial even when native resolution arrives with status=resolved', async () => {
+        const f = fixture();
+        const request = {
+            id: 5,
+            method: 'item/tool/requestApproval',
+            params: {
+                threadId: 'thread',
+                turnId: 'turn',
+                itemId: 'call-read-web-denied',
+                tool: 'read_file',
+                input: { path: '/workspace/web-denied.txt' }
+            }
+        };
+        f.permissions.receive(request);
+        const [id] = Object.entries(f.state().requests ?? {})[0]!;
+        await f.handlers.get('permission')!({ id, approved: false, decision: 'denied' });
+        // Native serverRequest/resolved arrives with status='resolved'
+        f.permissions.resolved('thread', 5, 'resolved');
+        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/web-denied.txt');
+        expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/web-denied.txt');
+    });
+
+    it('marks attachment approved when execution evidence arrives through observeExecution', () => {
+        const f = fixture();
+        f.permissions.observeExecution('read_file', { path: '/workspace/executed.txt' });
+        expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/executed.txt');
+    });
 });
