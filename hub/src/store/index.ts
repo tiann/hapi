@@ -1692,6 +1692,9 @@ export class Store {
                 WHERE namespace = ? AND session_id = ?
             `).run(toSessionId, namespace, fromSessionId)
             const movedScratchlist = this.scratchlist.transferInTransaction(fromSessionId, toSessionId)
+            // The client-visible source id points at the survivor only if every
+            // ownership move and the source deletion commit in this transaction.
+            this.sessionRedirects.record(fromSessionId, toSessionId, namespace)
             for (const [entryId, attachments] of scratchlistAttachments) {
                 if (!this.scratchlist.update(toSessionId, entryId, { attachments })) {
                     throw new Error(`Failed to update merged scratchlist entry: ${entryId}`)

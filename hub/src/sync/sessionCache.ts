@@ -1999,9 +1999,6 @@ export class SessionCache {
                     throw new Error('Cannot merge a session that became active')
                 }
                 this.transferAttachedJobs(oldSessionId, newSessionId, namespace)
-                // Write the redirect before the source row disappears so a
-                // concurrent lookup can never observe neither row nor redirect.
-                this.store.sessionRedirects.record(oldSessionId, newSessionId, namespace)
                 const moved = this.store.mergeSessionMessagesAndAttachmentsAndDeleteSession(
                     namespace,
                     oldSessionId,
