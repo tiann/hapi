@@ -3637,6 +3637,92 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(preceding.localId).toBe('restart-pending-handoff-b')
     })
 
+    it('recovers a durable handoff prefix containing only scheduled rows in sequence order', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'restart-scheduled-only-handoff')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const now = Date.now()
+        const attachment = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'restart-scheduled-only-handoff')],
+                },
+            },
+            'restart-scheduled-only-a',
+            now - 1_000,
+        )
+        const later = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled B' } },
+            'restart-scheduled-only-b',
+            now - 2_000,
+        )
+        const clearCutoff = Date.now()
+        store.sessions.getOrCreateSession(
+            'restart-scheduled-only-handoff-source',
+            {
+                path: '/tmp/restart-scheduled-only-handoff-source',
+                host: 'localhost',
+                flavor: 'opencode',
+                supersededBySessionId: session.id,
+                opencodeClearOperation: {
+                    replacementSessionId: session.id,
+                    state: 'completed',
+                    updatedAt: clearCutoff,
+                },
+            },
+            null,
+            'default',
+        )
+        const firstService = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async () => {
+                    throw new Error('initial materialization failed')
+                },
+            },
+        )
+        await expect(firstService.releaseDeliverableQueuedMessages(session.id, Date.now(), clearCutoff)).resolves.toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+
+        const restartedService = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => (
+                    attachments.map((entry) => ({ ...entry, path: '/tmp/restart-scheduled-only.png' }))
+                ),
+            },
+        )
+        await restartedService.releaseMatureScheduledMessages(Date.now())
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'restart-scheduled-only-a',
+            'restart-scheduled-only-b',
+        ])
+        expect(attachment.localId).toBe('restart-scheduled-only-a')
+        expect(later.localId).toBe('restart-scheduled-only-b')
+    })
+
     it('keeps periodic text-only delivery behind a cancelled attachment handoff', async () => {
         const store = makeStore()
         const session = makeSession(store, 'cancelled-handoff-serialization')

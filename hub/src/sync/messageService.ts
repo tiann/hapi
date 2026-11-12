@@ -1707,11 +1707,8 @@ export class MessageService {
             const deliverable = this.store.messages
                 .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
             const clearHandoffCutoff = this.completedClearHandoffCutoff(sessionId)
-            const hasHandoffMature = clearHandoffCutoff !== null
-                && messages.some((message) => message.createdAt <= clearHandoffCutoff)
-            const hasHandoffImmediate = clearHandoffCutoff !== null
-                && deliverable.some((message) => message.scheduledAt === null
-                    && message.createdAt <= clearHandoffCutoff)
+            const hasHandoffPrefix = clearHandoffCutoff !== null
+                && deliverable.some((message) => message.createdAt <= clearHandoffCutoff)
             const deliverableSignature = deliverable
                 .map((message) => `${message.id}:${message.seq}`)
                 .join('\u001f')
@@ -1721,8 +1718,7 @@ export class MessageService {
             // prevents re-emitting a drained handoff while its CLI ACK is pending.
             const hasPendingOrderedDrain = this.pendingOrderedDeliverableReleaseSessions.has(sessionId)
             const needsOrderedDrain = hasPendingOrderedDrain
-                || (hasHandoffMature
-                    && hasHandoffImmediate
+                || (hasHandoffPrefix
                     && this.completedOrderedDeliverableSignatures.get(sessionId) !== deliverableSignature)
             if (needsOrderedDrain) {
                 if (!hasPendingOrderedDrain && !this.hasCliSessionConnection(sessionId)) return
