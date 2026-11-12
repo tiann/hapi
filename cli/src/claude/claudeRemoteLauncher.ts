@@ -688,6 +688,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             });
                             if (details) publishContextDetails(session.client, details);
                         },
+                        onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
                         onFirstResult: (initialMessage) => {
                             // SDK streams omit Claude Code's native ai-title; it is only in the transcript.
                             const sessionId = session.sessionId;
