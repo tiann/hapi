@@ -69,7 +69,7 @@ import { hasActiveSteeringTurn } from '@hapi/protocol'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
-import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
+import { getRegularPrependBudgetCount, rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
 import {
     createScratchlistAttachmentAdapter,
@@ -1581,6 +1581,10 @@ function SessionChatInner(props: SessionChatProps) {
         () => props.messages.filter((m) => !isQueuedForInvocation(m)),
         [props.messages]
     )
+    const retainedMessagesCount = useMemo(
+        () => getRegularPrependBudgetCount(props.messages),
+        [props.messages]
+    )
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
         // Clear caches immediately when session changes (before useEffect runs)
@@ -2206,6 +2210,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onCancelLoadMore={props.onCancelLoadMore}
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
+                        retainedMessagesCount={retainedMessagesCount}
                         normalizedMessagesCount={normalizedMessages.length}
                         visibleBlocksCount={visibleBlocks.length}
                         conciseViewActive={conciseViewActive}

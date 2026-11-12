@@ -720,6 +720,7 @@ export function HappyThread(props: {
     onCancelLoadMore: () => void
     unseenCount: number
     rawMessagesCount: number
+    retainedMessagesCount?: number
     normalizedMessagesCount: number
     visibleBlocksCount?: number
     conciseViewActive?: boolean
@@ -843,9 +844,10 @@ export function HappyThread(props: {
     const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
     const renderedMessagesCount = props.visibleBlocksCount ?? props.normalizedMessagesCount
+    const retainedMessagesCount = props.retainedMessagesCount ?? props.rawMessagesCount
     const conciseViewActive = props.conciseViewActive === true
-    const rawMessagesCountRef = useRef(props.rawMessagesCount)
-    rawMessagesCountRef.current = props.rawMessagesCount
+    const retainedMessagesCountRef = useRef(retainedMessagesCount)
+    retainedMessagesCountRef.current = retainedMessagesCount
     const renderedMessagesCountRef = useRef(renderedMessagesCount)
     renderedMessagesCountRef.current = renderedMessagesCount
     const normalizedMessagesCountRef = useRef(props.normalizedMessagesCount)
@@ -1046,7 +1048,7 @@ export function HappyThread(props: {
         prevConciseViewActiveRef.current = conciseViewActive
         if (conciseViewActive && !wasConcise) {
             const wouldEvictVisibleTail = renderedMessagesCountRef.current > 0
-                && rawMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
             initialConciseCoverageDoneRef.current = wouldEvictVisibleTail
             conciseCoveragePagesRef.current = 0
             if (historyLoaderRef.current.autoPaused && !wouldEvictVisibleTail) {
@@ -2108,7 +2110,7 @@ export function HappyThread(props: {
                 renderedMessagesCountRef.current === 0
                 || (
                     renderedMessagesCountRef.current <= 1
-                    && rawMessagesCountRef.current <= CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                    && retainedMessagesCountRef.current <= CONCISE_TAIL_PRESERVE_RAW_LIMIT
                 )
             )
         ) {
@@ -2236,6 +2238,16 @@ export function HappyThread(props: {
                     ) {
                         return false
                     }
+                    if (
+                        current.source === 'coverage'
+                        && conciseViewActiveRef.current
+                        && atBottomRef.current
+                        && renderedMessagesCountRef.current > 0
+                        && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                    ) {
+                        initialConciseCoverageDoneRef.current = true
+                        return false
+                    }
                     if (current.source !== 'consumer' && !needsViewportCoverage()) {
                         return false
                     }
@@ -2325,7 +2337,7 @@ export function HappyThread(props: {
                 conciseViewActiveRef.current
                 && atBottomRef.current
                 && renderedMessagesCountRef.current > 0
-                && rawMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
             ) {
                 initialConciseCoverageDoneRef.current = true
                 historyLoaderRef.current = { ...state, autoPaused: true }
@@ -2543,7 +2555,7 @@ export function HappyThread(props: {
                     ? pending.addedRenderableCount > 0
                     : normalizedMessagesCountRef.current > pending.normalizedMessagesCount
                 const wouldEvictVisibleTail = renderedMessagesCountRef.current > 0
-                    && rawMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                    && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
                 const canContinueConcisePaging = hasMoreMessagesRef.current
                     && addedRenderable
                     && !wouldEvictVisibleTail

@@ -750,4 +750,25 @@ test('concise view preserves the latest reply when more than 800 hidden tool mes
     expect(await page.evaluate(() =>
         window.__probe.requests.filter((r) => r.direction === 'before').length
     )).toBe(3)
+
+    // Also verify when 25 queued prompts sit after the final reply: after 3
+    // older pages, visibleMessages.length is 595 while the retained window is
+    // 620 rows (595 non-queued + 25 queued). Automatic coverage must include
+    // queued rows in the eviction budget and stop at 3 pages so the final
+    // reply (`Fixture final reply 1175`) is not evicted.
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=900&conciseFinalReply=1&queuedTail=25')
+    await expect(viewport).toBeVisible()
+    await expect(page.getByText('Fixture final reply 1175', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => ({
+        beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+        messageCount: window.__probe.windowState().messageCount
+    }))).toEqual({
+        beforeReqs: 3,
+        messageCount: 620
+    })
+    await page.waitForTimeout(500)
+    await expect(page.getByText('Fixture final reply 1175', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() =>
+        window.__probe.requests.filter((r) => r.direction === 'before').length
+    )).toBe(3)
 })

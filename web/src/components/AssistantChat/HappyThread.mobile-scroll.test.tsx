@@ -1224,9 +1224,10 @@ describe('concise view history coverage', () => {
             isSyncingTail: false,
             hasMoreMessages: true,
             isLoadingMoreMessages: false,
-            rawMessagesCount: 20,
-            normalizedMessagesCount: 20,
-            visibleBlocksCount: 1,
+            rawMessagesCount: 0,
+            retainedMessagesCount: 20,
+            normalizedMessagesCount: 0,
+            visibleBlocksCount: 0,
             conciseViewActive: true,
             messagesVersion: 1,
             historyVersion: 0
@@ -1262,6 +1263,7 @@ describe('concise view history coverage', () => {
                         onCancelLoadMore={vi.fn()}
                         unseenCount={0}
                         rawMessagesCount={state.rawMessagesCount}
+                        retainedMessagesCount={state.retainedMessagesCount}
                         normalizedMessagesCount={state.normalizedMessagesCount}
                         visibleBlocksCount={state.visibleBlocksCount}
                         conciseViewActive={state.conciseViewActive}
@@ -1284,11 +1286,15 @@ describe('concise view history coverage', () => {
         })
         expect(onLoadMore).toHaveBeenCalledTimes(1)
 
-        // Pages 1..3 take rawMessagesCount 20 -> 220 -> 420 -> 620 while the
-        // 900 intermediate messages remain hidden (visibleBlocksCount stays 1).
+        // With 25 queued prompts at the tail, pages 1..3 take non-queued
+        // rawMessagesCount to 195 -> 395 -> 595 while retainedMessagesCount
+        // reaches 220 -> 420 -> 620 and visibleBlocksCount becomes 1 (the
+        // final reply).
         for (let page = 1; page <= 3; page += 1) {
-            state.rawMessagesCount = 20 + page * 200
+            state.retainedMessagesCount = 20 + page * 200
+            state.rawMessagesCount = state.retainedMessagesCount - 25
             state.normalizedMessagesCount = state.rawMessagesCount
+            state.visibleBlocksCount = 1
             state.historyVersion = page
             searchTargetTestState.extras = { messagesVersion: 1, historyVersion: page }
             act(() => {
@@ -1302,10 +1308,12 @@ describe('concise view history coverage', () => {
             })
         }
 
-        // At 620 raw messages, a 4th 200-message page would cross the 800-row
-        // prepend window cap and evict the newest 20 rows (the final reply).
-        // Automatic concise coverage must stop at 3 pages.
-        expect(state.rawMessagesCount).toBe(620)
+        // Even though non-queued rawMessagesCount is 595 (<= 600), the
+        // retained window (including 25 queued prompts) is 620 (> 600).
+        // A 4th 200-row page would cross the 800-row prepend cap and evict
+        // the final reply, so automatic concise coverage stops at 3 pages.
+        expect(state.rawMessagesCount).toBe(595)
+        expect(state.retainedMessagesCount).toBe(620)
         expect(state.visibleBlocksCount).toBe(1)
         expect(onLoadMore).toHaveBeenCalledTimes(3)
     })

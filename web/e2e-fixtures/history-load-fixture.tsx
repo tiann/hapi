@@ -16,7 +16,7 @@ import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState } from '../src/lib/message-window-store'
+import { getMessageWindowState, getRegularPrependBudgetCount } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
@@ -120,6 +120,7 @@ const cachedReentry = fixtureParams.has('cachedReentry')
 const holdLatest = fixtureParams.has('holdLatest')
 const initialConcise = fixtureParams.has('concise')
 const conciseFinalReply = fixtureParams.has('conciseFinalReply')
+const queuedTailCount = Number(fixtureParams.get('queuedTail') ?? '0')
 const conciseToolTailCount = Number(fixtureParams.get('conciseToolTail') ?? (initialConcise ? '220' : '0'))
 if (holdLatest) {
     latestResponseGate = new Promise<void>((resolve) => {
@@ -131,8 +132,10 @@ let beforeAttempts = 0
 const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
-    const isFinalReply = conciseFinalReply && seq === TOTAL_MESSAGES
-    const hiddenTailEnd = conciseFinalReply ? TOTAL_MESSAGES - 1 : TOTAL_MESSAGES
+    const isQueuedPrompt = queuedTailCount > 0 && seq > TOTAL_MESSAGES - queuedTailCount
+    const finalReplySeq = TOTAL_MESSAGES - queuedTailCount
+    const isFinalReply = conciseFinalReply && seq === finalReplySeq
+    const hiddenTailEnd = conciseFinalReply ? finalReplySeq - 1 : finalReplySeq
     const isConciseHiddenWork = conciseToolTailCount > 0
         && seq > hiddenTailEnd - conciseToolTailCount
         && seq <= hiddenTailEnd
@@ -148,6 +151,8 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
                     data: { type: 'generated-image', imageId: `img-${seq}`, fileName: `image-${seq}.svg`, mimeType: 'image/svg+xml' },
                 },
             }
+            : isQueuedPrompt
+            ? { role: 'user', content: { type: 'text', text: `Queued prompt ${seq}` } }
             : isFinalReply
             ? {
                 role: 'agent',
@@ -177,7 +182,7 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
             ? { role: 'agent', content: { type: 'output', data: { isMeta: true } } }
             : { role: 'user', content: { type: 'text', text: `Fixture message ${seq}` } },
         createdAt: BASE_AT + seq,
-        invokedAt: BASE_AT + seq
+        invokedAt: isQueuedPrompt ? null : BASE_AT + seq
     } as DecryptedMessage
 })
 
@@ -351,6 +356,15 @@ function FixtureThread() {
 
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
 
+    const visibleMessages = useMemo(
+        () => messages.filter((message) => !isQueuedForInvocation(message)),
+        [messages]
+    )
+    const retainedMessagesCount = useMemo(
+        () => getRegularPrependBudgetCount(messages),
+        [messages]
+    )
+
     const normalizedMessages = useMemo(() => {
         const normalized = []
         for (const message of messages) {
@@ -417,7 +431,8 @@ function FixtureThread() {
                         // This fixture drives HappyThread directly, bypassing the
                         // SessionChat block reduction that computes the real count.
                         unseenCount={0}
-                        rawMessagesCount={messages.length}
+                        rawMessagesCount={visibleMessages.length}
+                        retainedMessagesCount={retainedMessagesCount}
                         normalizedMessagesCount={normalizedMessages.length}
                         visibleBlocksCount={visibleBlocks.length}
                         conciseViewActive={conciseMode}

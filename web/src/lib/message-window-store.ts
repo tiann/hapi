@@ -590,6 +590,17 @@ function findDroppedSubagentParents(
     })
 }
 
+export function getRegularPrependBudgetCount(messages: readonly DecryptedMessage[]): number {
+    const deduplicated = dropSupersededReasoningSnapshots([...messages])
+    let count = 0
+    for (const message of deduplicated) {
+        if (isQueuedForInvocation(message) || !isCodexAgentRunMessage(message)) {
+            count += 1
+        }
+    }
+    return count
+}
+
 function trimPreservingQueued(
     incoming: DecryptedMessage[],
     regularLimit: number,
