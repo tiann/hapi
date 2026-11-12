@@ -805,6 +805,66 @@ export const AgentAvailabilityResponseSchema = z.object({
 })
 export type AgentAvailabilityResponse = z.infer<typeof AgentAvailabilityResponseSchema>
 
+export const AgentQuotaStatusSchema = z.enum([
+    'ok',
+    'custom_provider',
+    'unauthenticated',
+    'unavailable',
+    'error'
+])
+export type AgentQuotaStatus = z.infer<typeof AgentQuotaStatusSchema>
+
+export const AgentQuotaBucketSchema = z.object({
+    id: z.string(),
+    label: z.string(),
+    group: z.string().nullable().optional(),
+    window: z.string().nullable().optional(),
+    usedPercent: z.number().min(0).max(100),
+    remainingPercent: z.number().min(0).max(100),
+    resetsAt: z.number().nullable().optional()
+})
+export type AgentQuotaBucket = z.infer<typeof AgentQuotaBucketSchema>
+
+export const AgentQuotaAccountSchema = z.object({
+    agent: AgentFlavorSchema,
+    available: z.boolean(),
+    status: AgentQuotaStatusSchema,
+    accountLabel: z.string().nullable().optional(),
+    planLabel: z.string().nullable().optional(),
+    creditsLabel: z.string().nullable().optional(),
+    buckets: z.array(AgentQuotaBucketSchema),
+    note: z.string().nullable().optional(),
+    updatedAt: z.number()
+})
+export type AgentQuotaAccount = z.infer<typeof AgentQuotaAccountSchema>
+
+export const AgentQuotasRequestSchema = z.object({
+    refresh: z.boolean().optional()
+})
+export type AgentQuotasRequest = z.infer<typeof AgentQuotasRequestSchema>
+
+export const AgentQuotasResponseSchema = z.object({
+    accounts: z.array(AgentQuotaAccountSchema),
+    fetchedAt: z.number()
+})
+export type AgentQuotasResponse = z.infer<typeof AgentQuotasResponseSchema>
+
+export const UsageMachineQuotasEntrySchema = z.object({
+    machineId: z.string(),
+    machineName: z.string(),
+    supported: z.boolean(),
+    accounts: z.array(AgentQuotaAccountSchema),
+    fetchedAt: z.number().nullable(),
+    error: z.string().optional()
+})
+export type UsageMachineQuotasEntry = z.infer<typeof UsageMachineQuotasEntrySchema>
+
+export const UsageQuotasResponseSchema = z.object({
+    machines: z.array(UsageMachineQuotasEntrySchema),
+    updatedAt: z.number()
+})
+export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
+
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
     z.object({ accessToken: z.string() })

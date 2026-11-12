@@ -478,9 +478,14 @@ export class SharedCodexRoot {
         }
         const canForkLatest = turns.some(turn => turn.status === 'completed')
             || (this.lazyHistory() && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted === true);
-        if (this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted !== canForkLatest) {
-            this.session.updateMetadata(metadata => ({ ...metadata, capabilities: { ...metadata.capabilities,
-                conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } } }));
+        // Starting a later turn does not invalidate completed-history evidence.
+        // Only a stale demotion must defer to newer completion notifications.
+        if ((canForkLatest || revision === this.turnRevision)
+            && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted !== canForkLatest) {
+            this.session.updateMetadata(metadata => !canForkLatest && revision !== this.turnRevision ? metadata : ({
+                ...metadata, capabilities: { ...metadata.capabilities,
+                    conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } }
+            }));
         }
         await this.projectHistory(this.projection, thread); await this.queue.reconcile(); this.alive();
     }

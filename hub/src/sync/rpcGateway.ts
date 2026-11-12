@@ -3,6 +3,7 @@ import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protoco
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
+    AgentQuotasResponseSchema,
     CursorChatStoreStatusSchema,
     ListCodexSessionsRpcResponseSchema,
     ListOpencodeSessionsRpcResponseSchema,
@@ -12,6 +13,7 @@ import type {
     AgyModelsResponse,
     ClaudeModelsResponse,
     AgentAvailabilityResponse,
+    AgentQuotasResponse,
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
@@ -373,6 +375,12 @@ export class RpcGateway {
     async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
         return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): Promise<AgentQuotasResponse> {
+        const params = options?.refresh ? { refresh: true } : {}
+        const result = await this.machineRpc(machineId, RPC_METHODS.AgentQuotas, params, 20_000)
+        return AgentQuotasResponseSchema.parse(result)
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<PathExistsResponse> {
