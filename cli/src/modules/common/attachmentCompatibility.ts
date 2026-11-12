@@ -169,12 +169,16 @@ export class AttachmentCompatibility {
                     const digest = createHash('sha256').update(bytes).digest('hex')
                     if (this.seen.has(digest)) continue
                     const media = registerGeneratedImage({ id: randomUUID(), path: canonical, bytes, mimeType: detectDisplayMediaMimeType(bytes) })
-                    // ChatMarkdownImage rejects sandbox: and file: URLs through resolveMarkdownFileImage,
-                    // and enforces a 10 MiB limit. Retain the web card unless inline rendering succeeds.
+                    // ChatMarkdownImage rejects sandbox:, file:, parent-relative ('..'),
+                    // and files exceeding 10 MiB through resolveMarkdownFileImage / normalizeLocalPath.
+                    // Retain the web card unless inline rendering succeeds.
+                    const normalizedTarget = item.rawTarget.trim().replaceAll('\\', '/')
                     const suppressWebCard =
                         item.isMarkdownImage
                         && !item.rawTarget.startsWith('sandbox:')
                         && !item.rawTarget.startsWith('file:')
+                        && !normalizedTarget.startsWith('../')
+                        && !normalizedTarget.includes('/../')
                         && bytes.length <= MAX_INLINE_WEB_IMAGE_BYTES
                     emit({
                         type: 'generated-image',

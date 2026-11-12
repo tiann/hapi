@@ -141,6 +141,23 @@ export function isDisplayOrReadFileTool(toolName?: string | null, kind?: string 
     );
 }
 
+function collectPathsFromRecord(record: Record<string, unknown>, add: (v: unknown) => void): void {
+    add(record.path);
+    add(record.file_path);
+    add(record.filePath);
+    add(record.target);
+    if (Array.isArray(record.paths)) record.paths.forEach(add);
+    if (Array.isArray(record.files)) record.files.forEach(add);
+    if (Array.isArray(record.file_paths)) record.file_paths.forEach(add);
+    if (Array.isArray(record.locations)) {
+        for (const loc of record.locations) {
+            if (loc && typeof loc === 'object') {
+                add((loc as { path?: unknown }).path);
+            }
+        }
+    }
+}
+
 /**
  * Extract target file paths from tool arguments, approval inputs, or ACP titles.
  * Supports flat path/file_path, multi-file arrays (paths, files, file_paths),
@@ -163,36 +180,12 @@ export function extractTargetFilePaths(
 
     if (input && typeof input === 'object') {
         const record = input as Record<string, unknown>;
-        add(record.path);
-        add(record.file_path);
-        add(record.filePath);
-        add(record.target);
-        if (Array.isArray(record.paths)) record.paths.forEach(add);
-        if (Array.isArray(record.files)) record.files.forEach(add);
-        if (Array.isArray(record.file_paths)) record.file_paths.forEach(add);
-
+        collectPathsFromRecord(record, add);
         if (record.toolParams && typeof record.toolParams === 'object') {
-            const nested = record.toolParams as Record<string, unknown>;
-            add(nested.path);
-            add(nested.file_path);
-            add(nested.filePath);
-            if (Array.isArray(nested.paths)) nested.paths.forEach(add);
-            if (Array.isArray(nested.files)) nested.files.forEach(add);
+            collectPathsFromRecord(record.toolParams as Record<string, unknown>, add);
         }
         if (record.arguments && typeof record.arguments === 'object') {
-            const nested = record.arguments as Record<string, unknown>;
-            add(nested.path);
-            add(nested.file_path);
-            add(nested.filePath);
-            if (Array.isArray(nested.paths)) nested.paths.forEach(add);
-            if (Array.isArray(nested.files)) nested.files.forEach(add);
-        }
-        if (Array.isArray(record.locations)) {
-            for (const loc of record.locations) {
-                if (loc && typeof loc === 'object') {
-                    add((loc as { path?: unknown }).path);
-                }
-            }
+            collectPathsFromRecord(record.arguments as Record<string, unknown>, add);
         }
     }
 

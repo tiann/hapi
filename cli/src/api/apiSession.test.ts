@@ -1310,6 +1310,57 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterMulti).toHaveLength(2) // neither multi1 nor multi2 was delivered
+
+                // Codex nested multi-file denial with toolParams.file_paths array
+                await writeFile(join(workspace, 'codex-multi1.txt'), 'multi 1')
+                await writeFile(join(workspace, 'codex-multi2.txt'), 'multi 2')
+                sharedCodex.receive({
+                    id: 105,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-multi-codex',
+                        tool: 'mcp__filesystem__read_multiple_files',
+                        input: {
+                            message: 'Allow MCP tool call?',
+                            toolParams: { file_paths: [join(workspace, 'codex-multi1.txt'), join(workspace, 'codex-multi2.txt')] }
+                        }
+                    }
+                })
+                const codexMultiReqId = 'gen-1:thread-1:number:105'
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: codexMultiReqId, approved: false, decision: 'denied', reason: 'Declined multi' })
+                })
+                client.sendAgentMessage({ type: 'message', message: '[cm1](codex-multi1.txt) [cm2](codex-multi2.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterCodexMulti = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterCodexMulti).toHaveLength(2) // neither codex-multi1 nor codex-multi2 was delivered
+
+                // Terminal-only approval (approved directly in terminal without web reply) MUST NOT be blocked
+                await writeFile(join(workspace, 'terminal-approved.txt'), 'terminal approved')
+                sharedCodex.receive({
+                    id: 106,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-term-appr',
+                        tool: 'read_file',
+                        input: { path: join(workspace, 'terminal-approved.txt') }
+                    }
+                })
+                sharedCodex.resolved('thread-1', 106, 'resolved')
+
+                client.sendAgentMessage({ type: 'message', message: '[term-appr](terminal-approved.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterTermAppr = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterTermAppr).toHaveLength(3) // terminal-approved.txt was delivered!
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

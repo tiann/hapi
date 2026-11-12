@@ -82,26 +82,16 @@ export class SharedCodexPermissions {
             client: { registerRequestHandler: (method, handler) => { handlers.set(method, handler); } },
             shared: true,
             permissionHandler: { handleToolCall: async (_id, name, input) => {
-                try {
-                    const reply = await ask(name, input);
-                    if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
-                        if (isDisplayOrReadFileTool(name)) {
-                            const targetPaths = extractTargetFilePaths(input);
-                            for (const targetPath of targetPaths) {
-                                this.session.markAttachmentDenied(targetPath);
-                            }
-                        }
-                    }
-                    return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
-                } catch (error) {
+                const reply = await ask(name, input);
+                if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
                     if (isDisplayOrReadFileTool(name)) {
                         const targetPaths = extractTargetFilePaths(input);
                         for (const targetPath of targetPaths) {
                             this.session.markAttachmentDenied(targetPath);
                         }
                     }
-                    throw error;
                 }
+                return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
             } },
             onUserInputRequest: async ({ input }) => {
                 const reply = await ask('request_user_input', input);

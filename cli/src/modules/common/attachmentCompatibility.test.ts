@@ -127,6 +127,29 @@ it('preserves authorization boundaries: withholds reads in restrictive modes and
             fileName: 'sandbox.png',
             source: expect.objectContaining({ ingress: 'attachment-fallback', isMarkdownImage: true, suppressWebCard: false })
         })
+
+        // Parent-relative image contained in workspace retains the web card (suppressWebCard is false)
+        const wsName = workspace.split(/[/\\]/).pop()!
+        await writeFile(join(workspace, 'parent.png'), 'parent png content distinct')
+        compat.enqueue({ type: 'message', message: `![img](../${wsName}/parent.png)` }, workspace, message => messages.push(message), { permissionMode: 'yolo' })
+        await compat.flush()
+        expect(messages).toHaveLength(5)
+        expect(messages[4]).toMatchObject({
+            type: 'generated-image',
+            fileName: 'parent.png',
+            source: expect.objectContaining({ ingress: 'attachment-fallback', isMarkdownImage: true, suppressWebCard: false })
+        })
+
+        // Normal relative image suppresses the web card (rendered inline by ChatMarkdownImage)
+        await writeFile(join(workspace, 'inline.png'), 'inline png content distinct')
+        compat.enqueue({ type: 'message', message: '![img](./inline.png)' }, workspace, message => messages.push(message), { permissionMode: 'yolo' })
+        await compat.flush()
+        expect(messages).toHaveLength(6)
+        expect(messages[5]).toMatchObject({
+            type: 'generated-image',
+            fileName: 'inline.png',
+            source: expect.objectContaining({ ingress: 'attachment-fallback', isMarkdownImage: true, suppressWebCard: true })
+        })
     } finally {
         await rm(root, { recursive: true, force: true })
     }
