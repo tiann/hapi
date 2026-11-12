@@ -118,6 +118,42 @@ describe('buildWatchdogScript', () => {
     expect(script).not.toContain('head -n 1');
   });
 
+  it('verifies the recorded process generation before killing the pid claim', async () => {
+    const { buildWatchdogScript } = await import('./watchdog');
+
+    const script = buildWatchdogScript({
+      heartbeatPath: '/hb',
+      logPath: '/log'
+    });
+
+    // The heartbeat's fourth line records the pid's start time; the script
+    // re-queries it with the same LC_ALL/TZ pinning (and whitespace
+    // trimming) the runner-side marker uses, so a recycled pid — whose
+    // current start time differs — is never killed.
+    expect(script).toContain("sed -n '4p' \"$HEARTBEAT\"");
+    expect(script).toContain('LC_ALL=C TZ=UTC ps -p "$pid" -o lstart=');
+    expect(script).toContain('[ "$actual_start" != "$recorded_start" ]');
+    expect(script).toContain('(pid reuse); not killing');
+  });
+
+  it('keeps the historical oldest-pgrep victim only for explicitly legacy scripts', async () => {
+    const { buildWatchdogScript } = await import('./watchdog');
+
+    const legacy = buildWatchdogScript({
+      heartbeatPath: '/hb',
+      logPath: '/log',
+      legacyHeartbeatVictimFallback: true
+    });
+
+    // The legacy branch is the fallback for heartbeats WITHOUT a pid line
+    // (pre per-instance-scoping writers) only…
+    expect(legacy).toContain('| head -n 1');
+    // …while a heartbeat that does carry a pid claim still gets exact
+    // victim selection plus the generation check.
+    expect(legacy).toContain("pid=$(sed -n '3p' \"$HEARTBEAT\"");
+    expect(legacy).toContain('LC_ALL=C TZ=UTC ps -p "$pid" -o lstart=');
+  });
+
   it('honors custom staleSeconds and runnerPattern', async () => {
     const { buildWatchdogScript } = await import('./watchdog');
 
@@ -323,6 +359,9 @@ describe('ensureWatchdogInstalled', () => {
     expect(scriptFile).toBe(scriptPath);
     expect(String(scriptContent)).toContain('STALE_SECONDS=300');
     expect(String(scriptContent)).toContain("RUNNER_PATTERN='hapi runner start'");
+    // The default-home runner owns its script: strict pid-exact victim
+    // selection, no legacy oldest-pgrep fallback.
+    expect(String(scriptContent)).not.toContain('head -n 1');
     expect(chmodSyncMock).toHaveBeenCalledWith(scriptPath, 0o755);
 
     const [plistFile, plistContent] = writeFileSyncMock.mock.calls[1] as unknown[];
@@ -353,21 +392,81 @@ describe('ensureWatchdogInstalled', () => {
     const [scriptFile, scriptContent] = writeFileSyncMock.mock.calls[0] as unknown[];
     expect(scriptFile).toBe(scriptPath);
     expect(String(scriptContent)).toContain(`HEARTBEAT='${runnerHeartbeatPath()}'`);
+    // A home owned by a current runner keeps strict pid-exact victim
+    // selection — the legacy fallback must not leak into it.
+    expect(String(scriptContent)).not.toContain('head -n 1');
     expect(chmodSyncMock).toHaveBeenCalledWith(scriptPath, 0o755);
 
     // Upgrade transition: the pre-scoping default-home script (whose
     // pgrep-oldest victim could kill this instance) is rewritten in the
-    // pid-exact, self-neutering form.
+    // pid-exact form, keeping the historical oldest-pgrep victim as a
+    // fallback so a still-running old runner (heartbeat without a pid
+    // line) stays protected instead of silently disarmed.
     const [defaultScriptFile, defaultScriptContent] = writeFileSyncMock.mock.calls[1] as unknown[];
     expect(defaultScriptFile).toBe(join(os.homedir(), '.hapi', 'watchdog.sh'));
     expect(String(defaultScriptContent)).toContain(`HEARTBEAT='${join(os.homedir(), '.hapi', 'runner-heartbeat')}'`);
     expect(String(defaultScriptContent)).toContain("pid=$(sed -n '3p' \"$HEARTBEAT\"");
+    expect(String(defaultScriptContent)).toContain('| head -n 1');
+    // No default-home script is installed (ENOENT): the default 300s
+    // threshold applies — this instance's env does not leak into a home it
+    // does not own.
+    expect(String(defaultScriptContent)).toContain('STALE_SECONDS=300');
 
     const [plistFile, plistContent] = writeFileSyncMock.mock.calls[2] as unknown[];
     expect(plistFile).toBe(plistPath);
     expect(String(plistContent)).toContain(`<string>${watchdogLabel()}</string>`);
     expect(String(plistContent)).toContain(scriptPath);
     expect(chmodSyncMock).toHaveBeenCalledWith(join(os.homedir(), '.hapi', 'watchdog.sh'), 0o755);
+  });
+
+  it('preserves the default home\'s installed stale threshold in the transition rewrite', async () => {
+    setPlatform('darwin');
+    process.env.HAPI_HOME = '/srv/hapi-instance-b';
+    // THIS instance slowed its own heartbeat cadence, widening its own
+    // stale window…
+    process.env.HAPI_RUNNER_HEARTBEAT_INTERVAL = '300000';
+    const defaultScriptPath = join(os.homedir(), '.hapi', 'watchdog.sh');
+    readFileSyncMock.mockImplementation(((path: unknown) => {
+      // …while the default home's runner installed its own (different)
+      // widened threshold long ago.
+      if (String(path) === defaultScriptPath) {
+        return '#!/bin/bash\n# Generated by hapi (com.hapi.watchdog) — do not edit.\nset -u\n\nSTALE_SECONDS=900\nHEARTBEAT=/old\n';
+      }
+      throw new Error('ENOENT');
+    }) as any);
+    const { ensureWatchdogInstalled } = await import('./watchdog');
+
+    const result = await ensureWatchdogInstalled();
+
+    expect(result).toBe('installed');
+    const [ownScriptFile, ownScriptContent] = writeFileSyncMock.mock.calls[0] as unknown[];
+    expect(String(ownScriptFile)).toBe('/srv/hapi-instance-b/watchdog.sh');
+    expect(String(ownScriptContent)).toContain('STALE_SECONDS=600');
+    const [defaultScriptFile, defaultScriptContent] = writeFileSyncMock.mock.calls[1] as unknown[];
+    expect(String(defaultScriptFile)).toBe(defaultScriptPath);
+    // The default home keeps ITS threshold: importing this instance's
+    // 600s window could stretch the default home's protection, and
+    // importing an unconfigured 300s could kill-loop its slow-but-healthy
+    // runner.
+    expect(String(defaultScriptContent)).toContain('STALE_SECONDS=900');
+    expect(String(defaultScriptContent)).not.toContain('STALE_SECONDS=600');
+  });
+
+  it('falls back to the default threshold for the transition rewrite when no default script exists', async () => {
+    setPlatform('darwin');
+    process.env.HAPI_HOME = '/srv/hapi-instance-b';
+    process.env.HAPI_RUNNER_HEARTBEAT_INTERVAL = '300000';
+    const { ensureWatchdogInstalled } = await import('./watchdog');
+
+    await ensureWatchdogInstalled();
+
+    const [, ownScriptContent] = writeFileSyncMock.mock.calls[0] as unknown[];
+    expect(String(ownScriptContent)).toContain('STALE_SECONDS=600');
+    const [, defaultScriptContent] = writeFileSyncMock.mock.calls[1] as unknown[];
+    // No readable default-home script: the standard 300s window — never
+    // this instance's widened one.
+    expect(String(defaultScriptContent)).toContain('STALE_SECONDS=300');
+    expect(String(defaultScriptContent)).not.toContain('STALE_SECONDS=600');
   });
 
   it('skips rewriting files whose content is unchanged', async () => {
@@ -469,42 +568,60 @@ describe('touchRunnerHeartbeat supervision claim', () => {
     }
   });
 
-  it('writes the timestamp, an unsupervised claim and the pid by default', async () => {
+  it('writes the timestamp, an unsupervised claim, the pid and the generation marker', async () => {
     delete process.env.HAPI_RUNNER_SUPERVISED;
     const { touchRunnerHeartbeat } = await import('./watchdog');
 
-    touchRunnerHeartbeat(1_700_000_000_000, false, 4242);
+    touchRunnerHeartbeat(1_700_000_000_000, false, 4242, 'Mon Nov  3 09:12:34 2026');
 
     expect(written[0].path).toBe(heartbeatPath);
-    expect(written[0].data).toBe('1700000000000\nunsupervised\n4242\n');
+    expect(written[0].data).toBe('1700000000000\nunsupervised\n4242\nMon Nov  3 09:12:34 2026\n');
+  });
+
+  it('writes an empty generation marker when the start time is unknown', async () => {
+    const { touchRunnerHeartbeat } = await import('./watchdog');
+
+    touchRunnerHeartbeat(1_700_000_000_000, false, 4242, null);
+
+    expect(written[0].data).toBe('1700000000000\nunsupervised\n4242\n\n');
+  });
+
+  it('derives the generation marker from the live process when not given', async () => {
+    const { touchRunnerHeartbeat } = await import('./watchdog');
+
+    touchRunnerHeartbeat(5, true);
+
+    // Fourth line: the ps lstart marker, or empty when unavailable — either
+    // way the four-line shape is stable for the watchdog script to parse.
+    expect(written[0].data).toMatch(/^5\nsupervised\n\d+\n.*\n$/);
   });
 
   it('writes the supervised claim when HAPI_RUNNER_SUPERVISED=1', async () => {
     process.env.HAPI_RUNNER_SUPERVISED = '1';
     const { touchRunnerHeartbeat } = await import('./watchdog');
 
-    touchRunnerHeartbeat(1_700_000_000_001, true, 4243);
+    touchRunnerHeartbeat(1_700_000_000_001, true, 4243, 'Mon Nov  3 09:12:34 2026');
 
-    expect(written[0].data).toBe('1700000000001\nsupervised\n4243\n');
+    expect(written[0].data).toBe('1700000000001\nsupervised\n4243\nMon Nov  3 09:12:34 2026\n');
   });
 
   it('rewrites the claim on every tick so a later unsupervised runner clears a stale marker', async () => {
     process.env.HAPI_RUNNER_SUPERVISED = '1';
     const { touchRunnerHeartbeat } = await import('./watchdog');
-    touchRunnerHeartbeat(1, true, 7);
+    touchRunnerHeartbeat(1, true, 7, null);
     delete process.env.HAPI_RUNNER_SUPERVISED;
-    touchRunnerHeartbeat(2, false, 8);
-    expect(written[1].data).toBe('2\nunsupervised\n8\n');
+    touchRunnerHeartbeat(2, false, 8, null);
+    expect(written[1].data).toBe('2\nunsupervised\n8\n\n');
   });
 
   it('writes the heartbeat into a custom HAPI_HOME so instances stay isolated', async () => {
     process.env.HAPI_HOME = '/srv/hapi-instance-b';
     const { touchRunnerHeartbeat } = await import('./watchdog');
 
-    touchRunnerHeartbeat(1_700_000_000_002, true, 99);
+    touchRunnerHeartbeat(1_700_000_000_002, true, 99, 'Tue Nov 10 08:00:00 2026');
 
     expect(written[0].path).toBe('/srv/hapi-instance-b/runner-heartbeat');
-    expect(written[0].data).toBe('1700000000002\nsupervised\n99\n');
+    expect(written[0].data).toBe('1700000000002\nsupervised\n99\nTue Nov 10 08:00:00 2026\n');
   });
 });
 

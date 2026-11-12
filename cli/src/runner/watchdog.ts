@@ -11,7 +11,9 @@
  *    the very top of every heartbeat tick, before any await/network work — so
  *    the file only goes stale when the event loop itself is frozen. The
  *    file's second line records whether the runner is supervised
- *    (HAPI_RUNNER_SUPERVISED=1) and its third line the runner's pid.
+ *    (HAPI_RUNNER_SUPERVISED=1), its third line the runner's pid, and its
+ *    fourth line the runner process's start time (ps lstart) so the
+ *    watchdog can refuse to kill a recycled pid.
  * 2. A macOS LaunchAgent runs a pure-bash watchdog script every 60s. If the
  *    heartbeat is stale while its recorded pid still looks like a live
  *    `hapi runner start` process AND the runner advertised a supervisor, the
@@ -40,6 +42,7 @@ import os from 'os';
 import { dirname, join } from 'node:path';
 import { resolveHapiHomeDir } from '@/configuration';
 import { logger } from '@/ui/logger';
+import { getProcessStartMarker } from '@/utils/process';
 
 export const WATCHDOG_LABEL = 'com.hapi.watchdog';
 export const WATCHDOG_STALE_SECONDS = 300;
@@ -77,6 +80,28 @@ export function runnerHeartbeatPath(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 /**
+ * Cache of per-pid process start markers (ps lstart, LC_ALL=C TZ=UTC — the
+ * same normalization the generated watchdog script uses when it re-queries
+ * the marker before a kill). A process's pid and start time are both
+ * immutable for its lifetime, so a successful lookup is cached forever; a
+ * failed one is retried on the next tick so a transiently unavailable `ps`
+ * cannot permanently weaken the generation check.
+ */
+const processStartMarkers = new Map<number, string>();
+
+function runnerProcessStartMarker(pid: number): string | null {
+    const cached = processStartMarkers.get(pid);
+    if (cached !== undefined) {
+        return cached;
+    }
+    const marker = getProcessStartMarker(pid);
+    if (marker !== null) {
+        processStartMarkers.set(pid, marker);
+    }
+    return marker;
+}
+
+/**
  * Refresh the heartbeat file with the current epoch milliseconds. Called
  * unconditionally at the top of every heartbeat tick and once at startup, so
  * a fresh file means "the event loop is alive". The second line records
@@ -88,7 +113,10 @@ export function runnerHeartbeatPath(env: NodeJS.ProcessEnv = process.env): strin
  * unsupervised runner overwrites a stale supervised marker before it can
  * authorize a kill. The third line records THIS runner's pid so the
  * watchdog's victim selection is exact (see buildWatchdogScript) instead of
- * guessing among every `hapi runner start` process on the machine.
+ * guessing among every `hapi runner start` process on the machine, and the
+ * fourth line records the process start time of that pid so the watchdog
+ * can detect OS pid reuse before acting on the claim (an empty marker means
+ * "generation unknown"; the script then falls back to its pattern check).
  * Best-effort: a failed write falls back to a utimes touch (mtime refresh),
  * and a failed touch is ignored — the watchdog must never take the runner
  * down with it.
@@ -96,11 +124,12 @@ export function runnerHeartbeatPath(env: NodeJS.ProcessEnv = process.env): strin
 export function touchRunnerHeartbeat(
     now: number = Date.now(),
     supervised: boolean = process.env.HAPI_RUNNER_SUPERVISED === '1',
-    pid: number = process.pid
+    pid: number = process.pid,
+    processStart: string | null = runnerProcessStartMarker(pid)
 ): void {
     const heartbeatPath = runnerHeartbeatPath();
     try {
-        writeFileSync(heartbeatPath, `${now}\n${supervised ? 'supervised' : 'unsupervised'}\n${pid}\n`);
+        writeFileSync(heartbeatPath, `${now}\n${supervised ? 'supervised' : 'unsupervised'}\n${pid}\n${processStart ?? ''}\n`);
         return;
     } catch {
         // Fall through to the utimes touch below.
@@ -148,6 +177,32 @@ export interface WatchdogScriptOptions {
     logPath: string;
     runnerPattern?: string;
     label?: string;
+    /**
+     * Fall back to the historical oldest-pgrep-hit victim when the heartbeat
+     * carries no pid line (pre per-instance-scoping writers). Only valid for
+     * the DEFAULT home's upgrade-transition script: pre-scoping runners ran
+     * under the single-instance premise (every instance shared one
+     * heartbeat), so the heuristic is as exact as victim selection ever was
+     * there — and without the fallback the transition would silently disarm
+     * the watchdog protecting a still-running old runner. A home owned by a
+     * current runner must never set this: on a multi-instance machine the
+     * oldest pgrep hit can be a different, healthy instance.
+     */
+    legacyHeartbeatVictimFallback?: boolean;
+}
+
+/** Victim-selection branch for heartbeats without a pid claim. */
+function legacyVictimFallbackBlock(): string {
+    return `  # Legacy heartbeat (pre per-instance-scoping writer): timestamp and
+  # supervision claim only, no pid line. This script shape is generated for
+  # the DEFAULT home alone, whose pre-scoping runners ran under the
+  # single-instance premise, so the historical oldest-pgrep-hit victim stays
+  # as faithful as victim selection ever was there.
+  pid=$(printf '%s\\n' "$pids" | head -n 1)
+  if [ -z "$pid" ] || [ "$pid" = "$$" ]; then
+    exit 0
+  fi
+`;
 }
 
 /**
@@ -158,6 +213,7 @@ export function buildWatchdogScript(opts: WatchdogScriptOptions): string {
     const staleSeconds = opts.staleSeconds ?? WATCHDOG_STALE_SECONDS;
     const runnerPattern = opts.runnerPattern ?? WATCHDOG_RUNNER_PATTERN;
     const label = opts.label ?? WATCHDOG_LABEL;
+    const legacyFallback = opts.legacyHeartbeatVictimFallback === true ? legacyVictimFallbackBlock() : '  exit 0\n';
     return `#!/bin/bash
 # Generated by hapi (${label}) — do not edit.
 # Kills the runner when its heartbeat file goes stale while the process is
@@ -218,15 +274,37 @@ fi
 # including runner instances from other HAPI_HOMEs — so killing the oldest
 # pgrep hit could kill the wrong instance. Only kill the recorded pid, and
 # only while it still matches the runner pattern (guards against OS pid
-# reuse). An unknown, exited or reused pid is never substituted with a
+# reuse). A recorded pid that no longer matches is never substituted with a
 # guess: skip and let the guard do its job.
 pid=$(sed -n '3p' "$HEARTBEAT" 2>/dev/null | tr -d '[:space:]')
-if [ -z "$pid" ] || [ -z "$(printf '%s\\n' "$pids" | grep -Fx "$pid")" ]; then
+if [ -z "$pid" ]; then
+${legacyFallback}fi
+if [ -z "$(printf '%s\\n' "$pids" | grep -Fx "$pid")" ]; then
   exit 0
 fi
 if [ "$pid" = "$$" ]; then
   exit 0
 fi
+
+# Generation check: between the runner freezing and this run, the recorded
+# pid may have been recycled by the OS into a different — even
+# runner-matching — process, and a stale pid claim must not authorize
+# killing that unrelated process. The heartbeat's fourth line records the
+# pid's process start time as captured when the claim was written; a live
+# pid whose start time no longer matches is a recycled pid, so do not kill.
+# The query uses the same LC_ALL/TZ pinning and whitespace trimming as the
+# runner-side marker, so identical generations compare equal. An unrecorded
+# or unqueryable start time leaves the pattern-membership checks above as
+# the only gate (a failed ps cannot disable recovery).
+recorded_start=$(sed -n '4p' "$HEARTBEAT" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+if [ -n "$recorded_start" ]; then
+  actual_start=$(LC_ALL=C TZ=UTC ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [ -n "$actual_start" ] && [ "$actual_start" != "$recorded_start" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') stale runner heartbeat: age=\${age}s pid=\${pid} recorded start '\${recorded_start}' but pid now started '\${actual_start}' (pid reuse); not killing" >> "$LOG_PATH" 2>/dev/null || true
+    exit 0
+  fi
+fi
+
 echo "$(date '+%Y-%m-%d %H:%M:%S') stale runner heartbeat: age=\${age}s pid=\${pid} pattern=\${RUNNER_PATTERN}, sending kill -9" >> "$LOG_PATH" 2>/dev/null || true
 kill -9 "$pid" 2>/dev/null || true
 exit 0
@@ -275,6 +353,24 @@ function readFileIfExists(path: string): string | undefined {
     } catch {
         return undefined;
     }
+}
+
+/**
+ * Stale threshold of an already-installed watchdog script. The upgrade
+ * transition rewrites the DEFAULT home's script on behalf of an instance
+ * that does not own it, and the default home's own runner configured its
+ * threshold when it installed that script (possibly widened via
+ * HAPI_RUNNER_HEARTBEAT_INTERVAL because it runs a slow heartbeat cadence).
+ * The rewrite must preserve that threshold: substituting this instance's
+ * env-derived value could either stretch the default home's protection
+ * window (disarming it) or shrink it below a slow-but-healthy runner's
+ * cadence (kill-looping it). Undefined when no readable/parseable script
+ * exists.
+ */
+function readInstalledStaleSeconds(scriptPath: string): number | undefined {
+    const match = readFileIfExists(scriptPath)?.match(/^STALE_SECONDS=(\d+)\s*$/m);
+    const parsed = match ? Number.parseInt(match[1], 10) : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 /** launchctl invocation that never throws; output is swallowed. */
@@ -353,12 +449,16 @@ export async function ensureWatchdogInstalled(): Promise<WatchdogInstallResult> 
         // Upgrade transition: a runner from before per-instance scoping may
         // have left a default-home script whose pgrep-oldest victim logic
         // can no longer be trusted on a multi-instance machine. Rewrite the
-        // default-home script with the pid-exact form — it is inert unless
-        // a runner actually owns the default home (no heartbeat file → exit
-        // 0; pre-scoping heartbeats carry no pid line → no victim → exit
-        // 0), and a live default-home runner rewrites the same content
-        // anyway. Never removes the default label itself: a concurrent
-        // default-home instance owns it.
+        // default-home script with the pid-exact form. Unlike a home owned
+        // by a current runner, the default home may still be running its
+        // pre-scoping runner, whose heartbeats carry no pid line — for that
+        // writer the script keeps the historical oldest-pgrep-hit victim
+        // (valid under the pre-scoping single-instance premise), so the
+        // rewrite stays protection-equivalent instead of silently disarming
+        // the default home's watchdog. The stale threshold is preserved
+        // from the installed script (this instance's env-derived value
+        // describes a home it does not own). Never removes the default
+        // label itself: a concurrent default-home instance owns it.
         if (label !== WATCHDOG_LABEL) {
             try {
                 const defaultHome = resolveHapiHomeDir({ ...process.env, HAPI_HOME: undefined });
@@ -366,9 +466,10 @@ export async function ensureWatchdogInstalled(): Promise<WatchdogInstallResult> 
                     const defaultScriptPath = join(defaultHome, 'watchdog.sh');
                     const defaultScript = buildWatchdogScript({
                         heartbeatPath: join(defaultHome, 'runner-heartbeat'),
-                        staleSeconds,
+                        staleSeconds: readInstalledStaleSeconds(defaultScriptPath) ?? WATCHDOG_STALE_SECONDS,
                         logPath: join(defaultHome, 'logs', 'watchdog.log'),
-                        runnerPattern: WATCHDOG_RUNNER_PATTERN
+                        runnerPattern: WATCHDOG_RUNNER_PATTERN,
+                        legacyHeartbeatVictimFallback: true
                     });
                     if (readFileIfExists(defaultScriptPath) !== defaultScript) {
                         writeFileSync(defaultScriptPath, defaultScript);
