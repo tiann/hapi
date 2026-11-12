@@ -110,24 +110,48 @@ export function resolveToolAutoApprovalDecision(
     return null;
 }
 
-function isDisplayToolName(tool?: string | null): boolean {
-    if (!tool) return false;
-    const lower = tool.toLowerCase();
-    return lower.includes('display_media') || lower.includes('display_image') || lower.includes('display_video');
+/**
+ * Detect tools that display or read a local file.
+ * Recognizes canonical names, snake_case variants, and ACP human-readable titles.
+ */
+export function isDisplayOrReadFileTool(toolName?: string | null): boolean {
+    if (!toolName) return false;
+    const normalized = toolName.toLowerCase().replace(/[_-]/g, ' ').trim();
+    return (
+        normalized.includes('display media')
+        || normalized.includes('display image')
+        || normalized.includes('display video')
+        || normalized.startsWith('read')
+        || normalized === 'view'
+        || normalized.startsWith('view file')
+        || normalized.startsWith('read file')
+        || normalized === 'cat'
+    );
 }
 
-function extractDisplayToolPath(input: unknown): string | null {
+/**
+ * Extract target file path from tool arguments or approval inputs.
+ * Supports flat path/file_path, nested Codex toolParams, and arguments objects.
+ */
+export function extractTargetFilePath(input: unknown): string | null {
     if (!input || typeof input !== 'object') return null;
     const record = input as Record<string, unknown>;
     if (typeof record.path === 'string') return record.path;
-    // Codex MCP approval arguments nest parameters under toolParams
+    if (typeof record.file_path === 'string') return record.file_path;
+    if (typeof record.filePath === 'string') return record.filePath;
+    if (typeof record.target === 'string') return record.target;
+
     if (record.toolParams && typeof record.toolParams === 'object') {
         const nested = record.toolParams as Record<string, unknown>;
         if (typeof nested.path === 'string') return nested.path;
+        if (typeof nested.file_path === 'string') return nested.file_path;
+        if (typeof nested.filePath === 'string') return nested.filePath;
     }
     if (record.arguments && typeof record.arguments === 'object') {
         const nested = record.arguments as Record<string, unknown>;
         if (typeof nested.path === 'string') return nested.path;
+        if (typeof nested.file_path === 'string') return nested.file_path;
+        if (typeof nested.filePath === 'string') return nested.filePath;
     }
     return null;
 }
@@ -234,8 +258,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 || completion.decision === 'denied'
                 || completion.decision === 'abort'
             ) {
-                if (isDisplayToolName(request.tool)) {
-                    const targetPath = extractDisplayToolPath(request.arguments);
+                if (isDisplayOrReadFileTool(request.tool)) {
+                    const targetPath = extractTargetFilePath(request.arguments);
                     if (targetPath) {
                         this.client.markAttachmentDenied?.(targetPath);
                     }
@@ -270,8 +294,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
         for (const [id, pending] of this.pendingRequests.entries()) {
             if (filter && !filter(pending.toolName)) continue;
-            if (isDisplayToolName(pending.toolName)) {
-                const targetPath = extractDisplayToolPath(pending.input);
+            if (isDisplayOrReadFileTool(pending.toolName)) {
+                const targetPath = extractTargetFilePath(pending.input);
                 if (targetPath) {
                     this.client.markAttachmentDenied?.(targetPath);
                 }
@@ -330,8 +354,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 || completion.decision === 'denied'
                 || completion.decision === 'abort'
             ) {
-                if (isDisplayToolName(pending.toolName)) {
-                    const targetPath = extractDisplayToolPath(pending.input);
+                if (isDisplayOrReadFileTool(pending.toolName)) {
+                    const targetPath = extractTargetFilePath(pending.input);
                     if (targetPath) {
                         this.client.markAttachmentDenied?.(targetPath);
                     }

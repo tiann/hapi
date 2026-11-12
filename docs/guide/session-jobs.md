@@ -130,7 +130,7 @@ Do **not**:
 
 - MCP `session_job` `set` or one-shot CLI `set` + background the real work (no heartbeat).
 - `hapi job run --done 0 --total N -- cmd` with **no** continuous count writer (**frozen 0/N under a live heartbeat** — the common agent footgun).
-- `hapi job run --progress unknown -- sleep 150747` (or any numeric `sleep N`) — that is a known-duration countdown; CLI refuses it. Use `--progress until --until …` (or `sleep infinity` under `unknown`).
+- `hapi job run --progress unknown -- sleep 150747` (or any numeric `sleep N`) — that is a known-duration countdown; CLI refuses it under `unknown`. Use `--progress until --until …` (supports relative durations like `+5m` or `300s`, and running `hapi job run <session> <key> -- sleep N` automatically infers countdown progress).
 - Wrap `hapi-restart-hub` / `hapi-use-worktree` / `hapi-use-driver` / `hapi-watch-activate-driver` inside `hapi job run`. The hub is down exactly when the terminal `completed`/`failed` PATCH must land → `ECONNREFUSED` → zombie `running` meter (CLI refuses these argv tokens). Run remat/work under the job; run the hub restart **after** the job exits (same shape as soup remat `#205`).
 - Claim done / invite archive while a zombie `running` meter remains.
 

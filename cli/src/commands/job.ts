@@ -62,10 +62,10 @@ ${chalk.bold('Agent contract:')}
   An idle agent cannot heartbeat; set-once jobs go amber after ~15m.
   ${chalk.bold('run/set require --progress')} unknown|fraction|until (explicit affordance).
   unknown → indeterminate stripes (no counts). fraction → remaining+total or done+total.
-  until → --until <ISO|epoch>; remaining/total derived (job run heartbeats re-stamp remaining).
+  until → --until <ISO|epoch|duration (+5m, 300s)>; remaining/total derived (job run heartbeats re-stamp remaining).
   Fraction without a continuous updater freezes under heartbeats — keep
   ${chalk.bold('job update')}ing done/remaining (or use --progress unknown).
-  Numeric ${chalk.bold('sleep N')} requires ${chalk.bold('--progress until')}.
+  Numeric ${chalk.bold('sleep N')} automatically infers ${chalk.bold('--progress until')} (supports multi-operand sleep N M).
   Never invent a fake percent.
   Do not wrap hapi-restart-hub / stack-switch in job run (hub down → zombie running meter).
 

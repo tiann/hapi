@@ -1187,6 +1187,22 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterCodex).toHaveLength(1) // codex-denied.pdf blocked across spellings
+
+                // File-read denial: Claude Read({ file_path }) rejection also blocks attachment delivery
+                await writeFile(join(workspace, 'read-denied.txt'), 'read denied content')
+                const readReq = permHandler.triggerRequest('req-read-1', 'Read', { file_path: join(workspace, 'read-denied.txt') })
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: 'req-read-1', approved: false, decision: 'denied', reason: 'Declined read' })
+                })
+                await expect(readReq).rejects.toThrow()
+
+                client.sendAgentMessage({ type: 'message', message: '[read-denied](read-denied.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterReadDenial = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterReadDenial).toHaveLength(1) // read-denied.txt blocked
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

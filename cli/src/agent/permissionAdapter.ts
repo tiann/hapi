@@ -5,6 +5,8 @@ import { logger } from '@/ui/logger';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
+    isDisplayOrReadFileTool,
+    extractTargetFilePath,
     resolveToolAutoApprovalDecision,
     type AutoApprovalDecision
 } from '@/modules/common/permission/BasePermissionHandler';
@@ -157,10 +159,9 @@ export class PermissionAdapter {
         }
 
         if (!response.approved || decision === 'denied' || decision === 'abort') {
-            const lowerTool = toolName.toLowerCase();
-            if (lowerTool.includes('display_media') || lowerTool.includes('display_image') || lowerTool.includes('display_video')) {
-                const targetPath = (toolInput as { path?: unknown })?.path ?? (pending.rawInput as { path?: unknown })?.path;
-                if (typeof targetPath === 'string') {
+            if (isDisplayOrReadFileTool(toolName) || isDisplayOrReadFileTool(pending.title)) {
+                const targetPath = extractTargetFilePath(toolInput) ?? extractTargetFilePath(pending.rawInput);
+                if (targetPath) {
                     this.session.markAttachmentDenied(targetPath);
                 }
             }
@@ -224,11 +225,10 @@ export class PermissionAdapter {
                 kind: request.kind,
                 rawInput: request.rawInput
             });
-            const lowerTool = toolName.toLowerCase();
-            if (lowerTool.includes('display_media') || lowerTool.includes('display_image') || lowerTool.includes('display_video')) {
+            if (isDisplayOrReadFileTool(toolName) || isDisplayOrReadFileTool(request.title)) {
                 const toolInput = deriveToolInput(request);
-                const targetPath = (toolInput as { path?: unknown })?.path ?? (request.rawInput as { path?: unknown })?.path;
-                if (typeof targetPath === 'string') {
+                const targetPath = extractTargetFilePath(toolInput) ?? extractTargetFilePath(request.rawInput);
+                if (targetPath) {
                     this.session.markAttachmentDenied(targetPath);
                 }
             }

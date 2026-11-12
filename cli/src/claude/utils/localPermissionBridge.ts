@@ -4,7 +4,11 @@ import { z } from 'zod'
 import { isObject } from '@hapi/protocol'
 import type { AgentStateCompletedRequest, AgentStateRequest } from '@hapi/protocol/schemas'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
-import type { PermissionHandlerClient } from '@/modules/common/permission/BasePermissionHandler'
+import {
+    isDisplayOrReadFileTool,
+    extractTargetFilePath,
+    type PermissionHandlerClient
+} from '@/modules/common/permission/BasePermissionHandler'
 import { buildAskUserQuestionUpdatedInput } from './askUserQuestionAnswers'
 import {
     type LocalPermissionDecision,
@@ -173,11 +177,10 @@ export class LocalPermissionBridge {
         let decision: LocalPermissionDecision
         if (!response.approved) {
             decision = { behavior: 'deny', message: response.reason ?? 'The user declined this request.' }
-            const tool = String(pending.entry.tool || '').toLowerCase()
-            if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
-                const args = pending.entry.arguments
-                if (isObject(args) && typeof args.path === 'string') {
-                    this.client.markAttachmentDenied?.(args.path)
+            if (isDisplayOrReadFileTool(pending.entry.tool)) {
+                const targetPath = extractTargetFilePath(pending.entry.arguments)
+                if (targetPath) {
+                    this.client.markAttachmentDenied?.(targetPath)
                 }
             }
         } else if (pending.entry.tool === 'AskUserQuestion') {
@@ -232,11 +235,10 @@ export class LocalPermissionBridge {
         pending.detach()
         pending.resolve(null)
         if (status === 'denied' || status === 'canceled') {
-            const tool = String(pending.entry.tool || '').toLowerCase()
-            if (tool.includes('display_media') || tool.includes('display_image') || tool.includes('display_video')) {
-                const args = pending.entry.arguments
-                if (isObject(args) && typeof args.path === 'string') {
-                    this.client.markAttachmentDenied?.(args.path)
+            if (isDisplayOrReadFileTool(pending.entry.tool)) {
+                const targetPath = extractTargetFilePath(pending.entry.arguments)
+                if (targetPath) {
+                    this.client.markAttachmentDenied?.(targetPath)
                 }
             }
         }
