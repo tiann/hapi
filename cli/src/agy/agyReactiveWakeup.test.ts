@@ -1620,6 +1620,8 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
         // Wakeup 1: starts a background run_command (`task-5`) and finishes its wakeup turn.
+        // The hub's background-task indicator must register the chained command even
+        // though no ACP turn is open (it was started by the transcript-only wakeup).
         appendFileSync(
             compactPath,
             [
@@ -1658,6 +1660,23 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await vi.waitFor(() => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
+
+        // The chained command registers into the indicator with its command line,
+        // mirroring what closeBackgroundCommands does for ACP-turn commands.
+        const chainedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+                expect.objectContaining({
+                    type: 'system',
+                    subtype: 'background_tasks_changed',
+                    tasks: [expect.objectContaining({
+                        task_id: chainedCallId,
+                        task_type: 'local_bash',
+                        description: 'sleep 3 && echo CHAINED_BG_OK'
+                    })]
+                })
+            );
+        });
         client.sendSessionEvent.mockClear();
         client.sendAgentMessage.mockClear();
 
@@ -1694,6 +1713,16 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             is_error: false,
             output: { stdout: 'CHAINED_BG_OK', exit_code: 0 }
         }));
+
+        // The wakeup that settled the chained command also retires its indicator
+        // entry: an empty snapshot follows so the hub stops showing it running.
+        expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+            expect.objectContaining({
+                type: 'system',
+                subtype: 'background_tasks_changed',
+                tasks: []
+            })
+        );
 
         queue.close();
         await runPromise;

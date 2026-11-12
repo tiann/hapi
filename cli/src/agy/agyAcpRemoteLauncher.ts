@@ -684,6 +684,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     for (const msg of converted.messages) {
                         this.forwardAgentMessage(this.showQuestionCard(msg));
                     }
+                    this.registerTranscriptBackgroundTasks();
                     this.retireSettledBackgroundTasks();
                     if (converted.usage) {
                         const wakeupNumTurns = inspection.steps.filter((step) =>
@@ -1652,6 +1653,26 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.activeBgTasks.delete(id);
                 changed = true;
             }
+        }
+        if (changed) this.emitBackgroundTasksSnapshot();
+    }
+
+    /**
+     * Registers background commands the transcript shows as still running but
+     * the indicator does not know yet: a completed reactive wakeup can start
+     * another background command while no ACP turn is open, so
+     * closeBackgroundCommands never sees it. Mirrors that registration — the
+     * command line as the description — and emits the complete snapshot.
+     */
+    private registerTranscriptBackgroundTasks(): void {
+        let changed = false;
+        for (const entry of this.backgroundCommands) {
+            if (this.activeBgTasks.has(entry.callId)) continue;
+            const description = typeof entry.commandLine === 'string' && entry.commandLine.trim().length > 0
+                ? entry.commandLine
+                : entry.callId;
+            this.activeBgTasks.set(entry.callId, description);
+            changed = true;
         }
         if (changed) this.emitBackgroundTasksSnapshot();
     }
