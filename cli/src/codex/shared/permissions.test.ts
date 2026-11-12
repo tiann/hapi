@@ -8,14 +8,16 @@ function fixture() {
     let state: AgentState = {};
     const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const markAttachmentDenied = vi.fn();
     const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: send,
+        markAttachmentDenied,
         updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); },
         rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => handlers.set(key, fn) } } as unknown as ApiSessionClient;
     const respond = vi.fn();
     const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation');
     const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
         questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }] }] } };
-    return { permissions, request, respond, handlers, send, state: () => state };
+    return { permissions, request, respond, handlers, send, markAttachmentDenied, state: () => state };
 }
 describe('shared request arbitration', () => {
     it.each([{ notes: [] }, { notes: ['user_note: custom answer'] }])('preserves isOther and canonical other answers (%j) without claiming a winner', async ({ notes }) => {
@@ -125,5 +127,24 @@ describe('shared request arbitration', () => {
         permissions.receive(request);
         permissions.resolved('thread', request.id);
         await vi.waitFor(() => expect(waitCloses).toBe(1));
+    });
+
+    it('marks attachment denied when a tool request for read_file or display_media is denied in SharedCodexPermissions', async () => {
+        const f = fixture();
+        const request = {
+            id: 2,
+            method: 'item/tool/requestApproval',
+            params: {
+                threadId: 'thread',
+                turnId: 'turn',
+                itemId: 'call-read-1',
+                tool: 'read_file',
+                input: { path: '/workspace/private.txt' }
+            }
+        };
+        f.permissions.receive(request);
+        const [id] = Object.entries(f.state().requests ?? {})[0]!;
+        await f.handlers.get('permission')!({ id, approved: false, decision: 'denied' });
+        expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/private.txt');
     });
 });

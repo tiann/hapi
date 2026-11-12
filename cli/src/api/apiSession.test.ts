@@ -1058,6 +1058,8 @@ describe('ApiSessionClient durable status identity', () => {
 
 import { BasePermissionHandler, type PermissionCompletion } from '@/modules/common/permission/BasePermissionHandler'
 import { RPC_METHODS } from '@hapi/protocol'
+import { SharedCodexPermissions } from '@/codex/shared/permissions'
+import type { CodexAppServerClient } from '@/codex/codexAppServerClient'
 
 describe('ApiSessionClient attachment links', () => {
     it('flushes link attachments from each assistant ingress in authorized permission modes', async () => {
@@ -1203,6 +1205,35 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterReadDenial).toHaveLength(1) // read-denied.txt blocked
+
+                // SharedCodexPermissions denial integration: denying a file read via SharedCodexPermissions
+                // records the path on ApiSessionClient and prevents fallback link delivery.
+                await writeFile(join(workspace, 'codex-shared-denied.txt'), 'secret shared')
+                const codexClient = { respond: vi.fn(), request: vi.fn() } as unknown as CodexAppServerClient
+                const sharedCodex = new SharedCodexPermissions(client, codexClient, 'gen-1')
+                sharedCodex.receive({
+                    id: 101,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-read',
+                        tool: 'read_file',
+                        input: { path: join(workspace, 'codex-shared-denied.txt') }
+                    }
+                })
+                const sharedReqId = 'gen-1:thread-1:number:101'
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: sharedReqId, approved: false, decision: 'denied' })
+                })
+
+                client.sendAgentMessage({ type: 'message', message: '[shared](codex-shared-denied.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterSharedCodex = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterSharedCodex).toHaveLength(1) // codex-shared-denied.txt blocked
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

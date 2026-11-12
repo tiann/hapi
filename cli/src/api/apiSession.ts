@@ -551,6 +551,10 @@ export class ApiSessionClient extends EventEmitter {
         return this.metadata
     }
 
+    getAgentState(): Readonly<AgentState> | null {
+        return this.agentState
+    }
+
     isPending(): boolean {
         return this.state === 'pending' || this.state === 'materializing'
     }

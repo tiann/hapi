@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { isDisplayOrReadFileTool, extractTargetFilePath } from '@/modules/common/permission/BasePermissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 import { registerAppServerPermissionHandlers, IGNORE_SHARED_REQUEST } from '../utils/appServerPermissionAdapter';
 import { record, string } from './gateway';
@@ -81,6 +82,14 @@ export class SharedCodexPermissions {
             shared: true,
             permissionHandler: { handleToolCall: async (_id, name, input) => {
                 const reply = await ask(name, input);
+                if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
+                    if (isDisplayOrReadFileTool(name)) {
+                        const targetPath = extractTargetFilePath(input);
+                        if (targetPath) {
+                            this.session.markAttachmentDenied(targetPath);
+                        }
+                    }
+                }
                 return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
             } },
             onUserInputRequest: async ({ input }) => {
