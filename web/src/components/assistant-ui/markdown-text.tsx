@@ -1,7 +1,7 @@
 import '@assistant-ui/react-markdown/styles/dot.css'
 
 import type { ComponentPropsWithoutRef, ComponentType, MouseEvent, ReactNode } from 'react'
-import { Children, Fragment, isValidElement, useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
+import { Children, Fragment, cloneElement, isValidElement, useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
 import {
     MarkdownTextPrimitive,
     unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -599,21 +599,46 @@ function InertMarkdownHref(props: { href: string; children?: ReactNode; classNam
     )
 }
 
-function isInteractiveMarkdownImage(child: ReactNode, fileBase: MarkdownFileBaseValue | null): boolean {
-    if (!isValidElement<{ children?: ReactNode; src?: unknown }>(child)) return false
+type LinkChildSegment = {
+    interactiveImage: boolean
+    children: ReactNode[]
+}
+
+type SplitLinkNode = {
+    interactiveImage: boolean
+    node: ReactNode
+}
+
+function splitInteractiveImageNodes(child: ReactNode, fileBase: MarkdownFileBaseValue | null): SplitLinkNode[] {
+    if (!isValidElement<{ children?: ReactNode; src?: unknown }>(child)) {
+        return [{ interactiveImage: false, node: child }]
+    }
+
     const src = typeof child.props.src === 'string' ? child.props.src : null
     if (src) {
         const standalonePath = fileBase
             ? resolveMarkdownRelativePath(fileBase.filePath, src, fileBase.workspacePath)
             : null
-        return !standalonePath
+        return [{ interactiveImage: !standalonePath, node: child }]
     }
-    return Children.toArray(child.props.children).some((nested) => isInteractiveMarkdownImage(nested, fileBase))
-}
 
-type LinkChildSegment = {
-    interactiveImage: boolean
-    children: ReactNode[]
+    const nestedChildren = Children.toArray(child.props.children)
+    if (nestedChildren.length === 0) {
+        return [{ interactiveImage: false, node: child }]
+    }
+    const nested = nestedChildren.flatMap((nestedChild) => splitInteractiveImageNodes(nestedChild, fileBase))
+    if (!nested.some((segment) => segment.interactiveImage)) {
+        return [{ interactiveImage: false, node: child }]
+    }
+
+    return nested.map((segment, index) => ({
+        interactiveImage: segment.interactiveImage,
+        node: cloneElement(
+            child,
+            { key: `${String(child.key ?? 'node')}-${index}` },
+            segment.node,
+        ),
+    }))
 }
 
 function renderSplitInteractiveImageLink(
@@ -622,15 +647,15 @@ function renderSplitInteractiveImageLink(
     renderAnchor: (children: ReactNode, key: string) => ReactNode,
 ): ReactNode | null {
     const segments: LinkChildSegment[] = []
-    for (const child of Children.toArray(children)) {
-        const interactiveImage = isInteractiveMarkdownImage(child, fileBase)
-        if (interactiveImage) {
-            segments.push({ interactiveImage: true, children: [child] })
+    const splitNodes = Children.toArray(children).flatMap((child) => splitInteractiveImageNodes(child, fileBase))
+    for (const splitNode of splitNodes) {
+        if (splitNode.interactiveImage) {
+            segments.push({ interactiveImage: true, children: [splitNode.node] })
             continue
         }
         const previous = segments.at(-1)
-        if (previous && !previous.interactiveImage) previous.children.push(child)
-        else segments.push({ interactiveImage: false, children: [child] })
+        if (previous && !previous.interactiveImage) previous.children.push(splitNode.node)
+        else segments.push({ interactiveImage: false, children: [splitNode.node] })
     }
 
     if (!segments.some((segment) => segment.interactiveImage)) return null

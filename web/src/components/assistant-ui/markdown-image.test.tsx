@@ -152,6 +152,34 @@ describe('ChatMarkdownImage', () => {
         expect(reportLink).toHaveAttribute('href', '/sessions/session-1/file?path=cmVwb3J0Lm1k&origin=chat')
     })
 
+    it.each([
+        ['strong', '[**![Nested chart](images/chart.png) Open report**](report.md)', 'STRONG'],
+        ['emphasis', '[*![Nested chart](images/chart.png) Open report*](report.md)', 'EM'],
+    ])('preserves text navigation inside %s wrappers', async (_name, content, wrapperTag) => {
+        const readSessionFile = vi.fn(async () => ({
+            success: true,
+            content: encodeBase64('png-bytes'),
+            size: 9,
+        }))
+        const api = { readSessionFile } as unknown as ApiClient
+
+        render(
+            <I18nProvider>
+                <HappyChatProvider value={chatValue(api)}>
+                    <MarkdownRenderer content={content} />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+
+        await waitFor(() => expect(screen.getByRole('img', { name: 'Nested chart' }).tagName).toBe('IMG'))
+        const trigger = screen.getByRole('button', { name: /nested chart/i })
+        const reportText = screen.getByText('Open report')
+        const reportLink = reportText.closest('a')
+        expect(trigger.closest('a')).toBeNull()
+        expect(reportLink).not.toBeNull()
+        expect(reportLink?.querySelector(wrapperTag)).not.toBeNull()
+    })
+
     it('loads reachable HTTPS images directly without reading a session file', () => {
         const readSessionFile = vi.fn()
         const api = { readSessionFile } as unknown as ApiClient
