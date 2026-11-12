@@ -1,4 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+    chmodSync,
+    existsSync,
+    lstatSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    statSync,
+    writeFileSync
+} from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -20,6 +32,8 @@ import {
     berrySpawnEnvOverlay,
     createBerryBackend,
     ensureBerryDataDir,
+    loadSqliteOpener,
+    overrideSqliteOpenerForTests,
     resolveBerryAcpCommand,
     resolveBerryDataDir,
     resolveInteractiveBerryDataDir
@@ -177,6 +191,61 @@ function makeInteractiveBerryHome(): { home: string; interactiveDir: string } {
     return { home, interactiveDir }
 }
 
+/* ------------------------------------------------------------------ *
+ * Real sqlite fixtures                                                *
+ *                                                                     *
+ * The credentials seed snapshots a real store, so the fixtures build  *
+ * real WAL-mode databases through the module's own sqlite loader      *
+ * (bun:sqlite on Bun, node:sqlite on the vitest/Node rig).            *
+ * ------------------------------------------------------------------ */
+
+function sqlStringLiteral(value: string): string {
+    return `'${value.replaceAll("'", "''")}'`
+}
+
+function requireSqliteOpener() {
+    const opener = loadSqliteOpener()
+    if (!opener) throw new Error('test rig requires a sqlite module (bun:sqlite or node:sqlite)')
+    return opener
+}
+
+/** Berry's real credentials table (persist/schema.ts: provider/api_key/meta/updated_at, STRICT). */
+const BERRY_CREDENTIALS_DDL = `CREATE TABLE credentials (
+    provider   TEXT PRIMARY KEY,
+    api_key    TEXT NOT NULL,
+    meta       TEXT,
+    updated_at INTEGER NOT NULL
+) STRICT`
+
+function createInteractiveSqliteStore(
+    interactiveDir: string,
+    providers: ReadonlyArray<{ provider: string; apiKey: string }>
+): void {
+    const db = requireSqliteOpener()(join(interactiveDir, 'sessions.db'), 'readwrite')
+    try {
+        db.exec('PRAGMA journal_mode = WAL')
+        db.exec(BERRY_CREDENTIALS_DDL)
+        for (const { provider, apiKey } of providers) {
+            db.exec(
+                `INSERT INTO credentials (provider, api_key, meta, updated_at) `
+                + `VALUES (${sqlStringLiteral(provider)}, ${sqlStringLiteral(apiKey)}, NULL, 0)`
+            )
+        }
+    } finally {
+        db.close()
+    }
+}
+
+function readCredentialProviders(dbPath: string): string[] {
+    const db = requireSqliteOpener()(dbPath, 'readonly')
+    try {
+        const rows = db.readAll('SELECT provider FROM credentials ORDER BY provider') as Array<{ provider: string }>
+        return rows.map((row) => row.provider)
+    } finally {
+        db.close()
+    }
+}
+
 function writeInteractiveProviderConfig(interactiveDir: string): {
     customProviders: Record<string, unknown>
     settingsJson: string
@@ -195,13 +264,23 @@ function writeInteractiveProviderConfig(interactiveDir: string): {
         customProviders
     })
     writeFileSync(join(interactiveDir, 'settings.json'), settingsJson, 'utf8')
-    writeFileSync(join(interactiveDir, 'sessions.db'), 'FAKE-SESSIONS-DB', 'utf8')
-    writeFileSync(join(interactiveDir, 'sessions.db-wal'), 'FAKE-WAL', 'utf8')
+    createInteractiveSqliteStore(interactiveDir, [
+        { provider: 'newapi', apiKey: 'v1:cipher-for-newapi' }
+    ])
     writeFileSync(join(interactiveDir, 'secret.key'), 'FAKE-SECRET-KEY', 'utf8')
     // Sticky permission grants are the one thing the isolated dir exists
     // to keep out.
     writeFileSync(join(interactiveDir, 'tool-policy.json'), '{"toolcall_bash":{"outcome":"allow_always"}}', 'utf8')
     return { customProviders, settingsJson }
+}
+
+/** Recursively writes a skill tree (`skills/<name>/SKILL.md`). */
+function writeInteractiveSkills(interactiveDir: string, names: string[]): void {
+    for (const name of names) {
+        const skillDir = join(interactiveDir, 'skills', name)
+        mkdirSync(skillDir, { recursive: true })
+        writeFileSync(join(skillDir, 'SKILL.md'), `# ${name}\n\nbody\n`, 'utf8')
+    }
 }
 
 describe('ensureBerryDataDir provider config seed', () => {
@@ -213,6 +292,7 @@ describe('ensureBerryDataDir provider config seed', () => {
     it('seeds provider config from the interactive dir on first creation', () => {
         const { home, interactiveDir } = makeInteractiveBerryHome()
         const { customProviders } = writeInteractiveProviderConfig(interactiveDir)
+        writeInteractiveSkills(interactiveDir, ['pdf-tools'])
         const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-seed-')), 'row-1')
 
         ensureBerryDataDir(dataDir, { HOME: home })
@@ -220,13 +300,83 @@ describe('ensureBerryDataDir provider config seed', () => {
         // Provider definitions ride over — and ONLY them: berry's own
         // sandbox/approval defaults must not change HAPI session gating.
         expect(JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8'))).toEqual({ customProviders })
-        // Stored provider auth: credentials table (sessions.db + its WAL
-        // sidecar) and the key that decrypts it.
-        expect(readFileSync(join(dataDir, 'sessions.db'), 'utf8')).toBe('FAKE-SESSIONS-DB')
-        expect(readFileSync(join(dataDir, 'sessions.db-wal'), 'utf8')).toBe('FAKE-WAL')
+        // Stored provider auth: a consistent single-file snapshot of the
+        // credentials store (opens on its own, rows intact) plus the key
+        // that decrypts it.
+        expect(readCredentialProviders(join(dataDir, 'sessions.db'))).toEqual(['newapi'])
+        expect(existsSync(join(dataDir, 'sessions.db-wal'))).toBe(false)
         expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+        // The interactive skills tree rides along (copy, not symlink).
+        expect(readFileSync(join(dataDir, 'skills', 'pdf-tools', 'SKILL.md'), 'utf8')).toContain('pdf-tools')
+        expect(lstatSync(join(dataDir, 'skills')).isSymbolicLink()).toBe(false)
         // Sticky permission grants stay isolated.
         expect(existsSync(join(dataDir, 'tool-policy.json'))).toBe(false)
+    })
+
+    it('snapshots credentials consistently while a live writer holds un-checkpointed WAL commits', () => {
+        // The regression the snapshot exists for: berry commits live in the
+        // WAL until a checkpoint runs, so a credentials row added moments
+        // ago exists ONLY in sessions.db-wal. Copying db and WAL as two
+        // separate files can pair mismatched generations; the seed must
+        // instead produce a single file that already contains the row.
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        createInteractiveSqliteStore(interactiveDir, [
+            { provider: 'newapi', apiKey: 'v1:cipher-for-newapi' }
+        ])
+        const dbPath = join(interactiveDir, 'sessions.db')
+        const writer = requireSqliteOpener()(dbPath, 'readwrite')
+        try {
+            writer.exec('PRAGMA wal_autocheckpoint = 0')
+            writer.exec(
+                `INSERT INTO credentials (provider, api_key, meta, updated_at) `
+                + `VALUES ('openrouter', 'v1:cipher-wal-only', NULL, 1)`
+            )
+            expect(statSync(`${dbPath}-wal`).size).toBeGreaterThan(0)
+            const dbBytesBefore = readFileSync(dbPath)
+            const walBytesBefore = readFileSync(`${dbPath}-wal`)
+
+            const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-live-')), 'row-1')
+            ensureBerryDataDir(dataDir, { HOME: home })
+
+            // The seeded store opens on its own and carries the WAL-only
+            // credential — no sidecar copied, source bytes untouched.
+            expect(readCredentialProviders(join(dataDir, 'sessions.db'))).toEqual(['newapi', 'openrouter'])
+            expect(existsSync(join(dataDir, 'sessions.db-wal'))).toBe(false)
+            expect(Buffer.compare(readFileSync(dbPath), dbBytesBefore)).toBe(0)
+            expect(Buffer.compare(readFileSync(`${dbPath}-wal`), walBytesBefore)).toBe(0)
+        } finally {
+            writer.close()
+        }
+    })
+
+    it('snapshots credentials consistently from a crashed writer\u2019s hot WAL (no -shm)', () => {
+        // A hard-killed berry leaves the WAL hot with no -shm; read-only
+        // opens refuse that shape, so the ladder must escalate instead of
+        // degrading to a racy two-file copy.
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        const dbPath = join(interactiveDir, 'sessions.db')
+        const child = spawnSync(
+            process.execPath,
+            ['-e', `
+                const { DatabaseSync } = require('node:sqlite');
+                const db = new DatabaseSync(${JSON.stringify(dbPath)});
+                db.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0');
+                db.exec(${JSON.stringify(BERRY_CREDENTIALS_DDL)});
+                db.exec("INSERT INTO credentials (provider, api_key, meta, updated_at) VALUES ('newapi', 'v1:cipher', NULL, 0)");
+                db.exec("INSERT INTO credentials (provider, api_key, meta, updated_at) VALUES ('openrouter', 'v1:cipher-wal-only', NULL, 1)");
+                process.exit(0); // no close: WAL stays hot
+            `],
+            { encoding: 'utf8' }
+        )
+        expect(child.status).toBe(0)
+        expect(existsSync(`${dbPath}-wal`)).toBe(true)
+        rmSync(`${dbPath}-shm`, { force: true })
+
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-crash-')), 'row-1')
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        expect(readCredentialProviders(join(dataDir, 'sessions.db'))).toEqual(['newapi', 'openrouter'])
+        expect(existsSync(join(dataDir, 'sessions.db-wal'))).toBe(false)
     })
 
     it('seeds through createBerryBackend when it creates the isolated dir', () => {
@@ -239,6 +389,7 @@ describe('ensureBerryDataDir provider config seed', () => {
         expect(backend).toBeInstanceOf(AcpSdkBackend)
         expect(existsSync(join(dataDir, 'secret.key'))).toBe(true)
         expect(existsSync(join(dataDir, 'settings.json'))).toBe(true)
+        expect(existsSync(join(dataDir, 'sessions.db'))).toBe(true)
     })
 
     it('never reseeds or overwrites an existing directory', () => {
@@ -296,5 +447,95 @@ describe('ensureBerryDataDir provider config seed', () => {
 
         expect(() => ensureBerryDataDir(dataDir, { HOME: home })).not.toThrow()
         expect(existsSync(join(dataDir, 'settings.json'))).toBe(false)
+    })
+
+    it('skips the database seed (never a racy pair copy) when the source is not a database', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeFileSync(join(interactiveDir, 'sessions.db'), 'NOT-A-SQLITE-FILE', 'utf8')
+        writeFileSync(join(interactiveDir, 'sessions.db-wal'), 'NOT-A-WAL', 'utf8')
+        writeFileSync(join(interactiveDir, 'secret.key'), 'FAKE-SECRET-KEY', 'utf8')
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-junkdb-')), 'row-8')
+
+        expect(() => ensureBerryDataDir(dataDir, { HOME: home })).not.toThrow()
+        // Degrade = no database seed at all: a junk or mismatched pair copy
+        // is exactly the corruption the snapshot ladder avoids.
+        expect(existsSync(join(dataDir, 'sessions.db'))).toBe(false)
+        expect(existsSync(join(dataDir, 'sessions.db-wal'))).toBe(false)
+        // Independent seeds still land; berry still boots.
+        expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+    })
+
+    it('skips the database seed when no sqlite module is available', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeInteractiveProviderConfig(interactiveDir)
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-nosqlite-')), 'row-9')
+        overrideSqliteOpenerForTests(null)
+        try {
+            expect(() => ensureBerryDataDir(dataDir, { HOME: home })).not.toThrow()
+        } finally {
+            overrideSqliteOpenerForTests(undefined)
+        }
+
+        expect(existsSync(join(dataDir, 'sessions.db'))).toBe(false)
+        expect(existsSync(join(dataDir, 'sessions.db-wal'))).toBe(false)
+        expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+        expect(existsSync(join(dataDir, 'settings.json'))).toBe(true)
+    })
+})
+
+describe('ensureBerryDataDir skills seed', () => {
+    it('carries the interactive skills tree over with nested directories', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeInteractiveSkills(interactiveDir, ['pdf-tools', 'repo-bisect/inner'])
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-skills-seed-')), 'row-1')
+
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        expect(readFileSync(join(dataDir, 'skills', 'pdf-tools', 'SKILL.md'), 'utf8')).toContain('pdf-tools')
+        expect(existsSync(join(dataDir, 'skills', 'repo-bisect', 'inner', 'SKILL.md'))).toBe(true)
+    })
+
+    it('leaves the skills root absent when the interactive profile has none', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeFileSync(join(interactiveDir, 'secret.key'), 'FAKE-SECRET-KEY', 'utf8')
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-skills-none-')), 'row-2')
+
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        expect(existsSync(join(dataDir, 'skills'))).toBe(false)
+    })
+
+    it('degrades when the skills tree cannot be copied', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeInteractiveSkills(interactiveDir, ['locked'])
+        const unreadable = join(interactiveDir, 'skills', 'locked', 'SKILL.md')
+        chmodSync(unreadable, 0o000)
+        writeFileSync(join(interactiveDir, 'secret.key'), 'FAKE-SECRET-KEY', 'utf8')
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-skills-fail-')), 'row-3')
+        try {
+            expect(() => ensureBerryDataDir(dataDir, { HOME: home })).not.toThrow()
+        } finally {
+            chmodSync(unreadable, 0o600)
+        }
+
+        // The skills seed fails open: nothing half-copied, no staging
+        // leftovers, and the other seeds still land.
+        expect(existsSync(join(dataDir, 'skills'))).toBe(false)
+        expect(readdirSync(dataDir).some((name) => name.startsWith('skills.hapi-seed-'))).toBe(false)
+        expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+    })
+
+    it('never overwrites skills berry already created in the isolated dir', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeInteractiveSkills(interactiveDir, ['interactive-skill'])
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-skills-keep-')), 'row-4')
+        mkdirSync(join(dataDir, 'skills'), { recursive: true })
+        writeFileSync(join(dataDir, 'skills', 'SKILL.md'), 'berry-owned', 'utf8')
+        // Re-create the rest of the first-creation path: the dir already
+        // exists, so the whole seed (skills included) must be a no-op.
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        expect(readFileSync(join(dataDir, 'skills', 'SKILL.md'), 'utf8')).toBe('berry-owned')
+        expect(existsSync(join(dataDir, 'skills', 'interactive-skill'))).toBe(false)
     })
 })
