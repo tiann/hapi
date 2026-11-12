@@ -7,6 +7,7 @@ import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/T
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
+import { parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import {
     getCodexAgentActivity,
@@ -128,8 +129,75 @@ type ToolOpts = {
     childrenCount: number
     description: string | null
     metadata: SessionMetadataSummary | null
+    // True while the tool's permission is still awaiting the user's reply.
+    // Question tools use it to keep the header minimal: the open card body
+    // already shows the question text, and it returns to the header once the
+    // card settles and collapses.
+    pending?: boolean
     t?: Translator
 }
+
+// AskUserQuestion, its lowercase alias and CursorAskQuestion share one
+// presentation: the parsed header titles the card and the question text is the
+// subtitle. While pending, the header stays minimal because the open card body
+// already shows the question; both return once the card settles and collapses.
+// Each tool parses its own payload shape, so the presentation takes a questions
+// reader — the Cursor reader is parseCursorAskQuestionInput itself, keeping its
+// request-level title fallback the single source of truth.
+function readQuestionFields(raw: unknown): { header: string; question: string } {
+    if (!isObject(raw)) return { header: '', question: '' }
+    const header = typeof raw.header === 'string' && raw.header.trim()
+        ? raw.header.trim()
+        : (typeof raw.title === 'string' ? raw.title.trim() : '')
+    const question = typeof raw.question === 'string' && raw.question.trim()
+        ? raw.question.trim()
+        : (typeof raw.prompt === 'string' ? raw.prompt.trim() : '')
+    return { header, question }
+}
+
+type PresentationQuestion = { header: string | null; question: string }
+
+function questionToolPresentation(readQuestions: (input: unknown) => PresentationQuestion[]) {
+    return {
+        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts: ToolOpts) => {
+            const questions = readQuestions(opts.input)
+            const first = questions[0] ?? null
+            const header = first?.header?.trim() ?? ''
+
+            if (questions.length > 1) {
+                return `${questions.length} Questions`
+            }
+            return header.length > 0 ? header : 'Question'
+        },
+        subtitle: (opts: ToolOpts) => {
+            const questions = readQuestions(opts.input)
+            const first = questions[0] ?? null
+            const question = first?.question?.trim() ?? ''
+
+            // While the question awaits a reply the open card body already
+            // shows the question text, so the header must not repeat it.
+            if (opts.pending) return null
+
+            if (questions.length > 1 && question.length > 0) {
+                return truncate(question, 100) + ` (+${questions.length - 1} more)`
+            }
+            return question.length > 0 ? truncate(question, 120) : null
+        },
+        minimal: true
+    }
+}
+
+function readAskUserQuestionQuestions(input: unknown): PresentationQuestion[] {
+    return isObject(input) && Array.isArray(input.questions)
+        ? input.questions.map((question) => readQuestionFields(question))
+        : []
+}
+
+const askUserQuestionPresentation = questionToolPresentation(readAskUserQuestionQuestions)
+const cursorAskQuestionPresentation = questionToolPresentation(
+    (input) => parseCursorAskQuestionInput(input).questions
+)
 
 export const knownTools: Record<string, {
     icon: (opts: ToolOpts) => ReactNode
@@ -589,66 +657,9 @@ export const knownTools: Record<string, {
         title: () => 'Plan proposal',
         minimal: false
     },
-    AskUserQuestion: {
-        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const header = isObject(first) && typeof first.header === 'string'
-                ? first.header.trim() : ''
-
-            if (count > 1) {
-                return `${count} Questions`
-            }
-            return header.length > 0 ? header : 'Question'
-        },
-        subtitle: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const question = isObject(first) && typeof first.question === 'string'
-                ? first.question.trim() : ''
-
-            if (count > 1 && question.length > 0) {
-                return truncate(question, 100) + ` (+${count - 1} more)`
-            }
-            return question.length > 0 ? truncate(question, 120) : null
-        },
-        minimal: true
-    },
-    ask_user_question: {
-        icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const header = isObject(first) && typeof first.header === 'string'
-                ? first.header.trim() : ''
-
-            if (count > 1) {
-                return `${count} Questions`
-            }
-            return header.length > 0 ? header : 'Question'
-        },
-        subtitle: (opts) => {
-            const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
-                ? opts.input.questions : []
-            const count = questions.length
-            const first = questions[0] ?? null
-            const question = isObject(first) && typeof first.question === 'string'
-                ? first.question.trim() : ''
-
-            if (count > 1 && question.length > 0) {
-                return truncate(question, 100) + ` (+${count - 1} more)`
-            }
-            return question.length > 0 ? truncate(question, 120) : null
-        },
-        minimal: true
-    },
+    AskUserQuestion: askUserQuestionPresentation,
+    ask_user_question: askUserQuestionPresentation,
+    CursorAskQuestion: cursorAskQuestionPresentation,
     request_user_input: {
         icon: () => <QuestionIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
@@ -658,24 +669,41 @@ export const knownTools: Record<string, {
             const first = questions[0] ?? null
             const header = isObject(first) && typeof first.header === 'string'
                 ? first.header.trim() : ''
+            const question = isObject(first) && typeof first.question === 'string'
+                ? first.question.trim() : ''
 
             if (count > 1) {
                 return `${count} Questions`
             }
-            return header.length > 0 ? header : 'Question'
+            // While pending, the open card body already shows the question
+            // text; the question-text title applies once the card settles and
+            // its body collapses.
+            if (opts.pending) return 'Question'
+            // Codex questions carry no header field; a settled card would
+            // otherwise always read "Question" and hide the question text.
+            // Mirror the AskUserQuestion title and let the subtitle go, so
+            // the question is readable on the collapsed card.
+            if (header.length > 0) return header
+            return question.length > 0 ? truncate(question, 120) : 'Question'
         },
         subtitle: (opts) => {
             const questions = isObject(opts.input) && Array.isArray(opts.input.questions)
                 ? opts.input.questions : []
             const count = questions.length
             const first = questions[0] ?? null
+            const header = isObject(first) && typeof first.header === 'string'
+                ? first.header.trim() : ''
             const question = isObject(first) && typeof first.question === 'string'
                 ? first.question.trim() : ''
+
+            // While the question awaits a reply the open card body already
+            // shows the question text, so the header must not repeat it.
+            if (opts.pending) return null
 
             if (count > 1 && question.length > 0) {
                 return truncate(question, 100) + ` (+${count - 1} more)`
             }
-            return question.length > 0 ? truncate(question, 120) : null
+            return header.length > 0 && question.length > 0 ? truncate(question, 120) : null
         },
         minimal: true
     }
