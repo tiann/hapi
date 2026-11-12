@@ -107,6 +107,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
+        abandon: (id: string) => abandon!(id),
         session, root, native, rpc, send, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
