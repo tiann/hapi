@@ -1836,6 +1836,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         maxDelay: 30000,
         shouldRetry: isRetryableConnectionError,
         onRetry: (error, attempt, nextDelayMs) => {
+          // The in-process heartbeat interval is only armed after
+          // registration succeeds, so this retry loop is the last place
+          // liveness is asserted for a long stretch (up to ~30min of
+          // backoff). Refresh the watchdog heartbeat on every retry or a
+          // healthy-but-retrying supervised runner looks frozen and gets
+          // kill -9'd by the out-of-process watchdog.
+          touchRunnerHeartbeat();
           const errorMsg = error instanceof Error ? error.message : String(error)
           logger.debug(`[RUNNER RUN] Failed to register machine (attempt ${attempt}), retrying in ${nextDelayMs}ms: ${errorMsg}`)
         }
