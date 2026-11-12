@@ -273,6 +273,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private pausedWakeupStepIndex: number | null = null;
     private lastTurnTranscriptState: {
         turnStartStepIndex: number;
+        // Optional wider counting boundary for an internal wakeup reattach:
+        // the wakeup's pre-approval model calls sit before turnStartStepIndex.
+        countFromStepIndex?: number;
         streamedTextCounts: Map<string, number>;
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
@@ -400,11 +403,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.pausedWakeupStepIndex = null;
     }
 
-    private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number): void {
+    private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number, countFromStepIndex?: number): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
         this.lastTurnTranscriptState = {
             turnStartStepIndex,
+            ...(countFromStepIndex !== undefined && countFromStepIndex < turnStartStepIndex
+                ? { countFromStepIndex }
+                : {}),
             streamedTextCounts: new Map(turn.streamedTextCounts)
         };
         this.advanceCursorFromLastTurnState(turn);
@@ -428,12 +434,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // Round footer turn count (google-antigravity/antigravity-cli#1045):
             // count this turn's own model calls from the transcript the cursor
             // walk just bounded. Steps past that boundary belong to a reactive
-            // wakeup, which counts its own round.
-            turn.transcriptNumTurns = stepsAfterStart.filter((step) =>
+            // wakeup, which counts its own round. An internal wakeup reattach
+            // counts from the preserved wakeup boundary instead: the cursor was
+            // synchronized before prompting, so it already sits past the
+            // wakeup's pre-approval model calls, which this round owns.
+            const countFrom = state.countFromStepIndex ?? state.turnStartStepIndex;
+            const countSteps = countFrom < state.turnStartStepIndex
+                ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, countFrom)
+                : stepsAfterStart;
+            turn.transcriptNumTurns = countSteps.filter((step) =>
                 step.source === 'MODEL'
                 && step.type === 'PLANNER_RESPONSE'
                 && step.status === 'DONE'
-                && step.step_index > state.turnStartStepIndex
+                && step.step_index > countFrom
                 && step.step_index <= nextCursor
             ).length;
         }
@@ -1034,7 +1047,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             await this.waitForSteers(turn);
             this.flushDeferredLiveCommandCalls(turn);
             if (!turn.aborted && !this.backendLost) {
-                this.syncTurnTranscriptCursor(turn, turnStartStepIndex);
+                this.syncTurnTranscriptCursor(turn, turnStartStepIndex, internalWakeup ? commandWindowAfterStepIndex : undefined);
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
         } finally {

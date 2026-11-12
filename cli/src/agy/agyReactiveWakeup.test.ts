@@ -1862,6 +1862,112 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
+    it('counts pre-approval model calls in a reattached wakeup round summary', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        // Turn 1 ends; its transcript has steps 0-1.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Waiting on subagent...' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Waiting on subagent...' }
+            ]);
+        });
+
+        // Reattached internal turn: the gated command is approved and completes
+        // in-turn, then the wakeup answers. Its transcript appends the final
+        // planner response (step 4); the pre-approval planner call (step 3)
+        // already sat in the transcript when this turn's cursor was synced.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-approved-1',
+                name: 'echo hi',
+                title: 'echo hi',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'echo hi' }
+            });
+            onUpdate({ type: 'tool_result', id: 'call-approved-1', output: { stdout: 'hi', exit_code: 0 }, status: 'completed' });
+            onUpdate({ type: 'usage', inputTokens: 20, outputTokens: 6 });
+            onUpdate({ type: 'text', text: 'Approved command finished.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Approved command finished.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        // Wakeup slice: SYSTEM_MESSAGE (step 2), then the planner call that
+        // requests the gated command (step 3) parks on approval.
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Subagent ready</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo hi"' } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // The reattached round counts the whole wakeup: the pre-approval
+        // planner call (step 3) plus the final response (step 4) = 2 turns.
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({ provider: 'agy', num_turns: 2 })
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
     it('reconciles native ACP completion updates during a subsequent user prompt back to a reactive wakeup Bash card', async () => {
         const backend = new WakeupTestBackend();
         const { session, queue, client } = makeHarness('always-proceed');
