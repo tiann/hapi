@@ -1244,7 +1244,7 @@ describe('ApiSessionClient attachment links', () => {
                         threadId: 'thread-1',
                         turnId: 'turn-1',
                         itemId: 'call-mcp-qualified',
-                        tool: 'mcp__filesystem__read_file',
+                        tool: 'mcp__custom_filesystem__read_file',
                         input: { path: join(workspace, 'terminal-codex.txt') }
                     }
                 })
@@ -1256,7 +1256,7 @@ describe('ApiSessionClient attachment links', () => {
                 const mediaAfterTerminal = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
-                expect(mediaAfterTerminal).toHaveLength(1) // terminal-codex.txt also blocked!
+                expect(mediaAfterTerminal).toHaveLength(1) // terminal-codex.txt with underscored server name was blocked!
 
                 // Successful Codex approval followed by native resolution ('resolved') MUST NOT be blocked
                 await writeFile(join(workspace, 'codex-approved.txt'), 'approved content')

@@ -120,10 +120,11 @@ export function isDisplayOrReadFileTool(toolName?: string | null, kind?: string 
     if (kind === 'read') return true;
     if (!toolName) return false;
     let name = toolName.toLowerCase();
-    // Strip namespaces: "mcp__server__read_file" -> "read_file", "functions.read_file" -> "read_file"
-    const mcpMatch = /^mcp__[^_]+__(.+)$/.exec(name);
-    if (mcpMatch && mcpMatch[1]) {
-        name = mcpMatch[1];
+    // Strip namespaces: "mcp__server__read_file" -> "read_file" (server name may contain single underscores, e.g. "my_server")
+    // or "functions.read_file" -> "read_file"
+    const mcpMatch = /^mcp__(.+?)__(.+)$/.exec(name);
+    if (mcpMatch && mcpMatch[2]) {
+        name = mcpMatch[2];
     } else {
         name = name.replace(/^(functions\.|tools\.[^.]+\.|tools\.)/, '');
     }

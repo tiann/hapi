@@ -215,6 +215,10 @@ describe('shared request arbitration', () => {
         const f = fixture();
         f.permissions.observeExecution('read_file', { path: '/workspace/executed.txt', status: 'completed' });
         expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/executed.txt');
+
+        // Accept null error field on successful completions
+        f.permissions.observeExecution('read_file', { path: '/workspace/null-error.txt', status: 'completed', error: null, result: { Ok: 'success' } });
+        expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/null-error.txt');
     });
 
     it('does not mark attachment approved when execution completed with failure or error', () => {

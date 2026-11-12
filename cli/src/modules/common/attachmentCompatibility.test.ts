@@ -59,6 +59,12 @@ it('deduplicates files, rejects escapes and retries missing files', async () => 
         second.enqueue({ type: 'message', message: '[already uploaded](report.txt)' }, workspace, message => messages.push(message), opts)
         await second.flush()
         expect(messages).toHaveLength(3)
+
+        // Across cold resumes with shared dedup enabled, identical files are not re-uploaded
+        const coldResume = new AttachmentCompatibility({ sharedDedup: true })
+        coldResume.enqueue({ type: 'message', message: '[cold resume link](report.txt)' }, workspace, message => messages.push(message), opts)
+        await coldResume.flush()
+        expect(messages).toHaveLength(3) // deduplicated across cold resume!
     } finally { await rm(root, { recursive: true, force: true }) }
 })
 

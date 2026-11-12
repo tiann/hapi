@@ -245,7 +245,7 @@ export class ApiSessionClient extends EventEmitter {
     hubArchived = false
     private readonly token: string
     readonly sessionId: string
-    private attachmentCompatibility = new AttachmentCompatibility()
+    private attachmentCompatibility = new AttachmentCompatibility({ sharedDedup: true })
     private metadata: Metadata | null
     private metadataVersion: number
     private agentState: AgentState | null

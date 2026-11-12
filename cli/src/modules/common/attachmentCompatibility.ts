@@ -96,9 +96,14 @@ export function assistantAttachmentText(body: unknown): string | null {
 
 /** Per-session serial queue: bounded reads, canonical containment and duplicate suppression. */
 export class AttachmentCompatibility {
+    private static readonly sharedSeen = new Set<string>()
     private queue = Promise.resolve()
-    private seen = new Set<string>()
+    private readonly seen: Set<string>
     private deniedPaths = new Set<string>()
+
+    constructor(options?: { sharedDedup?: boolean }) {
+        this.seen = options?.sharedDedup ? AttachmentCompatibility.sharedSeen : new Set<string>()
+    }
 
     markDenied(path: string, cwd?: string): void {
         this.deniedPaths.add(path)

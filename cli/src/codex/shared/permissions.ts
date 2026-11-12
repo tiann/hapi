@@ -164,7 +164,7 @@ export class SharedCodexPermissions {
             || (record(resultRecord.Ok).isError === true || record(resultRecord.Ok).is_error === true);
         const isError =
             recordItem.is_error === true
-            || recordItem.error !== undefined
+            || (recordItem.error !== undefined && recordItem.error !== null)
             || status === 'failed'
             || status === 'cancelled'
             || hasResultError;
