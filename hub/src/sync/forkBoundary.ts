@@ -1,7 +1,9 @@
 /**
- * Select the HAPI transcript prefix to hydrate into a forked child session.
- * Historical fork excludes the boundary message and everything after it.
- * Current fork copies the full source transcript.
+ * Fork and rewind boundary resolution for HAPI transcripts.
+ *
+ * `selectForkTranscriptPrefix` selects the HAPI transcript prefix to hydrate
+ * into a forked child session. Historical fork excludes the boundary message
+ * and everything after it. Current fork copies the full source transcript.
  * Pending scheduled/queued rows (`invokedAt == null`) are never copied — they
  * are not part of the native history being forked and would otherwise fire on
  * both the source and the child.

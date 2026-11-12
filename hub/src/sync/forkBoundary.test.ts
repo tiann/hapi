@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { selectForkTranscriptPrefix } from './forkTranscript'
+import { selectForkTranscriptPrefix } from './forkBoundary'
 
 describe('selectForkTranscriptPrefix', () => {
     const messages = [
