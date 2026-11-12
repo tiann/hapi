@@ -36,7 +36,14 @@ const harness = vi.hoisted(() => ({
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     setModeCalls: [] as Array<{ sessionId: string; modeId: string; syncThoughtLevel?: boolean }>,
     setModeError: null as Error | null,
+    // When non-empty, each setMode() call shifts the next entry (null passes
+    // through, an Error is thrown) — lets tests kill exactly one set_mode
+    // call with the dead-transport marker while the respawn's replay and the
+    // retried call succeed. Falls back to setModeError when empty.
+    setModeErrorQueue: [] as Array<Error | null>,
     configOptionError: null as Error | null,
+    // Same per-call queue for setConfigOption().
+    setConfigOptionErrorQueue: [] as Array<Error | null>,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
     newSessionBlocker: null as null | Promise<void>,
@@ -95,12 +102,18 @@ vi.mock('./utils/hermesBackend', () => ({
             getSessionModelsMetadata: vi.fn(() => harness.modelsMetadata),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
                 harness.setConfigOptionCalls.push({ sessionId, configId, value })
-                if (harness.configOptionError) throw harness.configOptionError
+                const queuedError = harness.setConfigOptionErrorQueue.length > 0
+                    ? harness.setConfigOptionErrorQueue.shift()
+                    : harness.configOptionError
+                if (queuedError) throw queuedError
                 return {}
             }),
             setMode: vi.fn(async (sessionId: string, modeId: string, opts?: { syncThoughtLevel?: boolean }) => {
                 harness.setModeCalls.push({ sessionId, modeId, syncThoughtLevel: opts?.syncThoughtLevel })
-                if (harness.setModeError) throw harness.setModeError
+                const queuedError = harness.setModeErrorQueue.length > 0
+                    ? harness.setModeErrorQueue.shift()
+                    : harness.setModeError
+                if (queuedError) throw queuedError
                 return {}
             }),
             onStderrError: vi.fn(),
@@ -212,7 +225,9 @@ describe('HermesRemoteLauncher', () => {
         harness.setConfigOptionCalls = []
         harness.setModeCalls = []
         harness.setModeError = null
+        harness.setModeErrorQueue = []
         harness.configOptionError = null
+        harness.setConfigOptionErrorQueue = []
         harness.newSessionBlocker = null
         harness.disconnectBlocker = null
     })
@@ -339,7 +354,9 @@ describe('HermesRemoteLauncher', () => {
         await launcher.launch()
 
         // The turn still runs: HAPI-side auto-approval honors the mode even
-        // when the Hermes edit axis cannot be switched.
+        // when the Hermes edit axis cannot be switched. A regular rejection
+        // is not a dead transport — no respawn.
+        expect(harness.backends).toHaveLength(1)
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
@@ -828,6 +845,138 @@ describe('HermesRemoteLauncher', () => {
             type: 'message',
             message: expect.stringContaining('Re-send the message to retry')
         })
+    })
+
+    it('respawns and replays the edit mode when set_mode hits a dead transport', async () => {
+        // The gateway daemon restarts exactly while the queued mode switch is
+        // in flight: set_mode rejects with the transport's typed dead-marker.
+        // The pre-fix launcher only surfaced 'edit mode switch failed' and
+        // blocked/degraded the turn on the corpse; the fix routes the failure
+        // through the same respawn machine as the prompt path — and because
+        // the batch has not been dispatched yet, the turn still runs on the
+        // replacement backend with the requested mode re-asserted.
+        // Kill exactly the per-turn yolo apply (call #2); the initial
+        // establishment's default (#1), the respawn's replay (#3), and the
+        // retried yolo apply (#4) all succeed.
+        harness.setModeErrorQueue = [null, deadTransportError(), null, null]
+        const session = createSessionWithBatches([['hello', { permissionMode: 'yolo' }]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        // The dead backend was disconnected and a fresh one created,
+        // initialized, and resumed on the persisted daemon session id.
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.backends[0].disconnect).toHaveBeenCalled()
+        expect(harness.backends[1].initialize).toHaveBeenCalled()
+        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: []
+        })
+        // Startup default, the dead yolo apply, the respawn's replay of the
+        // session-stored mode, and the retried yolo apply on the replacement.
+        expect(harness.setModeCalls.map((call) => call.modeId)).toEqual([
+            'default',
+            'dont_ask',
+            'default',
+            'dont_ask'
+        ])
+        // The batch was NOT dropped: it ran exactly once, on the replacement.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'hello' }]])
+        expect(harness.backends[1].prompt).toHaveBeenCalledWith(
+            'hermes-existing-1',
+            [{ type: 'text', text: 'hello' }],
+            expect.any(Function)
+        )
+        // Exactly one reconnect status line for the whole recovery.
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const reconnectLines = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '').includes('reconnecting'))
+        expect(reconnectLines).toHaveLength(1)
+    })
+
+    it('drops the batch when a user stop lands during the set_mode-triggered respawn', async () => {
+        // Same dead-transport set_mode as above, but a Stop arrives while the
+        // replacement backend is being established: the user already saw
+        // 'Session aborted' and the queue was reset, so the already-dequeued
+        // batch must not run on the replacement (same contract as the other
+        // reconnect windows).
+        harness.setModeErrorQueue = [null, deadTransportError()]
+        // Park only the RESPAWN's session/resume so the stop lands inside the
+        // reconnect window (the initial establishment's resume passes through
+        // a resolved slot).
+        let releaseResume!: () => void
+        const park = new Promise<void>((resolve) => { releaseResume = resolve })
+        harness.resumeBlockerQueue = [Promise.resolve(), park]
+        const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
+        queue.push('hello', { permissionMode: 'yolo' })
+        const session = createSessionFromQueue(queue, 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        // The mode switch died on the corpse and the respawn parked inside
+        // session/resume on the fresh backend.
+        await vi.waitFor(() => expect(harness.backends[1]?.resumeSession).toHaveBeenCalled())
+
+        // Simulate the production abort path (the RPC handler invokes
+        // handleAbort directly).
+        const abortPromise = (launcher as unknown as { handleAbort: () => Promise<void> }).handleAbort()
+        releaseResume()
+        await abortPromise
+
+        // The aborted 'hello' must be dropped, not configured-and-run; the
+        // loop stays alive and the NEXT message runs on the respawned backend.
+        queue.push('third', {})
+        queue.close()
+        await done
+
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'third' }]
+        ])
+        expect(harness.backends[1].prompt).toHaveBeenCalledWith(
+            'hermes-existing-1',
+            [{ type: 'text', text: 'third' }],
+            expect.any(Function)
+        )
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'Session aborted'
+        })
+    })
+
+    it('respawns and retries the model switch when set_config_option hits a dead transport', async () => {
+        // Same recovery for the pre-prompt model switch: the dead transport
+        // respawns the backend, the switch is retried once on the
+        // replacement, and the turn proceeds on it.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: GLM }
+        harness.setConfigOptionErrorQueue = [deadTransportError(), null]
+        const session = createSessionWithBatches([['hello', { model: GLM_FLASH }]], 'hermes-existing-1')
+        const launcher = new HermesRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.backends).toHaveLength(2)
+        expect(harness.backends[0].disconnect).toHaveBeenCalled()
+        expect(harness.backends[1].resumeSession).toHaveBeenCalledWith({
+            sessionId: 'hermes-existing-1',
+            cwd: '/tmp/hermes-test',
+            mcpServers: []
+        })
+        // The dead switch on the corpse, then the successful retry on the
+        // replacement — both against the resumed session id.
+        expect(harness.setConfigOptionCalls).toEqual([
+            { sessionId: 'hermes-existing-1', configId: 'model', value: GLM_FLASH },
+            { sessionId: 'hermes-existing-1', configId: 'model', value: GLM_FLASH }
+        ])
+        // The batch ran exactly once, on the replacement.
+        expect(harness.prompts).toEqual([[{ type: 'text', text: 'hello' }]])
+        expect(harness.backends[1].prompt).toHaveBeenCalled()
+        const events = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+        const reconnectLines = events.filter((call) =>
+            String((call[0] as { message?: string } | undefined)?.message ?? '').includes('reconnecting'))
+        expect(reconnectLines).toHaveLength(1)
     })
 
     it('surfaces the error and keeps the loop alive when the respawn also fails', async () => {

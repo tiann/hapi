@@ -225,15 +225,42 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             }
 
             // Reference the CURRENT backend/session per iteration (not a
-            // const captured at loop start): a respawn swaps both.
-            const backend = this.backend!
-            const acpSessionId = this.acpSessionId!
+            // const captured at loop start): a respawn swaps both — including
+            // the mid-iteration respawns from the pre-prompt configuration
+            // recovery below.
+            let backend = this.backend!
+            let acpSessionId = this.acpSessionId!
 
             this.applyDisplayMode(batch.mode.permissionMode)
             let modeBlockedMessage: string | null = null
             if (batch.mode.permissionMode !== undefined) {
-                const applied = await this.applyHermesEditMode(backend, acpSessionId, batch.mode.permissionMode)
-                if (!applied) {
+                let editModeOutcome = await this.applyHermesEditMode(backend, acpSessionId, batch.mode.permissionMode)
+                if (editModeOutcome === 'dead-transport') {
+                    // set_mode hit a dead ACP child (gateway restart mid-mode-
+                    // switch). Blocking the turn would wedge the session on
+                    // the corpse — every later set_mode fails the same way.
+                    // Recover through the prompt path's respawn machine
+                    // instead; the batch has not been dispatched yet, so the
+                    // turn proceeds on the replacement.
+                    if (!(await this.respawnForDeadTransportConfig(generationAtDequeue))) {
+                        this.session.onThinkingChange(false)
+                        await this.permissionHandler?.cancelAll('Prompt finished')
+                        if (this.session.queue.size() === 0 && !this.shouldExit) {
+                            this.session.sendSessionEvent({ type: 'ready' })
+                        }
+                        continue
+                    }
+                    backend = this.backend!
+                    acpSessionId = this.acpSessionId!
+                    // The respawn replayed the session-stored mode inside
+                    // establishBackend; re-assert the batch's requested mode
+                    // on the replacement (a no-op when the replay already
+                    // applied it). A second dead transport is not respawned
+                    // again within the same batch — the next message retries.
+                    editModeOutcome = await this.applyHermesEditMode(backend, acpSessionId, batch.mode.permissionMode)
+                    if (editModeOutcome === 'dead-transport') editModeOutcome = 'failed'
+                }
+                if (editModeOutcome !== 'applied') {
                     const requestedEditMode = HERMES_EDIT_MODE_BY_PERMISSION[batch.mode.permissionMode ?? 'default'] ?? 'default'
                     const runningEditMode = this.lastAppliedEditMode
                     const relaxed = (HERMES_EDIT_MODE_PERMISSIVENESS[requestedEditMode] ?? 0)
@@ -260,18 +287,16 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             }
 
             const requestedModel = batch.mode.model
+            // Which model (if any) must be applied before this turn runs;
+            // gathered first so both switch paths share the dead-transport
+            // recovery below.
+            let modelSwitchTarget: string | undefined
             if (requestedModel === null) {
                 // Explicit "Default": switch back to the server default captured
                 // at session creation. The web picker resets the session model
                 // to null and the next queued turn carries it here.
                 if (this.initialBackendModel && this.initialBackendModel !== this.currentBackendModel) {
-                    const applied = await this.applyModelSwitch(backend, acpSessionId, this.initialBackendModel)
-                    if (applied) {
-                        batch.mode.model = applied
-                    } else {
-                        batch.mode.model = this.currentBackendModel ?? undefined
-                        this.opts.onModelRollback?.(this.currentBackendModel)
-                    }
+                    modelSwitchTarget = this.initialBackendModel
                 } else if (!this.initialBackendModel) {
                     // Nothing captured to go back to — keep the running model and
                     // report it back so the picker does not claim "Default".
@@ -286,7 +311,32 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     batch.mode.model = this.currentBackendModel ?? undefined
                 }
             } else if (requestedModel && requestedModel !== this.currentBackendModel) {
-                const applied = await this.applyModelSwitch(backend, acpSessionId, requestedModel)
+                modelSwitchTarget = requestedModel
+            }
+            if (modelSwitchTarget !== undefined) {
+                let applied = await this.applyModelSwitch(backend, acpSessionId, modelSwitchTarget)
+                if (applied === 'dead-transport') {
+                    // set_config_option hit a dead ACP child: same recovery as
+                    // set_mode above — respawn, then retry the switch once on
+                    // the replacement and proceed with the turn (the batch has
+                    // not been dispatched yet).
+                    if (!(await this.respawnForDeadTransportConfig(generationAtDequeue))) {
+                        this.session.onThinkingChange(false)
+                        await this.permissionHandler?.cancelAll('Prompt finished')
+                        if (this.session.queue.size() === 0 && !this.shouldExit) {
+                            this.session.sendSessionEvent({ type: 'ready' })
+                        }
+                        continue
+                    }
+                    backend = this.backend!
+                    acpSessionId = this.acpSessionId!
+                    // establishBackend already re-applied the live model
+                    // preference during the respawn; re-assert this batch's
+                    // target on the replacement. A second dead transport is
+                    // not respawned again within the same batch.
+                    applied = await this.applyModelSwitch(backend, acpSessionId, modelSwitchTarget)
+                    if (applied === 'dead-transport') applied = null
+                }
                 if (applied) {
                     batch.mode.model = applied
                 } else {
@@ -479,7 +529,11 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
                 ?? null
             if (this.opts.model && modelOption) {
-                this.currentBackendModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
+                const appliedSpawnModel = await this.applyModelSwitch(backend, acpSessionId, this.opts.model)
+                // 'dead-transport' during establishment keeps the previous
+                // model: the first pre-prompt configuration or prompt on this
+                // backend triggers the respawn recovery.
+                this.currentBackendModel = appliedSpawnModel === 'dead-transport' ? null : appliedSpawnModel
             }
             if (!this.currentBackendModel) {
                 this.currentBackendModel = this.initialBackendModel
@@ -670,38 +724,82 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
+     * Recover a pre-prompt configuration (`session/set_mode` or
+     * `session/set_config_option`) that failed on a dead ACP transport —
+     * the same respawn machine as the prompt path: rebuild the backend,
+     * resume the persisted daemon session id, and replay the live model and
+     * edit-mode preferences. Unlike the prompt path the batch has NOT been
+     * dispatched yet, so on success the caller re-runs the configuration on
+     * the replacement (`this.backend` / `this.acpSessionId`) and the turn
+     * proceeds.
+     *
+     * Returns true when the replacement backend is live. Returns false after
+     * dropping the batch with the user already informed: the respawn itself
+     * failed (one surfaced error per message, like the other reconnect
+     * windows), or a user stop landed while the replacement was being
+     * established (the user already saw 'Session aborted' and the queue was
+     * reset, so the dequeued batch must not run).
+     */
+    private async respawnForDeadTransportConfig(generationAtDequeue: number): Promise<boolean> {
+        try {
+            await this.respawnBackend()
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn('[hermes-acp] reconnect failed', { message })
+            this.session.sendSessionEvent({ type: 'message', message: `Hermes reconnect failed: ${message}` })
+            this.messageBuffer.addMessage(`Hermes reconnect failed: ${message}`, 'status')
+            return false
+        }
+        if (generationAtDequeue !== this.abortGeneration) {
+            this.messageBuffer.addMessage('Aborted while reconnecting the Hermes session; dropping the queued message', 'status')
+            if (this.session.queue.size() === 0 && !this.shouldExit) {
+                this.session.sendSessionEvent({ type: 'ready' })
+            }
+            return false
+        }
+        return true
+    }
+
+    /**
      * Push the HAPI permission mode onto Hermes's edit-approval axis via
      * `session/set_mode` (default / accept_edits / dont_ask). Only the edit
      * axis lives in Hermes; dangerous-command approvals always arrive as
      * request_permission and are decided by the HAPI permission bridge. No-op
-     * when the mode is unchanged. Returns whether the requested mode is in
-     * effect: callers block the turn when a STRICTER mode failed to apply —
-     * Hermes would keep auto-editing under its more permissive mode while
-     * HAPI displays the stricter one, and the bridge cannot interpose for
-     * edits Hermes executes without request_permission. A failed relaxation
-     * is safe (Hermes stays stricter than requested), so it only degrades to
-     * a status note.
+     * when the mode is unchanged. Returns the outcome: 'applied' when the
+     * requested mode is in effect; 'failed' for a regular rejection — callers
+     * block the turn when a STRICTER mode failed to apply, because Hermes
+     * would keep auto-editing under its more permissive mode while HAPI
+     * displays the stricter one, and the bridge cannot interpose for edits
+     * Hermes executes without request_permission (a failed relaxation is
+     * safe, so it only degrades to a status note); 'dead-transport' when the
+     * ACP child died under the call — every later request on the transport
+     * rejects the same way, so the main loop routes it through the respawn
+     * recovery instead of blocking or degrading on a corpse.
      */
     private async applyHermesEditMode(
         backend: ReturnType<typeof createHermesBackend>,
         acpSessionId: string,
         permissionMode: PermissionMode | undefined
-    ): Promise<boolean> {
+    ): Promise<'applied' | 'failed' | 'dead-transport'> {
         const editMode = HERMES_EDIT_MODE_BY_PERMISSION[permissionMode ?? 'default'] ?? 'default'
-        if (editMode === this.lastAppliedEditMode) return true
+        if (editMode === this.lastAppliedEditMode) return 'applied'
         try {
             await backend.setMode(acpSessionId, editMode, { syncThoughtLevel: false })
             this.lastAppliedEditMode = editMode
             logger.debug(`[hermes-acp] Applied edit mode via set_mode: ${editMode}`)
-            return true
+            return 'applied'
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
+            if (isAcpIndeterminateError(error)) {
+                logger.warn('[hermes-acp] set_mode failed on a dead transport', { message })
+                return 'dead-transport'
+            }
             logger.warn('[hermes-acp] set_mode failed', { message })
             this.session.sendSessionEvent({
                 type: 'message',
                 message: `Hermes edit mode switch failed: ${message}`
             })
-            return false
+            return 'failed'
         }
     }
 
@@ -710,13 +808,16 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
      * has no parameterized model picker; models surface as config options of
      * category `model`. Model ids are opaque `provider:model` strings sent
      * back verbatim; unknown ids fail loud with -32602. Returns the applied
-     * model, or null when the switch failed (caller keeps the previous model).
+     * model, null when the switch failed (caller keeps the previous model),
+     * or 'dead-transport' when the ACP child died under the call (the main
+     * loop routes that through the respawn recovery; establishment callers
+     * treat it like null and keep the previous model).
      */
     private async applyModelSwitch(
         backend: ReturnType<typeof createHermesBackend>,
         acpSessionId: string,
         model: string
-    ): Promise<string | null> {
+    ): Promise<string | null | 'dead-transport'> {
         const option = backend.getConfigOptionByCategory(acpSessionId, 'model')
         if (!option) {
             logger.warn('[hermes-acp] Cannot switch model: agent exposes no model config option')
@@ -733,6 +834,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             return model
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
+            if (isAcpIndeterminateError(error)) {
+                logger.warn('[hermes-acp] model switch failed on a dead transport', { message })
+                return 'dead-transport'
+            }
             logger.warn('[hermes-acp] model switch failed', { message })
             this.session.sendSessionEvent({
                 type: 'message',
