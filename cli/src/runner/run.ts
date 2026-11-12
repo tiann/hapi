@@ -12,7 +12,7 @@ import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
-import { ensureWatchdogInstalled, touchRunnerHeartbeat } from './watchdog';
+import { clearRunnerHeartbeat, ensureWatchdogInstalled, touchRunnerHeartbeat } from './watchdog';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
@@ -2146,6 +2146,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       apiMachine.shutdown();
       await stopControlServer();
       await cleanupRunnerState();
+      // Remove the watchdog heartbeat so a cleanly stopped runner cannot
+      // leave a stale supervised claim that (after pid reuse) later arms the
+      // out-of-process watchdog against an unrelated process.
+      clearRunnerHeartbeat();
       await releaseRunnerLock(runnerLockHandle);
 
       logger.debug('[RUNNER RUN] Cleanup completed, exiting process');
