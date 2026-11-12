@@ -177,7 +177,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `GET /api/sessions/:id/git-status` - Git status.
 - `GET /api/sessions/:id/git-diff-numstat` - Diff summary.
 - `GET /api/sessions/:id/git-diff-file` - File-specific diff.
-- `GET /api/sessions/:id/file` - Read file content.
+- `GET /api/sessions/:id/file` - Read file content with an optional stable failure `reason`.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
 
 For inactive sessions, including archived sessions, these read-only file and Git operations fall back to

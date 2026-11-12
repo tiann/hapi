@@ -15,14 +15,25 @@ const CONTENT = `# Chat Markdown image fixture
 
 ![Remote chart](${REMOTE_IMAGE_URL})
 
+![Retry chart](images/retry.svg)
+
 ![Blocked chart](/outside/secret.png)`
+
+let retryReads = 0
 
 const API = {
     readSessionFile: async (_sessionId: string, path: string, _maxBytes?: number) => {
         if (path === 'images/chart.svg') {
             return { success: true, content: SVG_BASE64, size: SVG_CONTENT.length }
         }
-        return { success: false, error: 'outside workspace' }
+        if (path === 'images/retry.svg') {
+            retryReads += 1
+            if (retryReads === 1) {
+                return { success: false, error: 'temporarily unavailable', reason: 'read-failed' }
+            }
+            return { success: true, content: SVG_BASE64, size: SVG_CONTENT.length }
+        }
+        return { success: false, error: 'outside workspace', reason: 'outside-workspace' }
     },
 } as unknown as ApiClient
 
@@ -40,6 +51,10 @@ const chatValue: HappyChatContextValue = {
     loadOlderMessagesPreservingScroll: async () => 'loaded',
 }
 
+const theme = new URLSearchParams(window.location.search).get('theme') === 'light' ? 'light' : 'dark'
+document.documentElement.dataset.theme = theme
+document.documentElement.style.colorScheme = theme
+document.documentElement.style.backgroundColor = theme === 'light' ? '#ffffff' : '#1c1c1e'
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root')
 

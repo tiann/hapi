@@ -43,9 +43,23 @@ test('renders and previews local and remote chat Markdown images', async ({ page
     await page.keyboard.press('Escape')
     await expect(remoteTrigger).toBeFocused()
 
+    const retryFailure = page.locator('[data-hapi-markdown-image-fallback="true"][aria-label="Retry chart"]')
+    await expect(retryFailure).toHaveAttribute('data-hapi-markdown-image-failure', 'read-failed')
+    await expect(retryFailure).toContainText('Could not load image')
+    await capture(page, 'markdown-image-retry-failure.png')
+    const retryButton = retryFailure.getByRole('button', { name: 'Retry Retry chart' })
+    await retryButton.focus()
+    await page.keyboard.press('Enter')
+    const retryImage = page.locator('img[alt="Retry chart"]')
+    await expect(retryImage).toHaveAttribute('src', /^data:image\/svg\+xml;base64,/)
+    const retryTrigger = page.getByRole('button', { name: /Retry chart/i })
+    await expect(retryTrigger).toBeEnabled()
+    await capture(page, 'markdown-image-retry-success.png')
     const blockedImage = page.locator('[data-hapi-markdown-image-fallback="true"][aria-label="Blocked chart"]')
     await expect(blockedImage).toHaveCount(1)
-    await expect(page.getByRole('button', { name: /Blocked chart/i })).toHaveCount(0)
+    await expect(blockedImage).toHaveAttribute('data-hapi-markdown-image-failure', 'invalid-source')
+    await expect(blockedImage).toContainText('Image path is not allowed')
+    await expect(blockedImage.getByRole('button')).toHaveCount(0)
 })
 
 test('portals Markdown image previews above tool detail dialogs', async ({ page }) => {
@@ -88,5 +102,19 @@ test.describe('mobile Markdown image previews', () => {
         await trigger.tap()
         await expect(page.getByRole('dialog', { name: 'Local chart' })).toBeVisible()
         await capture(page, 'markdown-image-fullscreen-mobile.png')
+    })
+
+    test('shows retry states in the mobile light theme', async ({ page }) => {
+        await page.goto('/e2e-fixtures/chat-markdown-images.html?theme=light')
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+
+        const failure = page.locator('[data-hapi-markdown-image-fallback="true"][aria-label="Retry chart"]')
+        await expect(failure).toBeVisible()
+        await expect(failure).toContainText('Could not load image')
+        await capture(page, 'markdown-image-retry-failure-mobile-light.png')
+
+        await failure.getByRole('button', { name: 'Retry Retry chart' }).tap()
+        await expect(page.getByRole('button', { name: /Retry chart/i })).toBeEnabled()
+        await capture(page, 'markdown-image-retry-success-mobile-light.png')
     })
 })

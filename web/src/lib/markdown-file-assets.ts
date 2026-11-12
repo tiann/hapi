@@ -23,7 +23,7 @@ export type MarkdownAssetTarget =
     | { kind: 'remote'; href: string }
     | { kind: 'uri'; href: string }
     | { kind: 'anchor'; href: string }
-    | { kind: 'inert'; href: string }
+    | { kind: 'inert'; href: string; reason?: 'unsupported-image' | 'blocked' }
 
 export interface MarkdownAssetResolutionOptions {
     workspacePath?: string | null
@@ -136,8 +136,11 @@ export function resolveMarkdownFileLink(currentFilePath: string, href: string, o
 
 export function resolveMarkdownFileImage(currentFilePath: string, src: string, options?: MarkdownAssetResolutionOptions): MarkdownAssetTarget {
     const target = classifyTarget(currentFilePath, src, options)
-    if (target.kind === 'uri' || (target.kind === 'local' && !getMarkdownImageMimeType(target.path))) {
-        return { kind: 'inert', href: src }
+    if (target.kind === 'uri' || target.kind === 'inert') {
+        return { kind: 'inert', href: src, reason: 'blocked' }
+    }
+    if (target.kind === 'local' && !getMarkdownImageMimeType(target.path)) {
+        return { kind: 'inert', href: src, reason: 'unsupported-image' }
     }
     return target
 }

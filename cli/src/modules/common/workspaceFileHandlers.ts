@@ -13,6 +13,7 @@ import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { runGitCommand } from './handlers/git'
 import { run as runRipgrep, runFileSearch, type FileSearchOptions } from '@/modules/ripgrep/index'
 import { MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile } from './generatedImages'
+import { classifyFileReadError, FileReadFailureError } from './fileReadFailures'
 import { getErrorMessage, rpcError } from './rpcResponses'
 
 /**
@@ -174,13 +175,13 @@ export function registerWorkspaceFileHandlers(
         async (data) => {
             const resolved = await resolveWorkspacePath(pathPolicy, data.cwd, data.path)
             if ('error' in resolved) {
-                return rpcError(resolved.error)
+                return rpcError(resolved.error, { reason: 'outside-workspace' as const })
             }
 
             try {
                 const stats = await stat(resolved.path)
                 if (!stats.isFile()) {
-                    throw new Error('Path is not a regular file')
+                    throw new FileReadFailureError('not-regular-file', 'Path is not a regular file')
                 }
                 const requestedMaxBytes = typeof data.maxBytes === 'number' && Number.isFinite(data.maxBytes) && data.maxBytes > 0
                     ? Math.floor(data.maxBytes)
@@ -194,7 +195,11 @@ export function registerWorkspaceFileHandlers(
                     modified: stats.mtime.getTime(),
                 }
             } catch (error) {
-                return rpcError(getErrorMessage(error, 'Failed to read file'))
+                const failure = classifyFileReadError(error)
+                return rpcError(getErrorMessage(error, 'Failed to read file'), {
+                    reason: failure.reason,
+                    ...(failure.size === undefined ? {} : { size: failure.size }),
+                })
             }
         },
     )

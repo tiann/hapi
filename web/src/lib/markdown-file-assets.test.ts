@@ -86,6 +86,18 @@ describe('markdown file assets', () => {
         expect(getMarkdownImageMimeType('docs/readme.md')).toBeNull()
     })
 
+    it('distinguishes unsupported image formats from blocked image sources', () => {
+        expect(resolveMarkdownFileImage('notes/readme.md', 'notes/readme.md')).toEqual({
+            kind: 'inert',
+            href: 'notes/readme.md',
+            reason: 'unsupported-image',
+        })
+        expect(resolveMarkdownFileImage('notes/readme.md', '../../outside.png')).toEqual({
+            kind: 'inert',
+            href: '../../outside.png',
+            reason: 'blocked',
+        })
+    })
     it('resolves image extensions declared in the MIME map', () => {
         expect(resolveMarkdownFileImage('notes/readme.md', 'images/animation.apng')).toEqual({
             kind: 'local',

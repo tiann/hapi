@@ -212,16 +212,102 @@ describe('ChatMarkdownImage', () => {
         expect(readSessionFile).not.toHaveBeenCalled()
     })
 
-    it('shows a fallback when a remote image fails to load', async () => {
+    it('classifies a remote load failure and retries it', async () => {
         const onError = vi.fn()
         renderImage({ src: 'https://example.com/missing.png', alt: 'Missing remote', onError })
 
-        const image = screen.getByRole('img', { name: 'Missing remote' })
-        fireEvent.error(image)
+        fireEvent.error(screen.getByRole('img', { name: 'Missing remote' }))
 
-        await waitFor(() => expect(screen.getByRole('img', { name: 'Missing remote' })).toHaveAttribute('data-hapi-markdown-image-fallback', 'true'))
+        const failure = await screen.findByRole('group', { name: 'Missing remote' })
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure', 'remote-load-failed')
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure-layout', 'placeholder')
+        expect(failure).toHaveTextContent('Image unavailable')
+        expect(failure).toHaveTextContent('Could not load remote image')
         expect(onError).toHaveBeenCalledTimes(1)
-        expect(screen.queryByRole('button', { name: /missing remote/i })).not.toBeInTheDocument()
+
+        fireEvent.click(within(failure).getByRole('button', { name: 'Retry Missing remote' }))
+        fireEvent.load(await screen.findByRole('img', { name: 'Missing remote' }))
+
+        await waitFor(() => expect(screen.getByRole('button', { name: /missing remote/i })).toBeEnabled())
+        expect(screen.queryByRole('group', { name: 'Missing remote' })).not.toBeInTheDocument()
+    })
+
+    it('classifies local failures and retries without duplicate requests', async () => {
+        const readSessionFile = vi.fn()
+            .mockResolvedValueOnce({ success: false, error: 'missing', reason: 'not-found' })
+            .mockResolvedValueOnce({ success: true, content: encodeBase64('png-bytes'), size: 9 })
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'images/chart.png', alt: 'Retry chart', api })
+
+        const failure = await screen.findByRole('group', { name: 'Retry chart' })
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure', 'not-found')
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure-layout', 'placeholder')
+        expect(failure).toHaveTextContent('Image not found')
+        const retry = within(failure).getByRole('button', { name: 'Retry Retry chart' })
+
+        fireEvent.click(retry)
+        fireEvent.click(retry)
+
+        await waitFor(() => expect(readSessionFile).toHaveBeenCalledTimes(2))
+        const image = await screen.findByRole('img', { name: 'Retry chart' })
+        fireEvent.load(image)
+        await waitFor(() => expect(screen.getByRole('button', { name: /retry chart/i })).toBeEnabled())
+    })
+
+    it('classifies rejected session reads as unavailable and retries them', async () => {
+        const readSessionFile = vi.fn()
+            .mockRejectedValueOnce(new Error('offline'))
+            .mockResolvedValueOnce({ success: true, content: encodeBase64('png-bytes'), size: 9 })
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'images/chart.png', alt: 'Offline chart', api })
+
+        const failure = await screen.findByRole('group', { name: 'Offline chart' })
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure', 'session-unavailable')
+        expect(failure).toHaveTextContent('Image could not be loaded because the session is unavailable')
+        fireEvent.click(within(failure).getByRole('button', { name: 'Retry Offline chart' }))
+
+        const image = await screen.findByRole('img', { name: 'Offline chart' })
+        fireEvent.load(image)
+        await waitFor(() => expect(screen.getByRole('button', { name: /offline chart/i })).toBeEnabled())
+        expect(readSessionFile).toHaveBeenCalledTimes(2)
+    })
+    it('keeps the classified failure visible when retry fails again', async () => {
+        const readSessionFile = vi.fn(async () => ({
+            success: false,
+            error: 'denied',
+            reason: 'access-denied',
+        }))
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'images/chart.png', alt: 'Denied chart', api })
+
+        const failure = await screen.findByRole('group', { name: 'Denied chart' })
+        fireEvent.click(within(failure).getByRole('button', { name: 'Retry Denied chart' }))
+
+        await waitFor(() => expect(readSessionFile).toHaveBeenCalledTimes(2))
+        const retriedFailure = await screen.findByRole('group', { name: 'Denied chart' })
+        expect(retriedFailure).toHaveAttribute('data-hapi-markdown-image-failure', 'access-denied')
+        expect(retriedFailure).toHaveTextContent('Access to the image was denied')
+        expect(within(retriedFailure).getByRole('button', { name: 'Retry Denied chart' })).toBeEnabled()
+    })
+    it('shows actual size details for oversized local images', async () => {
+        const readSessionFile = vi.fn(async () => ({
+            success: false,
+            error: 'File is too large to display inline',
+            reason: 'too-large',
+            size: 12 * 1024 * 1024,
+        }))
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'images/large.png', alt: 'Large chart', api })
+
+        const failure = await screen.findByRole('group', { name: 'Large chart' })
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure', 'too-large')
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure-layout', 'placeholder')
+        expect(failure).toHaveTextContent('Image is too large (12 MB; limit 10 MB)')
+        expect(within(failure).getByRole('button', { name: 'Retry Large chart' })).toBeEnabled()
     })
 
     it.each([
@@ -229,16 +315,64 @@ describe('ChatMarkdownImage', () => {
         ['/etc/secret.png', 'outside absolute path'],
         ['data:image/png;base64,ZmFrZQ==', 'data URI'],
         ['file:///tmp/secret.png', 'file URI'],
-    ])('does not read %s (%s)', (src) => {
+    ])('does not read or offer retry for %s (%s)', (src) => {
         const readSessionFile = vi.fn()
         const api = { readSessionFile } as unknown as ApiClient
 
         renderImage({ src, alt: 'Blocked image', api })
 
-        expect(screen.getByRole('img', { name: 'Blocked image' })).toHaveAttribute('data-hapi-markdown-image-fallback', 'true')
+        const failure = screen.getByRole('group', { name: 'Blocked image' })
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure', 'invalid-source')
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure-layout', 'compact')
+        expect(failure).toHaveTextContent('Image path is not allowed')
+        expect(within(failure).queryByRole('button')).not.toBeInTheDocument()
         expect(readSessionFile).not.toHaveBeenCalled()
     })
 
+    it('classifies unsupported image formats without a retry action', () => {
+        const readSessionFile = vi.fn()
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'images/chart.md', alt: 'Unsupported chart', api })
+
+        const failure = screen.getByRole('group', { name: 'Unsupported chart' })
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure', 'unsupported-format')
+        expect(failure).toHaveAttribute('data-hapi-markdown-image-failure-layout', 'compact')
+        expect(failure).toHaveTextContent('Unsupported image format')
+        expect(within(failure).queryByRole('button')).not.toBeInTheDocument()
+        expect(readSessionFile).not.toHaveBeenCalled()
+    })
+
+    it('ignores stale local reads after the image source changes', async () => {
+        let resolveFirst!: (value: { success: boolean; content: string; size: number }) => void
+        const firstRead = new Promise<{ success: boolean; content: string; size: number }>((resolve) => {
+            resolveFirst = resolve
+        })
+        const readSessionFile = vi.fn()
+            .mockImplementationOnce(() => firstRead)
+            .mockResolvedValueOnce({ success: true, content: encodeBase64('second-bytes'), size: 12 })
+        const api = { readSessionFile } as unknown as ApiClient
+        const renderFor = (source: string, label: string) => (
+            <I18nProvider>
+                <HappyChatProvider value={chatValue(api)}>
+                    <ChatMarkdownImage src={source} alt={label} />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+        const view = render(renderFor('images/first.png', 'First chart'))
+
+        await waitFor(() => expect(readSessionFile).toHaveBeenCalledTimes(1))
+        view.rerender(renderFor('images/second.png', 'Second chart'))
+        await waitFor(() => expect(readSessionFile).toHaveBeenCalledTimes(2))
+        const secondImage = await screen.findByRole('img', { name: 'Second chart' })
+        expect(secondImage).toHaveAttribute('src', 'data:image/png;base64,c2Vjb25kLWJ5dGVz')
+
+        resolveFirst({ success: true, content: encodeBase64('first-bytes'), size: 11 })
+
+        await waitFor(() => expect(screen.queryByRole('img', { name: 'First chart' })).not.toBeInTheDocument())
+        expect(screen.getByRole('img', { name: 'Second chart' })).toBe(secondImage)
+        expect(readSessionFile).toHaveBeenCalledTimes(2)
+    })
     it('keeps an in-workspace absolute path behind the session file API', async () => {
         const readSessionFile = vi.fn(async () => ({
             success: true,

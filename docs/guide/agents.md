@@ -95,7 +95,7 @@ Local images are read through the authenticated session file API. The referenced
 
 Reachable HTTP(S) images load directly in the browser. The 10 MiB session-file limit applies to local images, not remote image URLs.
 
-In Web/PWA, successfully loaded Markdown images can be clicked, tapped, or opened from the keyboard to launch the same zoomable fullscreen viewer used by `display_image`. Images keep their inline presentation and `no-referrer` behavior. Loading and failed-image fallbacks do not open a viewer.
+In Web/PWA, successfully loaded Markdown images can be clicked, tapped, or opened from the keyboard to launch the same zoomable fullscreen viewer used by `display_image`. Images keep their inline presentation and `no-referrer` behavior. Loading and failed-image fallbacks do not open a viewer. Failed images explain whether the file is missing, too large, unsupported, inaccessible, or temporarily unavailable. Recoverable failures offer a Retry action; unsafe or out-of-workspace paths do not.
 
 #### Using display_image
 

@@ -7,6 +7,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { validatePath } from '../pathSecurity'
 import { getGeneratedImage, readBoundedRegularFile } from '../generatedImages'
+import { classifyFileReadError, FileReadFailureError } from '../fileReadFailures'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface ReadFileRequest {
@@ -41,7 +42,7 @@ async function resolveReadablePath(path: string, workingDirectory: string): Prom
     ])
     const relativePath = relative(realWorkingDirectory, realPath)
     if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
-        throw new Error('Access denied: resolved path is outside the working directory')
+        throw new FileReadFailureError('outside-workspace', 'Access denied: resolved path is outside the working directory')
     }
     return realPath
 }
@@ -52,7 +53,7 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
 
         const validation = validatePath(data.path, workingDirectory)
         if (!validation.valid) {
-            return rpcError(validation.error ?? 'Invalid file path')
+            return rpcError(validation.error ?? 'Invalid file path', { reason: 'outside-workspace' as const })
         }
 
         try {
@@ -74,7 +75,11 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
             }
         } catch (error) {
             logger.debug('Failed to read file:', error)
-            return rpcError(getErrorMessage(error, 'Failed to read file'))
+            const failure = classifyFileReadError(error)
+            return rpcError(getErrorMessage(error, 'Failed to read file'), {
+                reason: failure.reason,
+                ...(failure.size === undefined ? {} : { size: failure.size }),
+            })
         }
     })
 
@@ -104,7 +109,7 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
 
         const validation = validatePath(data.path, workingDirectory)
         if (!validation.valid) {
-            return rpcError(validation.error ?? 'Invalid file path')
+            return rpcError(validation.error ?? 'Invalid file path', { reason: 'outside-workspace' as const })
         }
 
         try {

@@ -112,7 +112,7 @@ describe('workspace file RPC handlers', () => {
             cwd: rootDir,
             path: 'oversized.bin',
         })
-        expect(oversized).toEqual({ success: false, error: 'File is too large to display inline' })
+        expect(oversized).toEqual({ success: false, error: 'File is too large to display inline', reason: 'too-large', size: MAX_WORKSPACE_FILE_BYTES + 1 })
 
         const directoryPath = join(rootDir, 'not-a-file')
         await mkdir(directoryPath)
@@ -120,7 +120,7 @@ describe('workspace file RPC handlers', () => {
             cwd: rootDir,
             path: 'not-a-file',
         })
-        expect(directory).toEqual({ success: false, error: 'Path is not a regular file' })
+        expect(directory).toEqual({ success: false, error: 'Path is not a regular file', reason: 'not-regular-file' })
 
         if (process.platform !== 'win32') {
             const fifoPath = join(rootDir, 'named-pipe')
@@ -129,7 +129,7 @@ describe('workspace file RPC handlers', () => {
                 cwd: rootDir,
                 path: 'named-pipe',
             })
-            expect(fifo).toEqual({ success: false, error: 'Path is not a regular file' })
+            expect(fifo).toEqual({ success: false, error: 'Path is not a regular file', reason: 'not-regular-file' })
         }
     })
 
@@ -187,7 +187,7 @@ describe('workspace file RPC handlers', () => {
                 cwd: outsideDir,
                 path: 'secret.txt',
             })
-            expect(result).toEqual({ success: false, error: 'Path is outside workspace roots' })
+            expect(result).toEqual({ success: false, error: 'Path is outside workspace roots', reason: 'outside-workspace' })
         } finally {
             await rm(outsideDir, { recursive: true, force: true })
         }
@@ -203,7 +203,7 @@ describe('workspace file RPC handlers', () => {
                 cwd: rootDir,
                 path: `../${outsideFile.split(/[\\/]/).pop()}`,
             })
-            expect(result).toEqual({ success: false, error: 'Path is outside the session workspace' })
+            expect(result).toEqual({ success: false, error: 'Path is outside the session workspace', reason: 'outside-workspace' })
         } finally {
             await rm(outsideFile, { force: true })
         }

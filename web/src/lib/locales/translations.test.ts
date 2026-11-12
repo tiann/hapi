@@ -9,3 +9,32 @@ describe('question card locale strings', () => {
         }
     })
 })
+describe('Markdown image failure locale strings', () => {
+    const keys = [
+        'markdownImage.loading',
+        'markdownImage.unavailable',
+        'markdownImage.retrying',
+        'markdownImage.retryImage',
+        'markdownImage.failure.notFound',
+        'markdownImage.failure.tooLargeWithSize',
+        'markdownImage.failure.tooLargeLimit',
+        'markdownImage.failure.notRegularFile',
+        'markdownImage.failure.fileChanged',
+        'markdownImage.failure.accessDenied',
+        'markdownImage.failure.pathNotAllowed',
+        'markdownImage.failure.sessionUnavailable',
+        'markdownImage.failure.unsupportedFormat',
+        'markdownImage.failure.decodeFailed',
+        'markdownImage.failure.remoteLoadFailed',
+        'markdownImage.failure.readFailed',
+    ] as const
+
+    it('defines localized copy in every shipped locale', () => {
+        for (const [locale, dict] of [['zh-CN', zhCN], ['ru', ru]] as const) {
+            for (const key of keys) {
+                expect(dict[key], `${locale} should define ${key}`).toBeTruthy()
+                expect(dict[key], `${locale} should localize ${key}`).not.toBe(en[key])
+            }
+        }
+    })
+})
