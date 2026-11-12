@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
-import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
+import { followSessionTail, markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
@@ -51,11 +51,11 @@ describe('SessionRowSummary background status', () => {
         localStorage.clear()
     })
 
-    it('marks running and background work on the presence badge, without spinners', () => {
+    it('keeps presence independent of the title-side activity spinner', () => {
         const background = renderSummary(false).container
         const backgroundBadge = background.querySelector('[data-testid="session-presence"]')
         expect(backgroundBadge).toHaveClass('bg-blue-400', 'animate-pulse')
-        expect(background.querySelector('svg.animate-spin-slow')).toBeNull()
+        expect(background.querySelector('svg.animate-spin-slow')).toHaveClass('text-[var(--app-hint)]')
         cleanup()
 
         const thinking = render(
@@ -188,7 +188,7 @@ describe('SessionRowSummary background status', () => {
         expectUnread()
     })
 
-    it('shows the unread dot separately from the pulsing presence badge', () => {
+    it('combines manual unread and running activity in one blue spinner', () => {
         const session = makeSummary({
             id: 'selected-thinking-unread',
             thinking: true,
@@ -210,8 +210,9 @@ describe('SessionRowSummary background status', () => {
 
         expectUnread()
         const dots = container.querySelectorAll('.rounded-full')
-        expect(dots).toHaveLength(2)
-        expect(container.querySelector('[data-testid="session-unread"]')).toBeInTheDocument()
+        expect(dots).toHaveLength(1)
+        expect(container.querySelector('[data-testid="session-unread"]')).toBeNull()
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('animate-pulse')
     })
 
@@ -387,6 +388,39 @@ describe('SessionRowSummary attached job progress', () => {
         expect(bar).not.toHaveAttribute('aria-valuenow')
     })
 
+    it('keeps job progress and the stale marker out of the truncating label', () => {
+        vi.setSystemTime(1_000_000 + 20 * 60_000)
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        backgroundTaskCount: 0,
+                        attachedJob: {
+                            key: 'reencode',
+                            label: 'Re-encode every portfolio film at the higher quality setting',
+                            status: 'running',
+                            done: 6,
+                            total: 39,
+                            unit: 'films',
+                            heartbeatAt: 1_000_000,
+                            startedAt: 1_000_000 - 60_000,
+                            updatedAt: 1_000_000,
+                        },
+                        attachedJobUpdatedAt: 1,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        // A long label shrinks first; the changing status has its own span so it
+        // is not the part an ellipsis removes.
+        const label = screen.getByText('Re-encode every portfolio film at the higher quality setting')
+        expect(label).toHaveClass('truncate')
+        const status = screen.getByTestId('attached-job-status')
+        expect(label.contains(status)).toBe(false)
+        expect(status).toHaveTextContent(/^· stale · 15% · 6\/39 films · 21m · no heartbeat · 20m$/)
+    })
+
     it('renders a real fill only when total yields a fraction', () => {
         const { container } = render(
             <I18nProvider>
@@ -417,6 +451,101 @@ describe('SessionRowSummary attached job progress', () => {
         expect(fill).not.toBeNull()
         expect(fill!.style.width).toBe('50%')
         expect(bar.querySelector('.animate-attached-job-indeterminate')).toBeNull()
+    })
+})
+
+describe('SessionRowSummary combined activity and unread indicator', () => {
+    beforeEach(() => localStorage.clear())
+
+    it.each([false, true])('shows grey running, blue running-unread, then foreground unread in detailed=%s', (showDetailedStatus) => {
+        let session = makeSummary({ backgroundTaskCount: 0, thinking: true, contentRevision: 0 })
+        const row = () => <I18nProvider><SessionRowSummary session={session} showDetailedStatus={showDetailedStatus} lastSeenVersion={session.contentRevision} /></I18nProvider>
+        const view = render(row())
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('animate-spin-slow', 'text-[var(--app-hint)]')
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+
+        session = { ...session, contentRevision: 2 }
+        view.rerender(row())
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expectUnread()
+
+        session = { ...session, thinking: false }
+        view.rerender(row())
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.getByTestId('session-unread')).toHaveClass('bg-[var(--app-fg)]')
+
+        markSessionSeen(session.id, 2)
+        view.rerender(row())
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+    })
+
+    it('returns to a grey spinner when running content is read, and keeps manual unread blue', () => {
+        const session = makeSummary({ thinking: true, contentRevision: 2, backgroundTaskCount: 0 })
+        const row = (version: number) => <I18nProvider><SessionRowSummary session={session} lastSeenVersion={version} /></I18nProvider>
+        const view = render(row(0))
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+        markSessionSeen(session.id, 2)
+        view.rerender(row(1))
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
+        markSessionUnread(session.id)
+        view.rerender(row(2))
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+    })
+
+    it.each(['permission', 'input'] as const)('keeps the spinner and %s symbol without a misleading completed dot', (kind) => {
+        render(<I18nProvider><SessionRowSummary session={makeSummary({
+            thinking: true, backgroundTaskCount: 0, contentRevision: 2,
+            pendingRequestsCount: 1, pendingRequestKinds: [kind],
+            pendingRequests: [{ id: 'request', kind, tool: 'Question', since: 0 }],
+        })} /></I18nProvider>)
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Question')
+        expectUnread()
+    })
+
+    it('ignores expired thinking and background flags when disconnected', () => {
+        render(<I18nProvider><SessionRowSummary session={makeSummary({ active: false, thinking: true, contentRevision: 2 })} /></I18nProvider>)
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.getByTestId('session-unread')).toHaveClass('bg-[var(--app-fg)]')
+    })
+
+    it('keeps a followed transcript grey until unseen output really needs attention', () => {
+        const session = makeSummary({ thinking: true, contentRevision: 2, backgroundTaskCount: 0 })
+        const release = followSessionTail(session.id)
+        const row = (version: number) => <I18nProvider><SessionRowSummary session={session} lastSeenVersion={version} /></I18nProvider>
+        const view = render(row(0))
+        try {
+            expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
+        } finally {
+            release()
+        }
+        view.rerender(row(1))
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+    })
+
+    it('responds to cross-device read state without changing running status', () => {
+        let session = makeSummary({ thinking: true, contentRevision: 2, backgroundTaskCount: 0 })
+        const row = () => <I18nProvider><SessionRowSummary session={session} /></I18nProvider>
+        const view = render(row())
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+        session = { ...session, readState: { readRevision: 2, version: 1, manualUnread: false } }
+        view.rerender(row())
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
+    })
+
+    it('keeps outliving jobs spinning at full contrast after disconnect', () => {
+        const session = makeSummary({ active: false, contentRevision: 2, attachedJob: {
+            key: 'import', label: 'Import', status: 'running', heartbeatAt: Date.now(),
+            startedAt: Date.now(), updatedAt: Date.now(),
+        } })
+        const { container } = render(<I18nProvider><SessionRowSummary session={session} /></I18nProvider>)
+        const spinner = screen.getByTestId('session-activity')
+        expect(spinner.querySelector('svg')).toHaveClass('text-blue-500')
+        expect(container.querySelector('.opacity-50')!.contains(spinner)).toBe(false)
+        expect(screen.queryByTestId('session-unread')).toBeNull()
     })
 })
 

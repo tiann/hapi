@@ -32,7 +32,8 @@ function resolveSessionForNamespace(
     sessionId: string,
     namespace: string
 ): { ok: true; session: Session; sessionId: string } | { ok: false; status: 403 | 404; error: string } {
-    const access = engine.resolveSessionAccess(sessionId, namespace)
+    // CLI callers continue with the returned id (e.g. a runner reopen of a merged-away id).
+    const access = engine.resolveSessionAccess(sessionId, namespace, { followRedirects: true })
     if (access.ok) {
         return { ok: true, session: access.session, sessionId: access.sessionId }
     }
@@ -168,6 +169,28 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ sessions })
     })
 
+    // Registered before `/sessions/:id/*` so the literal segment wins.
+    app.get('/sessions/resume-target-by-agent', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const flavor = c.req.query('flavor')
+        const agentSessionId = c.req.query('agentSessionId')?.trim()
+        if (flavor !== 'claude' || !agentSessionId) {
+            return c.json({ error: 'Invalid query' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const machineId = c.req.query('machineId') || undefined
+        const result = engine.resolveLocalResumeTargetByAgentSessionId(agentSessionId, namespace, { machineId })
+        if (result.type === 'error') {
+            return c.json({ error: result.message, code: result.code }, 409)
+        }
+        return c.json({ target: result.target, historical: result.historical })
+    })
+
     app.get('/sessions/:id/resume-target', (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -184,6 +207,28 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         return c.json({ target: result.target })
+    })
+
+    app.post('/sessions/:id/prepare-local-resume', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        let result: Awaited<ReturnType<SyncEngine['prepareLocalResume']>>
+        try {
+            result = await engine.prepareLocalResume(c.req.param('id'), namespace)
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to prepare session', code: 'prepare_failed' }, 409)
+        }
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : 409
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+        return c.json({ ok: true, revived: result.revived })
     })
 
     app.post('/sessions/:id/handoff-local', async (c) => {
