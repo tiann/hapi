@@ -281,9 +281,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const effectiveLimitFor = (model: string | null | undefined): number | undefined => {
             if (effectiveContextWindow === undefined) return undefined;
             if (!effectiveContextModel || !model) return effectiveContextWindow;
-            return effectiveContextModel.replace(/\\[1m\\]$/, '') === model.replace(/\\[1m\\]$/, '')
-                ? effectiveContextWindow
-                : undefined;
+            return sameClaudeModelID(effectiveContextModel, model) ? effectiveContextWindow : undefined;
         };
 
         function onMessage(message: SDKMessage) {
