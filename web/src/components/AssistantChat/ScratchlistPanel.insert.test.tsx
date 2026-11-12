@@ -19,7 +19,7 @@ afterEach(() => {
 const original = { id: 'original', filename: 'original.txt', mimeType: 'text/plain', size: 1, path: 'hapi-hub:scratchlist/default/test/original.txt' }
 const entry: ScratchlistEntry = { id: 'draft', text: 'Existing text', createdAt: 1, attachments: [original] }
 
-function setup(onUpdate = vi.fn().mockResolvedValue(undefined)) {
+function setup(onUpdate = vi.fn().mockResolvedValue(undefined), draftEntry: ScratchlistEntry = entry) {
     const api = {
         uploadScratchlistAttachment: vi.fn(async (_session: string, filename: string, _content: string, mimeType: string) => ({
             success: true, attachment: { id: filename, filename, mimeType, size: 3, path: `hapi-hub:scratchlist/default/test/${filename}` },
@@ -28,21 +28,33 @@ function setup(onUpdate = vi.fn().mockResolvedValue(undefined)) {
     }
     const view = (entries: ScratchlistEntry[]) => <I18nProvider><ScratchlistDrawer entries={entries} sessionId="test" api={api as unknown as ApiClient}
         onUpdate={onUpdate} onReorder={vi.fn()} onDelete={vi.fn()} /></I18nProvider>
-    const rendered = render(view([entry]))
+    const rendered = render(view([draftEntry]))
     const input = screen.getByTestId('scratchlist-insert-attachments')
     const select = (files: File[]) => {
         fireEvent.click(screen.getByTestId('scratchlist-insert-attachment-plus'))
         fireEvent.change(input, { target: { files } })
     }
-    return { api, onUpdate, select, rerender: (entries: ScratchlistEntry[]) => rendered.rerender(view(entries)) }
+    return { api, input, onUpdate, select, rerender: (entries: ScratchlistEntry[]) => rendered.rerender(view(entries)) }
 }
 
 describe('insert attachments into a saved scratchlist draft', () => {
-    it('uses the plus control instead of a duplicate menu item', () => {
+    it('keeps the plus beside existing attachments and places upload below copy in the menu', () => {
         setup()
         expect(screen.getByTestId('scratchlist-insert-attachment-plus')).toHaveAccessibleName('Insert attachments')
         fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
-        expect(screen.queryByRole('menuitem', { name: 'Insert attachments' })).toBeNull()
+        expect(screen.getAllByRole('menuitem').slice(0, 2).map(item => item.textContent)).toEqual([
+            'Copy text',
+            'Insert attachments',
+        ])
+    })
+
+    it('hides the empty attachment strip and opens the picker from the action menu', () => {
+        const { input } = setup(vi.fn().mockResolvedValue(undefined), { ...entry, attachments: [] })
+        expect(screen.queryByTestId('scratchlist-insert-attachment-plus')).toBeNull()
+        const openPicker = vi.spyOn(input, 'click')
+        fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Insert attachments' }))
+        expect(openPicker).toHaveBeenCalledTimes(1)
     })
 
     it('appends multiple selected files in selection order, preserving existing attachments and text', async () => {

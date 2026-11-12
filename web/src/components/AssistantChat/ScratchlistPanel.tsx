@@ -31,7 +31,7 @@ import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
-import { CheckIcon, CopyIcon, ScheduleIcon } from '@/components/icons'
+import { CheckIcon, CopyIcon, PlusIcon, ScheduleIcon } from '@/components/icons'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ScheduleTimePicker, type PendingSchedule } from './ScheduleTimePicker'
 import {
@@ -315,6 +315,7 @@ function ScratchlistActionMenu({
     scheduleOpen,
     onClose,
     onCopy,
+    onInsertAttachments,
     onDelete,
     onSend,
     onOpenSchedule,
@@ -329,6 +330,7 @@ function ScratchlistActionMenu({
     scheduleOpen: boolean
     onClose: () => void
     onCopy: () => void
+    onInsertAttachments?: () => void
     onDelete: () => void
     onSend?: () => void
     onOpenSchedule: () => void
@@ -380,6 +382,23 @@ function ScratchlistActionMenu({
                 <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><CopyIcon className="h-[18px] w-[18px]" /></span>
                 <span>{t('scratchlist.action.copy')}</span>
             </button>
+            {onInsertAttachments ? (
+                <button
+                    type="button"
+                    role="menuitem"
+                    data-scratchlist-action="insert-attachments"
+                    aria-label={t('scratchlist.action.insertAttachments')}
+                    className={itemClassName}
+                    onClick={() => {
+                        onInsertAttachments()
+                        onClose()
+                    }}
+                    disabled={disabled || actionPending}
+                >
+                    <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><PlusIcon className="h-[18px] w-[18px]" /></span>
+                    <span>{t('scratchlist.action.insertAttachments')}</span>
+                </button>
+            ) : null}
             {onSend ? (
                 <button
                     type="button"
@@ -1080,20 +1099,22 @@ function ScratchlistInventory({
                                 className="min-w-0 flex-1"
                                 data-testid="scratchlist-entry-content"
                             >
-                                <ScratchlistAttachments
-                                    sessionId={sessionId}
-                                    api={api}
-                                    attachments={entry.attachments ?? []}
-                                    disabled={disabled || actionPendingEntryId === entry.id || attachmentUploadEntryId !== null}
-                                    onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
-                                    onReorder={async (ids) => {
-                                        const current = entriesRef.current.find((item) => item.id === entry.id)
-                                        if (!current || disabled) return
-                                        await onUpdate(current, current.text, orderItemsById(current.attachments ?? [], ids))
-                                    }}
-                                    onAdd={api && sessionId ? () => selectAttachments(entry) : undefined}
-                                    addLabel={t('scratchlist.action.insertAttachments')}
-                                />
+                                {(entry.attachments?.length ?? 0) > 0 ? (
+                                    <ScratchlistAttachments
+                                        sessionId={sessionId}
+                                        api={api}
+                                        attachments={entry.attachments ?? []}
+                                        disabled={disabled || actionPendingEntryId === entry.id || attachmentUploadEntryId !== null}
+                                        onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
+                                        onReorder={async (ids) => {
+                                            const current = entriesRef.current.find((item) => item.id === entry.id)
+                                            if (!current || disabled) return
+                                            await onUpdate(current, current.text, orderItemsById(current.attachments ?? [], ids))
+                                        }}
+                                        onAdd={api && sessionId ? () => selectAttachments(entry) : undefined}
+                                        addLabel={t('scratchlist.action.insertAttachments')}
+                                    />
+                                ) : null}
                                 {attachmentUploadEntryId === entry.id ? (
                                     <p role="status" className="text-xs text-[var(--app-hint)]">{t('scratchlist.uploadingAttachments')}</p>
                                 ) : null}
@@ -1186,6 +1207,7 @@ function ScratchlistInventory({
                                 scheduleOpen={scheduleEntryId === entry.id}
                                 onClose={closeMenu}
                                 onCopy={() => { void handleCopy(entry) }}
+                                onInsertAttachments={api && sessionId ? () => selectAttachments(entry) : undefined}
                                 onDelete={() => requestDeleteEntry(entry)}
                                 onSend={onSend ? () => handleSend(entry) : undefined}
                                 onOpenSchedule={() => setScheduleEntryId(entry.id)}
