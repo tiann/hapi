@@ -129,11 +129,11 @@ export function buildClaudeContextDetails(args: {
     const result = asRecord(args.result)
     const model = asString(contextUsage?.model) ?? asString(args.model) ?? asString(system?.model) ?? asString(result?.model)
     const contextWindow = asTokenCount(
-        contextUsage?.raw_max_tokens
+        getClaudeModelUsageContextWindow(result, model)
+        ?? contextUsage?.raw_max_tokens
         ?? contextUsage?.rawMaxTokens
         ?? contextUsage?.context_window
         ?? contextUsage?.contextWindow
-        ?? getClaudeModelUsageContextWindow(result, model)
     )
     const messageUsage = normalizeUsageSnapshot(args.messageUsage ?? result?.usage)
     const contextTokens = asTokenCount(

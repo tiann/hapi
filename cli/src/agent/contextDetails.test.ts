@@ -100,6 +100,16 @@ describe('Claude context details', () => {
         })
     })
 
+    it('prefers the effective result context limit over the base context-usage limit', () => {
+        const details = buildClaudeContextDetails({
+            updatedAt: 100,
+            model: 'claude-opus',
+            contextUsage: { raw_max_tokens: 262_144 },
+            result: { modelUsage: { 'claude-opus': { contextWindow: 1_000_000 } } }
+        })
+
+        expect(details?.contextWindow).toBe(1_000_000)
+    })
     it('selects the session model instead of the first subagent model', () => {
         const details = buildClaudeContextDetails({
             updatedAt: 100,
