@@ -77,6 +77,7 @@ export function ImagePreview(props: {
     const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null)
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
+    const triggerRef = useRef<HTMLButtonElement | null>(null)
     const scaleRef = useRef(scale)
     const offsetRef = useRef(offset)
     const activePointersRef = useRef(new Map<number, ImagePoint>())
@@ -328,6 +329,7 @@ export function ImagePreview(props: {
     return (
         <>
             <button
+                ref={triggerRef}
                 type="button"
                 onPointerDown={handleTriggerPointerDown}
                 onMouseDown={stopEvent}
@@ -374,6 +376,10 @@ export function ImagePreview(props: {
                     aria-label={activePreview.label}
                     aria-describedby={undefined}
                     data-image-preview-viewer=""
+                    onCloseAutoFocus={(event) => {
+                        event.preventDefault()
+                        triggerRef.current?.focus()
+                    }}
                     // Keep preview gestures from starting an ancestor's attachment drag.
                     onPointerDown={stopEvent}
                     // Portaled DOM events still follow React's logical tree. Stop

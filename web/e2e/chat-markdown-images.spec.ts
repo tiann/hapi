@@ -27,6 +27,7 @@ test('renders and previews local and remote chat Markdown images', async ({ page
         .toHaveAttribute('src', /^data:image\/svg\+xml;base64,/)
     await capture(page, 'markdown-image-fullscreen.png')
     await localDialog.getByTitle('Close', { exact: true }).click()
+    await expect(localTrigger).toBeFocused()
 
     const remoteImage = page.locator('img[alt="Remote chart"]')
     await expect(remoteImage).toHaveCount(1)
@@ -39,6 +40,8 @@ test('renders and previews local and remote chat Markdown images', async ({ page
     await expect(page.getByRole('dialog', { name: 'Remote chart' })
         .getByRole('img', { name: 'Remote chart' }))
         .toHaveAttribute('referrerpolicy', 'no-referrer')
+    await page.keyboard.press('Escape')
+    await expect(remoteTrigger).toBeFocused()
 
     const blockedImage = page.locator('[data-hapi-markdown-image-fallback="true"][aria-label="Blocked chart"]')
     await expect(blockedImage).toHaveCount(1)
@@ -72,6 +75,7 @@ test('portals Markdown image previews above tool detail dialogs', async ({ page 
     await capture(page, 'markdown-image-tool-dialog.png')
     await preview.getByTitle('Close', { exact: true }).click()
     await expect(toolDialog).toBeVisible()
+    await expect(trigger).toBeFocused()
 })
 
 test.describe('mobile Markdown image previews', () => {

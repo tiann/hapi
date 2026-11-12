@@ -128,6 +128,30 @@ describe('ChatMarkdownImage', () => {
         expect(screen.queryByRole('dialog', { name: 'Linked chart' })).not.toBeInTheDocument()
     })
 
+    it('preserves text navigation in mixed image and text links', async () => {
+        const readSessionFile = vi.fn(async () => ({
+            success: true,
+            content: encodeBase64('png-bytes'),
+            size: 9,
+        }))
+        const api = { readSessionFile } as unknown as ApiClient
+
+        render(
+            <I18nProvider>
+                <HappyChatProvider value={chatValue(api)}>
+                    <MarkdownRenderer content={'[![Linked chart](images/chart.png) Open report](report.md)'} />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+
+        await waitFor(() => expect(screen.getByRole('img', { name: 'Linked chart' }).tagName).toBe('IMG'))
+        const trigger = screen.getByRole('button', { name: /linked chart/i })
+        const reportLink = screen.getByText('Open report').closest('a')
+        expect(trigger.closest('a')).toBeNull()
+        expect(reportLink).not.toBeNull()
+        expect(reportLink).toHaveAttribute('href', '/sessions/session-1/file?path=cmVwb3J0Lm1k&origin=chat')
+    })
+
     it('loads reachable HTTPS images directly without reading a session file', () => {
         const readSessionFile = vi.fn()
         const api = { readSessionFile } as unknown as ApiClient
