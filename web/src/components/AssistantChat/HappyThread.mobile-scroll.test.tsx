@@ -13,12 +13,33 @@ vi.mock('@/hooks/queries/useMachines', () => ({
     useMachines: () => ({ machines: [] })
 }))
 
+vi.mock('@tanstack/react-router', () => ({
+    useNavigate: () => vi.fn()
+}))
+
+vi.mock('@/components/SessionHeader', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/components/SessionHeader')>()
+    return {
+        ...actual,
+        SessionHeader: () => null
+    }
+})
+
+vi.mock('@/components/AssistantChat/HappyComposer', () => ({
+    HappyComposer: () => null
+}))
+
+vi.mock('@/components/AssistantChat/QueuedMessagesBar', () => ({
+    QueuedMessagesBar: () => null
+}))
+
 vi.mock('@assistant-ui/react', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@assistant-ui/react')>()
     return {
         ...actual,
         useAuiState: (selector: (state: unknown) => unknown) => selector({
-            thread: { extras: searchTargetTestState.extras }
+            thread: { extras: searchTargetTestState.extras },
+            composer: { text: '' }
         }),
         unstable_useThreadMessageIds: () => ['target-message'],
         ThreadPrimitive: {
@@ -34,9 +55,14 @@ vi.mock('@assistant-ui/react', async (importOriginal) => {
 })
 
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { SessionChat } from '@/components/SessionChat'
+import { useConciseChatMode } from '@/hooks/useConciseChatMode'
+import { useMessages } from '@/hooks/queries/useMessages'
+import { clearMessageWindow, ingestIncomingMessages } from '@/lib/message-window-store'
+import { configureSessionReadState, getSessionLastSeenAt, hasUnseenContent } from '@/lib/sessionLastSeen'
 import type { ApiClient } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
-import type { Session } from '@/types/api'
+import type { DecryptedMessage, MessagesResponse, Session } from '@/types/api'
 
 const originalScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo')
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView')
@@ -971,5 +997,679 @@ describe('tail following survives layout-driven movement', () => {
 
         expect(viewport.scrollTop).toBe(832)
         expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+})
+
+describe('concise view history coverage', () => {
+    it('immediately pages older history across tool-only pages when switching sessions in concise view', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
+        } as unknown as ApiClient
+
+        const state = {
+            sessionId: 'concise-session-b',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 20,
+            normalizedMessagesCount: 20,
+            visibleBlocksCount: 0,
+            conciseViewActive: true,
+            messagesVersion: 1,
+            historyVersion: 0
+        }
+
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderConciseThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId={state.sessionId}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={state.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        const result = render(renderConciseThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')!
+        const sentinel = result.container.querySelector<HTMLElement>('.chat-scroll-content > [aria-hidden="true"]')!
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 530 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        // First older page fires immediately without waiting for the 1,800ms initial scroll settle timer.
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        // Page 1 finishes with 200 raw tool/reasoning messages that are still 100% filtered in concise view.
+        state.rawMessagesCount = 220
+        state.normalizedMessagesCount = 220
+        state.visibleBlocksCount = 0
+        state.historyVersion = 1
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 1 }
+        act(() => {
+            result.rerender(renderConciseThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        // Loader does not auto-pause on an empty concise view; it automatically chains page 2.
+        expect(onLoadMore).toHaveBeenCalledTimes(2)
+
+        // Page 2 reveals 12 visible conversation blocks that cover the viewport and pin to the bottom.
+        state.rawMessagesCount = 420
+        state.normalizedMessagesCount = 420
+        state.visibleBlocksCount = 12
+        state.historyVersion = 2
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 2 }
+        Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1_400 })
+        act(() => {
+            result.rerender(renderConciseThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(50)
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(viewport.scrollTop).toBe(870)
+        expect(onLoadMore).toHaveBeenCalledTimes(2)
+    })
+
+    it('re-arms automatic coverage when toggling concise view on collapses the thread', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
+        } as unknown as ApiClient
+
+        const state = {
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 200,
+            normalizedMessagesCount: 200,
+            visibleBlocksCount: 200,
+            conciseViewActive: false,
+            messagesVersion: 1,
+            historyVersion: 0
+        }
+
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderToggleThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId="concise-toggle-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={false}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        const result = render(renderToggleThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')!
+        const sentinel = result.container.querySelector<HTMLElement>('.chat-scroll-content > [aria-hidden="true"]')!
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 530 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        // First page in normal mode loads and sets autoPaused = true.
+        act(() => {
+            vi.advanceTimersByTime(2_000)
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        state.historyVersion = 1
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 1 }
+        act(() => {
+            result.rerender(renderToggleThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(500)
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        // Enabling concise mode hides tool/reasoning blocks, leaving 0 visible blocks;
+        // autoPaused is cleared and older history loads automatically without scrolling.
+        state.conciseViewActive = true
+        state.visibleBlocksCount = 0
+        Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 530 })
+        act(() => {
+            result.rerender(renderToggleThread())
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(onLoadMore).toHaveBeenCalledTimes(2)
+    })
+
+    it('stops automatic concise paging before prepend eviction drops a visible tail reply', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }),
+            getMachines: vi.fn().mockResolvedValue({ machines: [] })
+        } as unknown as ApiClient
+
+        const state = {
+            sessionId: 'concise-eviction-session',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 0,
+            retainedMessagesCount: 20,
+            normalizedMessagesCount: 0,
+            visibleBlocksCount: 0,
+            conciseViewActive: true,
+            messagesVersion: 1,
+            historyVersion: 0
+        }
+
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderEvictionThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId={state.sessionId}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={state.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        retainedMessagesCount={state.retainedMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        const result = render(renderEvictionThread())
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        // With 25 queued prompts at the tail, pages 1..3 take non-queued
+        // rawMessagesCount to 195 -> 395 -> 595 while retainedMessagesCount
+        // reaches 220 -> 420 -> 620 and visibleBlocksCount becomes 1 (the
+        // final reply).
+        for (let page = 1; page <= 3; page += 1) {
+            state.retainedMessagesCount = 20 + page * 200
+            state.rawMessagesCount = state.retainedMessagesCount - 25
+            state.normalizedMessagesCount = state.rawMessagesCount
+            state.visibleBlocksCount = 1
+            state.historyVersion = page
+            searchTargetTestState.extras = { messagesVersion: 1, historyVersion: page }
+            act(() => {
+                result.rerender(renderEvictionThread())
+            })
+            act(() => {
+                vi.advanceTimersByTime(16)
+            })
+            await act(async () => {
+                await Promise.resolve()
+            })
+        }
+
+        // Even though non-queued rawMessagesCount is 595 (<= 600), the
+        // retained window (including 25 queued prompts) is 620 (> 600).
+        // A 4th 200-row page would cross the 800-row prepend cap and evict
+        // the final reply, so automatic concise coverage stops at 3 pages.
+        expect(state.rawMessagesCount).toBe(595)
+        expect(state.retainedMessagesCount).toBe(620)
+        expect(state.visibleBlocksCount).toBe(1)
+        expect(onLoadMore).toHaveBeenCalledTimes(3)
+    })
+
+    it('transitions to history mode before evicting an entirely hidden tail and stays in history mode when preceding conversation renders', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }),
+            getMachines: vi.fn().mockResolvedValue({ machines: [] })
+        } as unknown as ApiClient
+
+        const state = {
+            sessionId: 'concise-hidden-tail-eviction-session',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 620,
+            retainedMessagesCount: 620,
+            normalizedMessagesCount: 620,
+            visibleBlocksCount: 0,
+            conciseViewActive: true,
+            messagesVersion: 1,
+            historyVersion: 2
+        }
+
+        const onViewModeChange = vi.fn()
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderHiddenTailThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId={state.sessionId}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={onViewModeChange}
+                        isSyncingTail={state.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        retainedMessagesCount={state.retainedMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 2 }
+        const result = render(renderHiddenTailThread())
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+        // Automatic concise coverage does not mark the window as user-selected
+        // history via onViewModeChange('history'), while still rendering the
+        // jump-to-latest button once the tail has been evicted.
+        expect(result.getByRole('button', { name: 'Scroll to bottom' })).toBeTruthy()
+
+        // When the older page renders visible preceding messages, initial
+        // scroll settling must not re-enter tail mode (which would reset back
+        // to the evicted tool-only tail).
+        onViewModeChange.mockClear()
+        state.rawMessagesCount = 800
+        state.retainedMessagesCount = 800
+        state.normalizedMessagesCount = 800
+        state.visibleBlocksCount = 50
+        state.messagesVersion = 2
+        state.historyVersion = 3
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 3 }
+        act(() => {
+            result.rerender(renderHiddenTailThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(500)
+        })
+
+        expect(onViewModeChange).not.toHaveBeenCalledWith('tail')
+    })
+
+    it('acknowledges post-eviction live replies through SessionChat while automatically following and suppresses user-selected history', async () => {
+        const sessionId = 'session-chat-concise-eviction-read-ack'
+        clearMessageWindow(sessionId)
+
+        const sendReadState = vi.fn(async (_id: string, request: { type: 'read'; readRevision: number; expectedVersion: number } | { type: 'unread'; expectedVersion: number }) => ({
+            readState: {
+                readRevision: request.type === 'read' ? request.readRevision : 0,
+                manualUnread: request.type === 'unread',
+                version: request.expectedVersion + 1
+            }
+        }))
+        const cleanupReadState = configureSessionReadState('session-chat-concise-eviction-scope', sendReadState)
+
+        const allMessages: DecryptedMessage[] = Array.from({ length: 902 }, (_, index) => {
+            const seq = index + 1
+            const isHiddenTool = seq > 2
+            return {
+                id: `m-${seq}`,
+                seq,
+                contentRevision: seq,
+                localId: null,
+                createdAt: 1_000_000 + seq,
+                invokedAt: 1_000_000 + seq,
+                content: isHiddenTool
+                    ? {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: {
+                                type: 'tool-call',
+                                callId: `call-${seq}`,
+                                name: 'Bash',
+                                input: { command: `echo ${seq}` },
+                                status: 'completed'
+                            }
+                        }
+                    }
+                    : {
+                        role: 'user',
+                        content: { type: 'text', text: `User message ${seq}` }
+                    }
+            } as DecryptedMessage
+        })
+
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryInChat: false }),
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [], migratedFromLocal: false }),
+            getMessages: vi.fn(async (_id: string, query?: { limit?: number; beforeSeq?: number | null }) => {
+                const limit = query?.limit ?? 200
+                const beforeSeq = query?.beforeSeq ?? null
+                const slice = beforeSeq === null
+                    ? allMessages.slice(-limit)
+                    : allMessages.filter((m) => (m.seq ?? 0) < beforeSeq).slice(-limit)
+                const oldest = slice[0] ?? null
+                const newest = slice.at(-1) ?? null
+                return {
+                    messages: slice,
+                    page: {
+                        direction: beforeSeq === null ? 'latest' : 'before',
+                        limit,
+                        epoch: 1,
+                        reset: false,
+                        nextBeforeAt: oldest ? (oldest.invokedAt ?? oldest.createdAt) : null,
+                        nextBeforeSeq: oldest?.seq ?? null,
+                        nextAfterAt: null,
+                        nextAfterSeq: null,
+                        snapshotHeadAt: newest ? (newest.invokedAt ?? newest.createdAt) : null,
+                        snapshotHeadSeq: newest?.seq ?? null,
+                        hasMore: (oldest?.seq ?? 1) > 1,
+                        readThroughRevision: beforeSeq === null ? (newest?.contentRevision ?? 0) : undefined
+                    }
+                } satisfies MessagesResponse
+            })
+        } as unknown as ApiClient
+
+        function SessionChatHarness() {
+            const { setConciseChatMode } = useConciseChatMode()
+            const msg = useMessages(api, sessionId)
+            searchTargetTestState.extras = {
+                messagesVersion: msg.messagesVersion,
+                historyVersion: msg.historyVersion
+            }
+            return (
+                <div>
+                    <button type="button" onClick={() => setConciseChatMode(true)}>Enable concise</button>
+                    <SessionChat
+                        api={api}
+                        session={{ id: sessionId, active: true, thinking: false, agentState: null, metadata: {} } as Session}
+                        messages={msg.messages}
+                        readThroughRevision={msg.readThroughRevision}
+                        messagesWarning={msg.warning}
+                        hasMoreMessages={msg.hasMore}
+                        hasMoreNewerMessages={msg.hasMoreNewer}
+                        isSyncingTail={msg.isSyncingTail}
+                        isLoadingMoreMessages={msg.isLoadingMore}
+                        isSending={false}
+                        viewMode={msg.viewMode}
+                        tailEvictedWhileFollowing={msg.tailEvictedWhileFollowing}
+                        messagesVersion={msg.messagesVersion}
+                        historyVersion={msg.historyVersion}
+                        tailRevision={msg.tailRevision}
+                        onBack={vi.fn()}
+                        onRefresh={ msg.refetch }
+                        onLoadMore={msg.loadMore}
+                        onCancelLoadMore={msg.cancelLoadMore}
+                        onSend={vi.fn(async () => false as const)}
+                        onViewModeChange={msg.setViewMode}
+                        onJumpToTail={msg.jumpToTail}
+                    />
+                </div>
+            )
+        }
+
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+
+        try {
+            const result = render(
+                <QueryClientProvider client={queryClient}>
+                    <I18nProvider>
+                        <SessionChatHarness />
+                    </I18nProvider>
+                </QueryClientProvider>
+            )
+
+            const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
+            if (!viewport) throw new Error('Expected chat viewport')
+            let scrollHeight = 530
+            Object.defineProperties(viewport, {
+                scrollHeight: { configurable: true, get: () => scrollHeight },
+                clientHeight: { configurable: true, value: 530 },
+                scrollTop: { configurable: true, writable: true, value: 0 }
+            })
+
+            fireEvent.click(result.getByRole('button', { name: 'Enable concise' }))
+
+            // Flush initial tail sync and automatic concise coverage across 5 older pages (900 hidden tool messages).
+            for (let step = 0; step < 8; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+
+            // Deliver a live final reply (seq 903, contentRevision 903) while still auto-following after hidden-tail eviction.
+            scrollHeight = 900
+            viewport.scrollTop = 370
+            act(() => {
+                ingestIncomingMessages(sessionId, [{
+                    id: 'm-903',
+                    seq: 903,
+                    contentRevision: 903,
+                    localId: null,
+                    createdAt: 1_000_903,
+                    invokedAt: 1_000_903,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: { type: 'message', message: 'Final live reply 903' }
+                        }
+                    }
+                } as DecryptedMessage])
+            })
+
+            for (let step = 0; step < 4; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+
+            expect(getSessionLastSeenAt(sessionId)).toBe(903)
+            expect(hasUnseenContent({ id: sessionId, contentRevision: 903 }, getSessionLastSeenAt(sessionId))).toBe(false)
+            expect(sendReadState).toHaveBeenCalledWith(sessionId, expect.objectContaining({
+                type: 'read',
+                readRevision: 903
+            }))
+            expect(result.queryByRole('button', { name: /new message/i })).toBeNull()
+            expect(result.getByRole('button', { name: 'Scroll to bottom' })).toBeTruthy()
+
+            // Once the user scrolls up into user-selected history, subsequent live replies must not be acknowledged.
+            fireEvent.wheel(viewport, { deltaY: -120 })
+            viewport.scrollTop = 100
+            fireEvent.scroll(viewport)
+            await act(async () => {
+                vi.advanceTimersByTime(200)
+                await Promise.resolve()
+            })
+
+            act(() => {
+                ingestIncomingMessages(sessionId, [{
+                    id: 'm-904',
+                    seq: 904,
+                    contentRevision: 904,
+                    localId: null,
+                    createdAt: 1_000_904,
+                    invokedAt: 1_000_904,
+                    content: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: { type: 'message', message: 'Unread live reply 904' }
+                        }
+                    }
+                } as DecryptedMessage])
+            })
+
+            for (let step = 0; step < 4; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+
+            expect(getSessionLastSeenAt(sessionId)).toBe(903)
+            expect(hasUnseenContent({ id: sessionId, contentRevision: 904 }, getSessionLastSeenAt(sessionId))).toBe(true)
+        } finally {
+            cleanupReadState()
+            clearMessageWindow(sessionId)
+            localStorage.removeItem('hapi-concise-chat-mode')
+        }
     })
 })

@@ -444,6 +444,7 @@ function SessionPage() {
         refetch: refetchMessages,
         loadMessageContext: loadMessageContextForSession,
         viewMode: messagesViewMode,
+        tailEvictedWhileFollowing,
         messagesVersion,
         historyVersion,
         tailRevision,
@@ -939,6 +940,7 @@ function SessionPage() {
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
             viewMode={messagesViewMode}
+            tailEvictedWhileFollowing={tailEvictedWhileFollowing}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}
             tailRevision={tailRevision}

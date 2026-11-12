@@ -69,7 +69,7 @@ import { hasActiveSteeringTurn } from '@hapi/protocol'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
-import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
+import { getMessageWindowState, getRegularPrependBudgetCount, rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
 import {
     createScratchlistAttachmentAdapter,
@@ -629,6 +629,17 @@ export function resolveLatestCompletedBoundaryIdForView(
     return cards.length === 1 ? cards[0].id : null
 }
 
+export function resolveRenderedReadThroughRevision(options: {
+    terminalVisible: boolean
+    viewMode: 'tail' | 'history'
+    tailEvictedWhileFollowing?: boolean
+    readThroughRevision?: number
+}): number | undefined {
+    if (options.terminalVisible) return undefined
+    if (options.viewMode !== 'tail' && !options.tailEvictedWhileFollowing) return undefined
+    return options.readThroughRevision
+}
+
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     for (const block of blocks) {
         if (block.kind === 'tool-call') {
@@ -662,6 +673,7 @@ type SessionChatProps = {
     isLoadingMoreMessages: boolean
     isSending: boolean
     viewMode: 'tail' | 'history'
+    tailEvictedWhileFollowing?: boolean
     messagesVersion: number
     historyVersion: number
     tailRevision: number
@@ -1581,6 +1593,10 @@ function SessionChatInner(props: SessionChatProps) {
         () => props.messages.filter((m) => !isQueuedForInvocation(m)),
         [props.messages]
     )
+    const retainedMessagesCount = useMemo(
+        () => getRegularPrependBudgetCount(props.messages),
+        [props.messages]
+    )
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
         // Clear caches immediately when session changes (before useEffect runs)
@@ -1730,10 +1746,17 @@ function SessionChatInner(props: SessionChatProps) {
         visibleGroupsRef.current = visibleBlocks.filter(isToolGroupBlock)
     }, [toolGroupingMode, visibleBlocks])
 
+    const effectiveTailEvictedWhileFollowing = props.tailEvictedWhileFollowing
+        ?? Boolean(getMessageWindowState(props.session.id).tailEvictedWhileFollowing)
+
     // "N new messages" counts rendered blocks, not raw messages: a subagent run
     // is dozens of sidechain messages but a single Task card, and a tool_use +
     // tool_result pair is one card.
-    const unseenCount = useUnseenBlockCount(props.viewMode, visibleBlocks)
+    const unseenCount = useUnseenBlockCount(
+        props.viewMode,
+        visibleBlocks,
+        effectiveTailEvictedWhileFollowing
+    )
 
     const outlineItems = useMemo(
         () => buildConversationOutline(reconciled.blocks),
@@ -2195,7 +2218,12 @@ function SessionChatInner(props: SessionChatProps) {
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
                         onViewModeChange={props.onViewModeChange}
                         onJumpToTail={props.onJumpToTail}
-                        readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
+                        readThroughRevision={resolveRenderedReadThroughRevision({
+                            terminalVisible,
+                            viewMode: props.viewMode,
+                            tailEvictedWhileFollowing: effectiveTailEvictedWhileFollowing,
+                            readThroughRevision: props.readThroughRevision
+                        })}
                         isSyncingTail={props.isSyncingTail}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
@@ -2206,7 +2234,10 @@ function SessionChatInner(props: SessionChatProps) {
                         onCancelLoadMore={props.onCancelLoadMore}
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
+                        retainedMessagesCount={retainedMessagesCount}
                         normalizedMessagesCount={normalizedMessages.length}
+                        visibleBlocksCount={visibleBlocks.length}
+                        conciseViewActive={conciseViewActive}
                         messagesVersion={props.messagesVersion}
                         historyVersion={props.historyVersion}
                         forceScrollToken={forceScrollToken}

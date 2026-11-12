@@ -693,3 +693,136 @@ test('scroll events cannot bypass backoff before an epoch-reset stop', async ({ 
     )
     expect(afterStop).toBe(2)
 })
+
+test('concise view automatically pages past tool-only tail and older pages when switching sessions', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=220')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    // The latest 20 messages and the first 200-message older page are all
+    // non-interactive Bash tool calls hidden by concise view. Without manual
+    // upward scrolling, HappyThread must automatically page through both until
+    // visible conversation history (`Fixture message 980`) is rendered.
+    await expect(page.getByText('Fixture message 980', { exact: true })).toBeVisible()
+
+    const stateAfterInitialFill = await page.evaluate(() => ({
+        beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+        childCount: document.querySelector('.happy-thread-messages')?.childElementCount ?? 0,
+        scrollTop: Math.round((document.querySelector('.app-scroll-y') as HTMLElement).scrollTop)
+    }))
+    expect(stateAfterInitialFill.beforeReqs).toBe(2)
+    expect(stateAfterInitialFill.childCount).toBe(200)
+    expect(stateAfterInitialFill.scrollTop).toBeGreaterThan(1000)
+
+    // Switching to another session with concise view already active must also
+    // automatically load older history until conversation messages appear.
+    await page.evaluate(() => {
+        window.__probe.requests.length = 0
+        window.__probe.switchSession('history-load-fixture-2')
+    })
+    await expect(page.getByText('Fixture message 980', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() =>
+        window.__probe.requests.filter((r) => r.direction === 'before').length
+    )).toBe(2)
+})
+
+test('concise view preserves the latest reply when more than 800 hidden tool messages precede it', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=900&conciseFinalReply=1')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    // The latest 20 messages contain 19 hidden tool calls and the final reply
+    // (`Fixture final reply 1200`). Automatic coverage loads 3 older pages
+    // (taking the window to 620 rows) and stops before a 4th 200-row page
+    // would cross the 800-row prepend cap and evict the final reply.
+    await expect(page.getByText('Fixture final reply 1200', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => ({
+        beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+        messageCount: window.__probe.windowState().messageCount
+    }))).toEqual({
+        beforeReqs: 3,
+        messageCount: 620
+    })
+
+    // Ensure no 4th request is fired after settling.
+    await page.waitForTimeout(500)
+    await expect(page.getByText('Fixture final reply 1200', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() =>
+        window.__probe.requests.filter((r) => r.direction === 'before').length
+    )).toBe(3)
+
+    // Also verify when 25 queued prompts sit after the final reply: after 3
+    // older pages, visibleMessages.length is 595 while the retained window is
+    // 620 rows (595 non-queued + 25 queued). Automatic coverage must include
+    // queued rows in the eviction budget and stop at 3 pages so the final
+    // reply (`Fixture final reply 1175`) is not evicted.
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=900&conciseFinalReply=1&queuedTail=25')
+    await expect(viewport).toBeVisible()
+    await expect(page.getByText('Fixture final reply 1175', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => ({
+        beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+        messageCount: window.__probe.windowState().messageCount
+    }))).toEqual({
+        beforeReqs: 3,
+        messageCount: 620
+    })
+    await page.waitForTimeout(500)
+    await expect(page.getByText('Fixture final reply 1175', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() =>
+        window.__probe.requests.filter((r) => r.direction === 'before').length
+    )).toBe(3)
+})
+
+test('concise view reaches preceding conversation and finishes loading when 900 hidden tool messages have no final reply', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=900')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    // An interrupted session ending in 900 hidden tool messages (m-301..m-1200)
+    // has 0 visible messages in the initial 800-row window. Automatic coverage
+    // must transition the window into history mode before prepend eviction sets
+    // requiresLatestReset, so useMessages does not report a stuck isSyncingTail
+    // state and paging continues until the preceding user message (`m-300`)
+    // renders and loading finishes.
+    await expect(page.getByText('Fixture message 300', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => {
+        const state = window.__probe.windowState()
+        return {
+            isLoadingMore: state.isLoadingMore,
+            viewMode: state.viewMode,
+            requiresLatestReset: state.requiresLatestReset,
+            oldestSeq: state.oldestSeq
+        }
+    })).toEqual({
+        isLoadingMore: false,
+        viewMode: 'history',
+        requiresLatestReset: true,
+        oldestSeq: 181
+    })
+
+    await page.waitForTimeout(500)
+    await expect(page.getByText('Fixture message 300', { exact: true })).toBeVisible()
+    // A jump-to-latest control stays available while the tail has been evicted.
+    await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
+
+    // Delivering an SSE final reply while auto-follow is still enabled must
+    // append and render the reply rather than discarding it under the 600-row
+    // user-selected history prepend budget, must advance + acknowledge its
+    // readThroughRevision, and must not display a new-message pill.
+    await page.evaluate(() => {
+        window.__probe.deliverLiveFinalReply('Live final reply 1201')
+    })
+    await expect(page.getByText('Live final reply 1201', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: /new message/i })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Scroll to bottom', exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => {
+        const state = window.__probe.windowState()
+        return {
+            readThroughRevision: state.readThroughRevision,
+            acknowledgedReadRevision: state.acknowledgedReadRevision
+        }
+    })).toEqual({
+        readThroughRevision: 1201,
+        acknowledgedReadRevision: 1201
+    })
+})
