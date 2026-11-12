@@ -26,7 +26,7 @@ import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
 import { execFileSync } from 'node:child_process';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getDefaultClaudeCodePath } from './sdk/utils';
-import { claudeConversationHistoryCapabilities } from './conversationHistory';
+import { claudeConversationHistoryCapabilities, readNativeTurns, resolveForkAtMessagePlan } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -294,9 +294,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     }))
 
     session.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
-        if (payload && typeof payload === 'object' && 'messageLocalId' in payload && (payload as { messageLocalId?: unknown }).messageLocalId) {
-            throw new Error('Historical fork is not supported for Claude')
-        }
+        const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
+            ? (payload as { messageLocalId: string }).messageLocalId
+            : undefined
         const nativeSessionId = currentSessionRef.current?.sessionId
             ?? session.getMetadata()?.claudeSessionId
             ?? sessionInfo.metadata?.claudeSessionId
@@ -304,7 +304,25 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (!nativeSessionId) {
             throw new Error('Claude session id is not ready')
         }
-        return { nativeSessionId, forkSession: true as const }
+        if (!messageLocalId) {
+            return { nativeSessionId, forkSession: true as const }
+        }
+        // Fork at a message: the child resumes the source truncated to the turn
+        // before the selected one, so its history ends at the chosen point.
+        if (session.getMetadata()?.capabilities?.conversationHistory?.forkAtMessage !== true) {
+            throw new Error('Historical fork is not supported for Claude')
+        }
+        const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
+        if (!promptUuid) {
+            throw new Error(`No native history point for message ${messageLocalId}`)
+        }
+        const plan = resolveForkAtMessagePlan(readNativeTurns(workingDirectory, nativeSessionId), promptUuid)
+        logger.debug(`[claude] fork at message ${messageLocalId}: boundary ${plan.resumeSessionAt}`)
+        return {
+            nativeSessionId,
+            forkSession: true as const,
+            ...(plan.resumeSessionAt ? { resumeSessionAt: plan.resumeSessionAt } : {})
+        }
     })
     session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async () => {
         throw new Error('Rewind is not supported for Claude')

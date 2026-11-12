@@ -140,6 +140,31 @@ export function claudeConversationHistoryCapabilities(versionOutput: string | nu
     })
 }
 
+export type ForkAtMessagePlan = {
+    resumeSessionAt?: string
+}
+
+/**
+ * Plan a fork at the turn started by `promptUuid`: the child's history ends
+ * before that turn, matching the hub transcript prefix convention (the
+ * selected boundary turn is excluded). The kept boundary is the last entry of
+ * the previous turn — `--resume-session-at` truncates unconditionally after
+ * it, so no drops flags are needed. Forking at the first message would
+ * produce an empty child and is rejected.
+ */
+export function resolveForkAtMessagePlan(turns: NativeTurn[], promptUuid: string): ForkAtMessagePlan {
+    const index = turns.findIndex((turn) => turn.promptUuid === promptUuid)
+    if (index < 0) {
+        throw new Error(`No native history point for message prompt ${promptUuid}`)
+    }
+    if (index === 0) {
+        throw new Error('Cannot fork before the first message')
+    }
+    return {
+        resumeSessionAt: turns[index - 1]!.endUuid
+    }
+}
+
 /**
  * Plan a rewind to the turn started by `promptUuid`: resume truncated to the
  * previous turn's last entry. `--resume-session-at` truncates everything

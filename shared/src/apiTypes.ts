@@ -699,6 +699,8 @@ export type ForkConversationRpcResult = {
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
+    /** Claude fork at a message: resume the child truncated to this entry uuid. */
+    resumeSessionAt?: string
 }
 
 /** Raw RPC response, including generic serialized handler failures. */

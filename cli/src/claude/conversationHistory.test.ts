@@ -7,6 +7,7 @@ import {
     parseClaudeVersion,
     readCompletedNativeTurn,
     readNativeTurns,
+    resolveForkAtMessagePlan,
     resolveRewindPlan,
     supportsNativeRewind
 } from './conversationHistory'
@@ -149,6 +150,24 @@ describe('readNativeTurns', () => {
             expect(readNativeTurns(CWD, 'absent')).toEqual([])
         })
         rmSync(root, { recursive: true, force: true })
+    })
+})
+
+describe('resolveForkAtMessagePlan', () => {
+    const turns = [
+        { promptUuid: 'u1', endUuid: 'as1' },
+        { promptUuid: 'u2', endUuid: 'as2' },
+        { promptUuid: 'u3', endUuid: 'as3' }
+    ]
+
+    it('keeps the previous turn boundary as the truncation point', () => {
+        expect(resolveForkAtMessagePlan(turns, 'u3')).toEqual({ resumeSessionAt: 'as2' })
+        expect(resolveForkAtMessagePlan(turns, 'u2')).toEqual({ resumeSessionAt: 'as1' })
+    })
+
+    it('rejects unknown prompts and forking before the first message', () => {
+        expect(() => resolveForkAtMessagePlan(turns, 'missing')).toThrow(/No native history point/)
+        expect(() => resolveForkAtMessagePlan(turns, 'u1')).toThrow(/first/i)
     })
 })
 
