@@ -24,16 +24,17 @@ describe('historical agy errors', () => {
                 const missingAnswer = await check();
                 insert.run(4, 15, 3, Buffer.from('answer'));
                 const complete = await check();
+                const trailingNewline = await isHistoricalAgyError(id, 2, 4, 'quota exceeded', 'answer\\n', path);
                 const differentAnswer = await isHistoricalAgyError(id, 2, 4, 'quota exceeded', 'different', path);
                 insert.run(5, 17, 3, Buffer.from('current failure'));
                 const currentError = await check();
-                console.log(JSON.stringify({ missingCurrent, missingAnswer, complete, differentAnswer, currentError }));
+                console.log(JSON.stringify({ missingCurrent, missingAnswer, complete, trailingNewline, differentAnswer, currentError }));
             } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
         `;
         const child = spawnSync('bun', ['-e', script], { cwd: process.cwd(), encoding: 'utf8', timeout: 20_000 });
         expect(child.status, child.stderr).toBe(0);
         expect(JSON.parse(child.stdout.trim())).toEqual({
-            missingCurrent: false, missingAnswer: false, complete: true, differentAnswer: false, currentError: false,
+            missingCurrent: false, missingAnswer: false, complete: true, trailingNewline: true, differentAnswer: false, currentError: false,
         });
     });
 });

@@ -29,7 +29,7 @@ export async function isHistoricalAgyError(
                 EXISTS(SELECT 1 FROM steps WHERE idx = ?2 AND step_type = 15 AND status = 3 AND instr(step_payload, CAST(?4 AS BLOB)) > 0) AS response,
                 EXISTS(SELECT 1 FROM steps WHERE idx > ?1 AND idx <= ?2 AND step_type = 14) AS nextPrompt,
                 EXISTS(SELECT 1 FROM steps WHERE idx >= ?1 AND (step_type = 17 OR status = 7)) AS currentError`)
-                .get(userStep, responseStep, error, response) as Evidence | null;
+                .get(userStep, responseStep, error, response.trim()) as Evidence | null;
             return Boolean(row?.prior && row.prompt && row.response && !row.nextPrompt && !row.currentError);
         } finally { db.close(); }
     } catch {
