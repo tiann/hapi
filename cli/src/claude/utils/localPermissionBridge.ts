@@ -6,7 +6,7 @@ import type { AgentStateCompletedRequest, AgentStateRequest } from '@hapi/protoc
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
     isDisplayOrReadFileTool,
-    extractTargetFilePath,
+    extractTargetFilePaths,
     type PermissionHandlerClient
 } from '@/modules/common/permission/BasePermissionHandler'
 import { buildAskUserQuestionUpdatedInput } from './askUserQuestionAnswers'
@@ -178,8 +178,8 @@ export class LocalPermissionBridge {
         if (!response.approved) {
             decision = { behavior: 'deny', message: response.reason ?? 'The user declined this request.' }
             if (isDisplayOrReadFileTool(pending.entry.tool)) {
-                const targetPath = extractTargetFilePath(pending.entry.arguments)
-                if (targetPath) {
+                const targetPaths = extractTargetFilePaths(pending.entry.arguments)
+                for (const targetPath of targetPaths) {
                     this.client.markAttachmentDenied?.(targetPath)
                 }
             }
@@ -225,8 +225,8 @@ export class LocalPermissionBridge {
         const observed = this.calls.get(toolCallId)
         if (status === 'denied' || status === 'canceled') {
             if (observed && isDisplayOrReadFileTool(observed.tool)) {
-                const targetPath = extractTargetFilePath(observed.input)
-                if (targetPath) {
+                const targetPaths = extractTargetFilePaths(observed.input)
+                for (const targetPath of targetPaths) {
                     this.client.markAttachmentDenied?.(targetPath)
                 }
             }
@@ -245,8 +245,8 @@ export class LocalPermissionBridge {
         pending.resolve(null)
         if (status === 'denied' || status === 'canceled') {
             if (isDisplayOrReadFileTool(pending.entry.tool)) {
-                const targetPath = extractTargetFilePath(pending.entry.arguments)
-                if (targetPath) {
+                const targetPaths = extractTargetFilePaths(pending.entry.arguments)
+                for (const targetPath of targetPaths) {
                     this.client.markAttachmentDenied?.(targetPath)
                 }
             }

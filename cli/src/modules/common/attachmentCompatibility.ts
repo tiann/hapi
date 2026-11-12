@@ -45,6 +45,7 @@ export interface AttachmentCompatibilityOptions {
 
 export type AttachmentLinkCandidate = {
     path: string
+    rawTarget: string
     isMarkdownImage: boolean
 }
 
@@ -57,7 +58,8 @@ export function attachmentLinks(text: string): AttachmentLinkCandidate[] {
     const links = /(!?)\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s()]+(?:\([^()]*\)[^\s()]*)*))\s*(?:["'][^\n]*?["']\s*)?\)/g
     for (const match of prose.matchAll(links)) {
         const isMarkdownImage = match[1] === '!'
-        let target = match[2] ?? match[3]
+        const rawTarget = match[2] ?? match[3] ?? ''
+        let target = rawTarget
         try {
             if (target.startsWith('file:')) target = fileURLToPath(target)
             else target = decodeURIComponent(target.replace(/^sandbox:/, ''))
@@ -69,7 +71,7 @@ export function attachmentLinks(text: string): AttachmentLinkCandidate[] {
         if (!/\.(?:pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|zip|tar|gz|png|jpe?g|gif|webp|svg|mp4|webm|mp3|wav|ogg|flac)$/i.test(target)) continue
         if (!seen.has(target)) {
             seen.add(target)
-            candidates.push({ path: target, isMarkdownImage })
+            candidates.push({ path: target, rawTarget, isMarkdownImage })
         }
         if (candidates.length === 16) break
     }
@@ -152,6 +154,7 @@ export class AttachmentCompatibility {
 
         this.queue = this.queue.then(async () => {
             const root = await realpath(cwd)
+            const MAX_INLINE_WEB_IMAGE_BYTES = 10 * 1024 * 1024
             for (const item of paths) {
                 const path = item.path
                 try {
@@ -166,6 +169,13 @@ export class AttachmentCompatibility {
                     const digest = createHash('sha256').update(bytes).digest('hex')
                     if (this.seen.has(digest)) continue
                     const media = registerGeneratedImage({ id: randomUUID(), path: canonical, bytes, mimeType: detectDisplayMediaMimeType(bytes) })
+                    // ChatMarkdownImage rejects sandbox: and file: URLs through resolveMarkdownFileImage,
+                    // and enforces a 10 MiB limit. Retain the web card unless inline rendering succeeds.
+                    const suppressWebCard =
+                        item.isMarkdownImage
+                        && !item.rawTarget.startsWith('sandbox:')
+                        && !item.rawTarget.startsWith('file:')
+                        && bytes.length <= MAX_INLINE_WEB_IMAGE_BYTES
                     emit({
                         type: 'generated-image',
                         imageId: media.id,
@@ -175,6 +185,7 @@ export class AttachmentCompatibility {
                         source: {
                             ingress: 'attachment-fallback',
                             isMarkdownImage: item.isMarkdownImage,
+                            suppressWebCard,
                             linkTarget: path
                         }
                     })

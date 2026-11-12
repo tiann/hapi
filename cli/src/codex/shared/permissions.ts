@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { isDisplayOrReadFileTool, extractTargetFilePath } from '@/modules/common/permission/BasePermissionHandler';
+import { isDisplayOrReadFileTool, extractTargetFilePaths } from '@/modules/common/permission/BasePermissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 import { registerAppServerPermissionHandlers, IGNORE_SHARED_REQUEST } from '../utils/appServerPermissionAdapter';
 import { record, string } from './gateway';
@@ -86,8 +86,8 @@ export class SharedCodexPermissions {
                     const reply = await ask(name, input);
                     if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
                         if (isDisplayOrReadFileTool(name)) {
-                            const targetPath = extractTargetFilePath(input);
-                            if (targetPath) {
+                            const targetPaths = extractTargetFilePaths(input);
+                            for (const targetPath of targetPaths) {
                                 this.session.markAttachmentDenied(targetPath);
                             }
                         }
@@ -95,8 +95,8 @@ export class SharedCodexPermissions {
                     return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
                 } catch (error) {
                     if (isDisplayOrReadFileTool(name)) {
-                        const targetPath = extractTargetFilePath(input);
-                        if (targetPath) {
+                        const targetPaths = extractTargetFilePaths(input);
+                        for (const targetPath of targetPaths) {
                             this.session.markAttachmentDenied(targetPath);
                         }
                     }
@@ -139,10 +139,13 @@ export class SharedCodexPermissions {
         for (const [key, request] of this.pending) {
             if (request.threadId !== threadId || request.nativeId !== nativeId) continue;
             this.pending.delete(key);
-            if (isDisplayOrReadFileTool(request.toolName)) {
-                const targetPath = extractTargetFilePath(request.input);
-                if (targetPath) {
-                    this.session.markAttachmentDenied(targetPath);
+            // Only mark denied when canceled/aborted natively — never on successful approval ('resolved')!
+            if (status === 'canceled') {
+                if (isDisplayOrReadFileTool(request.toolName)) {
+                    const targetPaths = extractTargetFilePaths(request.input);
+                    for (const targetPath of targetPaths) {
+                        this.session.markAttachmentDenied(targetPath);
+                    }
                 }
             }
             request.cancel(new Error('Resolved by Codex'));

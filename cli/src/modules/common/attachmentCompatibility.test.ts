@@ -7,10 +7,10 @@ import { AttachmentCompatibility, assistantAttachmentText, attachmentLinks } fro
 it('recognizes common delivery links', () => {
     expect(attachmentLinks('[report](sandbox:/tmp/report.pdf) ![image](file:///tmp/a.png) [doc](<./my file.docx>) [table](out/a%20b.csv)'))
         .toEqual([
-            { path: '/tmp/report.pdf', isMarkdownImage: false },
-            { path: '/tmp/a.png', isMarkdownImage: true },
-            { path: './my file.docx', isMarkdownImage: false },
-            { path: 'out/a b.csv', isMarkdownImage: false }
+            { path: '/tmp/report.pdf', rawTarget: 'sandbox:/tmp/report.pdf', isMarkdownImage: false },
+            { path: '/tmp/a.png', rawTarget: 'file:///tmp/a.png', isMarkdownImage: true },
+            { path: './my file.docx', rawTarget: './my file.docx', isMarkdownImage: false },
+            { path: 'out/a b.csv', rawTarget: 'out/a%20b.csv', isMarkdownImage: false }
         ])
 })
 it('ignores external links, citations, and code', () => {
@@ -116,6 +116,17 @@ it('preserves authorization boundaries: withholds reads in restrictive modes and
         await compat.flush()
         expect(messages).toHaveLength(3)
         expect(messages[2]).toMatchObject({ type: 'generated-image', fileName: 'pi-terminal.pdf' })
+
+        // Sandbox/file URLs retain the web card (suppressWebCard is false)
+        await writeFile(join(workspace, 'sandbox.png'), 'png bytes')
+        compat.enqueue({ type: 'message', message: `![img](sandbox:${join(workspace, 'sandbox.png')})` }, workspace, message => messages.push(message), { permissionMode: 'yolo' })
+        await compat.flush()
+        expect(messages).toHaveLength(4)
+        expect(messages[3]).toMatchObject({
+            type: 'generated-image',
+            fileName: 'sandbox.png',
+            source: expect.objectContaining({ ingress: 'attachment-fallback', isMarkdownImage: true, suppressWebCard: false })
+        })
     } finally {
         await rm(root, { recursive: true, force: true })
     }

@@ -1256,6 +1256,60 @@ describe('ApiSessionClient attachment links', () => {
                     message: { content: { data: Record<string, unknown> } }
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterTerminal).toHaveLength(1) // terminal-codex.txt also blocked!
+
+                // Successful Codex approval followed by native resolution ('resolved') MUST NOT be blocked
+                await writeFile(join(workspace, 'codex-approved.txt'), 'approved content')
+                sharedCodex.receive({
+                    id: 103,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-approved',
+                        tool: 'read_file',
+                        input: { path: join(workspace, 'codex-approved.txt') }
+                    }
+                })
+                const approvedReqId = 'gen-1:thread-1:number:103'
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: approvedReqId, approved: true, decision: 'approved' })
+                })
+                sharedCodex.resolved('thread-1', 103, 'resolved')
+
+                client.sendAgentMessage({ type: 'message', message: '[approved](codex-approved.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterApproved = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterApproved).toHaveLength(2) // codex-approved.txt was delivered!
+
+                // Multi-file denial: mcp__filesystem__read_multiple_files blocks EVERY path in paths array
+                await writeFile(join(workspace, 'multi1.txt'), 'multi 1')
+                await writeFile(join(workspace, 'multi2.txt'), 'multi 2')
+                sharedCodex.receive({
+                    id: 104,
+                    method: 'item/tool/requestApproval',
+                    params: {
+                        threadId: 'thread-1',
+                        turnId: 'turn-1',
+                        itemId: 'call-mcp-multi',
+                        tool: 'mcp__filesystem__read_multiple_files',
+                        input: { paths: [join(workspace, 'multi1.txt'), join(workspace, 'multi2.txt')] }
+                    }
+                })
+                const multiReqId = 'gen-1:thread-1:number:104'
+                await client.rpcHandlerManager.handleRequest({
+                    method: `${client.sessionId}:${RPC_METHODS.Permission}`,
+                    params: JSON.stringify({ id: multiReqId, approved: false, decision: 'denied', reason: 'Declined multi' })
+                })
+
+                client.sendAgentMessage({ type: 'message', message: '[m1](multi1.txt) [m2](multi2.txt)' })
+                expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+                const mediaAfterMulti = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                    message: { content: { data: Record<string, unknown> } }
+                }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+                expect(mediaAfterMulti).toHaveLength(2) // neither multi1 nor multi2 was delivered
             } finally {
                 delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
             }

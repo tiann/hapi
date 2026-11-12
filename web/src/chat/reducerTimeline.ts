@@ -928,9 +928,9 @@ export function reduceTimeline(
                 }
 
                 if (c.type === 'generated-image') {
-                    // Suppress duplicate card in web timeline when the markdown renderer
-                    // already displays the local image inline.
-                    if (c.source?.ingress === 'attachment-fallback' && c.source?.isMarkdownImage) {
+                    // Suppress duplicate card in web timeline ONLY when the markdown renderer
+                    // can and does display the local image inline directly.
+                    if (c.source?.ingress === 'attachment-fallback' && c.source?.suppressWebCard) {
                         continue
                     }
                     blocks.push({

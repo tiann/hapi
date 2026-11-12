@@ -142,55 +142,72 @@ export function isDisplayOrReadFileTool(toolName?: string | null, kind?: string 
 }
 
 /**
- * Extract target file path from tool arguments, approval inputs, or ACP titles.
- * Supports flat path/file_path, nested Codex toolParams, arguments objects,
- * locations arrays, and ACP title shapes (e.g. "Read: private.txt").
+ * Extract target file paths from tool arguments, approval inputs, or ACP titles.
+ * Supports flat path/file_path, multi-file arrays (paths, files, file_paths),
+ * nested Codex toolParams, arguments objects, locations arrays, and ACP title shapes.
  */
-export function extractTargetFilePath(
+export function extractTargetFilePaths(
     input: unknown,
     title?: string | null,
     kind?: string | null
-): string | null {
+): string[] {
+    const paths: string[] = [];
+    const add = (v: unknown) => {
+        if (typeof v === 'string') {
+            const trimmed = v.trim();
+            if (trimmed.length > 0 && !paths.includes(trimmed)) {
+                paths.push(trimmed);
+            }
+        }
+    };
+
     if (input && typeof input === 'object') {
         const record = input as Record<string, unknown>;
-        if (typeof record.path === 'string') return record.path;
-        if (typeof record.file_path === 'string') return record.file_path;
-        if (typeof record.filePath === 'string') return record.filePath;
-        if (typeof record.target === 'string') return record.target;
+        add(record.path);
+        add(record.file_path);
+        add(record.filePath);
+        add(record.target);
+        if (Array.isArray(record.paths)) record.paths.forEach(add);
+        if (Array.isArray(record.files)) record.files.forEach(add);
+        if (Array.isArray(record.file_paths)) record.file_paths.forEach(add);
 
         if (record.toolParams && typeof record.toolParams === 'object') {
             const nested = record.toolParams as Record<string, unknown>;
-            if (typeof nested.path === 'string') return nested.path;
-            if (typeof nested.file_path === 'string') return nested.file_path;
-            if (typeof nested.filePath === 'string') return nested.filePath;
+            add(nested.path);
+            add(nested.file_path);
+            add(nested.filePath);
+            if (Array.isArray(nested.paths)) nested.paths.forEach(add);
+            if (Array.isArray(nested.files)) nested.files.forEach(add);
         }
         if (record.arguments && typeof record.arguments === 'object') {
             const nested = record.arguments as Record<string, unknown>;
-            if (typeof nested.path === 'string') return nested.path;
-            if (typeof nested.file_path === 'string') return nested.file_path;
-            if (typeof nested.filePath === 'string') return nested.filePath;
+            add(nested.path);
+            add(nested.file_path);
+            add(nested.filePath);
+            if (Array.isArray(nested.paths)) nested.paths.forEach(add);
+            if (Array.isArray(nested.files)) nested.files.forEach(add);
         }
-        if (Array.isArray(record.locations) && record.locations.length > 0) {
-            const first = record.locations[0];
-            if (first && typeof first === 'object' && typeof (first as { path?: unknown }).path === 'string') {
-                return (first as { path: string }).path;
+        if (Array.isArray(record.locations)) {
+            for (const loc of record.locations) {
+                if (loc && typeof loc === 'object') {
+                    add((loc as { path?: unknown }).path);
+                }
             }
         }
     }
 
     // ACP fallback: when structured input is absent, derive from title and kind
-    if (title && (kind === 'read' || isDisplayOrReadFileTool(title, kind))) {
+    if (paths.length === 0 && title && (kind === 'read' || isDisplayOrReadFileTool(title, kind))) {
         const cleanTitle = title.trim();
-        // Strip prefixes like "Read: ", "Read file: ", "Display Media: "
         const colonMatch = /^([A-Za-z][A-Za-z _-]{0,31}):\s+(.+)$/.exec(cleanTitle);
         if (colonMatch && colonMatch[2]) {
-            return colonMatch[2].trim();
-        }
-        if (kind === 'read') {
-            return cleanTitle;
+            add(colonMatch[2].trim());
+        } else if (kind === 'read') {
+            add(cleanTitle);
         }
     }
-    return null;
+
+    return paths;
 }
 
 export type PermissionHandlerClient = {
@@ -296,8 +313,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 || completion.decision === 'abort'
             ) {
                 if (isDisplayOrReadFileTool(request.tool)) {
-                    const targetPath = extractTargetFilePath(request.arguments);
-                    if (targetPath) {
+                    const targetPaths = extractTargetFilePaths(request.arguments);
+                    for (const targetPath of targetPaths) {
                         this.client.markAttachmentDenied?.(targetPath);
                     }
                 }
@@ -332,8 +349,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         for (const [id, pending] of this.pendingRequests.entries()) {
             if (filter && !filter(pending.toolName)) continue;
             if (isDisplayOrReadFileTool(pending.toolName)) {
-                const targetPath = extractTargetFilePath(pending.input);
-                if (targetPath) {
+                const targetPaths = extractTargetFilePaths(pending.input);
+                for (const targetPath of targetPaths) {
                     this.client.markAttachmentDenied?.(targetPath);
                 }
             }
@@ -392,8 +409,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 || completion.decision === 'abort'
             ) {
                 if (isDisplayOrReadFileTool(pending.toolName)) {
-                    const targetPath = extractTargetFilePath(pending.input);
-                    if (targetPath) {
+                    const targetPaths = extractTargetFilePaths(pending.input);
+                    for (const targetPath of targetPaths) {
                         this.client.markAttachmentDenied?.(targetPath);
                     }
                 }

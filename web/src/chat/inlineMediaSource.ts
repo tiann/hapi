@@ -7,6 +7,7 @@ export type InlineMediaSource = {
     toolCallId?: string
     toolName?: string
     isMarkdownImage?: boolean
+    suppressWebCard?: boolean
     linkTarget?: string
 }
 
@@ -27,8 +28,9 @@ export function inlineMediaSourceFromWire(value: unknown): InlineMediaSource | u
             ? record.tool_name
             : undefined
     const isMarkdownImage = typeof record.isMarkdownImage === 'boolean' ? record.isMarkdownImage : undefined
+    const suppressWebCard = typeof record.suppressWebCard === 'boolean' ? record.suppressWebCard : undefined
     const linkTarget = typeof record.linkTarget === 'string' ? record.linkTarget : undefined
-    return { ingress, flavor, toolCallId, toolName, isMarkdownImage, linkTarget }
+    return { ingress, flavor, toolCallId, toolName, isMarkdownImage, suppressWebCard, linkTarget }
 }
 
 /** Structural equality — wire normalization always allocates a fresh object. */
@@ -40,5 +42,6 @@ export function areInlineMediaSourcesEqual(left?: InlineMediaSource, right?: Inl
         && left.toolCallId === right.toolCallId
         && left.toolName === right.toolName
         && left.isMarkdownImage === right.isMarkdownImage
+        && left.suppressWebCard === right.suppressWebCard
         && left.linkTarget === right.linkTarget
 }
