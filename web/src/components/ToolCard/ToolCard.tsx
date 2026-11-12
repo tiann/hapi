@@ -103,26 +103,24 @@ export function ToolTimingSummary(props: {
     startedAt: number | null
     completedAt: number | null
     durationMs: number | null
-    typography?: 'detail' | 'group'
 }) {
     const { t } = useTranslation()
-    const items = [
-        props.startedAt != null ? { label: t('tool.startedAt'), value: formatCompactToolTimestamp(props.startedAt) } : null,
-        props.completedAt != null ? { label: t('tool.completedAt'), value: formatCompactToolTimestamp(props.completedAt) } : null,
-        props.durationMs != null ? { label: t('tool.duration'), value: formatDuration(props.durationMs) } : null,
-    ].filter((item): item is { label: string; value: string } => item !== null)
+    if (props.durationMs == null) return null
 
-    if (items.length === 0) return null
+    // Collapsed headers carry only the duration — a wall-clock start and
+    // finish read like progress-report noise next to the tool name. They stay
+    // reachable on hover (title tooltip) and in the detail dialog, which
+    // renders the full timing grid.
+    const tooltip = [
+        props.startedAt != null ? `${t('tool.startedAt')} ${formatCompactToolTimestamp(props.startedAt)}` : null,
+        props.completedAt != null ? `${t('tool.completedAt')} ${formatCompactToolTimestamp(props.completedAt)}` : null,
+        `${t('tool.duration')} ${formatDuration(props.durationMs)}`,
+    ].filter((item): item is string => item !== null).join(' · ')
 
     return (
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
-            {items.map((item) => (
-                <span key={item.label} className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
-                    <span className={props.typography === 'group' ? undefined : 'font-medium'}>{item.label}</span>
-                    <span className={props.typography === 'group' ? undefined : 'font-mono'}>{item.value}</span>
-                </span>
-            ))}
-        </div>
+        <span className="text-xs text-[var(--app-hint)]" title={tooltip}>
+            {formatDuration(props.durationMs)}
+        </span>
     )
 }
 
@@ -137,6 +135,10 @@ function ToolCardTimingSummary(props: { tool: ChatToolCall }) {
         return () => clearInterval(id)
     }, [active, props.tool.startedAt, props.tool.createdAt])
 
+    // A pending question card stays in the 'running' tool state until its
+    // reply lands, so this counts the elapsed waiting time live — the same
+    // treatment as any running tool. The waiting sentence itself lives in the
+    // open answer area (the question footers), not in the header.
     return <ToolTimingSummary {...getToolTimingDetails(props.tool, now)} />
 }
 
@@ -433,7 +435,8 @@ function ToolCardInner(props: ToolCardProps) {
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
         description: props.block.tool.nativeTitle ?? props.block.tool.description,
-        metadata: props.metadata
+        metadata: props.metadata,
+        pending: props.block.tool.permission?.status === 'pending'
     }, t), [
         props.block.tool.name,
         props.block.tool.input,
@@ -442,6 +445,7 @@ function ToolCardInner(props: ToolCardProps) {
         props.block.tool.nativeTitle,
         props.block.tool.description,
         props.metadata,
+        props.block.tool.permission?.status,
         t
     ])
 
@@ -511,13 +515,13 @@ function ToolCardInner(props: ToolCardProps) {
                         {truncate(subtitle, 160)}
                     </CardDescription>
                 ) : null}
-                <ToolCardTimingSummary tool={props.block.tool} />
             </div>
 
             <div className={cn(
                 'flex shrink-0 items-center gap-2 self-center text-[var(--app-hint)]',
                 subtitle ? '-translate-y-0.5' : null
             )}>
+                <ToolCardTimingSummary tool={props.block.tool} />
                 {subagentModel ? (
                     <span
                         className="inline-block max-w-28 truncate rounded-full bg-[var(--app-subtle-bg)] px-1.5 py-px font-mono text-[10px] leading-tight text-[var(--app-hint)] sm:max-w-40"

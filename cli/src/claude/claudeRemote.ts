@@ -642,8 +642,14 @@ export async function claudeRemote(opts: {
                     : undefined;
             // The result of the manual /compact turn describes the compaction
             // call, not an assistant round: mark it so the log converter skips
-            // tok/s fields for it (everything else flows as before).
-            const isCompactTurnResult = compactState.active !== null && message.type === 'result';
+            // tok/s fields for it (everything else flows as before). The
+            // pending-compaction state alone is not enough — the result
+            // handler below treats only the first result AFTER the compaction
+            // signal as the compact result, so an autonomous round completing
+            // between /compact and the signal must stay unmarked.
+            const isCompactTurnResult = compactState.active !== null
+                && compactState.active.sawCompactSignal === true
+                && message.type === 'result';
             if (!isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }
