@@ -113,9 +113,12 @@ public enum NewSessionLogic {
 
     /// Flavors sharing the codex-style native permission select
     /// (`web/src/lib/codexFamilyPermissionAgents.ts`). Gemini is listed for
-    /// completeness though it is not creatable.
+    /// completeness though it is not creatable. Hermes renders through the
+    /// same select with its own three-mode catalog (default / safe-yolo /
+    /// yolo); without this entry the create form falls back to the legacy
+    /// YOLO toggle and safe-yolo is unreachable at create time.
     public static let codexFamilyPermissionAgents: Set<AgentFlavor> = [
-        .codex, .gemini, .kimi, .copilot, .opencode,
+        .codex, .gemini, .kimi, .copilot, .opencode, .hermes,
     ]
 
     public static func usesCodexFamilyPermissionModes(_ flavor: AgentFlavor) -> Bool {
@@ -136,7 +139,7 @@ public enum NewSessionLogic {
         switch flavor {
         case .claude, .grok: return .bypassPermissions
         case .agy: return .alwaysProceed
-        case .codex, .copilot, .cursor, .gemini, .kimi, .opencode: return .yolo
+        case .codex, .copilot, .cursor, .gemini, .hermes, .kimi, .opencode: return .yolo
         case .dsh, .pi, .other: return nil
         }
     }

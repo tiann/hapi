@@ -386,7 +386,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.transport.registerRequestHandler(method, handler);
     }
 
-    async setMode(sessionId: string, modeId: string): Promise<void> {
+    async setMode(sessionId: string, modeId: string, opts?: { syncThoughtLevel?: boolean }): Promise<void> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
         }
@@ -397,7 +397,12 @@ export class AcpSdkBackend implements AgentBackend {
             try {
                 await this.transport.sendRequest('session/set_mode', { sessionId, modeId });
                 this.setModeSupported = true;
-                this.updateThoughtLevelCurrentValue(sessionId, modeId);
+                // Agents whose set_mode IS the thought-level axis (grok) rely on
+                // this cache sync; agents with a separate edit-approval axis
+                // (hermes) must not have their thought_level option polluted.
+                if (opts?.syncThoughtLevel !== false) {
+                    this.updateThoughtLevelCurrentValue(sessionId, modeId);
+                }
                 return;
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);

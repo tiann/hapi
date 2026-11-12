@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
-import type { DshModelSummary } from '@/types/api'
+import type { DshModelSummary, HermesModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
 export interface DshModelsState {
@@ -66,6 +66,43 @@ export function useDshModelsForSession(args: {
         isLoading: query.isLoading,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load DSH models')
+            : query.error instanceof Error ? query.error.message : null,
+    }
+}
+
+export interface HermesModelsState {
+    availableModels: HermesModelSummary[]
+    currentModelId: string | null
+    isLoading: boolean
+    error: string | null
+}
+
+/** Live Hermes session catalog (ListHermesModels — opaque `provider:model` ids). */
+export function useHermesModelsForSession(args: {
+    api: ApiClient | null
+    sessionId?: string | null
+    enabled?: boolean
+}): HermesModelsState {
+    const enabled = Boolean(args.enabled && args.api && args.sessionId)
+    const query = useQuery({
+        queryKey: args.sessionId
+            ? queryKeys.sessionHermesModels(args.sessionId)
+            : ['session-hermes-models', 'unknown'] as const,
+        queryFn: async () => {
+            if (!args.api || !args.sessionId) throw new Error('Hermes session unavailable')
+            return await args.api.getSessionHermesModels(args.sessionId)
+        },
+        enabled,
+        staleTime: 30_000,
+        retry: false,
+    })
+
+    return {
+        availableModels: query.data?.availableModels ?? [],
+        currentModelId: query.data?.currentModelId ?? null,
+        isLoading: query.isLoading,
+        error: query.data?.success === false
+            ? (query.data.error ?? 'Failed to load Hermes models')
             : query.error instanceof Error ? query.error.message : null,
     }
 }

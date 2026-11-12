@@ -174,6 +174,23 @@ describe('getModelOptionsForFlavor', () => {
         expect(getModelOptionsForFlavor('dsh', '["deepseek-official","deepseek-flash"]', [])).toEqual([])
     })
 
+    it('returns an empty list for hermes flavor before the ACP catalog arrives (no claude fallback)', () => {
+        // Same rail as dsh: without the ListHermesModels catalog the picker
+        // must stay empty — Claude presets would enqueue ids the Hermes
+        // gateway rejects.
+        expect(getModelOptionsForFlavor('hermes', null)).toEqual([])
+        expect(getModelOptionsForFlavor('hermes', 'newapi:glm-5.3', [])).toEqual([])
+    })
+
+    it('keeps the supplied hermes catalog options (the Default entry comes from SessionChat)', () => {
+        const options = getModelOptionsForFlavor('hermes', null, [
+            { value: 'newapi:glm-5.3', label: 'GLM 5.3' }
+        ])
+        expect(options).toEqual([
+            { value: 'newapi:glm-5.3', label: 'GLM 5.3' }
+        ])
+    })
+
     it('keeps the supplied dsh catalog options including the Default reset entry', () => {
         const options = getModelOptionsForFlavor('dsh', null, [
             { value: null, label: 'Default' },
@@ -381,6 +398,11 @@ describe('getNextModelForFlavor', () => {
     it('returns null for opencode without a current model and without dynamic options (no Claude fallback)', () => {
         const next = getNextModelForFlavor('opencode', null, [])
         expect(next).toBeNull()
+    })
+
+    it('keeps the current hermes model when the ACP catalog has not loaded (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3')).toBe('newapi:glm-5.3')
+        expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3', [])).toBe('newapi:glm-5.3')
     })
 
     it('keeps the current dsh model when the ACP catalog has not loaded (no Claude fallback)', () => {

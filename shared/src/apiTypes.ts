@@ -1063,6 +1063,24 @@ export type DshModelsResponse = {
 }
 export type ListDshModelsResponse = DshModelsResponse
 
+export type HermesModelSummary = {
+    modelId: string
+    name?: string
+}
+
+/**
+ * Hermes model discovery. Model ids are opaque ACP config-option values —
+ * for the Hermes gateway they are `provider:model` strings — and must be
+ * sent back verbatim when switching.
+ */
+export type HermesModelsResponse = {
+    success: boolean
+    availableModels?: HermesModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+export type ListHermesModelsResponse = HermesModelsResponse
+
 export type GrokReasoningEffortOption = {
     value: string
     name?: string

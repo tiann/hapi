@@ -778,7 +778,7 @@ describe('machines routes', () => {
         app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
         app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
 
-        for (const agent of ['agy', 'dsh']) {
+        for (const agent of ['agy', 'dsh', 'hermes']) {
             for (const startingMode of ['local', 'pty']) {
                 const response = await app.request('/api/machines/machine-1/spawn', {
                     method: 'POST',

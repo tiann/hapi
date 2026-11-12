@@ -115,6 +115,22 @@ describe('agent executable resolution', () => {
         })).toEqual({ agent: 'dsh', available: true })
     })
 
+    it('rejects malformed Hermes static configuration', async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'hapi-agent-path-'))
+        await makeExecutable(directory, 'hermes')
+        expect(getAgentAvailability('hermes', {
+            PATH: directory,
+            HAPI_HERMES_ACP_ARGS_JSON: 'not json',
+        }).reason).toBe('invalid_configuration')
+        expect(getAgentAvailability('hermes', {
+            PATH: directory,
+        })).toEqual({ agent: 'hermes', available: true })
+        expect(getAgentAvailability('hermes', {
+            PATH: directory,
+            HAPI_HERMES_ACP_COMMAND: join(directory, 'hermes'),
+        })).toEqual({ agent: 'hermes', available: true })
+    })
+
     it('accepts a macOS Codex app executable when the CLI is absent', async () => {
         const directory = await mkdtemp(join(tmpdir(), 'hapi-agent-path-'))
         const appCommand = join(directory, 'Codex.app', 'Contents', 'Resources', 'codex')

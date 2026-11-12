@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -36,6 +36,12 @@ export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 
 export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
+
+// Hermes has no read-only equivalent — its ACP mode axis is edit-approval only
+// (default / accept_edits / dont_ask) — so the conservative read-only mode is
+// intentionally not offered.
+export const HERMES_PERMISSION_MODES = ['default', 'safe-yolo', 'yolo'] as const
+export type HermesPermissionMode = typeof HERMES_PERMISSION_MODES[number]
 
 export const COPILOT_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
@@ -141,6 +147,12 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     }
     if (flavor === 'dsh') {
         return []
+    }
+    if (flavor === 'hermes') {
+        // Hermes's ACP mode axis only covers edit approval; dangerous-command
+        // approvals always surface as session/request_permission, which HAPI's
+        // permission bridge auto-approves per the selected mode.
+        return HERMES_PERMISSION_MODES
     }
     if (flavor === 'copilot') {
         return COPILOT_PERMISSION_MODES
