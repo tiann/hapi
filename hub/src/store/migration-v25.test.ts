@@ -50,7 +50,7 @@ describe('schema migration v25 to v31', () => {
         const columns = internalDb.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
         const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
         expect(columns.some((column) => column.name === 'position')).toBe(true)
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
         migrated.close()
     })
 
@@ -91,7 +91,7 @@ describe('schema migration v25 to v31', () => {
         ).get() as { name: string } | null
         expect(columns.some((column) => column.name === 'position')).toBe(true)
         expect(positionIndex?.name).toBe('idx_session_scratchlist_session_position')
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
         migrated.close()
     })
 
@@ -131,7 +131,7 @@ describe('schema migration v25 to v31', () => {
         ).get() as { name: string } | null
         expect(columns.some((column) => column.name === 'position')).toBe(true)
         expect(positionIndex?.name).toBe('idx_session_scratchlist_session_position')
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
         migrated.close()
     })
 
@@ -162,7 +162,7 @@ describe('schema migration v25 to v31', () => {
             ORDER BY seq ASC
         `).all('session-id') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
         expect(plan.some((row) => row.detail.includes('idx_messages_immediate_queued'))).toBe(true)
         migrated.close()
     })
