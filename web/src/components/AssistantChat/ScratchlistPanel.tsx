@@ -31,7 +31,7 @@ import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
-import { CheckIcon, CopyIcon, PlusIcon, ScheduleIcon } from '@/components/icons'
+import { CheckIcon, CopyIcon, PaperclipIcon, ScheduleIcon } from '@/components/icons'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ScheduleTimePicker, type PendingSchedule } from './ScheduleTimePicker'
 import {
@@ -395,7 +395,7 @@ function ScratchlistActionMenu({
                     }}
                     disabled={disabled || actionPending}
                 >
-                    <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><PlusIcon className="h-[18px] w-[18px]" /></span>
+                    <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><PaperclipIcon className="h-[18px] w-[18px]" /></span>
                     <span>{t('scratchlist.action.insertAttachments')}</span>
                 </button>
             ) : null}
