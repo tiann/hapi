@@ -420,11 +420,13 @@ export class Store {
                 // Backfill any *missing* tables (sessions, machines, ...) that
                 // a partially-built legacy DB may not have yet.
                 this.createSchema()
+                this.ensureUsageScanParserVersion()
                 this.setUserVersion(SCHEMA_VERSION)
                 return
             }
 
             this.createSchema()
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -441,7 +443,9 @@ export class Store {
             this.migrateFromV30ToV31()
             this.migrateFromV31ToV32()
             this.migrateFromV32ToV33()
+            this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -451,6 +455,7 @@ export class Store {
                 if (!step) throw this.buildSchemaMismatchError(currentVersion)
                 step()
             }
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -460,6 +465,7 @@ export class Store {
         }
 
         this.assertRequiredTablesPresent()
+        this.ensureUsageScanParserVersion()
     }
 
     private createSchema(): void {
@@ -660,6 +666,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
@@ -1055,6 +1062,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_events;
@@ -1074,6 +1082,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_scan_state;
@@ -1370,6 +1379,15 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
                 ON session_redirects(namespace, new_id);
         `)
+    }
+
+    private ensureUsageScanParserVersion(): void {
+        const columns = this.db.prepare('PRAGMA table_info(usage_scan_state)').all() as Array<{ name: string }>
+        if (columns.length === 0) return
+        if (!columns.some((col) => col.name === 'parser_version')) {
+            this.db.exec('ALTER TABLE usage_scan_state ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 2')
+            this.db.exec('DELETE FROM usage_scan_state')
+        }
     }
 
     private getUserVersion(): number {
