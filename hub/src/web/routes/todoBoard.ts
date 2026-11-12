@@ -668,7 +668,7 @@ function toBoardItemComments(response: GhItemCommentsResponse): BoardItemComment
 const ISSUE_TEMPLATE_DIR_QUERY = `
 query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
-    isPrivate
+    visibility
     issueTemplateDir: object(expression: "HEAD:.github/ISSUE_TEMPLATE") {
       ... on Tree {
         entries {
@@ -680,10 +680,12 @@ query($owner: String!, $repo: String!) {
   }
 }`
 
+type GhRepositoryVisibility = 'PUBLIC' | 'PRIVATE' | 'INTERNAL'
+
 type GhIssueTemplateDirResponse = {
     data?: {
         repository?: {
-            isPrivate?: boolean | null
+            visibility?: GhRepositoryVisibility | null
             issueTemplateDir?: {
                 entries?: Array<{ name: string; object?: { text?: string | null } | null } | null>
             } | null
@@ -717,15 +719,22 @@ function repoHasNoIssueTemplateDir(response: GhIssueTemplateDirResponse): boolea
 }
 
 // GitHub only inherits default community files (issue templates, config.yml)
-// from an owner's `.github` repo when that repo is PUBLIC — a private
-// `.github` repo never contributes defaults to other repos, even ones the
-// same owner controls (review finding: the hub's gh account can often read
-// an org's private `.github` repo, which must not leak its templates/
-// blank-issues policy into a board whose own repo has none). Fail closed:
-// if visibility can't be determined, treat it as ineligible rather than
-// risk inheriting from a repo GitHub itself wouldn't use as a fallback.
+// from an owner's `.github` repo when that repo is eligible: PUBLIC always
+// is; PRIVATE never is, even for repos the same owner controls (review
+// finding: the hub's gh account can often read an org's private `.github`
+// repo, which must not leak its templates/blank-issues policy into a board
+// whose own repo has none). INTERNAL is also eligible — GitHub's own
+// default-community-files docs require it for GitHub Enterprise Managed
+// User organizations, whose repos are internal rather than public by
+// policy (review finding, second pass: an earlier `isPrivate` boolean check
+// rejected this case too, since GraphQL's `isPrivate` is true for both
+// private AND internal repos — `visibility` is the field that actually
+// distinguishes them). Fail closed: if visibility can't be determined,
+// treat it as ineligible rather than risk inheriting from a repo GitHub
+// itself wouldn't use as a fallback.
 function isEligibleIssueTemplateFallback(response: GhIssueTemplateDirResponse): boolean {
-    return response.data?.repository?.isPrivate === false
+    const visibility = response.data?.repository?.visibility
+    return visibility === 'PUBLIC' || visibility === 'INTERNAL'
 }
 
 function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; blankIssuesEnabled: boolean } {

@@ -1764,7 +1764,7 @@ body:
                     return {
                         data: {
                             repository: {
-                                isPrivate: false,
+                                visibility: 'PUBLIC',
                                 issueTemplateDir: {
                                     entries: [
                                         { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
@@ -1801,7 +1801,7 @@ body:
                     return {
                         data: {
                             repository: {
-                                isPrivate: true,
+                                visibility: 'PRIVATE',
                                 issueTemplateDir: {
                                     entries: [
                                         { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
@@ -1820,6 +1820,43 @@ body:
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
         expect(body.blankAllowed).toBe(true)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // Review finding (second pass): isPrivate is true for BOTH private and
+    // internal repos, so the first fix also wrongly rejected a managed-user
+    // organization's internal .github repo — GitHub's own default-community-
+    // files docs require inheriting from it for those orgs. visibility is
+    // the field that actually distinguishes PRIVATE from INTERNAL.
+    it('inherits from an internal .github repo (GitHub Enterprise Managed User org)', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'INTERNAL',
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
+        expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
