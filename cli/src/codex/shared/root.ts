@@ -81,7 +81,7 @@ export class SharedCodexRoot {
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
     private ready!: () => void;
-    private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
+    private readonly bound = new Promise<void>(resolve => { this.ready = resolve });
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
@@ -273,7 +273,8 @@ export class SharedCodexRoot {
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projectHistory(this.projection, response.thread);
         await this.refresh();
-        await this.refreshChildren(true);    }
+        await this.refreshChildren(true);
+    }
     async activate(options: SharedLaunchOptions = {}, beforeReady?: () => Promise<void>): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
         await this.initialSettings(options);
@@ -338,7 +339,6 @@ export class SharedCodexRoot {
         // projection must not compete with history hydration and the Hub RPC
         // registration barrier. The snapshot restores history before ready;
         // buffered live events resume afterwards with stable message IDs.
-        await this.bound;
         if (this.stopping) return;
         if (!this.threadId || this.closed) return;
         const p = record(params);
@@ -381,7 +381,12 @@ export class SharedCodexRoot {
         if (method === 'thread/queue/changed') {
             for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
         }
-        await this.projection.notification(method, params, modelAtReceipt, receivedAt); this.publishCompaction(); this.alive();
+        // Message-bearing replay can arrive while the cold-resume history is still
+        // being hydrated. Defer only those projections until the startup barrier,
+        // while keeping turn state updates available to pre-activation refreshes.
+        if (method === 'item/completed' && !this.heartbeat) await this.bound;
+        await this.projection.notification(method, params, modelAtReceipt, receivedAt);
+        this.publishCompaction(); this.alive();
     }
     private lazyHistory(): boolean {
         return !!this.threadId && (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '')
