@@ -470,6 +470,21 @@ describe('sessions routes', () => {
         })
     })
 
+    it('no longer serves Berry session model lists (runtime rail retired)', async () => {
+        // Berry exposes no ACP config-option or model-list face (its only
+        // model lever is the spawn-time BERRY_AGENT_MODEL env owned by the
+        // CLI agent), so the berry-models route was removed outright: any
+        // caller — berry sessions included — now gets a plain 404 instead of
+        // an RPC round-trip to a permanently dead handler.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'berry' }
+        })
+        const { app } = createApp(session, {})
+
+        const response = await app.request('/api/sessions/session-1/berry-models')
+        expect(response.status).toBe(404)
+    })
+
     it('serves Pi session model lists through the engine cache wrapper', async () => {
         const session = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }

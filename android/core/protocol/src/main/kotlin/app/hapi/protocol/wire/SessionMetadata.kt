@@ -46,6 +46,8 @@ data class SessionMetadata(
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
     val dshSessionId: String? = null,
+    // Berry Agent:自有 SQLite 会话存储的持久 id,resume 句柄(MetadataSchema)。
+    val berrySessionId: String? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */

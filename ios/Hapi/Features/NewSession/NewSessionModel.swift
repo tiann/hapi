@@ -463,6 +463,10 @@ final class NewSessionModel {
             let cwd = normalizedDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cwd.isEmpty, directoryExists == true, !directoryOutsideWorkspaceRoots else { return nil }
             return AgentModelsRequest(flavor: form.agent, machineId: machineId, cwd: cwd)
+        case .session:
+            // Session-only catalogs need the running agent;
+            // the create form stays on the Default sentinel.
+            return nil
         }
     }
 

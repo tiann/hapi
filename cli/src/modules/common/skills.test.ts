@@ -21,6 +21,7 @@ describe('listSkills', () => {
     const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
     const originalCodexHome = process.env.CODEX_HOME
     const originalDshHome = process.env.DSH_HOME
+    const originalBerryDataDir = process.env.BERRY_AGENT_DATA_DIR
     let sandboxDir: string
     let homeDir: string
 
@@ -31,6 +32,7 @@ describe('listSkills', () => {
         delete process.env.CLAUDE_CONFIG_DIR
         delete process.env.CODEX_HOME
         delete process.env.DSH_HOME
+        delete process.env.BERRY_AGENT_DATA_DIR
         await mkdir(homeDir, { recursive: true })
     })
 
@@ -57,6 +59,12 @@ describe('listSkills', () => {
             delete process.env.DSH_HOME
         } else {
             process.env.DSH_HOME = originalDshHome
+        }
+
+        if (originalBerryDataDir === undefined) {
+            delete process.env.BERRY_AGENT_DATA_DIR
+        } else {
+            process.env.BERRY_AGENT_DATA_DIR = originalBerryDataDir
         }
 
         await rm(sandboxDir, { recursive: true, force: true })
@@ -165,6 +173,44 @@ describe('listSkills', () => {
         const skills = await listSkills(undefined, { flavor: 'dsh' })
 
         expect(skills.map((skill) => skill.name)).toEqual(['custom-dsh', 'shared'])
+    })
+
+    it('lists Berry user skills from the interactive profile by default', async () => {
+        await writeSkill(join(homeDir, '.agents', 'skills', 'shared'), 'shared', 'Shared skill')
+        await writeSkill(join(homeDir, '.berry-agent', 'skills', 'berry-user'), 'berry-user', 'Berry user skill')
+
+        const skills = await listSkills(undefined, { flavor: 'berry' })
+
+        expect(skills.map((skill) => skill.name)).toEqual(['berry-user', 'shared'])
+    })
+
+    it('uses a configured BERRY_AGENT_DATA_DIR for Berry user skills', async () => {
+        const dataDir = join(sandboxDir, 'custom-berry-data')
+        process.env.BERRY_AGENT_DATA_DIR = dataDir
+        await writeSkill(join(homeDir, '.berry-agent', 'skills', 'interactive'), 'interactive', 'Interactive skill')
+        await writeSkill(join(dataDir, 'skills', 'pinned'), 'pinned', 'Pinned skill')
+
+        const skills = await listSkills(undefined, { flavor: 'berry' })
+
+        expect(skills.map((skill) => skill.name)).toEqual(['pinned'])
+    })
+
+    it('lists Berry skills from the session data dir when provided, ahead of the interactive profile', async () => {
+        // HAPI spawns berry children with an isolated BERRY_AGENT_DATA_DIR
+        // (<hapiHome>/berry-data/<rowId>), and berry's user-skills layer is
+        // <dataDir>/skills — so the session-scoped dir must win over both
+        // the interactive ~/.berry-agent (which drifts after the
+        // copy-on-create seed) and this process's own env. The listing
+        // then mirrors exactly what that session's agent can load.
+        const dataDir = join(sandboxDir, 'berry-data', 'row-1')
+        process.env.BERRY_AGENT_DATA_DIR = join(sandboxDir, 'machine-wide-berry')
+        await writeSkill(join(homeDir, '.berry-agent', 'skills', 'interactive-only'), 'interactive-only', 'Interactive skill')
+        await writeSkill(join(sandboxDir, 'machine-wide-berry', 'skills', 'machine-wide'), 'machine-wide', 'Machine-wide skill')
+        await writeSkill(join(dataDir, 'skills', 'isolated'), 'isolated', 'Isolated skill')
+
+        const skills = await listSkills(undefined, { flavor: 'berry', berryDataDir: dataDir })
+
+        expect(skills.map((skill) => skill.name)).toEqual(['isolated'])
     })
 
     it('scopes user skills to the requested flavor', async () => {
@@ -422,6 +468,21 @@ describe('listSkills', () => {
             description: 'DSH user skill',
             body: '# dsh-user'
         })
+    })
+
+    it('resolves a Berry skill body from the session data dir', async () => {
+        const dataDir = join(sandboxDir, 'berry-data', 'row-1')
+        await writeSkill(join(dataDir, 'skills', 'isolated'), 'isolated', 'Isolated skill')
+        await writeSkill(join(homeDir, '.berry-agent', 'skills', 'drifted'), 'drifted', 'Drifted interactive skill')
+
+        await expect(resolveSkill('isolated', undefined, { flavor: 'berry', berryDataDir: dataDir })).resolves.toEqual({
+            name: 'isolated',
+            description: 'Isolated skill',
+            body: '# isolated'
+        })
+        // The interactive profile is not consulted once the session dir is
+        // known: its skills are not loadable by the isolated agent.
+        await expect(resolveSkill('drifted', undefined, { flavor: 'berry', berryDataDir: dataDir })).resolves.toBeNull()
     })
 
     it('returns null for an unknown exact skill name', async () => {

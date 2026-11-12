@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { AgentBackend, PermissionRequest } from '@/agent/types'
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { PermissionMode } from '@hapi/protocol/types'
@@ -142,6 +143,49 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         auto.request(commandRequest)
     })
 
+    it('fails read-only closed for requests whose only identity is a human summary title', async () => {
+        // Berry-style request: no kind, no rawInput — the title is prose like
+        // 'Run command'. The real bridge must surface it to the user instead
+        // of auto-approving: the write-hint heuristic cannot classify a
+        // summary, and approving would let a shell write (e.g. `touch file`)
+        // run while HAPI advertises read-only.
+        const { backend, request } = setup('read-only', { sessionScopedPermissionGrants: true })
+        request({
+            id: 'perm-ro-1',
+            sessionId: 'acp-1',
+            toolCallId: 'APPROVAL-xyz',
+            title: 'Run command',
+            options: [
+                { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        } as PermissionRequest)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(backend.respondToPermission).not.toHaveBeenCalled()
+    })
+
+    it('never auto-approves an unclassifiable request from title keywords alone', async () => {
+        // Regression: the title-keyword auto-approve path used to run
+        // before the unclassifiable guard, so a berry-style request (no
+        // kind, no rawInput) whose human summary happened to contain an
+        // auto-approve keyword ('think', 'hapi_change_title', 'list peer
+        // sessions') was approved in every mode. The summary is prose, not
+        // a tool classification — the request must surface to the user.
+        const { backend, request } = setup('default', { sessionScopedPermissionGrants: true })
+        request({
+            id: 'perm-kw-1',
+            sessionId: 'acp-1',
+            toolCallId: 'APPROVAL-abc',
+            title: 'Think about saving memory of the hapi_change_title step',
+            options: [
+                { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        } as PermissionRequest)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(backend.respondToPermission).not.toHaveBeenCalled()
+    })
+
     it('never auto-answers a request the agent marks as needing the user', () => {
         const { backend, client, request } = setup('always-proceed', { requiresUser: () => true })
 
@@ -208,5 +252,147 @@ describe('AcpPermissionHandler questions for the user', () => {
 
         await expect(handler.cancelAll('Antigravity stopped')).rejects.toThrow('agy is gone')
         await expect(open).resolves.toEqual({ decision: 'abort' })
+    })
+})
+
+describe('AcpPermissionHandler session-scoped grants', () => {
+    type RegisteredHandler = (params: unknown) => Promise<void>
+
+    function createHarness() {
+        const registered = new Map<string, RegisteredHandler>()
+        const client = {
+            rpcHandlerManager: {
+                registerHandler: vi.fn((method: string, handler: RegisteredHandler) => {
+                    registered.set(method, handler)
+                })
+            },
+            updateAgentState: vi.fn((fn: (state: unknown) => unknown) => fn({}))
+        }
+        const backend = {
+            onPermissionRequest: vi.fn(),
+            respondToPermission: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {})
+        }
+        return { client, backend, registered }
+    }
+
+    async function permissionRpcRespond(harness: ReturnType<typeof createHarness>, payload: unknown): Promise<void> {
+        const handler = harness.registered.get(RPC_METHODS.Permission)
+        if (!handler) throw new Error('permission RPC handler was not registered')
+        await handler(payload)
+    }
+
+    function berryRequest(): PermissionRequest {
+        return {
+            sessionId: 'berry-session-1',
+            id: 'acp-req-1',
+            toolCallId: 'call-1',
+            kind: 'other',
+            title: 'Run command',
+            options: [
+                { optionId: 'opt-always', kind: 'allow_always', name: 'Always allow' },
+                { optionId: 'opt-once', kind: 'allow_once', name: 'Allow once' },
+                { optionId: 'opt-reject', kind: 'reject_once', name: 'Reject' }
+            ]
+        }
+    }
+
+    async function answerSessionGrant(harness: ReturnType<typeof createHarness>) {
+        const request = berryRequest()
+        ;(harness.backend.onPermissionRequest as unknown as { mock: { calls: Array<[cb: (r: unknown) => void]> } })
+            .mock.calls[0][0](request)
+        await permissionRpcRespond(harness, {
+            id: request.id,
+            approved: true,
+            decision: 'approved_for_session'
+        })
+        return request
+    }
+
+    it('maps approved_for_session to allow_always by default', async () => {
+        const harness = createHarness()
+        const handler = new AcpPermissionHandler(
+            harness.client as unknown as ApiSessionClient,
+            harness.backend as unknown as AgentBackend,
+            () => undefined
+        )
+        const request = await answerSessionGrant(harness)
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'berry-session-1',
+            request,
+            { outcome: 'selected', optionId: 'opt-always' }
+        )
+    })
+
+    it('maps approved_for_session to allow_once when sessionScopedPermissionGrants is set', async () => {
+        // Berry persists allow_always answers STICKILY in tool-policy.json —
+        // they outlive the session. A HAPI "allow for session" pick must
+        // therefore map to allow_once for berry backends.
+        const harness = createHarness()
+        const handler = new AcpPermissionHandler(
+            harness.client as unknown as ApiSessionClient,
+            harness.backend as unknown as AgentBackend,
+            () => undefined,
+            { sessionScopedPermissionGrants: true }
+        )
+        const request = await answerSessionGrant(harness)
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'berry-session-1',
+            request,
+            { outcome: 'selected', optionId: 'opt-once' }
+        )
+    })
+
+    it('falls back to allow_always in session-scoped mode when allow_once is absent', async () => {
+        const harness = createHarness()
+        const handler = new AcpPermissionHandler(
+            harness.client as unknown as ApiSessionClient,
+            harness.backend as unknown as AgentBackend,
+            () => undefined,
+            { sessionScopedPermissionGrants: true }
+        )
+        const request = berryRequest()
+        request.options = request.options.filter((option) => option.kind !== 'allow_once')
+        ;(harness.backend.onPermissionRequest as unknown as { mock: { calls: Array<[cb: (r: unknown) => void]> } })
+            .mock.calls[0][0](request)
+        await permissionRpcRespond(harness, {
+            id: request.id,
+            approved: true,
+            decision: 'approved_for_session'
+        })
+
+        expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+            'berry-session-1',
+            request,
+            { outcome: 'selected', optionId: 'opt-always' }
+        )
+    })
+
+    it('keeps plain approvals preferring allow_once in both modes', async () => {
+        for (const options of [undefined, { sessionScopedPermissionGrants: true }] as const) {
+            const harness = createHarness()
+            const handler = new AcpPermissionHandler(
+                harness.client as unknown as ApiSessionClient,
+                harness.backend as unknown as AgentBackend,
+                () => undefined,
+                options
+            )
+            const request = berryRequest()
+            ;(harness.backend.onPermissionRequest as unknown as { mock: { calls: Array<[cb: (r: unknown) => void]> } })
+                .mock.calls[0][0](request)
+            await permissionRpcRespond(harness, {
+                id: request.id,
+                approved: true,
+                decision: 'approved'
+            })
+
+            expect(harness.backend.respondToPermission).toHaveBeenCalledWith(
+                'berry-session-1',
+                request,
+                { outcome: 'selected', optionId: 'opt-once' }
+            )
+        }
     })
 })

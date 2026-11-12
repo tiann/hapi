@@ -2336,6 +2336,13 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? agyModelOptions
                                             : agentFlavor === 'dsh'
                                                 ? dshModelOptions
+                                        // Berry intentionally has no runtime
+                                        // model options (no ACP config-option
+                                        // face; spawn-time BERRY_AGENT_MODEL is
+                                        // the only lever), so it falls through
+                                        // to claudeModelOptions, which is
+                                        // undefined for berry and keeps the
+                                        // composer's model picker hidden.
                                         // Pi gets its provider-qualified model list from the piModels prop;
                                         // feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,

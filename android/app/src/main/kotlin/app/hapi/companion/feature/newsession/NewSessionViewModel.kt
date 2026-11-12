@@ -938,6 +938,8 @@ class NewSessionViewModel(
         // null (not probed/omitted/failed) keeps the option fully available.
         val grokAutoUnavailable = agent == "grok" && catalogs.grokAutoSupported == false
         val permission: PermissionUi = when {
+            // 仅 pi/dsh 权限由 agent 自管;berry 走 YOLO 开关
+            // (映射原生 yolo 模式,对齐 iOS NewSessionForm 同款路由)。
             agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
                 PermissionModes.forFlavor(agent).map { mode ->
@@ -1014,7 +1016,9 @@ class NewSessionViewModel(
         fun hapiYoloNativeMode(flavor: String?): PermissionMode? = when (flavor) {
             "claude", "grok" -> PermissionMode.BypassPermissions
             "agy" -> PermissionMode.AlwaysProceed
-            "codex", "copilot", "cursor", "gemini", "kimi", "opencode" -> PermissionMode.Yolo
+            // berry:YOLO 开关映射到原生 yolo 模式(对齐 shared/iOS);
+            // dsh/pi 权限由 agent 自管,无映射。
+            "codex", "copilot", "cursor", "gemini", "berry", "kimi", "opencode" -> PermissionMode.Yolo
             else -> null
         }
 

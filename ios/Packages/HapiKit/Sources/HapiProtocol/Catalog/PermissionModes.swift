@@ -93,6 +93,12 @@ extension AgentFlavor {
             return [.default, .readOnly, .autoReview, .yolo]
         case .gemini, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
+        case .berry:
+            // Berry has no agent-side mode RPC (no session/set_mode); the
+            // HAPI permission bridge is the only enforcement, deciding every
+            // request_permission by the live mode, so the full four-mode set
+            // is offered.
+            return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]
         case .opencode:

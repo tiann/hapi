@@ -154,13 +154,14 @@ struct CatalogTests {
 
     @Test func knownFlavorsMatchAgentFlavorsOrder() {
         #expect(AgentFlavor.knownFlavors.map(\.rawValue) == [
-            "agy", "claude", "codex", "dsh", "copilot", "cursor",
+            "agy", "berry", "claude", "codex", "dsh", "copilot", "cursor",
             "gemini", "grok", "kimi", "opencode", "pi",
         ])
     }
 
     @Test func creatableFlavorsExcludeOnlyGemini() {
-        #expect(AgentFlavor.creatableFlavors.count == 10)
+        #expect(AgentFlavor.knownFlavors.count == 12)
+        #expect(AgentFlavor.creatableFlavors.count == 11)
         #expect(!AgentFlavor.creatableFlavors.contains(.gemini))
         #expect(AgentFlavor.creatableFlavors.contains(.claude))
     }
@@ -198,10 +199,13 @@ struct CatalogTests {
     }
 
     @Test func modelChangeIsSupportedByEveryModelConfigFlavor() {
-        for flavor in AgentFlavor.knownFlavors where flavor != .dsh {
+        // Berry is pinned off like dsh: its only model lever is the
+        // spawn-time BERRY_AGENT_MODEL env (no runtime switching surface).
+        for flavor in AgentFlavor.knownFlavors where flavor != .dsh && flavor != .berry {
             #expect(flavor.supportsModelChange, "\(flavor.rawValue) should support model change")
         }
         #expect(!AgentFlavor.dsh.supportsModelChange)
+        #expect(!AgentFlavor.berry.supportsModelChange)
         #expect(!AgentFlavor.other("x").supportsModelChange)
         #expect(!supportsModelChange(forFlavor: nil))
     }

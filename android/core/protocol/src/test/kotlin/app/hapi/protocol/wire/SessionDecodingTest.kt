@@ -120,6 +120,33 @@ class SessionDecodingTest {
     }
 
     @Test
+    fun `decodes per-flavor agent session ids including dsh and berry`() {
+        // 每个 flavor 的 resume 句柄字段(MetadataSchema)都必须能从 wire
+        // 解码——漏建模的字段会被静默丢弃,下游 resume 投影就恒为 null
+        // (dsh 在旧版 Android 包上的归档会话无重开即此因)。
+        val session = HapiJson.decodeFromString(
+            Session.serializer(),
+            """
+            {
+              "id": "sess-ids", "namespace": "default", "seq": 1,
+              "createdAt": 1755000000000, "updatedAt": 1755000000000,
+              "active": false,
+              "metadataVersion": 2, "agentStateVersion": 0,
+              "thinking": false, "thinkingAt": 0,
+              "metadata": {
+                "path": "/repo", "host": "h", "flavor": "berry",
+                "dshSessionId": "dsh-1", "berrySessionId": "berry-1"
+              }
+            }
+            """
+        )
+        val metadata = assertNotNull(session.metadata)
+        assertEquals("dsh-1", metadata.dshSessionId)
+        assertEquals("berry-1", metadata.berrySessionId)
+        assertEquals("berry-1", SummaryPatching.toSessionSummaryMetadata(metadata)?.agentSessionId)
+    }
+
+    @Test
     fun `decodes a sessions list response`() {
         val response = HapiJson.decodeFromString(
             SessionsResponse.serializer(),

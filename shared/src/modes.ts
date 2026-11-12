@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'berry', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -36,6 +36,16 @@ export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 
 export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
+
+// Berry has NO agent-side mode RPC (no session/set_mode — berry-agent does
+// not implement it): the HAPI permission bridge is the only enforcement,
+// deciding every session/request_permission by the live mode (read-only
+// denies writes via the classifier, yolo auto-approves). Berry also has no
+// session/resume — its restore path is session/load (agentCapabilities.
+// loadSession). All four modes are offered because the bridge, not the
+// agent, realizes read-only.
+export const BERRY_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+export type BerryPermissionMode = typeof BERRY_PERMISSION_MODES[number]
 
 export const COPILOT_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
@@ -141,6 +151,13 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     }
     if (flavor === 'dsh') {
         return []
+    }
+    if (flavor === 'berry') {
+        // Berry has no agent-side mode RPC (no session/set_mode): nothing is
+        // pushed to the agent. The HAPI permission bridge is the only
+        // enforcement — read-only turns are still sent and writes are denied
+        // by the classifier, yolo auto-approves.
+        return BERRY_PERMISSION_MODES
     }
     if (flavor === 'copilot') {
         return COPILOT_PERMISSION_MODES

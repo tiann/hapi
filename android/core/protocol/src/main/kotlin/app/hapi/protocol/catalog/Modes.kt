@@ -69,6 +69,16 @@ object PermissionModes {
         PermissionMode.SafeYolo, PermissionMode.Yolo,
     )
 
+    // `BERRY_PERMISSION_MODES`:Berry 没有代理侧模式 RPC(无
+    // session/set_mode——berry-agent 未实现);HAPI 权限桥是唯一执行层,
+    // 按活态模式裁决每条 session/request_permission(read-only 由分类器
+    // 拒绝写请求,yolo 自动放行)。四种模式全提供,因为实现 read-only 的
+    // 是桥而非代理(shared/src/modes.ts)。
+    val BERRY = listOf(
+        PermissionMode.Default, PermissionMode.ReadOnly,
+        PermissionMode.SafeYolo, PermissionMode.Yolo,
+    )
+
     /** `GROK_PERMISSION_MODES`. */
     val GROK = listOf(
         PermissionMode.Default, PermissionMode.Auto,
@@ -97,6 +107,7 @@ object PermissionModes {
         "grok" -> GROK
         "opencode" -> OPENCODE
         "dsh" -> emptyList()
+        "berry" -> BERRY
         "agy" -> AGY
         "cursor" -> CURSOR
         "pi" -> emptyList()

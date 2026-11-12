@@ -92,6 +92,12 @@ describe.each([
                 if (!emitPermission) throw new Error('Permission listener not registered')
                 emitPermission({
                     id, sessionId: 'repro', toolCallId: id, title: autoApprove ? 'hapi_change_title' : 'Write', rawInput, rawOutput,
+                    // The ACP bridge fails closed on requests whose only
+                    // identity is the title (berry summaries), so the
+                    // auto-approval case models a backend-correlated
+                    // request: kind carries machine-readable identity and
+                    // the title still derives the tool name.
+                    kind: autoApprove ? 'other' : undefined,
                     options: [
                         { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
                         { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' }

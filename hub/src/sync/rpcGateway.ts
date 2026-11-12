@@ -578,6 +578,7 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListDshModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListDshModelsResponse
     }
 
+
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListGrokReasoningEffortOptions, {}) as RpcListGrokReasoningEffortOptionsResponse
     }

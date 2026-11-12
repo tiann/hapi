@@ -3722,6 +3722,9 @@ export class SyncEngine {
         // `session/resume` method. Never fall through to a stale cross-flavor id.
         if (flavor === 'dsh') return metadata.dshSessionId ?? null
 
+        // Berry persists sessions in its own SQLite store; same resume shape.
+        if (flavor === 'berry') return metadata.berrySessionId ?? null
+
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
 
@@ -4281,7 +4284,7 @@ export class SyncEngine {
             namespace,
             {
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'berry') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {

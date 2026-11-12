@@ -9,6 +9,7 @@ import Foundation
 /// Claude permission-mode fallback).
 public enum AgentFlavor: Equatable, Hashable, Sendable {
     case agy
+    case berry
     case claude
     case codex
     case dsh
@@ -23,7 +24,7 @@ public enum AgentFlavor: Equatable, Hashable, Sendable {
 
     /// Order matches `AGENT_FLAVORS`.
     public static let knownFlavors: [AgentFlavor] = [
-        .agy, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .kimi, .opencode, .pi,
+        .agy, .berry, .claude, .codex, .dsh, .copilot, .cursor, .gemini, .grok, .kimi, .opencode, .pi,
     ]
 
     /// Flavors offered when creating a new session (`CREATABLE_AGENT_FLAVORS`).
@@ -41,6 +42,7 @@ extension AgentFlavor: RawRepresentable {
     public init(rawValue: String) {
         switch rawValue {
         case "agy": self = .agy
+        case "berry": self = .berry
         case "claude": self = .claude
         case "codex": self = .codex
         case "dsh": self = .dsh
@@ -58,6 +60,7 @@ extension AgentFlavor: RawRepresentable {
     public var rawValue: String {
         switch self {
         case .agy: return "agy"
+        case .berry: return "berry"
         case .claude: return "claude"
         case .codex: return "codex"
         case .dsh: return "dsh"
@@ -92,6 +95,7 @@ extension AgentFlavor {
     public var displayLabel: String {
         switch self {
         case .agy: return "Antigravity"
+        case .berry: return "Berry Agent"
         case .claude: return "Claude"
         case .codex: return "Codex"
         case .dsh: return "DeepSeek Harness"
@@ -110,7 +114,7 @@ extension AgentFlavor {
     /// model selection and unknown flavors.
     public var supportsModelChange: Bool {
         switch self {
-        case .dsh, .other: return false
+        case .dsh, .berry, .other: return false
         default: return true
         }
     }

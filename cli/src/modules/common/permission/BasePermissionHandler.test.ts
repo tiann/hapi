@@ -56,6 +56,48 @@ describe('resolveToolAutoApprovalDecision ping_peer', () => {
         expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
     })
 
+    it('fails read-only closed for unclassifiable requests (title-only identity)', () => {
+        // Berry-style request: no kind, no rawInput — the title is a human
+        // summary like 'Run command', which the write-hint heuristic cannot
+        // classify. Auto-approving it would let a shell write (e.g.
+        // `touch file`) run while HAPI advertises read-only.
+        expect(resolveToolAutoApprovalDecision('read-only', 'Run command', 'call-1', undefined, { unclassifiable: true })).toBeNull()
+        expect(resolveToolAutoApprovalDecision('read-only', 'Check the build', 'APPROVAL-7', undefined, { unclassifiable: true })).toBeNull()
+    })
+
+    it('keeps classifiable requests on the title heuristic in read-only mode', () => {
+        expect(resolveToolAutoApprovalDecision('read-only', 'Run command', 'call-1', undefined, { unclassifiable: false })).toBe('approved')
+        expect(resolveToolAutoApprovalDecision('read-only', 'Write file', 'call-1', undefined, { unclassifiable: false })).toBeNull()
+    });
+
+    it('fails closed BEFORE the title auto-approve keywords for unclassifiable requests', () => {
+        // Regression: the exact-name / name-hint checks used to run before
+        // the unclassifiable guard, so an unclassifiable request whose
+        // human title happened to contain an auto-approve keyword was
+        // approved. The title is prose, not a tool classification.
+        expect(resolveToolAutoApprovalDecision('read-only', 'Think about the migration', 'APPROVAL-9', undefined, { unclassifiable: true })).toBeNull()
+        expect(resolveToolAutoApprovalDecision('default', 'Think about the migration', 'APPROVAL-9', undefined, { unclassifiable: true })).toBeNull()
+        expect(resolveToolAutoApprovalDecision('read-only', 'list peer sessions', 'APPROVAL-9', undefined, { unclassifiable: true })).toBeNull()
+        expect(resolveToolAutoApprovalDecision('default', 'list peer sessions', 'APPROVAL-9', undefined, { unclassifiable: true })).toBeNull()
+    })
+
+    it('skips the id-hint auto-approve path for unclassifiable requests', () => {
+        expect(resolveToolAutoApprovalDecision('default', 'Run command', 'save_memory-forged', undefined, { unclassifiable: true })).toBeNull()
+        expect(resolveToolAutoApprovalDecision('read-only', 'Run command', 'change_title-forged', undefined, { unclassifiable: true })).toBeNull()
+    })
+
+    it('keeps mode-policy approvals for unclassifiable requests (yolo / safe-yolo never read the title)', () => {
+        expect(resolveToolAutoApprovalDecision('yolo', 'Think about the migration', 'APPROVAL-9', undefined, { unclassifiable: true })).toBe('approved_for_session')
+        expect(resolveToolAutoApprovalDecision('safe-yolo', 'Think about the migration', 'APPROVAL-9', undefined, { unclassifiable: true })).toBe('approved')
+    })
+
+    it('still auto-approves classifiable keyword-named tools in read-only mode', () => {
+        // The guard must not overreach: a request with machine-readable
+        // identity keeps its keyword auto-approval.
+        expect(resolveToolAutoApprovalDecision('read-only', 'save_memory', 'call-1', undefined, { unclassifiable: false })).toBe('approved')
+        expect(resolveToolAutoApprovalDecision('default', 'save_memory', 'call-1', undefined, { unclassifiable: false })).toBe('approved')
+    })
+
     it('still auto-approves unrelated read tools in read-only mode', () => {
         expect(resolveToolAutoApprovalDecision('read-only', 'Read', 'call-1')).toBe('approved')
         expect(resolveToolAutoApprovalDecision('read-only', 'grep', 'call-2')).toBe('approved')

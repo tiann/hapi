@@ -27,6 +27,7 @@ export type {
     DeleteUploadResponse,
     DirectoryEntry,
     DshModelsResponse,
+    AcpCatalogModelSummary,
     DshModelSummary,
     FileReadResponse,
     GitCommandResponse,

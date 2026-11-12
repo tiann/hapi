@@ -14,9 +14,15 @@ public enum AgentModelCatalog {
         case machine
         /// Probed in the target directory: needs an existing `cwd`.
         case directory
+        /// Only discoverable on an active session (the catalog rides
+        /// the running agent's ACP connection; no create-form probe).
+        case session
     }
 
     /// Nil for flavors without a discovered catalog (claude, codex, gemini).
+    /// Berry is nil too: its only model lever is the spawn-time
+    /// BERRY_AGENT_MODEL env — no machine/directory probe and no in-session
+    /// switching surface (ListBerryModels offers nothing actionable).
     public static func scope(for flavor: AgentFlavor) -> Scope? {
         switch flavor {
         case .agy, .cursor, .dsh, .pi: return .machine

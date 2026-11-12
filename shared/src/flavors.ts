@@ -18,6 +18,11 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     grok: new Set([Capabilities.ModelChange, Capabilities.Effort]),
     codex: new Set([Capabilities.ModelChange]),
     dsh: new Set([Capabilities.ModelChange]),
+    // Berry has no runtime model switching at all: the only lever is the
+    // spawn-time BERRY_AGENT_MODEL env, and the agent exposes no
+    // session/config-option model surface (the phantom model rail is
+    // retired). Matches the iOS/Android capability pins.
+    berry: new Set([]),
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
     pi: new Set([Capabilities.ModelChange, Capabilities.Effort]),
@@ -33,6 +38,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     grok: 'Grok Build',
     codex: 'Codex',
     dsh: 'DeepSeek Harness',
+    berry: 'Berry Agent',
     cursor: 'Cursor',
     opencode: 'OpenCode',
     pi: 'Pi',

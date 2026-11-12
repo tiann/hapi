@@ -36,6 +36,7 @@ import type {
 import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { resolveBerryDataDir } from '../berry/utils/berryBackend'
 import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
@@ -310,7 +311,18 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         if (this.metadata?.path) {
-            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path)
+            registerCommonHandlers(
+                this.rpcHandlerManager,
+                this.metadata.path,
+                // A berry session's skill listing must read the isolated
+                // data dir its spawned child runs on
+                // (BERRY_AGENT_DATA_DIR → <hapiHome>/berry-data/<rowId>),
+                // not the interactive ~/.berry-agent this process would
+                // fall back to — that is the tree the agent discovers.
+                this.metadata.flavor === 'berry'
+                    ? { resolveBerryDataDir: () => resolveBerryDataDir(this.sessionId) }
+                    : undefined
+            )
         }
 
         this.socket = io(`${configuration.apiUrl}/cli`, {

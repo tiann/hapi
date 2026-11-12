@@ -32,6 +32,28 @@
                 "tone": "danger"
             }
         ],
+        "berry": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Read Only",
+                "mode": "read-only",
+                "tone": "warning"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
         "claude": [
             {
                 "label": "Default",

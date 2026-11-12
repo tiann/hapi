@@ -67,11 +67,49 @@ const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     ...SENSITIVE_TOOL_NAME_HINTS
 ];
 
+/**
+ * Auto-approval classification context for a permission request.
+ *
+ * `unclassifiable` marks a request that carries NEITHER a tool `kind` NOR a
+ * `rawInput` (see {@link isUnclassifiablePermissionRequest}). The only
+ * identity left is the human-facing title — for berry (whose `APPROVAL-*`
+ * request ids never correlate to a drained tool_call, the title is a human
+ * summary) that title is prose, not a tool classification, so NONE of the
+ * title-derived heuristics below (exact-name allowlist, name hints, id
+ * hints, write hints) may be trusted to auto-approve it.
+ */
+export type AutoApprovalClassification = {
+    unclassifiable?: boolean;
+};
+
+/**
+ * Whether a permission request carries any machine-readable tool identity
+ * (a non-empty `kind`, or any `rawInput`) after backend-side correlation.
+ *
+ * Flavors that fill request fields (codex/cursor/opencode, correlated dsh
+ * requests) keep their existing classification. A request whose ONLY
+ * identity is the human-facing title — berry's `request_permission`
+ * summaries — is unclassifiable: a berry write (or shell command) whose
+ * summary lacks write-words would otherwise be auto-approved in read-only
+ * by the title write-hint heuristic.
+ */
+export function isUnclassifiablePermissionRequest(request: {
+    kind?: string;
+    rawInput?: unknown;
+}): boolean {
+    const kind = typeof request.kind === 'string' ? request.kind.trim() : '';
+    if (kind.length > 0) {
+        return false;
+    }
+    return request.rawInput === undefined || request.rawInput === null;
+}
+
 export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
     toolName: string,
     toolCallId: string,
-    ruleOverrides?: AutoApprovalRuleSet
+    ruleOverrides?: AutoApprovalRuleSet,
+    classification?: AutoApprovalClassification
 ): AutoApprovalDecision | null {
     const rules = {
         alwaysToolNameHints: ruleOverrides?.alwaysToolNameHints ?? AUTO_APPROVE_TOOL_NAME_HINTS,
@@ -82,16 +120,29 @@ export function resolveToolAutoApprovalDecision(
     const lowerTool = toolName.toLowerCase();
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
+    const unclassifiable = classification?.unclassifiable === true;
 
-    if (
-        AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
-        || rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))
-    ) {
-        return decisionForMode;
-    }
+    // Fail closed BEFORE any title-derived auto-approval: a request we
+    // cannot classify (no kind and no rawInput — the title is the only
+    // identity, e.g. berry's human summaries like "Run command") must
+    // never be auto-approved by the exact-name / name-hint / id-hint
+    // checks below. The title is prose, not a tool classification, so a
+    // summary that happens to contain an auto-approve keyword ("Think
+    // about the fix…") cannot be trusted in ANY mode — with the guard
+    // living only inside the read-only branch, these checks approved such
+    // a request first. Mode-policy approvals (yolo / safe-yolo) still
+    // apply to unclassifiable requests: they never read the title.
+    if (!unclassifiable) {
+        if (
+            AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
+            || rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))
+        ) {
+            return decisionForMode;
+        }
 
-    if (rules.alwaysToolIdHints.some((name) => lowerId.includes(name))) {
-        return decisionForMode;
+        if (rules.alwaysToolIdHints.some((name) => lowerId.includes(name))) {
+            return decisionForMode;
+        }
     }
 
     if (mode === 'yolo' || mode === 'always-proceed') {
@@ -103,6 +154,12 @@ export function resolveToolAutoApprovalDecision(
     }
 
     if (mode === 'read-only') {
+        // Unclassifiable requests fall through to here after the hint
+        // checks above were skipped: the write-hint heuristic below is
+        // also title-derived, so it must fail closed too.
+        if (unclassifiable) {
+            return null;
+        }
         const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name));
         return isWriteTool ? null : 'approved';
     }
@@ -171,9 +228,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         mode: PermissionMode | undefined,
         toolName: string,
         toolCallId: string,
-        ruleOverrides?: AutoApprovalRuleSet
+        ruleOverrides?: AutoApprovalRuleSet,
+        classification?: AutoApprovalClassification
     ): AutoApprovalDecision | null {
-        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides);
+        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides, classification);
     }
 
     protected addPendingRequest(

@@ -137,6 +137,7 @@ public enum NewSessionLogic {
         case .claude, .grok: return .bypassPermissions
         case .agy: return .alwaysProceed
         case .codex, .copilot, .cursor, .gemini, .kimi, .opencode: return .yolo
+        case .codex, .copilot, .cursor, .gemini, .berry, .kimi, .opencode: return .yolo
         case .dsh, .pi, .other: return nil
         }
     }
@@ -169,8 +170,11 @@ public enum NewSessionLogic {
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
+        // Session-only catalogs have nothing to pick at create
+        // time — their picker appears in-chat once the agent is running.
+        let catalogScope = AgentModelCatalog.scope(for: agent)
         let hasModelPicker = agent == .claude || agent == .codex
-            || AgentModelCatalog.scope(for: agent) != nil
+            || (catalogScope != nil && catalogScope != .session)
         let trimmedModel = form.model.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedModel: String?
         if agent == .cursor {

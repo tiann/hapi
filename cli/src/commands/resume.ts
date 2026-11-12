@@ -9,6 +9,7 @@ import type {
     CodexPermissionMode,
     CursorPermissionMode,
     GrokPermissionMode,
+    BerryPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode
@@ -115,6 +116,23 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
             startingMode: 'remote'
+        })
+        return
+    }
+
+    if (target.flavor === 'berry') {
+        const { runBerry } = await import('@/berry/runBerry')
+        await runBerry({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as BerryPermissionMode | undefined,
+            startingMode: 'remote',
+            // Mirror the dsh branch: the stored model re-flows as the
+            // spawn-time BERRY_AGENT_MODEL lever (berry reads it only at
+            // process start), so a resumed session keeps its model.
+            model: target.model ?? undefined
         })
         return
     }

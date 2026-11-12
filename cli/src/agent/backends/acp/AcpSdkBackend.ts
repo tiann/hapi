@@ -358,6 +358,19 @@ export class AcpSdkBackend implements AgentBackend {
         }
     }
 
+    /**
+     * Whether the initialize result advertises inline image prompt content
+     * (`agentCapabilities.promptCapabilities.image`).
+     *
+     * Callers must gate image content blocks on this: sending `{type:'image'}`
+     * blocks to an agent that never advertised the capability rejects the
+     * whole session/prompt.
+     */
+    supportsImagePrompts(): boolean {
+        const promptCapabilities = this.initializeResult?.agentCapabilities?.promptCapabilities;
+        return isObject(promptCapabilities) && promptCapabilities.image === true;
+    }
+
     supportsLoadSession(): boolean {
         return this.initializeResult?.agentCapabilities?.loadSession === true;
     }

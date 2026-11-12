@@ -141,6 +141,13 @@ export function getModelOptionsForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): ModelOption[] {
+    // Berry's runtime model rail is retired: berry exposes no ACP
+    // config-option or model-list face (spawn-time BERRY_AGENT_MODEL env is
+    // the only lever, owned by the CLI agent), so no customOptions may ever
+    // resurrect a picker for it — not even a stale catalog passed by mistake.
+    if (flavor === 'berry') {
+        return []
+    }
     if (flavor === 'agy') {
         return getAgyModelOptions(currentModel, customOptions)
     }
@@ -172,6 +179,11 @@ export function getModelOptionsForFlavor(
     // fallback — surfacing Claude presets in a DeepSeek session would let the
     // picker enqueue `sonnet`-style ids the ACP server rejects.
     if (flavor === 'dsh') {
+        return []
+    }
+    // Berry has no runtime model face at all (spawn-time BERRY_AGENT_MODEL
+    // env only), so it stays empty and never falls through to Claude presets.
+    if (flavor === 'berry') {
         return []
     }
     if (flavor === 'cursor') {
@@ -206,6 +218,13 @@ export function getNextModelForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): string | null {
+    // Berry: the runtime model rail is retired (spawn-time env lever only),
+    // so the Ctrl/Cmd+M cycler must keep the current model no matter what
+    // customOptions claim — even a stale catalog must not cycle ids the
+    // session can no longer apply.
+    if (flavor === 'berry') {
+        return normalizeCurrentModel(currentModel)
+    }
     if (flavor === 'agy') {
         const options = getAgyModelOptions(currentModel, customOptions)
         const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
@@ -244,6 +263,11 @@ export function getNextModelForFlavor(
     // DSH: same guard for the Ctrl/Cmd+M cycler — without the catalog the
     // shortcut must keep the current model, never cycle into Claude presets.
     if (flavor === 'dsh') {
+        return normalizeCurrentModel(currentModel)
+    }
+    // Berry has no runtime catalog to wait for (spawn-time env lever only),
+    // so its cycler keeps the current model permanently.
+    if (flavor === 'berry') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {
