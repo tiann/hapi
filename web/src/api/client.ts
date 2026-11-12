@@ -46,7 +46,6 @@ import type {
     CursorModelsResponse,
     DeleteUploadResponse,
     DshModelsResponse,
-    HermesModelsResponse,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
@@ -1170,11 +1169,6 @@ export class ApiClient {
         )
     }
 
-    async getSessionHermesModels(sessionId: string): Promise<HermesModelsResponse> {
-        return await this.request<HermesModelsResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/hermes-models`
-        )
-    }
 
     async getSessionGrokModels(sessionId: string): Promise<GrokModelsResponse> {
         return await this.request<GrokModelsResponse>(

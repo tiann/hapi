@@ -389,10 +389,8 @@ describe('getNextModelForFlavor', () => {
         expect(getNextModelForFlavor('dsh', flash, [])).toBe(flash)
     })
 
-    it('keeps the current hermes/berry model when the ACP catalog has not loaded (no Claude fallback)', () => {
-        expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3')).toBe('newapi:glm-5.3')
+    it('keeps the current berry model when no catalog exists (no Claude fallback)', () => {
         expect(getNextModelForFlavor('berry', 'newapi/glm-5.3')).toBe('newapi/glm-5.3')
-        expect(getModelOptionsForFlavor('hermes', null)).toEqual([])
         expect(getModelOptionsForFlavor('berry', null)).toEqual([])
     })
 
@@ -406,18 +404,6 @@ describe('getNextModelForFlavor', () => {
         expect(getModelOptionsForFlavor('berry', 'newapi/glm-5.3', staleCatalog)).toEqual([])
         expect(getNextModelForFlavor('berry', 'newapi/glm-5.3', staleCatalog)).toBe('newapi/glm-5.3')
         expect(getNextModelForFlavor('berry', null, staleCatalog)).toBeNull()
-    })
-
-    it('still offers hermes runtime model options from its ACP catalog (rail intact)', () => {
-        const catalog = [
-            { value: 'newapi:glm-5.3', label: 'GLM 5.3' },
-            { value: 'newapi:glm-5.4', label: 'GLM 5.4' }
-        ]
-        expect(getModelOptionsForFlavor('hermes', 'newapi:glm-5.3', catalog)).toEqual([
-            { value: 'newapi:glm-5.3', label: 'GLM 5.3' },
-            { value: 'newapi:glm-5.4', label: 'GLM 5.4' }
-        ])
-        expect(getNextModelForFlavor('hermes', 'newapi:glm-5.3', catalog)).toBe('newapi:glm-5.4')
     })
 
     it('keeps the current cursor model when the dynamic list has not loaded', () => {

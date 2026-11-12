@@ -464,7 +464,7 @@ final class NewSessionModel {
             guard !cwd.isEmpty, directoryExists == true, !directoryOutsideWorkspaceRoots else { return nil }
             return AgentModelsRequest(flavor: form.agent, machineId: machineId, cwd: cwd)
         case .session:
-            // Session-only catalogs (hermes/berry) need the running agent;
+            // Session-only catalogs need the running agent;
             // the create form stays on the Default sentinel.
             return nil
         }

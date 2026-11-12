@@ -69,14 +69,6 @@ object PermissionModes {
         PermissionMode.SafeYolo, PermissionMode.Yolo,
     )
 
-    // `HERMES_PERMISSION_MODES`:Hermes 的 ACP 模式轴只覆盖编辑审批
-    // (default / accept_edits / dont_ask),没有 read-only 等价物,故不提供
-    // 保守的 read-only;危险命令审批始终以 session/request_permission 到达,
-    // 由共享权限桥按所选模式自动放行(shared/src/modes.ts)。
-    val HERMES = listOf(
-        PermissionMode.Default, PermissionMode.SafeYolo, PermissionMode.Yolo,
-    )
-
     // `BERRY_PERMISSION_MODES`:Berry 没有代理侧模式 RPC(无
     // session/set_mode——berry-agent 未实现);HAPI 权限桥是唯一执行层,
     // 按活态模式裁决每条 session/request_permission(read-only 由分类器
@@ -115,8 +107,6 @@ object PermissionModes {
         "grok" -> GROK
         "opencode" -> OPENCODE
         "dsh" -> emptyList()
-        // hermes/berry:权限由 HAPI 共享权限桥按模式放行(见上方列表注释)。
-        "hermes" -> HERMES
         "berry" -> BERRY
         "agy" -> AGY
         "cursor" -> CURSOR

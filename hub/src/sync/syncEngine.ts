@@ -69,7 +69,6 @@ import {
     type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
     type RpcListDshModelsResponse,
-    type RpcListHermesModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -111,7 +110,6 @@ export type {
     RpcListOpencodeModelVariantsResponse,
     RpcListGrokModelsResponse,
     RpcListDshModelsResponse,
-    RpcListHermesModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -4286,7 +4284,7 @@ export class SyncEngine {
             namespace,
             {
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'hermes' || flavor === 'berry') && resumeToken !== undefined)
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'berry') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {
@@ -5615,14 +5613,6 @@ export class SyncEngine {
             () => this.rpcGateway.listDshModelsForSession(sessionId),
             SyncEngine.modelListCacheable
         ) as RpcListDshModelsResponse
-    }
-
-    async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
-        return await this.modelListCache.get(
-            `${sessionId}|hermes-models`,
-            () => this.rpcGateway.listHermesModelsForSession(sessionId),
-            SyncEngine.modelListCacheable
-        ) as RpcListHermesModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

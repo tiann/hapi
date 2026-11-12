@@ -181,12 +181,9 @@ export function getModelOptionsForFlavor(
     if (flavor === 'dsh') {
         return []
     }
-    // Hermes is the same shape: its catalog arrives via the session's ACP
-    // config options (SessionChat's hermesModelOptions). An empty list must
-    // win over the Claude fallback for the same reason. Berry has no runtime
-    // model face at all (spawn-time BERRY_AGENT_MODEL env only), so it also
-    // stays empty and never falls through to Claude presets.
-    if (flavor === 'hermes' || flavor === 'berry') {
+    // Berry has no runtime model face at all (spawn-time BERRY_AGENT_MODEL
+    // env only), so it stays empty and never falls through to Claude presets.
+    if (flavor === 'berry') {
         return []
     }
     if (flavor === 'cursor') {
@@ -268,11 +265,9 @@ export function getNextModelForFlavor(
     if (flavor === 'dsh') {
         return normalizeCurrentModel(currentModel)
     }
-    // Hermes: same guard — its catalog arrives via the session's ACP config
-    // options; until then the shortcut keeps the current model. Berry has no
-    // runtime catalog to wait for (spawn-time env lever only), so its cycler
-    // keeps the current model permanently.
-    if (flavor === 'hermes' || flavor === 'berry') {
+    // Berry has no runtime catalog to wait for (spawn-time env lever only),
+    // so its cycler keeps the current model permanently.
+    if (flavor === 'berry') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {

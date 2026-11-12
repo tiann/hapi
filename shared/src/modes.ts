@@ -152,9 +152,6 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     if (flavor === 'dsh') {
         return []
     }
-        // approvals always surface as session/request_permission, which HAPI's
-        // permission bridge auto-approves per the selected mode.
-    }
     if (flavor === 'berry') {
         // Berry has no agent-side mode RPC (no session/set_mode): nothing is
         // pushed to the agent. The HAPI permission bridge is the only

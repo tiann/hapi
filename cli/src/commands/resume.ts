@@ -120,15 +120,6 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
-            existingSessionId: base.existingSessionId,
-            workingDirectory: base.workingDirectory,
-            resumeSessionId: base.resumeSessionId,
-            startedBy: base.startedBy,
-            startingMode: 'remote'
-        })
-        return
-    }
-
     if (target.flavor === 'berry') {
         const { runBerry } = await import('@/berry/runBerry')
         await runBerry({

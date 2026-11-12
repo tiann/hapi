@@ -20,8 +20,6 @@ sealed interface AgentFlavor {
     data object Cursor : AgentFlavor { override val id = "cursor" }
     data object Gemini : AgentFlavor { override val id = "gemini" }
     data object Grok : AgentFlavor { override val id = "grok" }
-    // Hermes:gateway 持久会话 id,hermesSessionId 跨进程 resume(对齐 iOS AgentFlavor.swift)。
-    data object Hermes : AgentFlavor { override val id = "hermes" }
     data object Kimi : AgentFlavor { override val id = "kimi" }
     data object Opencode : AgentFlavor { override val id = "opencode" }
     data object Pi : AgentFlavor { override val id = "pi" }
@@ -34,7 +32,7 @@ sealed interface AgentFlavor {
     companion object {
         /** `AGENT_FLAVORS` — declaration order preserved. */
         val KNOWN: List<AgentFlavor> = listOf(
-            Agy, Berry, Claude, Codex, Dsh, Copilot, Cursor, Gemini, Grok, Hermes, Kimi, Opencode, Pi,
+            Agy, Berry, Claude, Codex, Dsh, Copilot, Cursor, Gemini, Grok, Kimi, Opencode, Pi,
         )
 
         /**
@@ -73,8 +71,7 @@ object Flavors {
         "grok" to setOf(FlavorCapability.ModelChange, FlavorCapability.Effort),
         "codex" to setOf(FlavorCapability.ModelChange),
         "dsh" to emptySet(),
-        "hermes" to setOf(FlavorCapability.ModelChange),
-        // Berry has no runtime model switching: the only lever is the
+            // Berry has no runtime model switching: the only lever is the
         // spawn-time BERRY_AGENT_MODEL env (no session/config-option surface).
         "berry" to emptySet(),
         "cursor" to setOf(FlavorCapability.ModelChange),
@@ -91,8 +88,7 @@ object Flavors {
         "grok" to "Grok Build",
         "codex" to "Codex",
         "dsh" to "DeepSeek Harness",
-        "hermes" to "Hermes",
-        "berry" to "Berry Agent",
+            "berry" to "Berry Agent",
         "cursor" to "Cursor",
         "opencode" to "OpenCode",
         "pi" to "Pi",

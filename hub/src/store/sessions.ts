@@ -71,7 +71,6 @@ const SIMPLE_RESUME_TOKENS = [
     'kimiSessionId',
     'copilotSessionId',
     'piSessionId',
-    'dshSessionId'
     'dshSessionId',
     'berrySessionId'
 ] as const

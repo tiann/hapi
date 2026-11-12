@@ -127,7 +127,6 @@ import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReas
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
-import { useHermesModelsForSession } from '@/hooks/queries/useAcpSessionModels'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1243,26 +1242,6 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, dshModelsState.availableModels])
-    // hermes rides the same rail: catalogs arrive through the session's
-    // ACP config options (ListHermesModels RPC). Berry has no runtime model
-    // face at all (its only lever is the spawn-time BERRY_AGENT_MODEL env,
-    // owned by the CLI agent), so no picker is offered for it.
-    const hermesModelsState = useHermesModelsForSession({
-        api: props.api,
-        sessionId: props.session.id,
-        enabled: agentFlavor === 'hermes' && props.session.active
-    })
-    const hermesModelOptions = useMemo(() => (
-        agentFlavor === 'hermes' && hermesModelsState.availableModels.length > 0
-            ? [
-                { value: null, label: 'Default' },
-                ...hermesModelsState.availableModels.map((model) => ({
-                    value: model.modelId,
-                    label: model.name ?? model.modelId
-                }))
-            ]
-            : undefined
-    ), [agentFlavor, hermesModelsState.availableModels])
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -2357,8 +2336,6 @@ function SessionChatInner(props: SessionChatProps) {
                                                 ? agyModelOptions
                                             : agentFlavor === 'dsh'
                                                 ? dshModelOptions
-                                            : agentFlavor === 'hermes'
-                                                ? hermesModelOptions
                                         // Berry intentionally has no runtime
                                         // model options (no ACP config-option
                                         // face; spawn-time BERRY_AGENT_MODEL is

@@ -204,16 +204,8 @@ class SummaryPatchingTest {
         )
         assertEquals("dsh-1", dsh?.agentSessionId)
 
-        // hermes/berry:已知 flavor 只读各自的持久 id,跨 flavor 陈旧 id
+        // berry:已知 flavor 只读各自的持久 id,跨 flavor 陈旧 id
         // 一律忽略(hub resolveAgentResumeId 同款语义)。
-        val hermes = SummaryPatching.toSessionSummaryMetadata(
-            SessionMetadata(
-                path = "/p", host = "h", flavor = "hermes",
-                codexSessionId = "stale", hermesSessionId = "hermes-1",
-            )
-        )
-        assertEquals("hermes-1", hermes?.agentSessionId)
-
         val berry = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(
                 path = "/p", host = "h", flavor = "berry",
@@ -234,12 +226,7 @@ class SummaryPatchingTest {
         )
         assertNull(piOnly?.agentSessionId)
 
-        // Legacy 链同样不读 hermes/berry 的 id(shared 同款:仅已知 flavor 分支消费)。
-        val hermesOnly = SummaryPatching.toSessionSummaryMetadata(
-            SessionMetadata(path = "/p", host = "h", flavor = null, hermesSessionId = "hermes-1")
-        )
-        assertNull(hermesOnly?.agentSessionId)
-
+        // Legacy 链同样不读 berry 的 id(shared 同款:仅已知 flavor 分支消费)。
         val berryOnly = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(path = "/p", host = "h", flavor = null, berrySessionId = "berry-1")
         )

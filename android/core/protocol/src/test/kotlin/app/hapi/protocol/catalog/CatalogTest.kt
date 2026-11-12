@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
  *
  * The exhaustive cross-check runs against the generated catalog
  * `shared/fixtures/catalogs/modes.json` (track K, from `shared/src/modes.ts`),
- * so catalog drift — including new flavor registrations like berry/hermes —
+ * so catalog drift — including new flavor registrations like berry —
  * turns this suite red automatically; the inline expectations below stay for
  * fast diagnosis when the generated catalog and the port disagree.
  */
@@ -127,15 +127,10 @@ class CatalogTest {
         assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("kimi"))
         assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("copilot"))
         // berry shares the gemini shape but keeps its own constant
-        // (`BERRY_PERMISSION_MODES`); hermes drops read-only (no native
-        // read-only sandbox on its ACP mode axis).
+        // (`BERRY_PERMISSION_MODES`).
         assertEquals(
             listOf("default", "read-only", "safe-yolo", "yolo"),
             PermissionModes.forFlavor("berry").map { it.wireId }
-        )
-        assertEquals(
-            listOf("default", "safe-yolo", "yolo"),
-            PermissionModes.forFlavor("hermes").map { it.wireId }
         )
         assertEquals(
             listOf("default", "auto", "plan", "bypassPermissions"),
@@ -172,7 +167,7 @@ class CatalogTest {
         assertEquals(
             listOf(
                 "agy", "berry", "claude", "codex", "dsh", "copilot", "cursor",
-                "gemini", "grok", "hermes", "kimi", "opencode", "pi",
+                "gemini", "grok", "kimi", "opencode", "pi",
             ),
             AgentFlavor.KNOWN.map { it.id }
         )
@@ -180,12 +175,10 @@ class CatalogTest {
         assertEquals(AgentFlavor.KNOWN.size - 1, AgentFlavor.CREATABLE.size)
         assertEquals(AgentFlavor.Claude, AgentFlavor.from("claude"))
         assertEquals(AgentFlavor.Berry, AgentFlavor.from("berry"))
-        assertEquals(AgentFlavor.Hermes, AgentFlavor.from("hermes"))
         assertEquals(AgentFlavor.Other("newagent"), AgentFlavor.from("newagent"))
         assertNull(AgentFlavor.from(null))
         assertTrue(AgentFlavor.isKnown("pi"))
         assertTrue(AgentFlavor.isKnown("berry"))
-        assertTrue(AgentFlavor.isKnown("hermes"))
         assertFalse(AgentFlavor.isKnown("newagent"))
     }
 
@@ -202,20 +195,17 @@ class CatalogTest {
         assertFalse(Flavors.supportsModelChange("dsh"))
         assertFalse(Flavors.supportsModelChange("unknown"))
         assertFalse(Flavors.supportsModelChange("berry"))
-        assertTrue(Flavors.supportsModelChange("hermes"))
         assertEquals("Antigravity", Flavors.label("agy"))
         assertEquals("Grok Build", Flavors.label("grok"))
         assertEquals("OpenCode", Flavors.label("opencode"))
         assertEquals("DeepSeek Harness", Flavors.label("dsh"))
         assertEquals("Berry Agent", Flavors.label("berry"))
-        assertEquals("Hermes", Flavors.label("hermes"))
         assertEquals("Unknown", Flavors.label("mystery"))
         assertTrue(Flavors.isCodexFamily("copilot"))
         assertFalse(Flavors.isCodexFamily("claude"))
         assertFalse(Flavors.isCodexFamily("cursor"))
         assertFalse(Flavors.isCodexFamily("pi"))
-        // hermes/berry 走通用 ACP 信封,不属于 codex 家族权限 UX。
-        assertFalse(Flavors.isCodexFamily("hermes"))
+        // berry 走通用 ACP 信封,不属于 codex 家族权限 UX。
         assertFalse(Flavors.isCodexFamily("berry"))
     }
 

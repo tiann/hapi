@@ -14,7 +14,7 @@ public enum AgentModelCatalog {
         case machine
         /// Probed in the target directory: needs an existing `cwd`.
         case directory
-        /// Only discoverable on an active session (ListHermesModels rides
+        /// Only discoverable on an active session (the catalog rides
         /// the running agent's ACP connection; no create-form probe).
         case session
     }
@@ -27,7 +27,6 @@ public enum AgentModelCatalog {
         switch flavor {
         case .agy, .cursor, .dsh, .pi: return .machine
         case .copilot, .grok, .kimi, .opencode: return .directory
-        case .hermes: return .session
         default: return nil
         }
     }
@@ -196,12 +195,6 @@ public enum AgentModelCatalog {
         case .opencode, .agy, .pi:
             options = rows
         case .dsh:
-            options = rows.isEmpty ? [] : [CatalogOption(value: nil, label: "Default")] + rows
-        case .hermes:
-            // Session-scoped discovery (ListHermesModels): without a catalog
-            // the picker stays hidden (an empty response offers nothing to
-            // switch to); with one, a nil-value Default row clears back to
-            // the gateway's default.
             options = rows.isEmpty ? [] : [CatalogOption(value: nil, label: "Default")] + rows
         case .copilot:
             options = [CatalogOption(value: nil, label: "Auto")] + rows

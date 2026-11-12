@@ -55,8 +55,6 @@ describe('getPermissionModesForFlavor', () => {
         expect(getPermissionModesForFlavor('dsh')).toEqual([])
     })
 
-    })
-
     test("returns the four Berry modes (sandbox axis covers read-only)", () => {
         expect(getPermissionModesForFlavor('berry')).toEqual(['default', 'read-only', 'safe-yolo', 'yolo'])
     })

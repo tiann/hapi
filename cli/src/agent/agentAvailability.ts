@@ -36,8 +36,6 @@ function resolveLaunchSpec(agent: AgentFlavor, env: LaunchEnvironment, context: 
     if (agent === 'dsh') {
         return resolveDshAcpCommand(env)
     }
-        // generic single-command resolution would probe the wrong argv.
-    }
     if (agent === 'berry') {
         // The real launch shape is `berry acp` (subcommand, not a flag), so the
         // generic single-command resolution would probe the wrong argv.

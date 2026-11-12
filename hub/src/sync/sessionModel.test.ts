@@ -3380,47 +3380,6 @@ describe('session model', () => {
         }
     })
 
-        const store = new Store(':memory:')
-        const engine = new SyncEngine(
-            store,
-            {} as never,
-            new RpcRegistry(),
-            { broadcast() {} } as never
-        )
-
-        try {
-            const session = engine.getOrCreateSession(
-                {
-                    path: '/tmp/project',
-                    host: 'localhost',
-                    machineId: 'machine-1',
-                },
-                null,
-                'default'
-            )
-            engine.getOrCreateMachine(
-                'machine-1',
-                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
-                null,
-                'default'
-            )
-            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
-
-            let capturedResumeSessionId: string | undefined
-            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
-                capturedResumeSessionId = args[8]
-                return { type: 'success', sessionId: session.id }
-            }
-            ;(engine as any).waitForSessionActive = async () => true
-
-            const result = await engine.resumeSession(session.id, 'default')
-
-            expect(result).toEqual({ type: 'success', sessionId: session.id })
-        } finally {
-            engine.stop()
-        }
-    })
-
     it('passes the Berry native session id to the runner on resume', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
