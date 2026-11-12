@@ -147,6 +147,13 @@ export type CancelPendingRequestOptions = {
 
 export abstract class BasePermissionHandler<TResponse extends { id: string }, TResult> {
     protected readonly pendingRequests = new Map<string, PendingPermissionRequest<TResult>>();
+    /**
+     * Request ids whose first answer is mid-flight through handlePermissionResponse.
+     * pendingRequests is cleared before that await, so a overlapping second answer
+     * must not treat these as orphans and cancel agentState out from under the
+     * first finalize (tiann/hapi#2415 review).
+     */
+    private readonly inFlightResponses = new Set<string>();
     protected readonly client: PermissionHandlerClient;
 
     protected constructor(client: PermissionHandlerClient) {
@@ -263,12 +270,14 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
     /**
      * Move agentState.requests entries that are not in this.pendingRequests into
-     * completedRequests as canceled. Used on handler start and when a late
-     * answer arrives for a request the CLI no longer tracks (tiann/hapi#2414).
+     * completedRequests as canceled. Used when a late answer arrives for a
+     * request the CLI no longer tracks (tiann/hapi#2414). Skips ids still being
+     * processed so overlapping answers cannot cancel a successful finalize.
      */
     protected finalizeOrphanedAgentStateRequests(reason: string, onlyId?: string): void {
         this.client.updateAgentState((currentState) => {
             const pendingIds = this.pendingRequests;
+            const inFlight = this.inFlightResponses;
             const requests = currentState.requests ?? {};
             const completedRequests = { ...currentState.completedRequests };
             const nextRequests: typeof requests = {};
@@ -279,7 +288,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                     nextRequests[id] = request;
                     continue;
                 }
-                if (pendingIds.has(id)) {
+                if (pendingIds.has(id) || inFlight.has(id)) {
                     nextRequests[id] = request;
                     continue;
                 }
@@ -309,20 +318,27 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             if (!pending) {
                 // Clear the sticky hub/web badge before surfacing the error —
                 // otherwise StatusBar keeps "permission required" after 409
-                // (tiann/hapi#2414, follow-on to #1735).
-                this.finalizeOrphanedAgentStateRequests(
-                    'Permission request not found or already resolved',
-                    response.id
-                );
+                // (tiann/hapi#2414, follow-on to #1735). Skip ids still in
+                // flight: another answer already owns finalize for them.
+                if (!this.inFlightResponses.has(response.id)) {
+                    this.finalizeOrphanedAgentStateRequests(
+                        'Permission request not found or already resolved',
+                        response.id
+                    );
+                }
                 this.handleMissingPendingResponse(response);
                 return;
             }
 
             this.onResponseReceived(response);
             this.pendingRequests.delete(response.id);
-
-            const completion = await this.handlePermissionResponse(response, pending);
-            this.finalizeRequest(response.id, completion);
+            this.inFlightResponses.add(response.id);
+            try {
+                const completion = await this.handlePermissionResponse(response, pending);
+                this.finalizeRequest(response.id, completion);
+            } finally {
+                this.inFlightResponses.delete(response.id);
+            }
         });
     }
 }
