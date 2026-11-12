@@ -4509,4 +4509,154 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('never transfers a heuristically parked read_file approval to a subsequent gated run_command when read completes before reattachment', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Armed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Armed.' }
+            ]);
+        });
+
+        // Between the user's approval click and reattachment, `read_file` already finished natively!
+        // Reattachment replays `read_file` as `completed`, and then proposes a gated `run_command`!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'replayed-finished-read',
+                name: 'read_file',
+                title: 'read_file',
+                status: 'completed',
+                input: { Path: `${session.path}/config.json` },
+                nativeName: 'read_file',
+                nativeArgs: { Path: `${session.path}/config.json` }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'replayed-finished-read',
+                status: 'completed',
+                output: '{"deploy":true}'
+            });
+
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-gated-deploy-cmd',
+                name: 'rm -rf ./prod-cache',
+                title: 'rm -rf ./prod-cache',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'rm -rf ./prod-cache' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-deploy-cmd',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'live-gated-deploy-cmd',
+                kind: 'execute',
+                title: 'rm -rf ./prod-cache',
+                rawInput: { CommandLine: 'rm -rf ./prod-cache' },
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+
+            // Must wait on explicit user decision for `perm-deploy-cmd` (NOT auto-approved from `read_file`!)
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
+            onUpdate({ type: 'text', text: 'Stopped before touching prod-cache.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 30,
+            reactiveSlowToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Slow in-workspace read_file heuristically parks
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const configPath = `${session.path}/config.json`;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'read_file', args: { Path: JSON.stringify(configPath) } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticReadId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeDefined();
+        });
+
+        // User approves the `read_file` card just as `read_file` finishes natively before reattachment
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        const approvalDone = permHandler!({ id: syntheticReadId, approved: true, decision: 'approved' });
+
+        // `perm-deploy-cmd` MUST NOT be auto-approved; it must surface in `agentState.requests` for explicit user choice!
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.['perm-deploy-cmd']).toBeDefined();
+        });
+        expect(backend.permissionResponses).toEqual([]);
+
+        // User explicitly denies `perm-deploy-cmd`!
+        await permHandler!({ id: 'perm-deploy-cmd', approved: false, decision: 'denied' });
+        await approvalDone;
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        expect(backend.permissionResponses).toEqual([
+            { outcome: 'selected', optionId: 'reject_once' }
+        ]);
+
+        // Replayed completed `read_file` populated the original `syntheticReadId` card without duplicating it
+        const msgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(
+            msgs.filter(
+                (m) => (m as { type?: string; callId?: string }).type === 'tool-call'
+                    && (m as { callId?: string }).callId === syntheticReadId
+            )
+        ).toHaveLength(1);
+        expect(msgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: syntheticReadId,
+            is_error: false,
+            output: '{"deploy":true}'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
 });

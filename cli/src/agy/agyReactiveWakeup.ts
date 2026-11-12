@@ -546,48 +546,61 @@ export function areAgyToolArgsCompatible(
     expectedDecodedArgs: Record<string, unknown>,
     actualArgs: unknown,
     fallbackTitle?: string,
-    toolName?: string
+    toolName?: string,
+    requirePositiveMatch = false
 ): boolean {
+    const expectedKeys = Object.keys(expectedDecodedArgs);
     const actualRecord = actualArgs && typeof actualArgs === 'object' && !Array.isArray(actualArgs)
         ? (actualArgs as Record<string, unknown>)
         : null;
     const actualKeys = actualRecord ? Object.keys(actualRecord) : [];
 
     if (actualRecord && actualKeys.length > 0) {
-        if (
-            typeof expectedDecodedArgs.CommandLine === 'string'
-            && 'CommandLine' in actualRecord
-            && actualRecord.CommandLine !== expectedDecodedArgs.CommandLine
-        ) {
+        if (typeof expectedDecodedArgs.CommandLine === 'string') {
+            if (!('CommandLine' in actualRecord) || actualRecord.CommandLine !== expectedDecodedArgs.CommandLine) {
+                return false;
+            }
+        } else if ('CommandLine' in actualRecord) {
             return false;
         }
-        if (
-            typeof expectedDecodedArgs.Path === 'string'
-            && 'Path' in actualRecord
-            && actualRecord.Path !== expectedDecodedArgs.Path
-        ) {
+
+        if (typeof expectedDecodedArgs.Path === 'string') {
+            if (!('Path' in actualRecord) || actualRecord.Path !== expectedDecodedArgs.Path) {
+                return false;
+            }
+        } else if ('Path' in actualRecord) {
             return false;
         }
+
+        let sharedCompared = 0;
         for (const key of actualKeys) {
             if (!(key in expectedDecodedArgs)) continue;
             const expectedVal = expectedDecodedArgs[key];
             const actualVal = actualRecord[key];
             if (actualVal === undefined) continue;
+            sharedCompared += 1;
             if (JSON.stringify(actualVal) !== JSON.stringify(expectedVal)) {
                 return false;
             }
+        }
+        if (expectedKeys.length > 0 && sharedCompared === 0) {
+            return false;
         }
         return true;
     }
 
     const trimmedTitle = typeof fallbackTitle === 'string' ? fallbackTitle.trim() : '';
     if (trimmedTitle && (!toolName || trimmedTitle !== toolName)) {
-        if (toolName === 'run_command' && typeof expectedDecodedArgs.CommandLine === 'string') {
-            return trimmedTitle === expectedDecodedArgs.CommandLine.trim();
+        if (typeof expectedDecodedArgs.CommandLine === 'string') {
+            return toolName === 'run_command' && trimmedTitle === expectedDecodedArgs.CommandLine.trim();
         }
         if (typeof expectedDecodedArgs.Path === 'string' && expectedDecodedArgs.Path.trim()) {
-            return trimmedTitle.includes(expectedDecodedArgs.Path.trim());
+            return toolName !== 'run_command' && trimmedTitle.includes(expectedDecodedArgs.Path.trim());
         }
+    }
+
+    if (requirePositiveMatch && expectedKeys.length > 0) {
+        return false;
     }
 
     return true;

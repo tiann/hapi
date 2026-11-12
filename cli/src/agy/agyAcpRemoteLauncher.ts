@@ -246,6 +246,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private idleConfigWake: (() => void) | null = null;
     private pendingParkedResolution: {
         parkedCallId: string;
+        parkedCall: AgyParkedWakeupCall;
+        replayAfterStepIndex: number;
         toolName: string;
         decodedArgs: Record<string, unknown>;
         aliasedLiveId: string | null;
@@ -738,6 +740,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         const parkedCallId = `agy-wakeup-${acpSessionId}-${this.emittedWakeupThrough.stepIndex}-${this.emittedWakeupThrough.callIndex}`;
                         this.pendingParkedResolution = {
                             parkedCallId,
+                            parkedCall: this.emittedWakeupThrough,
+                            replayAfterStepIndex: this.lastTranscriptStepIndex,
                             toolName: this.emittedWakeupThrough.toolName,
                             decodedArgs: this.emittedWakeupThrough.decodedArgs,
                             aliasedLiveId: null,
@@ -999,6 +1003,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (session.queue.size() > 0) {
                 this.pendingParkedResolution = {
                     parkedCallId: slice.parkedCallId,
+                    parkedCall,
+                    replayAfterStepIndex,
                     toolName: parkedCall.toolName,
                     decodedArgs: parkedCall.decodedArgs,
                     aliasedLiveId: null,
@@ -1030,12 +1036,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         });
         session.sendUserMessage(userActionText);
 
+        const completedDuringApprovalRace = hasAgyParkedCallProgressed(
+            readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, replayAfterStepIndex),
+            parkedCall
+        );
+
         this.pendingParkedResolution = {
             parkedCallId: slice.parkedCallId,
+            parkedCall,
+            replayAfterStepIndex,
             toolName: parkedCall.toolName,
             decodedArgs: parkedCall.decodedArgs,
             aliasedLiveId: null,
-            decisionConsumed: false,
+            decisionConsumed: completedDuringApprovalRace,
             decision: outcome.decision,
             ...(outcome.answers ? { answers: outcome.answers } : {}),
             ...(this.questionLabels.has(slice.parkedCallId)
@@ -1139,21 +1152,34 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         if (pending.aliasedLiveId && request.toolCallId !== pending.aliasedLiveId) {
                             return null;
                         }
-                        if (
-                            !pending.aliasedLiveId
-                            && !areAgyToolArgsCompatible(
-                                pending.decodedArgs,
-                                request.rawInput,
-                                request.title,
-                                pending.toolName
-                            )
-                        ) {
-                            return null;
-                        }
-                        if (!pending.aliasedLiveId && request.toolCallId) {
-                            pending.aliasedLiveId = request.toolCallId;
-                            this.syntheticCallAliases.set(request.toolCallId, pending.parkedCallId);
-                            this.nativeToolNames.set(pending.parkedCallId, pending.toolName);
+                        if (!pending.aliasedLiveId) {
+                            if (
+                                acpSessionId
+                                && hasAgyParkedCallProgressed(
+                                    readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, pending.replayAfterStepIndex),
+                                    pending.parkedCall
+                                )
+                            ) {
+                                pending.decisionConsumed = true;
+                                return null;
+                            }
+                            if (
+                                !isPermissionRequestKindCompatibleWithTool(request.kind, pending.toolName)
+                                || !areAgyToolArgsCompatible(
+                                    pending.decodedArgs,
+                                    request.rawInput,
+                                    request.title,
+                                    pending.toolName,
+                                    true
+                                )
+                            ) {
+                                return null;
+                            }
+                            if (request.toolCallId) {
+                                pending.aliasedLiveId = request.toolCallId;
+                                this.syntheticCallAliases.set(request.toolCallId, pending.parkedCallId);
+                                this.nativeToolNames.set(pending.parkedCallId, pending.toolName);
+                            }
                         }
                         pending.decisionConsumed = true;
                         return pending.decision;
@@ -1844,9 +1870,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             if (message.type === 'tool_call') {
                 const candidateArgs = message.nativeArgs ?? message.input;
-                const matchesParked =
-                    !pendingParked.decisionConsumed
-                    && pendingParked.aliasedLiveId === null
+                const matchesParkedIdentity =
+                    pendingParked.aliasedLiveId === null
                     && (message.nativeName === pendingParked.toolName || message.name === pendingParked.toolName)
                     && areAgyToolArgsCompatible(
                         pendingParked.decodedArgs,
@@ -1855,7 +1880,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         pendingParked.toolName
                     );
 
-                if (pendingParked.remainingPrefixCalls.length > 0 && (!matchesParked || message.status !== 'pending')) {
+                if (pendingParked.remainingPrefixCalls.length > 0 && (!matchesParkedIdentity || message.status !== 'pending')) {
                     const prefixIdx = pendingParked.remainingPrefixCalls.findIndex(
                         (entry) =>
                             (message.nativeName === entry.toolName || message.name === entry.toolName)
@@ -1877,11 +1902,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
 
-                if (matchesParked && message.status === 'pending') {
+                if (matchesParkedIdentity) {
                     pendingParked.remainingPrefixCalls.length = 0;
                     pendingParked.aliasedLiveId = message.id;
                     this.syntheticCallAliases.set(message.id, pendingParked.parkedCallId);
                     this.nativeToolNames.set(pendingParked.parkedCallId, pendingParked.toolName);
+                    if (message.status !== 'pending') {
+                        // Replay shows the original parked invocation already ran natively;
+                        // retire any saved approval grant so a later tool cannot inherit it.
+                        pendingParked.decisionConsumed = true;
+                    }
                     return {
                         message: { ...message, id: pendingParked.parkedCallId },
                         suppressForward: true,
@@ -2292,6 +2322,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         await backend?.disconnect();
         logger.debug('[agy-acp] cleanup done');
     }
+}
+
+function isPermissionRequestKindCompatibleWithTool(kind: string | undefined, toolName: string): boolean {
+    if (!kind) return true;
+    const normalized = kind.trim().toLowerCase();
+    if (!normalized) return true;
+    if (normalized === 'execute') return toolName === 'run_command';
+    if (normalized === 'read') return toolName === 'read_file';
+    if (normalized === 'edit' || normalized === 'write' || normalized === 'delete') {
+        return toolName === 'edit_file' || toolName === 'write_file';
+    }
+    return true;
 }
 
 function matchesParkedQuestionForm(
