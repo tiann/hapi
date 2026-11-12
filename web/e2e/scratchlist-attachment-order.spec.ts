@@ -92,10 +92,19 @@ for (const mobile of [false, true]) {
                 if (scenario === 'inserted' || scenario === 'text-only') {
                     const originalIds = attachments.map(attachment => attachment.id)
                     const plus = page.getByTestId('scratchlist-insert-attachment-plus')
-                    await expect(plus).toBeEnabled()
-                    await page.screenshot({ path: testInfo.outputPath(`${scenario}-plus.png`) })
                     const chooser = page.waitForEvent('filechooser')
-                    await plus.click()
+                    if (scenario === 'text-only') {
+                        await expect(plus).toHaveCount(0)
+                        await page.locator('[data-scratchlist-action="menu"]').click()
+                        const insert = page.locator('[data-scratchlist-action="insert-attachments"]')
+                        await expect(insert).toBeVisible()
+                        await page.screenshot({ path: testInfo.outputPath(`${scenario}-upload-menu.png`) })
+                        await insert.click()
+                    } else {
+                        await expect(plus).toBeEnabled()
+                        await page.screenshot({ path: testInfo.outputPath(`${scenario}-plus.png`) })
+                        await plus.click()
+                    }
                     await (await chooser).setFiles([
                         { name: `${run}-added-image.png`, mimeType: 'image/png', buffer: png },
                         { name: `${run}-added-file.txt`, mimeType: 'text/plain', buffer: Buffer.from('Inserted file') },

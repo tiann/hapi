@@ -110,3 +110,19 @@ for (const touch of [false, true]) {
         }
     })
 }
+
+test('selecting draft text does not open the inline editor', async ({ page }) => {
+    await page.goto('/e2e-fixtures/scratchlist-attachments-fixture.html')
+    const text = page.getByTestId('scratchlist-entry-text')
+    await text.evaluate((element) => {
+        const range = document.createRange()
+        range.selectNodeContents(element)
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+        element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe('Draft note')
+    await expect(page.getByRole('textbox', { name: 'Edit scratchlist entry' })).toHaveCount(0)
+})

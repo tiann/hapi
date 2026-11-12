@@ -1152,7 +1152,19 @@ function ScratchlistInventory({
                                         data-scratchlist-text=""
                                         title={t('scratchlist.action.editEntry')}
                                         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                                        onClick={() => startEditing(entry)}
+                                        onClick={(event) => {
+                                            const selection = window.getSelection()
+                                            if (
+                                                selection
+                                                && !selection.isCollapsed
+                                                && selection.toString().trim().length > 0
+                                                && selection.anchorNode
+                                                && event.currentTarget.contains(selection.anchorNode)
+                                            ) {
+                                                return
+                                            }
+                                            startEditing(entry)
+                                        }}
                                         onKeyDown={(event) => {
                                             if (!event.altKey || disabled) return
                                             const delta = event.key === 'ArrowUp'

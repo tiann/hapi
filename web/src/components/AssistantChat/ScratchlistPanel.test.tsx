@@ -226,6 +226,26 @@ describe('ScratchlistPanel', () => {
         expect(screen.getByTestId('scratchlist-entry-text')).toHaveTextContent('after')
     })
 
+    it('preserves selected draft text instead of opening the inline editor', () => {
+        persistScratchlist(SID, [makeEntry({ id: 'selection', text: 'select me' })])
+        renderPanel()
+        expandPanel()
+        const textButton = screen.getByTestId('scratchlist-entry-text')
+        const range = document.createRange()
+        range.selectNodeContents(textButton)
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+
+        fireEvent.click(textButton)
+
+        expect(window.getSelection()?.toString()).toBe('select me')
+        expect(screen.queryByRole('textbox', { name: 'Edit scratchlist entry' })).toBeNull()
+        selection.removeAllRanges()
+        fireEvent.click(textButton)
+        expect(screen.getByRole('textbox', { name: 'Edit scratchlist entry' })).toBeInTheDocument()
+    })
+
     it('keeps a multiline editor in sync with its content height without a scrollbar', () => {
         persistScratchlist(SID, [makeEntry({ id: 'a', text: 'first line\nsecond line' })])
         renderPanel()
