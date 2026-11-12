@@ -277,7 +277,7 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
 
         const sessionPath = sessionResult.session.metadata?.path
         if (!sessionPath) {
-            return c.json({ success: false, error: 'Session path not available' })
+            return c.json({ success: false, error: 'Session path not available', reason: 'session-unavailable' })
         }
 
         const parsed = boundedFileReadSchema.safeParse(c.req.query())

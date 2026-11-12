@@ -102,6 +102,23 @@ describe('session file route', () => {
     })
 })
 
+describe('session file failure metadata', () => {
+    it('marks an unavailable session path as session-unavailable', async () => {
+        const session = { id: 'session-1', namespace: 'default', active: true, metadata: {} } as unknown as Session
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/file?path=images%2Fpage.png')
+
+        expect(response.status).toBe(200)
+        await expect(response.json()).resolves.toEqual({
+            success: false,
+            error: 'Session path not available',
+            reason: 'session-unavailable',
+        })
+    })
+})
 describe('file search route', () => {
     it('uses an exact stat lookup for Windows relative paths', async () => {
         const session = {

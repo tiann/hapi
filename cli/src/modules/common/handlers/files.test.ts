@@ -47,6 +47,26 @@ describe('file RPC handlers', () => {
         expect(parsed.modified).toBe(expectedStats.mtime.getTime())
     })
 
+    it('marks rejected traversal as outside-workspace', async () => {
+        const response = await rpc.handleRequest({
+            method: 'session-test:readFile',
+            params: JSON.stringify({ path: '../outside.png', maxBytes: 1024 })
+        })
+        const parsed = JSON.parse(response) as { success: boolean; reason?: string }
+
+        expect(parsed.success).toBe(false)
+        expect(parsed.reason).toBe('outside-workspace')
+    })
+    it('returns a structured not-found reason for missing files', async () => {
+        const response = await rpc.handleRequest({
+            method: 'session-test:readFile',
+            params: JSON.stringify({ path: 'missing.png', maxBytes: 1024 })
+        })
+        const parsed = JSON.parse(response) as { success: boolean; error?: string; reason?: string }
+
+        expect(parsed.success).toBe(false)
+        expect(parsed.reason).toBe('not-found')
+    })
     it('rejects bounded reads before loading an oversized file', async () => {
         const filePath = join(rootDir, 'large.png')
         await writeFile(filePath, Buffer.alloc(32))
@@ -55,10 +75,12 @@ describe('file RPC handlers', () => {
             method: 'session-test:readFile',
             params: JSON.stringify({ path: 'large.png', maxBytes: 16 })
         })
-        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        const parsed = JSON.parse(response) as { success: boolean; error?: string; reason?: string; size?: number }
 
         expect(parsed.success).toBe(false)
         expect(parsed.error).toContain('too large')
+        expect(parsed.reason).toBe('too-large')
+        expect(parsed.size).toBe(32)
     })
 
     it('rejects bounded reads of non-regular files', async () => {
@@ -69,10 +91,11 @@ describe('file RPC handlers', () => {
             method: 'session-test:readFile',
             params: JSON.stringify({ path: 'directory.png', maxBytes: 1024 })
         })
-        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        const parsed = JSON.parse(response) as { success: boolean; error?: string; reason?: string; size?: number }
 
         expect(parsed.success).toBe(false)
         expect(parsed.error).toContain('regular file')
+        expect(parsed.reason).toBe('not-regular-file')
     })
 
     it('keeps bounded reads within the limit when the file is sparse and oversized', async () => {
@@ -84,10 +107,12 @@ describe('file RPC handlers', () => {
             method: 'session-test:readFile',
             params: JSON.stringify({ path: 'growth.png', maxBytes: 16 })
         })
-        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        const parsed = JSON.parse(response) as { success: boolean; error?: string; reason?: string; size?: number }
 
         expect(parsed.success).toBe(false)
         expect(parsed.error).toContain('too large')
+        expect(parsed.reason).toBe('too-large')
+        expect(parsed.size).toBe(32)
     })
 
     it('does not follow a symlink to a non-regular target for bounded reads', async () => {
@@ -104,10 +129,11 @@ describe('file RPC handlers', () => {
             method: 'session-test:readFile',
             params: JSON.stringify({ path: 'linked.png', maxBytes: 1024 })
         })
-        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+        const parsed = JSON.parse(response) as { success: boolean; error?: string; reason?: string; size?: number }
 
         expect(parsed.success).toBe(false)
         expect(parsed.error).toContain('regular file')
+        expect(parsed.reason).toBe('not-regular-file')
     })
 
     it('rejects bounded reads through a symlink to an outside regular file', async () => {
@@ -132,10 +158,11 @@ describe('file RPC handlers', () => {
                 method: 'session-test:readFile',
                 params: JSON.stringify({ path: 'linked-secret.png', maxBytes: 1024 })
             })
-            const parsed = JSON.parse(response) as { success: boolean; error?: string }
+            const parsed = JSON.parse(response) as { success: boolean; error?: string; reason?: string; size?: number }
 
             expect(parsed.success).toBe(false)
             expect(parsed.error).toContain('outside')
+            expect(parsed.reason).toBe('outside-workspace')
         } finally {
             await rm(outsideDir, { recursive: true, force: true })
         }

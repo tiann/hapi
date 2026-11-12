@@ -5,6 +5,19 @@ import { open } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { asString, isObject } from '@hapi/protocol'
 
+export type BoundedFileReadFailureReason = 'too-large' | 'not-regular-file' | 'file-changed'
+
+export class BoundedFileReadError extends Error {
+    constructor(
+        readonly reason: BoundedFileReadFailureReason,
+        message: string,
+        readonly size?: number,
+    ) {
+        super(message)
+        this.name = 'BoundedFileReadError'
+    }
+}
+
 /**
  * Read a regular file through one open descriptor: size is taken from the fd
  * (not a separate pathname `lstat`), then the buffer is allocated to that size
@@ -23,21 +36,21 @@ export async function readBoundedRegularFile(path: string, maxBytes: number): Pr
     try {
         const info = await handle.stat()
         if (!info.isFile()) {
-            throw new Error('Path is not a regular file')
+            throw new BoundedFileReadError('not-regular-file', 'Path is not a regular file')
         }
         if (info.size > maxBytes) {
-            throw new Error('File is too large to display inline')
+            throw new BoundedFileReadError('too-large', 'File is too large to display inline', info.size)
         }
         const bytes = Buffer.alloc(info.size)
         for (let offset = 0; offset < bytes.length;) {
             const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
             if (bytesRead === 0) {
-                throw new Error('File changed while reading')
+                throw new BoundedFileReadError('file-changed', 'File changed while reading', info.size)
             }
             offset += bytesRead
         }
         if ((await handle.stat()).size !== info.size) {
-            throw new Error('File changed while reading')
+            throw new BoundedFileReadError('file-changed', 'File changed while reading', info.size)
         }
         return bytes
     } finally {

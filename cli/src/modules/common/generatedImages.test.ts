@@ -247,7 +247,7 @@ describe('generatedImages', () => {
         const path = join(dir, 'big.bin')
         writeFileSync(path, Buffer.alloc(1024, 0xab))
 
-        await expect(readBoundedRegularFile(path, 512)).rejects.toThrow(/too large/i)
+        await expect(readBoundedRegularFile(path, 512)).rejects.toMatchObject({ reason: 'too-large', size: 1024 })
         await expect(readBoundedRegularFile(path, MAX_GENERATED_IMAGE_BYTES)).resolves.toHaveLength(1024)
     })
 

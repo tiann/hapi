@@ -880,12 +880,23 @@ export type CommandResponse = {
 
 export type GitCommandResponse = CommandResponse
 
+export type FileReadFailureReason =
+    | 'not-found'
+    | 'too-large'
+    | 'not-regular-file'
+    | 'file-changed'
+    | 'access-denied'
+    | 'outside-workspace'
+    | 'session-unavailable'
+    | 'read-failed'
+
 export type FileReadResponse = {
     success: boolean
     content?: string
     size?: number
     modified?: number
     error?: string
+    reason?: FileReadFailureReason
 }
 
 export type GeneratedImageResponse = {
