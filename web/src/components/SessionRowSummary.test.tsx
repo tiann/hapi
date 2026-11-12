@@ -81,6 +81,38 @@ describe('SessionRowSummary background status', () => {
         expect(idleBadge).not.toHaveClass('bg-[var(--app-badge-success-text)]')
     })
 
+    it('never puts a tooltip panel inside the faded subtree', () => {
+        // The residency fade must stay on the title text and off any container.
+        // HoverTooltip renders its panel inline as `absolute z-30` rather than
+        // through a portal, and any `opacity < 1` ancestor forms a stacking
+        // context — which would both wash the panel out and trap its z-index, so
+        // a later row could paint over a downward-opening schedule panel. Current
+        // code is correct; this pins the invariant, because the natural refactor
+        // (hoist the fade onto the grid so the whole row dims) reintroduces it
+        // silently and only on inactive rows that also have scheduled messages.
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        active: false,
+                        backgroundTaskCount: 0,
+                        futureScheduledMessageCount: 2,
+                        nextScheduledAt: 1_000_000,
+                    })}
+                    showDetailedStatus={true}
+                />
+            </I18nProvider>
+        )
+
+        const faded = Array.from(container.querySelectorAll('.opacity-50'))
+        expect(faded.length).toBeGreaterThan(0)
+        const tooltip = container.querySelector('[role="tooltip"]')
+        expect(tooltip).not.toBeNull()
+        for (const node of faded) {
+            expect(node.contains(tooltip)).toBe(false)
+        }
+    })
+
     it('dims disconnected rows and gives them a stopped badge instead of nothing', () => {
         const { container } = render(
             <I18nProvider>
