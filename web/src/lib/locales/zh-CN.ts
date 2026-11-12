@@ -793,6 +793,7 @@ export default {
   'forkPreview.newSessionStart': '不会包含在新会话中',
   'forkPreview.below': '新会话将在这条消息之前继续 · 原会话保持不变',
   'forkPreview.currentTail': '此会话的副本将成为新会话 · 原会话保持不变',
+  'forkPreview.latestCompletedTail': '复制到最后一个已完成的回合 · 源会话仍在进行的回复不会包含在内 · 原会话保持不变',
   'forkPreview.cancel': '取消',
   'forkPreview.confirm': '在此分叉',
 

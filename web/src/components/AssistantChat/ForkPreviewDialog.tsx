@@ -63,7 +63,7 @@ export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, prefi
                             {t(prefixMayHaveMore ? 'forkPreview.noTextPreview' : 'forkPreview.emptyPrefix')}
                         </div>
                     )}
-                    {kind === 'historical' ? (
+                    {kind !== 'current' ? (
                         <>
                             <div className="my-3 flex items-center gap-2" data-testid="fork-preview-boundary">
                                 <span className="h-px flex-1 bg-[var(--app-link)]" />
@@ -84,7 +84,8 @@ export function ForkPreviewDialog({ isOpen, kind, keptTurns, boundaryText, prefi
                     ) : null}
                 </div>
                 <p className="text-xs text-[var(--app-hint)]">
-                    {t(kind === 'historical' ? 'forkPreview.below' : 'forkPreview.currentTail')}
+                    {t(kind === 'historical' ? 'forkPreview.below'
+                        : kind === 'latestCompleted' ? 'forkPreview.latestCompletedTail' : 'forkPreview.currentTail')}
                 </p>
                 {error ? (
                     <div className="rounded-md bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400" data-testid="fork-preview-error">

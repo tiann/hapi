@@ -795,6 +795,7 @@ export default {
   'forkPreview.newSessionStart': 'Not included in the new session',
   'forkPreview.below': 'The new session resumes just before this message · The original session is unchanged',
   'forkPreview.currentTail': 'A copy of this conversation becomes a new session · The original session is unchanged',
+  'forkPreview.latestCompletedTail': 'Copies up to the last completed turn · The reply still running in the source is not included · The original session is unchanged',
   'forkPreview.cancel': 'Cancel',
   'forkPreview.confirm': 'Fork here',
 

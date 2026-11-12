@@ -5,7 +5,7 @@ export type ForkPreviewTurn = {
     text: string
 }
 
-export type ForkPreviewKind = 'current' | 'historical'
+export type ForkPreviewKind = 'current' | 'historical' | 'latestCompleted'
 
 export type ForkPreview = {
     /** How the fork maps onto the transcript. */
@@ -51,14 +51,33 @@ function blockPreviewText(block: VisibleChatBlock): { role: 'user' | 'assistant'
  * transcript. Queued rows (`invokedAt == null`) are never copied, matching
  * the hub filter.
  */
-export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLocalId?: string): ForkPreview {
+export function buildForkPreview(
+    blocks: readonly VisibleChatBlock[],
+    messageLocalId?: string,
+    options: { latestCompleted?: boolean; isRunning?: boolean; activeTurnStartedAt?: number | null } = {}
+): ForkPreview {
     let cutoff = blocks.length
     let boundaryText: string | null = null
+    let latestCompletedCut = false
     if (messageLocalId) {
         cutoff = blocks.findLastIndex((block) => block.kind !== 'agent-event' && block.kind !== 'tool-group' && block.localId === messageLocalId)
         if (cutoff < 0) return { kind: 'historical', keptTurns: [], boundaryText: null, prefixTruncated: false }
         const selected = blockPreviewText(blocks[cutoff])
         boundaryText = selected ? truncate(selected.text) : null
+    } else if (options.latestCompleted && options.isRunning) {
+        // A latest-completed fork copies the native turns through the last
+        // completed one: the turn still running in the source is left out,
+        // so the preview must end where that turn begins.
+        const activeTurnStartedAt = options.activeTurnStartedAt ?? null
+        const activeStart = activeTurnStartedAt === null
+            ? blocks.findLastIndex((block) => visibleBlockRole(block) === 'user' && (block.invokedAt ?? null) !== null)
+            : blocks.findIndex((block) => (block.invokedAt ?? block.createdAt) >= activeTurnStartedAt)
+        if (activeStart >= 0) {
+            cutoff = activeStart
+            latestCompletedCut = true
+            const selected = blockPreviewText(blocks[cutoff])
+            boundaryText = selected ? truncate(selected.text) : null
+        }
     }
 
     const turns: ForkPreviewTurn[] = []
@@ -82,7 +101,7 @@ export function buildForkPreview(blocks: readonly VisibleChatBlock[], messageLoc
     }
     const keptTurns = turns.slice(-MAX_KEPT_TURNS)
     return {
-        kind: messageLocalId ? 'historical' : 'current',
+        kind: messageLocalId ? 'historical' : latestCompletedCut ? 'latestCompleted' : 'current',
         keptTurns,
         boundaryText,
         prefixTruncated: previewIncomplete || turns.length > keptTurns.length,

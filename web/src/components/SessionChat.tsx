@@ -166,7 +166,7 @@ export function isRewindForkFallbackError(error: unknown): boolean {
  *  completed turn forks through that turn instead of being refused as busy,
  *  while a chosen historical boundary and the idle current fork stay plain. */
 export function forkConversationCallArgs(
-    session: { id: string; thinking: boolean; metadata?: { capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } } } },
+    session: { id: string; thinking: boolean; metadata?: { capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } } } | null },
     messageLocalId?: string
 ): { sessionId: string; messageLocalId?: string; latestCompleted: boolean } {
     const supportsCompletedFork = session.metadata?.capabilities?.conversationHistory?.forkLatestCompleted === true
@@ -756,7 +756,7 @@ function SessionChatInner(props: SessionChatProps) {
     const { conciseChatMode, setConciseChatMode } = useConciseChatMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
-    const [forkPreviewRequest, setForkPreviewRequest] = useState<{ messageLocalId?: string } | null>(null)
+    const [forkPreviewRequest, setForkPreviewRequest] = useState<{ messageLocalId?: string; latestCompleted?: boolean } | null>(null)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
 
     const executeForkConversation = useCallback(async (messageLocalId?: string) => {
@@ -778,8 +778,8 @@ function SessionChatInner(props: SessionChatProps) {
     }, [navigate, props.api, props.session])
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
-        setForkPreviewRequest({ messageLocalId })
-    }, [])
+        setForkPreviewRequest({ messageLocalId, latestCompleted: forkConversationCallArgs(props.session, messageLocalId).latestCompleted })
+    }, [props.session])
 
     const onRewindConversation = useCallback(async (messageLocalId: string) => {
         setHistoryActionPending(true)
@@ -1747,8 +1747,10 @@ function SessionChatInner(props: SessionChatProps) {
     )
 
     const forkPreview = useMemo(
-        () => forkPreviewRequest ? buildForkPreview(reconciled.blocks, forkPreviewRequest.messageLocalId) : null,
-        [forkPreviewRequest, reconciled.blocks]
+        () => forkPreviewRequest ? buildForkPreview(reconciled.blocks, forkPreviewRequest.messageLocalId,
+            { latestCompleted: forkPreviewRequest.latestCompleted === true, isRunning: props.session.thinking,
+                activeTurnStartedAt: props.session.activeTurnStartedAt ?? null }) : null,
+        [forkPreviewRequest, reconciled.blocks, props.session.thinking, props.session.activeTurnStartedAt]
     )
 
     const isLatestCompletedBoundary = useCallback((messageId: string) => {

@@ -55,6 +55,26 @@ describe('buildForkPreview', () => {
         expect(preview.boundaryText).toBeNull()
     })
 
+    it('cuts the in-progress turn for a latest-completed fork while the source runs', () => {
+        const running: VisibleChatBlock[] = [
+            ...blocks,
+            user('fourth question', 'u4'),
+            agent('fourth answer (still streaming)'),
+        ]
+        const preview = buildForkPreview(running, undefined, { latestCompleted: true, isRunning: true, activeTurnStartedAt: null })
+        expect(preview.kind).toBe('latestCompleted')
+        expect(preview.keptTurns[2].text).toBe('third answer')
+        expect(preview.keptTurns.some((turn) => turn.text.includes('fourth'))).toBe(false)
+        expect(preview.boundaryText).toBe('fourth question')
+    })
+
+    it('falls back to the plain current tail when nothing is in progress', () => {
+        const preview = buildForkPreview(blocks, undefined, { latestCompleted: true, isRunning: false })
+        expect(preview.kind).toBe('current')
+        expect(preview.keptTurns[2].text).toBe('third answer')
+        expect(preview.boundaryText).toBeNull()
+    })
+
     it('merges consecutive same-role blocks into one turn and truncates long text', () => {
         const merged: VisibleChatBlock[] = [
             agent(`"${'x'.repeat(300)}"`),
