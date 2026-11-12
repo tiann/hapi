@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import type { RawJSONLines } from '@/claude/types';
 import { watch, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
@@ -135,6 +136,16 @@ export function agyRoundSummary(
     } as const;
 }
 
+function backgroundTaskDescription(message: Extract<AgentMessage, { type: 'tool_call' }>): string {
+    const command = message.nativeArgs && typeof message.nativeArgs === 'object'
+        && !Array.isArray(message.nativeArgs)
+        ? (message.nativeArgs as { CommandLine?: unknown }).CommandLine
+        : undefined;
+    if (typeof command === 'string' && command.trim().length > 0) return command;
+    if (typeof message.title === 'string' && message.title.trim().length > 0) return message.title;
+    return message.name;
+}
+
 function normalizeEcho(text: string): string {
     return text.replace(/\s+/g, ' ').trim();
 }
@@ -171,6 +182,9 @@ type AgyTurn = {
     // Commands agy has not reported an end for; one still open at end_turn was
     // moved to the background.
     openCommands: Set<string>;
+    // Display text per open run_command (the command line agy was given), for
+    // the hub's background-task indicator.
+    bgTaskDescriptions: Map<string, string>;
     // All `run_command` call IDs seen in this turn in arrival order, kept even
     // if an earlier command completes during a steer so call ordinals stay 1:1
     // with transcript `PLANNER_RESPONSE.tool_calls` entries.
@@ -247,6 +261,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }> = [];
     // Background `run_command` entries awaiting completion across turns.
     private readonly backgroundCommands: AgyOpenBackgroundCommand[] = [];
+    // The hub's background-task indicator state: the commands agy left
+    // running, keyed by ACP call id, mirrored to the hub as a full
+    // system/background_tasks_changed snapshot on every membership change.
+    private readonly activeBgTasks = new Map<string, string>();
+    private lastBgSnapshotIds: string[] = [];
     private acpSessionId: string | null = null;
     private lastTranscriptStepIndex = -1;
     // Latest step_index seen when an unfinished wakeup hit `maxIdleMs`, so
@@ -665,6 +684,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     for (const msg of converted.messages) {
                         this.forwardAgentMessage(this.showQuestionCard(msg));
                     }
+                    this.retireSettledBackgroundTasks();
                     if (converted.usage) {
                         const wakeupNumTurns = inspection.steps.filter((step) =>
                             step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
@@ -889,6 +909,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answeredAt: null,
             generation: new GenerationClock(),
             openCommands: new Set(),
+            bgTaskDescriptions: new Map(),
             commandCallIds: [],
             commandArrivalOrder: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
@@ -1088,6 +1109,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             );
             if (placeholder) this.session.sendAgentMessage(placeholder);
         }
+        // The background-task indicator mirrors these cards: register every
+        // command agy left open at end_turn so the hub shows it running until
+        // its real result lands.
+        for (const id of openIds) {
+            const description = turn.bgTaskDescriptions.get(id);
+            if (description !== undefined) this.activeBgTasks.set(id, description);
+        }
+        if (openIds.length > 0) this.emitBackgroundTasksSnapshot();
         turn.openCommands.clear();
     }
 
@@ -1362,6 +1391,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     } else {
                         const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === match.entry.callId);
                         if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
+                        this.noteBackgroundTaskSettled(match.entry.callId);
                     }
                     this.forwardAgentMessage(this.showQuestionCard(effectiveResult));
                 } else if (match.kind === 'none') {
@@ -1574,11 +1604,63 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // for approval (pending) did not start, whatever happens to the turn.
         if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
             turn.openCommands.add(message.id);
+            turn.bgTaskDescriptions.set(message.id, backgroundTaskDescription(message));
         } else if (message.status !== 'in_progress') {
             turn.openCommands.delete(message.id);
             const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === message.id);
             if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
+            this.noteBackgroundTaskSettled(message.id);
         }
+    }
+
+    /**
+     * The hub's background-task indicator reads Claude's
+     * `system/background_tasks_changed` snapshot off the agent output stream
+     * (hub/src/sync/backgroundTasks.ts); agy reuses the shape so hub and web
+     * need no changes. Full snapshot on every membership change, empty once
+     * nothing runs — the launcher skips redundant snapshots itself, and the
+     * hub drops identical ones.
+     */
+    private emitBackgroundTasksSnapshot(): void {
+        const ids = [...this.activeBgTasks.keys()];
+        if (ids.length === this.lastBgSnapshotIds.length
+            && ids.every((id, index) => id === this.lastBgSnapshotIds[index])) return;
+        this.lastBgSnapshotIds = ids;
+        this.session.client.sendClaudeSessionMessage({
+            type: 'system',
+            uuid: randomUUID(),
+            subtype: 'background_tasks_changed',
+            tasks: ids.map((id) => ({
+                task_id: id,
+                task_type: 'local_bash',
+                description: this.activeBgTasks.get(id) ?? ''
+            }))
+        } as RawJSONLines);
+    }
+
+    /** One background command reported its end; an empty list once none remain. */
+    private noteBackgroundTaskSettled(callId: string): void {
+        if (!this.activeBgTasks.delete(callId)) return;
+        this.emitBackgroundTasksSnapshot();
+    }
+
+    /** Drops indicator entries whose command the transcript state already settled. */
+    private retireSettledBackgroundTasks(): void {
+        let changed = false;
+        for (const id of [...this.activeBgTasks.keys()]) {
+            if (!this.backgroundCommands.some((entry) => entry.callId === id)) {
+                this.activeBgTasks.delete(id);
+                changed = true;
+            }
+        }
+        if (changed) this.emitBackgroundTasksSnapshot();
+    }
+
+    /** Abort and session end clear the indicator with an empty snapshot. */
+    private clearBackgroundTasksSnapshot(): void {
+        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) return;
+        this.activeBgTasks.clear();
+        this.emitBackgroundTasksSnapshot();
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
@@ -1727,6 +1809,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null;
         await this.cancelActiveTurn();
+        this.clearBackgroundTasksSnapshot();
         this.abortController.abort();
         this.abortController = new AbortController();
         if (hadTurn) {
@@ -1741,6 +1824,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async handleKill(): Promise<void> {
         const turnSettled = this.turnSettled;
+        this.clearBackgroundTasksSnapshot();
         await this.requestExit('exit', () => this.handleAbort());
         await this.backend?.disconnect();
         // The runner ends the session and closes the client as soon as kill

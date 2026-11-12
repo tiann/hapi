@@ -609,6 +609,19 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
 
+        // The hub's background-task indicator mirrors the commands agy left
+        // open at end_turn, keyed by their ACP call id.
+        const claudeMessages = client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg);
+        expect(claudeMessages).toContainEqual(expect.objectContaining({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            tasks: [expect.objectContaining({
+                task_id: 'call-bg-1',
+                task_type: 'local_bash',
+                description: 'sleep 5 && echo READY'
+            })]
+        }));
+
         const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
         client.sendSessionEvent.mockClear();
         client.keepAlive.mockClear();
@@ -643,6 +656,14 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             expect(backend.resumeCalls).toEqual([backend.sessionIdToCreate]);
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
+
+        // The wakeup's real completion retires the indicator entry: an empty
+        // snapshot follows so the hub stops showing the command as running.
+        expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(expect.objectContaining({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            tasks: []
+        }));
 
         // Thinking transitioned true -> false during the reactive wakeup.
         const thinkingTransitions = client.keepAlive.mock.calls.map(([thinking]) => thinking);
