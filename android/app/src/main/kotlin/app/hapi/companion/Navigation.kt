@@ -38,6 +38,8 @@ import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
+import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
 import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
@@ -87,6 +89,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -631,11 +634,35 @@ fun HapiNavigation() {
                 onBack = { navController.popBackStack() },
                 onSendToComposer = chatHolder?.let { chat ->
                     { scratchEntry ->
-                        chat.viewModel.insertComposerText(scratchEntry.text)
+                        chat.viewModel.promoteScratchlistEntryToComposer(scratchEntry)
                         navController.popBackStack()
                     }
                 },
+                // "Send to queue" stays on this screen (busy state machine +
+                // entry delete live in the scratchlist ViewModel); true =
+                // hub accepted.
+                onSendToQueue = chatHolder?.let { chat -> chat.viewModel::sendScratchlistEntryToQueue },
             )
+            // Session supersession from the scratchlist route: a queue
+            // promote on an inactive session can resume into a different
+            // session id. ChatHost's event collector is out of composition
+            // while this destination covers it (no-replay SharedFlow), so
+            // the chat ViewModel retains the id as consumable state and it
+            // is handled here — after the promote settles (staging, send
+            // and the accepted entry delete all live under the busy flag),
+            // replace the chat stack with the superseding session so Back
+            // never returns to the obsolete id.
+            val supersededChat = chatHolder?.viewModel
+            val supersededBy = supersededChat?.supersededBySessionId?.collectAsState()?.value
+            LaunchedEffect(supersededBy) {
+                if (supersededBy != null && supersededChat != null) {
+                    holder.viewModel.busyPromoteEntryId.first { it == null }
+                    navController.navigate(Routes.chat(supersededBy)) {
+                        popUpTo(Routes.CHAT) { inclusive = true }
+                    }
+                    supersededChat.consumeSupersededBySessionId()
+                }
+            }
         }
 
         composable(
@@ -834,6 +861,7 @@ private class ChatViewModelHolder(
     appContext: Context,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val attachmentPreparer = AttachmentPreparer(appContext)
 
     val viewModel = ChatViewModel(
         sessionId = sessionId,
@@ -847,6 +875,24 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        // Scratchlist promote seams (web `scratchlistAttachmentFlow.ts`):
+        // hub blob fetch + the Android pick pipeline for rehydration.
+        scratchlistBlobFetcher = ScratchlistPromoter.AttachmentFetcher { id, attachmentId ->
+            try {
+                hubGraph.session.api.getScratchlistAttachment(id, attachmentId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+        },
+        scratchlistPickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
+            val resolved = mimeType.takeIf { it.isNotBlank() } ?: attachment.mimeType
+            when (val prepared = attachmentPreparer.prepareFetched(attachment.filename, resolved, bytes)) {
+                is PrepareResult.Ready -> prepared.attachment
+                else -> null
+            }
+        },
     )
 
     /**

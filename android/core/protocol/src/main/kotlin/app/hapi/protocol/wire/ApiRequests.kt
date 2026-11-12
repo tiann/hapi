@@ -76,6 +76,26 @@ data class ResumeSessionRequest(
     val permissionMode: String? = null,
 )
 
+/**
+ * `POST /api/sessions/:id/fork` (`ForkConversationRequestSchema`).
+ * `messageLocalId` absent/null = fork the current conversation head;
+ * a value forks at that history boundary (hub re-validates it was invoked).
+ */
+@Serializable
+data class ForkConversationRequest(
+    val messageLocalId: String? = null,
+)
+
+/**
+ * `POST /api/sessions/:id/rewind` (`RewindConversationRequestSchema`).
+ * The boundary `messageLocalId` is required and must be an invoked history
+ * boundary (`conversationHistoryPoints[localId] === true`).
+ */
+@Serializable
+data class RewindConversationRequest(
+    val messageLocalId: String,
+)
+
 /** `PATCH /api/sessions/:id` (`RenameSessionRequestSchema`, 1–255 chars). */
 @Serializable
 data class RenameSessionRequest(

@@ -30,6 +30,8 @@ import app.hapi.protocol.chat.AgentTextBlock
 /** Assistant prose: full-width markdown (the shared M2d1 renderer). */
 @Composable
 fun AgentTextBlockView(block: AgentTextBlock, modifier: Modifier = Modifier) {
+    // History actions (fork-current at the latest boundary) render from the
+    // transcript row wrapper, not here — see ChatTranscript.
     Markdown(text = block.text, modifier = modifier.fillMaxWidth())
 }
 

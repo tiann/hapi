@@ -3,6 +3,8 @@ package app.hapi.companion.feature.chat
 import androidx.annotation.MainThread
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
 import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
+import app.hapi.companion.feature.chat.attachments.chatUploadBase64
 import app.hapi.companion.feature.chat.composer.appendSharedText
 import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
@@ -33,6 +35,7 @@ import app.hapi.data.store.MessageWindowStore
 import app.hapi.data.store.MessageWindowStores
 import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.data.store.ScratchlistCreateResult
+import app.hapi.data.store.ScratchlistUploadResult
 import app.hapi.data.store.SessionDetailStore
 import app.hapi.data.store.SessionScratchlist
 import app.hapi.protocol.catalog.CatalogOption
@@ -48,6 +51,7 @@ import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
 import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildVisibleChatBlocks
+import app.hapi.protocol.chat.findLatestCompletedBoundaryKey
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.chat.reduceChatBlocks
@@ -68,6 +72,8 @@ import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionReadState
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SlashCommand
+import app.hapi.protocol.wire.ScratchlistAttachment
+import app.hapi.protocol.wire.ScratchlistEntry
 import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
@@ -105,6 +111,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -170,6 +177,12 @@ data class ChatUiState(
     val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
     /** Context-remaining readout for the composer strip; null until usage arrives. */
     val contextUsage: ContextUsageIndicator? = null,
+    /**
+     * Conversation-history action availability shared by every message row
+     * (fork current / fork at message / rewind). Default = off — inspection
+     * hosts and pre-detail states render no actions.
+     */
+    val historyGate: ChatHistoryGate = ChatHistoryGate(),
 )
 
 /** Composer bar state (M3a). */
@@ -188,9 +201,31 @@ data class ComposerUiState(
      * external text. `-1` ⇒ the text tail; tracks the live caret otherwise.
      */
     val caretPosition: Int = -1,
+    /**
+     * Scratchlist mode: Send parks the draft instead of delivering (amber
+     * send button, web `scratchlistMode`).
+     */
+    val routesToScratchlist: Boolean = false,
+    /**
+     * A promote-to-composer fetch is rehydrating attachments into the tray:
+     * the text is already live but no chips exist yet — submission waits so
+     * the text can never go out without its attachments.
+     */
+    val isRestoringAttachments: Boolean = false,
 )
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
+
+/**
+ * Web `shouldRouteToScratchlist` (`HappyComposer.tsx` park interception):
+ * while the composer sits in scratchlist mode, Send parks the draft instead
+ * of delivering — unless a scheduled send is pending, which keeps the real
+ * send contract. No schedule-composition surface exists on this branch yet
+ * (scheduled sends only arrive via retry preservation), so callers pass
+ * `schedulePending = false`; the function keeps the full web contract.
+ */
+fun scratchlistSendRouting(scratchlistMode: Boolean, schedulePending: Boolean): Boolean =
+    scratchlistMode && !schedulePending
 
 /** One row of the queued-messages bar (uninvoked sends). */
 data class QueuedRowUi(
@@ -253,7 +288,15 @@ sealed interface ChatNotice {
     data object DraftParked : ChatNotice
     data object ScratchlistFull : ChatNotice
     data object ScratchlistParkFailed : ChatNotice
+
+    /** Promote-to-queue could not stage the entry's attachments (fetch/upload). */
+    data object ScratchlistPromoteStagingFailed : ChatNotice
+    /** Promote-to-composer rehydrated only part of the entry's attachments. */
+    data object ScratchlistRehydratePartial : ChatNotice
     data object AttachmentsUploading : ChatNotice
+
+    /** A promote-to-composer fetch is still loading the entry's attachments — Send waits. */
+    data object PromotedAttachmentsLoading : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
     data object QueuedEditScheduleDropped : ChatNotice
@@ -274,7 +317,34 @@ sealed interface ChatNotice {
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
     data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
+    data class ForkFailed(val detail: String?) : ChatNotice
+    data class RewindFailed(val detail: String?) : ChatNotice
+
+    /** Rewind 500 `hydrateFailed` — the session's history diverged; outcome unknown. */
+    data object RewindDiverged : ChatNotice
 }
+
+/**
+ * The pending conversation-history action awaiting confirmation (its dialog
+ * is [ChatViewModel.conversationHistory]); `messageLocalId` targets the
+ * boundary for at-message fork and rewind.
+ */
+sealed interface PendingHistoryAction {
+    data object ForkCurrent : PendingHistoryAction
+    data class ForkAtMessage(val messageLocalId: String) : PendingHistoryAction
+    data class Rewind(val messageLocalId: String) : PendingHistoryAction
+}
+
+/** Dialog-state projection for the history actions (confirm/fallback dialogs). */
+data class ConversationHistoryUi(
+    val dialog: PendingHistoryAction? = null,
+    val opPending: Boolean = false,
+    /**
+     * Non-null while the rewind "fork here" fallback dialog is open — the
+     * 409 `ambiguous_native_boundary_fork_safe` boundary local id.
+     */
+    val rewindFallbackLocalId: String? = null,
+)
 
 /** A permission decision the UI can request (bodies mirror `PermissionFooter.tsx`). */
 sealed interface PermissionAction {
@@ -381,6 +451,17 @@ class ChatViewModel(
     private val drafts: ChatDrafts? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
+    /**
+     * Hub scratchlist blob fetch for the promote flows (web
+     * `fetchScratchlistAttachmentBlob`); null ⇒ promotes degrade to
+     * text-only (tests/previews without a hub).
+     */
+    private val scratchlistBlobFetcher: ScratchlistPromoter.AttachmentFetcher? = null,
+    /**
+     * Rebuilds fetched scratchlist bytes as composer picks (Android policy
+     * pipeline); null ⇒ promote-to-composer skips attachment rehydration.
+     */
+    private val scratchlistPickPreparer: ScratchlistPromoter.PickPreparer? = null,
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -561,6 +642,30 @@ class ChatViewModel(
     /** One-shot effects: renavigation on supersede, snackbar notices. */
     val events: SharedFlow<ChatEvent> = _events.asSharedFlow()
 
+    /**
+     * Last session id a resume superseded this session with, retained as
+     * consumable state: [events] is a no-replay SharedFlow collected only in
+     * ChatHost, which is out of composition while the scratchlist route
+     * covers it — a queue promote from there would lose the event. The
+     * scratchlist navigation flow reads this instead (and clears it via
+     * [consumeSupersededBySessionId] once it has replaced the route).
+     */
+    private val _supersededBySessionId = MutableStateFlow<String?>(null)
+
+    /** See [_supersededBySessionId]. */
+    val supersededBySessionId: StateFlow<String?> = _supersededBySessionId.asStateFlow()
+
+    /** Record a supersession for both consumers — the event flow and the retained state. */
+    private fun emitSuperseded(sessionId: String) {
+        _supersededBySessionId.value = sessionId
+        _events.tryEmit(ChatEvent.SessionSuperseded(sessionId))
+    }
+
+    /** The scratchlist route handled the replacement — clear the retained id. */
+    fun consumeSupersededBySessionId() {
+        _supersededBySessionId.value = null
+    }
+
     // Pipeline memo state — touched only inside the single uiState map stage.
     private val normalizeCache = HashMap<String, NormalizeCacheEntry>()
     private var previousGroups: List<ToolGroupBlock> = emptyList()
@@ -576,6 +681,7 @@ class ChatViewModel(
         val machines: List<Machine>,
         val detailLoadFailed: Boolean,
         val permissionOverrides: Map<String, PermissionRowOverride>,
+        val historyActionPending: Boolean,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -589,6 +695,7 @@ class ChatViewModel(
                 machineStore.machines,
                 detailLoadFailed,
                 permissionOverrides,
+                historyActionPending,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -602,6 +709,32 @@ class ChatViewModel(
         .flowOn(pipelineDispatcher)
         .stateIn(scope, SharingStarted.Eagerly, initialState())
 
+    /**
+     * Web `scratchlistMode` composer toggle: while on, Send parks the draft
+     * (see [scratchlistSendRouting]); promote actions and the toggle itself
+     * turn it back off.
+     */
+    private val scratchlistMode = MutableStateFlow(false)
+
+    /** See [scratchlistMode] — consumed by the composer's amber send + hint bar. */
+    val composerScratchlistMode: StateFlow<Boolean> = scratchlistMode.asStateFlow()
+
+    /** Toggle the park-instead-of-send routing (web note-icon toggle). */
+    fun setScratchlistMode(enabled: Boolean) {
+        scratchlistMode.value = enabled
+    }
+
+    /**
+     * Promote-to-composer attachments still rehydrating (blob fetch +
+     * prepare): the entry text is already in the composer but no chips exist
+     * yet, so both the send button and [sendMessage]/[parkComposerDraft]
+     * must wait — an eager send would deliver the text without its
+     * attachments (the web covers this with per-chip pending upload state;
+     * here the fetch runs before any chip exists). Counted, not boolean, so
+     * consecutive promotes stack.
+     */
+    private val promoteRehydrationPending = MutableStateFlow(0)
+
     /** Composer bar state (text is VM-owned so drafts and edit-prefill flow through it). */
     val composer: StateFlow<ComposerUiState> = combine(
         composerDraft,
@@ -609,14 +742,22 @@ class ChatViewModel(
         sessionStateFlow(),
         composerFocusRequest,
         importingShare,
-    ) { draft, sending, session, focusRequest, importing ->
+        scratchlistMode,
+        promoteRehydrationPending,
+    ) { values: Array<Any?> ->
+        // Seven heterogeneous sources overflow the typed five-flow combine;
+        // the samples pipeline above uses the same Array<Any?> unpacking.
+        val draft = values[0] as ComposerDraft
+        val session = values[2] as SessionLiveState
         ComposerUiState(
             text = draft.text,
-            isSending = sending,
+            isSending = values[1] as Boolean,
             canSteer = session.thinking && session.active,
-            focusRequest = focusRequest,
-            isImportingShare = importing,
+            focusRequest = values[3] as Long,
+            isImportingShare = values[4] as Boolean,
             caretPosition = draft.selectionEnd,
+            routesToScratchlist = scratchlistSendRouting(values[5] as Boolean, schedulePending = false),
+            isRestoringAttachments = (values[6] as Int) > 0,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -647,6 +788,31 @@ class ChatViewModel(
     ) { detail, summary, models, _ ->
         buildConfigUi(detail, summary, models)
     }.stateIn(scope, SharingStarted.Eagerly, buildConfigUi(null, null, CodexModels.Idle))
+
+    // ------------------------------------------------- conversation history --
+
+    /** Confirm dialog target; null = no dialog. */
+    private val historyDialog = MutableStateFlow<PendingHistoryAction?>(null)
+
+    /** A fork/rewind RPC is in flight (locks the menus + dialog buttons). */
+    private val historyActionPending = MutableStateFlow(false)
+
+    /** Rewind fallback ("fork here") dialog: the boundary local id, or null. */
+    private val rewindFallbackLocalId = MutableStateFlow<String?>(null)
+
+    /**
+     * Dialog-state projection for the chat screen: the pending confirm
+     * dialog, its in-flight flag, and the rewind fallback dialog. Deliberately
+     * outside the 100 ms-sampled transcript pipeline — dialog transitions
+     * must be immediate.
+     */
+    val conversationHistory: StateFlow<ConversationHistoryUi> = combine(
+        historyDialog,
+        historyActionPending,
+        rewindFallbackLocalId,
+    ) { dialog, pending, fallback ->
+        ConversationHistoryUi(dialog = dialog, opPending = pending, rewindFallbackLocalId = fallback)
+    }.stateIn(scope, SharingStarted.Eagerly, ConversationHistoryUi())
 
     /**
      * Slash-command dropdown rows (B-M3ce): non-empty only while the composer
@@ -729,6 +895,30 @@ class ChatViewModel(
 
     /** Whether a scratchlist store is wired — gates the badge and park affordances. */
     val scratchlistEnabled: Boolean = scratchlist != null
+
+    /** Single-flight guard for the park pipeline (web `parkPending`). */
+    private val parkPending = AtomicBoolean(false)
+
+    /** Chat-upload seams for scratchlist promote staging (see [ScratchlistPromoter]). */
+    private val queueStagingUploader = ScratchlistPromoter.ChatUploader { id, filename, bytes, mimeType ->
+        try {
+            val response = api.uploadFile(id, filename, chatUploadBase64(bytes), mimeType)
+            if (response.success) response.path else null
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            null
+        }
+    }
+    private val queueStagingDeleter = ScratchlistPromoter.ChatUploadDeleter { id, path ->
+        try {
+            api.deleteUpload(id, path)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // Best-effort by contract.
+        }
+    }
 
     // ------------------------------------------------------------ lifecycle --
 
@@ -1113,27 +1303,198 @@ class ChatViewModel(
     }
 
     /**
-     * Scratchlist "Park from composer" (B-M4d): the current draft becomes a
-     * scratchlist entry and the composer clears (store-optimistic; the
-     * composer clears only after the hub accepts, so a failed park cannot
-     * lose the draft).
+     * Scratchlist "Send to queue" promote (web `handlePromoteToQueue`):
+     * stage every entry attachment through the chat upload pipeline (a hub
+     * scratchlist path is not a valid send path), then deliver the entry
+     * text as a durable-queue send. Returns true when the hub accepted —
+     * the caller removes the entry; a false keeps it, retryable.
+     */
+    suspend fun sendScratchlistEntryToQueue(entry: ScratchlistEntry): Boolean {
+        val text = entry.text.trim()
+        if (text.isEmpty() && entry.attachments.isEmpty()) return false
+        val fetcher = scratchlistBlobFetcher
+        val staged = if (entry.attachments.isEmpty() || fetcher == null) {
+            null
+        } else {
+            ScratchlistPromoter.stageForQueueSend(
+                sessionId,
+                entry.attachments,
+                fetcher,
+                queueStagingUploader,
+                queueStagingDeleter,
+            ) ?: run {
+                _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistPromoteStagingFailed))
+                return false
+            }
+        }
+        val accepted = performSend(
+            text = text,
+            localId = localIdGenerator(),
+            createdAt = now(),
+            deliveryMode = "queue",
+            attachments = staged,
+            isRetry = false,
+        )
+        if (accepted) scratchlistMode.value = false
+        return accepted
+    }
+
+    /**
+     * Scratchlist "Copy into composer" promote (web
+     * `handlePromoteToComposer`): the entry text lands in the composer and
+     * every attachment rehydrates as a fresh composer pick (hub blob fetch →
+     * the tray re-uploads through the normal chat pipeline). Copy, not move
+     * — the entry itself stays. Scratchlist composer mode is left first so
+     * the next Send delivers the promoted draft instead of re-parking it
+     * (web flushSync exit order). The rehydration is registered
+     * synchronously, before any suspension: between the insert and the
+     * chips appearing there is no other pending state, so Send and park are
+     * gated on it (see [promoteRehydrationPending]).
+     */
+    fun promoteScratchlistEntryToComposer(entry: ScratchlistEntry) {
+        scratchlistMode.value = false
+        insertComposerText(entry.text)
+        val fetcher = scratchlistBlobFetcher
+        val preparer = scratchlistPickPreparer
+        if (fetcher == null || preparer == null || entry.attachments.isEmpty()) return
+        promoteRehydrationPending.value += entry.attachments.size
+        scope.launch {
+            try {
+                val picks = ScratchlistPromoter.rehydrateToComposer(sessionId, entry.attachments, fetcher, preparer)
+                picks.forEach { attachments.add(it) }
+                if (picks.size < entry.attachments.size) {
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistRehydratePartial))
+                }
+            } finally {
+                promoteRehydrationPending.value -= entry.attachments.size
+            }
+        }
+    }
+
+    /**
+     * Scratchlist "Park from composer" (B-M4d + attachment migration): the
+     * current draft becomes a scratchlist entry and the composer clears only
+     * after the hub accepts, so a failed park cannot lose the draft. Ready
+     * attachment chips migrate into hub scratchlist storage first (their chat
+     * upload paths are not valid entry attachments); any rejection frees the
+     * migrated hub blobs so a retry can re-migrate from the intact chips.
+     * The launch snapshot (text + chip ids) is re-validated after the
+     * migration, mirroring the web park flow's `composerParkSnapshotUnchanged`:
+     * a draft edited while the POSTs ran aborts the park instead of splitting
+     * it into an old-text entry plus a chip-less composer.
      */
     fun parkComposerDraft() {
         val store = scratchlist ?: return
+        if (!parkPending.compareAndSet(false, true)) return
+        if (attachments.hasUnsettled()) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
+            parkPending.set(false)
+            return
+        }
+        // A park mid-rehydration would split the promoted draft: the entry
+        // keeps the text while the fetched chips land in the next draft.
+        if (promoteRehydrationPending.value > 0) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.PromotedAttachmentsLoading))
+            parkPending.set(false)
+            return
+        }
         val text = composerDraft.value.text
-        if (text.isBlank()) return
+        val chips = attachments.parkableChips()
+        if (text.isBlank() && chips.isEmpty()) {
+            parkPending.set(false)
+            return
+        }
         scope.launch {
-            when (val result = store.createEntry(sessionId, text)) {
-                is ScratchlistCreateResult.Created -> {
-                    // Clear only when the draft is still what we parked (the
-                    // operator may have kept typing while the POST ran).
-                    if (composerDraft.value.text == text) setComposerText("")
-                    _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
+            try {
+                // 1. Migrate Ready chips into hub scratchlist storage; the
+                //    tray stays untouched until the entry write is accepted.
+                val migrated = mutableListOf<ScratchlistAttachment>()
+                var migrationFailed = false
+                for (chip in chips) {
+                    val uploaded = try {
+                        store.uploadAttachment(sessionId, chip.filename, chip.bytes, chip.mimeType)
+                    } catch (cancellation: CancellationException) {
+                        // Holder cancellation mid-migration (leaving chat):
+                        // blobs uploaded so far are unreferenced — the entry
+                        // write never ran. Free them out-of-band before the
+                        // cancellation propagates; storage.ts counts these
+                        // pending files against the session's byte quota, so
+                        // repeated cancellations must not strand them.
+                        if (migrated.isNotEmpty()) {
+                            freeMigratedBlobs(store, migrated)
+                        }
+                        throw cancellation
+                    } catch (_: Exception) {
+                        null
+                    }
+                    val attachment = (uploaded as? ScratchlistUploadResult.Uploaded)?.attachment
+                    if (attachment == null) migrationFailed = true else migrated += attachment
                 }
-                ScratchlistCreateResult.AtCap ->
-                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistFull))
-                is ScratchlistCreateResult.Failed ->
+                if (migrationFailed) {
+                    freeMigratedBlobs(store, migrated)
                     _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
+                    return@launch
+                }
+                // 2. Validate the launch snapshot before the irreversible
+                //    entry write (web `composerParkSnapshotUnchanged`): a
+                //    draft edited while the migration POSTs ran must not
+                //    split into an old-text entry plus a chip-less composer.
+                //    Text, chip ids, or a new chip still settling — any
+                //    change aborts the park: blobs freed, nothing written,
+                //    the whole (possibly edited) draft stays retryable.
+                val snapshotChanged = composerDraft.value.text != text ||
+                    attachments.hasUnsettled() ||
+                    attachments.parkableChips().map { it.id } != chips.map { it.id }
+                if (snapshotChanged) {
+                    freeMigratedBlobs(store, migrated)
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
+                    return@launch
+                }
+                // 3. Persist the entry (text + migrated attachments).
+                when (store.createEntry(sessionId, text, migrated)) {
+                    is ScratchlistCreateResult.Created -> {
+                        // Clear only when the draft is still what we parked:
+                        // the snapshot was validated just before the entry
+                        // POST, but the POST itself can race another edit —
+                        // keep the diverged draft whole (its chips' local
+                        // uploads are still referenced, so nothing orphans).
+                        if (composerDraft.value.text == text) {
+                            setComposerText("")
+                            attachments.removeParked(chips.map { it.id }.toSet())
+                        }
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
+                    }
+                    ScratchlistCreateResult.AtCap -> {
+                        freeMigratedBlobs(store, migrated)
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistFull))
+                    }
+                    is ScratchlistCreateResult.Failed -> {
+                        freeMigratedBlobs(store, migrated)
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ScratchlistParkFailed))
+                    }
+                }
+            } finally {
+                parkPending.set(false)
+            }
+        }
+    }
+
+    /**
+     * Rejected park: drop the migrated hub blobs so retry re-migrates from
+     * the chips. Runs under [NonCancellable] — the owning scope may already
+     * be cancelling (holder cleared mid-migration or mid-cleanup), and every
+     * delete must still reach the hub.
+     */
+    private suspend fun freeMigratedBlobs(store: SessionScratchlist, migrated: List<ScratchlistAttachment>) {
+        withContext(NonCancellable) {
+            migrated.forEach { attachment ->
+                try {
+                    store.deleteAttachment(sessionId, attachment.id)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // Best-effort.
+                }
             }
         }
     }
@@ -1263,6 +1624,20 @@ class ChatViewModel(
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
             return
         }
+        // Promoted attachments are still rehydrating: the text alone must
+        // not go out (and must not park text-only either).
+        if (promoteRehydrationPending.value > 0) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.PromotedAttachmentsLoading))
+            return
+        }
+        // Web `shouldRouteToScratchlist` park interception: in scratchlist
+        // mode Send parks the draft (both tap and steer long-press — the web
+        // interceptor runs before any intent handling). A pending schedule
+        // keeps the real send contract instead of parking.
+        if (scratchlistSendRouting(scratchlistMode.value, schedulePending = mutablePendingSchedule.value != null)) {
+            parkComposerDraft()
+            return
+        }
         val text = composerDraft.value.text.trim()
         val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
         // Mutual exclusion, checked BEFORE the draft clears or the tray
@@ -1298,7 +1673,7 @@ class ChatViewModel(
                     sendInFlight.value = true
                     try {
                         val result = api.clearConversation(sessionId)
-                        _events.tryEmit(ChatEvent.SessionSuperseded(result.sessionId))
+                        emitSuperseded(result.sessionId)
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (error: Exception) {
@@ -1366,6 +1741,11 @@ class ChatViewModel(
         return SendPayload(text, attachments)
     }
 
+    /**
+     * Optimistic send pipeline. Returns true when the hub accepted the send
+     * (directly or after an inactive-session resume) — the scratchlist
+     * promote-to-queue contract for deleting the entry.
+     */
     private suspend fun performSend(
         text: String,
         localId: String,
@@ -1374,7 +1754,7 @@ class ChatViewModel(
         attachments: List<AttachmentMetadata>? = null,
         scheduledAt: Long? = null,
         isRetry: Boolean,
-    ) {
+    ): Boolean {
         // Wire constraint (SendMessageRequestSchema): scheduled sends exclude
         // attachments (and steer). No Android surface can produce the combo
         // today — this trips loudly if a scheduled-send UI ever forgets it.
@@ -1403,9 +1783,10 @@ class ChatViewModel(
                 scheduledAt = scheduledAt,
                 deliveryMode = deliveryMode,
             )
-            try {
+            return try {
                 api.sendMessage(sessionId, request)
                 store.updateStatus(localId, successStatus())
+                true
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
@@ -1413,6 +1794,7 @@ class ChatViewModel(
                     resumeAndRetry(store, request, localId)
                 } else {
                     store.updateStatus(localId, MessageStatus.Failed)
+                    false
                 }
             }
         } finally {
@@ -1429,13 +1811,13 @@ class ChatViewModel(
      * `router.tsx`): one `POST /resume`, then retry the send against the id
      * the hub returns. A different id supersedes this session — seed the new
      * window from this one, migrate the draft, retarget the optimistic row,
-     * and tell the screen to renavigate.
+     * and tell the screen to renavigate. Returns the retry's outcome.
      */
     private suspend fun resumeAndRetry(
         store: MessageWindowStore,
         request: SendMessageRequest,
         localId: String,
-    ) {
+    ): Boolean {
         val targetSessionId = try {
             api.resumeSession(sessionId, currentDetail()?.permissionMode).sessionId
         } catch (cancellation: CancellationException) {
@@ -1443,7 +1825,7 @@ class ChatViewModel(
         } catch (error: Exception) {
             store.updateStatus(localId, MessageStatus.Failed)
             _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
-            return
+            return false
         }
 
         val optimisticRow = store.state.value.messages.firstOrNull { it.localId == localId }
@@ -1464,17 +1846,20 @@ class ChatViewModel(
         sessionStore.updateDetailLocal(sessionId) { it.copy(active = true) }
         sessionStore.scheduleRefresh()
 
+        var accepted = false
         try {
             api.sendMessage(targetSessionId, request)
             targetStore.updateStatus(localId, successStatus())
+            accepted = true
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {
             targetStore.updateStatus(localId, MessageStatus.Failed)
         }
         if (targetSessionId != sessionId) {
-            _events.tryEmit(ChatEvent.SessionSuperseded(targetSessionId))
+            emitSuperseded(targetSessionId)
         }
+        return accepted
     }
 
     /** `POST /abort` — confirm-free stop of the active turn. */
@@ -1543,7 +1928,7 @@ class ChatViewModel(
                 if (response.sessionId != sessionId) {
                     messageWindows.seed(sessionId, response.sessionId)
                     drafts?.let { runCatching { it.move(sessionId, response.sessionId) } }
-                    _events.tryEmit(ChatEvent.SessionSuperseded(response.sessionId))
+                    emitSuperseded(response.sessionId)
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
@@ -1552,6 +1937,142 @@ class ChatViewModel(
             } finally {
                 sessionOpPending.value = false
             }
+        }
+    }
+
+    // ------------------------------------------------- history fork/rewind --
+
+    /**
+     * Opens the fork-current confirm dialog. Guarded the way the menu is:
+     * no dialog while a history action is in flight, the agent is thinking,
+     * or the session is inactive / terminal-controlled.
+     */
+    @MainThread
+    fun requestForkCurrent() {
+        if (!historyRequestsAllowed()) return
+        historyDialog.value = PendingHistoryAction.ForkCurrent
+    }
+
+    /** Opens the fork-at-message confirm dialog for [messageLocalId]. */
+    @MainThread
+    fun requestForkAtMessage(messageLocalId: String) {
+        if (!historyRequestsAllowed()) return
+        historyDialog.value = PendingHistoryAction.ForkAtMessage(messageLocalId)
+    }
+
+    /** Opens the rewind confirm dialog for [messageLocalId]. */
+    @MainThread
+    fun requestRewind(messageLocalId: String) {
+        if (!historyRequestsAllowed()) return
+        historyDialog.value = PendingHistoryAction.Rewind(messageLocalId)
+    }
+
+    /** Dialog dismiss (back gesture / tap-outside); refused mid-flight. */
+    @MainThread
+    fun dismissHistoryDialog() {
+        if (!historyActionPending.value) historyDialog.value = null
+    }
+
+    /**
+     * Confirms the open dialog: `POST /fork` (navigate to the child session
+     * via [ChatEvent.SessionSuperseded] — the parent is untouched, no window
+     * seed) or `POST /rewind` (authoritative tail resync + jump to latest;
+     * the hub also invalidates the window over SSE).
+     */
+    fun confirmHistoryAction() {
+        val action = historyDialog.value ?: return
+        if (!historyActionPending.compareAndSet(expect = false, update = true)) return
+        scope.launch {
+            when (action) {
+                is PendingHistoryAction.ForkCurrent -> runHistoryFork(messageLocalId = null)
+                is PendingHistoryAction.ForkAtMessage -> runHistoryFork(action.messageLocalId)
+                is PendingHistoryAction.Rewind -> runHistoryRewind(action.messageLocalId)
+            }
+        }
+    }
+
+    /** Closes the rewind fallback ("fork here") dialog without acting. */
+    @MainThread
+    fun dismissRewindFallback() {
+        rewindFallbackLocalId.value = null
+    }
+
+    /**
+     * Confirms the rewind fallback: fork at the boundary the hub reported as
+     * fork-safe (`ambiguous_native_boundary_fork_safe`) instead of rewinding.
+     */
+    fun confirmRewindFallback() {
+        val messageLocalId = rewindFallbackLocalId.value ?: return
+        if (!historyActionPending.compareAndSet(expect = false, update = true)) return
+        scope.launch { runHistoryFork(messageLocalId) }
+    }
+
+    private fun historyRequestsAllowed(): Boolean {
+        if (historyActionPending.value) return false
+        val detail = currentDetail() ?: return false
+        return detail.active && !detail.thinking && !terminalControlled(detail)
+    }
+
+    /**
+     * `POST /fork` — on success the child session opens via
+     * [ChatEvent.SessionSuperseded] (no window seed: the child loads its own
+     * authoritative transcript; drafts stay with the parent, which still
+     * exists). Failure closes the dialog and surfaces a typed notice.
+     */
+    private suspend fun runHistoryFork(messageLocalId: String?) {
+        try {
+            val response = withContext(workerContext) {
+                api.forkConversation(sessionId, messageLocalId)
+            }
+            historyDialog.value = null
+            rewindFallbackLocalId.value = null
+            // Retained like every supersession: an in-flight fork can return
+            // after the operator left the chat for the scratchlist route.
+            emitSuperseded(response.sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            historyDialog.value = null
+            rewindFallbackLocalId.value = null
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ForkFailed(formatHistoryActionError(error))))
+        } finally {
+            historyActionPending.value = false
+        }
+    }
+
+    /**
+     * `POST /rewind` — on success force an authoritative tail resync (the
+     * hub truncates server-side and also emits `messages-invalidated` over
+     * SSE; the forced resync covers a racing/dropped event — web `onRefresh`)
+     * and jump to the tail. 409 `ambiguous_native_boundary_fork_safe` opens
+     * the "fork here" fallback dialog; a 500 `hydrateFailed` marks the
+     * session diverged and surfaces a distinct notice.
+     */
+    private suspend fun runHistoryRewind(messageLocalId: String) {
+        try {
+            withContext(workerContext) { api.rewindConversation(sessionId, messageLocalId) }
+            historyDialog.value = null
+            val store = windowStore.value
+            if (store != null) {
+                withContext(workerContext) {
+                    runCatching { store.syncTail(ensureAfterCurrent = true, allowingHistoryReset = true) }
+                }
+            }
+            if (started) uiScope.launch { jumpToLatest() }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            historyDialog.value = null
+            when {
+                error is ApiError && error.code == REWIND_FALLBACK_CODE ->
+                    rewindFallbackLocalId.value = messageLocalId
+                rewindHydrateFailed(error) ->
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindDiverged))
+                else ->
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindFailed(formatHistoryActionError(error))))
+            }
+        } finally {
+            historyActionPending.value = false
         }
     }
 
@@ -2127,6 +2648,7 @@ class ChatViewModel(
             machines = values[3] as List<Machine>,
             detailLoadFailed = values[4] as Boolean,
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
+            historyActionPending = values[6] as Boolean,
         )
     }
 
@@ -2240,6 +2762,43 @@ class ChatViewModel(
             readThroughRevision = window.readThroughRevision,
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
             contextUsage = contextUsage,
+            historyGate = buildHistoryGate(inputs, visibleBlocks),
+        )
+    }
+
+    /**
+     * Session-level fork/rewind availability (web `MessageActions` gating):
+     * capabilities from the session detail, per-message boundary flags from
+     * `metadata.conversationHistoryPoints`, and the latest completed
+     * boundary computed over the visible blocks. Locked while thinking or
+     * while a history RPC is in flight (`actionsLocked`); unavailable for
+     * inactive, terminal-controlled, or history-diverged sessions. All-off
+     * when the flavor reports no conversation-history capabilities.
+     */
+    private fun buildHistoryGate(inputs: PipelineInputs, visibleBlocks: List<VisibleChatBlock>): ChatHistoryGate {
+        val detail = inputs.detail ?: return ChatHistoryGate()
+        val metadata = detail.metadata ?: return ChatHistoryGate()
+        val capabilities = metadata.capabilities?.conversationHistory
+        val forkCurrent = capabilities?.forkCurrent == true
+        val forkAtMessage = capabilities?.forkAtMessage == true
+        val rewindToMessage = capabilities?.rewindToMessage == true
+        if (!forkCurrent && !forkAtMessage && !rewindToMessage) {
+            return ChatHistoryGate()
+        }
+        return ChatHistoryGate(
+            forkCurrent = forkCurrent,
+            forkAtMessage = forkAtMessage,
+            rewindToMessage = rewindToMessage,
+            historyPoints = metadata.conversationHistoryPoints ?: emptyMap(),
+            latestBoundaryKey = findLatestCompletedBoundaryKey(
+                blocks = visibleBlocks,
+                isRunning = detail.thinking,
+                activeTurnStartedAt = detail.activeTurnStartedAt,
+            ),
+            available = detail.active &&
+                !terminalControlled(detail) &&
+                metadata.conversationHistoryDiverged != true,
+            locked = detail.thinking || inputs.historyActionPending,
         )
     }
 

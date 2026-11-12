@@ -243,4 +243,61 @@ class ComposerAttachmentsTest {
         // `items` is derived from the entries flow — await the propagation.
         assertTrue(tray.items.first { it.isEmpty() }.isEmpty())
     }
+
+    // ------------------------------------------------ scratchlist park (B18b) --
+
+    @Test
+    fun `Ready chips retain their bytes as the park-migration source`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "a", filename = "a.jpg", bytes = byteArrayOf(11, 22, 33)))
+
+        tray.items.first { list -> list.isNotEmpty() && list[0].status == ComposerAttachmentStatus.Ready }
+
+        val chips = tray.parkableChips()
+        assertEquals(1, chips.size)
+        assertEquals("a", chips[0].id)
+        assertEquals("a.jpg", chips[0].filename)
+        assertEquals("/uploads/a.jpg", chips[0].path)
+        assertTrue(chips[0].bytes.contentEquals(byteArrayOf(11, 22, 33)))
+    }
+
+    @Test
+    fun `parkableChips snapshots Ready chips only and leaves the tray intact`() = runTest {
+        val api = FakeUploadApi().apply {
+            results.add(Result.success(UploadFileResponse(success = true, path = "/uploads/ok.jpg")))
+            results.add(Result.failure(RuntimeException("boom")))
+        }
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "ready", filename = "ok.jpg"))
+        tray.add(prepared(id = "failed", filename = "bad.jpg"))
+        // Both uploads race in parallel: wait for the failure AND the
+        // success chip's Ready transition, or the snapshot below can run
+        // while "ready" is still Uploading (observed ~1/3 under suite load).
+        tray.items.first { list ->
+            list.size == 2 &&
+                list.any { it.status == ComposerAttachmentStatus.Failed } &&
+                list.any { it.id == "ready" && it.status == ComposerAttachmentStatus.Ready }
+        }
+
+        val chips = tray.parkableChips()
+
+        assertEquals(listOf("ready"), chips.map { it.id })
+        assertEquals(2, tray.items.value.size, "the tray is untouched by the snapshot")
+    }
+
+    @Test
+    fun `removeParked drops exactly the parked chips and deletes their uploads`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "a", filename = "a.jpg"))
+        tray.add(prepared(id = "b", filename = "b.jpg"))
+        tray.items.first { list -> list.size == 2 && list.all { it.status == ComposerAttachmentStatus.Ready } }
+        val parked = tray.parkableChips()
+
+        tray.removeParked(setOf(parked[0].id))
+
+        assertEquals(setOf("/uploads/a.jpg"), api.deletes.first { it.isNotEmpty() }.toSet())
+        assertEquals(listOf("b"), tray.items.first { it.size == 1 }.map { it.id })
+    }
 }

@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 /** What [ScratchlistScreen] renders as the entry list. */
 data class ScratchlistUiState(
@@ -59,6 +60,9 @@ sealed interface ScratchlistNotice {
     data object RemoveAttachmentFailed : ScratchlistNotice
     data object UploadTooLarge : ScratchlistNotice
     data object UploadFailed : ScratchlistNotice
+
+    /** "Send to queue" was rejected by the hub — the entry stays, retryable. */
+    data object PromoteToQueueFailed : ScratchlistNotice
     data class ImportRejected(val reason: ScratchlistImportRejection) : ScratchlistNotice
 }
 
@@ -135,6 +139,46 @@ class ScratchlistViewModel(
     private val _events = MutableSharedFlow<ScratchlistEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<ScratchlistEvent> = _events.asSharedFlow()
 
+    private val _busyPromoteEntryId = MutableStateFlow<String?>(null)
+
+    /**
+     * Entry id with a "Send to queue" in flight (web `busyEntryId`): that
+     * card's actions all disable while it runs, and new promotes are
+     * ignored until it settles (single-flight, any card).
+     */
+    val busyPromoteEntryId: StateFlow<String?> = _busyPromoteEntryId.asStateFlow()
+
+    /**
+     * Web `handlePromoteToQueue` state machine: [send] runs the attachment
+     * staging + queue send (the chat ViewModel below this route); an
+     * accepted send deletes the entry, a rejected one keeps it with a
+     * notice — either way the busy flag clears.
+     */
+    fun promoteToQueue(entry: ScratchlistEntry, send: suspend (ScratchlistEntry) -> Boolean) {
+        if (_busyPromoteEntryId.value != null) return
+        _busyPromoteEntryId.value = entry.entryId
+        scope.launch {
+            try {
+                val accepted = try {
+                    send(entry)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    false
+                }
+                if (accepted) {
+                    if (!store.deleteEntry(sessionId, entry.entryId)) {
+                        notice(ScratchlistNotice.DeleteFailed)
+                    }
+                } else {
+                    notice(ScratchlistNotice.PromoteToQueueFailed)
+                }
+            } finally {
+                _busyPromoteEntryId.value = null
+            }
+        }
+    }
+
     private var opened = false
 
     /** Idempotent; call from the screen's composition, paired with [stop]. */
@@ -163,6 +207,11 @@ class ScratchlistViewModel(
             notice(ScratchlistNotice.AtCapDeleteFirst)
             return
         }
+        // Busy-promote freeze (web `busyEntryId`): the in-flight send holds
+        // this entry's snapshot and the accepted send deletes it — edits made
+        // now would be dropped undelivered. The card disables itself; this is
+        // the ViewModel half of the guard.
+        if (entry != null && _busyPromoteEntryId.value == entry.entryId) return
         _editor.value = if (entry == null) {
             ScratchlistEditorState()
         } else {
@@ -197,6 +246,10 @@ class ScratchlistViewModel(
      */
     fun saveEditor() {
         val editor = _editor.value ?: return
+        // Same freeze as [openEditor]: an editor opened before the promote
+        // started must not save either — the update would land just before
+        // the accepted send deletes the entry, losing the edits silently.
+        if (editor.entryId != null && _busyPromoteEntryId.value == editor.entryId) return
         val text = editor.text.trim()
         if (text.isEmpty() && editor.attachments.isEmpty()) {
             // Nothing to keep: a new draft just closes; an existing entry

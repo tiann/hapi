@@ -44,6 +44,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -110,6 +111,10 @@ fun ChatComposer(
     dictation: DictationState? = null,
     onDictationToggle: () -> Unit = {},
     onDictationCancel: () -> Unit = {},
+    /** Scratchlist entry count for the mode-toggle badge; 0 hides it. */
+    scratchlistCount: Int = 0,
+    /** null ⇒ the scratchlist mode toggle is hidden (no store wired). */
+    onToggleScratchlist: (() -> Unit)? = null,
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -174,6 +179,11 @@ fun ChatComposer(
                     },
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
+            }
+            // Scratchlist mode banner (web drawer header twin): while Send
+            // parks instead of delivering, an amber hint rides above the card.
+            if (state.routesToScratchlist) {
+                ScratchlistModeHint(modifier = Modifier.padding(bottom = 6.dp))
             }
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -262,6 +272,13 @@ fun ChatComposer(
                             ) {
                                 Icon(PlusGlyph, contentDescription = null, modifier = Modifier.size(20.dp))
                             }
+                        }
+                        if (onToggleScratchlist != null) {
+                            ScratchlistToggleButton(
+                                active = state.routesToScratchlist,
+                                count = scratchlistCount,
+                                onToggle = onToggleScratchlist,
+                            )
                         }
                         Spacer(modifier = Modifier.weight(1f))
                         // Clock toggle (B-M16b, web ComposerButtons schedule
@@ -449,6 +466,95 @@ private fun ComposerActionButton(
             modifier = Modifier.size(38.dp),
         ) {
             Box(contentAlignment = Alignment.Center) { content() }
+        }
+    }
+}
+
+// ------------------------------------------------------- scratchlist mode --
+
+/** Web `amber-500` — the scratchlist-mode accent (send, toggle, banner). */
+private val ScratchlistAmber = androidx.compose.ui.graphics.Color(0xFFF59E0B)
+
+/**
+ * Sticky-note toggle for scratchlist composer mode (web note-icon toggle):
+ * amber while active, with the entry-count badge (99+ cap, web parity).
+ */
+@Composable
+private fun ScratchlistToggleButton(
+    active: Boolean,
+    count: Int,
+    onToggle: () -> Unit,
+) {
+    Box {
+        ComposerActionButton(
+            contentDescription = stringResource(R.string.chat_composer_scratchlist_toggle),
+            onClick = onToggle,
+            color = if (active) ScratchlistAmber else MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = if (active) androidx.compose.ui.graphics.Color.White
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        ) {
+            Icon(NoteGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
+        }
+        if (count > 0) {
+            Surface(
+                color = if (active) androidx.compose.ui.graphics.Color.White else ScratchlistAmber,
+                contentColor = if (active) ScratchlistAmber else androidx.compose.ui.graphics.Color.White,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.align(Alignment.TopEnd),
+            ) {
+                Text(
+                    text = if (count > 99) "99+" else count.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Mode banner above the composer card while Send parks instead of delivering
+ * (the web drawer's amber border + "held — not sent" pill, compacted).
+ */
+@Composable
+private fun ScratchlistModeHint(modifier: Modifier = Modifier) {
+    Surface(
+        color = ScratchlistAmber.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, ScratchlistAmber.copy(alpha = 0.55f)),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        ) {
+            Icon(
+                NoteGlyph,
+                contentDescription = null,
+                tint = ScratchlistAmber,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = stringResource(R.string.chat_scratchlist_mode_hint),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp),
+            )
+            Surface(
+                color = ScratchlistAmber,
+                contentColor = androidx.compose.ui.graphics.Color.White,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.chat_scratchlist_held_label),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
         }
     }
 }
@@ -655,7 +761,11 @@ private fun PrimaryActionButton(
     // allows an attachments-only send (wire: text or attachments required).
     val attachmentsBusy = attachments.any { it.status != ComposerAttachmentStatus.Ready }
     val attachmentsReady = attachments.isNotEmpty() && !attachmentsBusy
-    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending && !state.isImportingShare
+    // Promoted attachments still rehydrating hold the text hostage: no chip
+    // exists yet, so only this flag keeps the text-only draft unsent.
+    val restoring = state.isRestoringAttachments
+    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !restoring &&
+        !state.isSending && !state.isImportingShare
     val action = when {
         state.isSending || state.isImportingShare -> ComposerPrimaryAction.Sending
         state.canSteer && !hasDraft -> ComposerPrimaryAction.Stop
@@ -685,23 +795,31 @@ private fun PrimaryActionButton(
                 Icon(StopGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
             }
             ComposerPrimaryAction.Send -> ComposerActionButton(
-                contentDescription = stringResource(R.string.chat_composer_send),
+                contentDescription = stringResource(
+                    if (state.routesToScratchlist) {
+                        R.string.chat_composer_send_to_scratchlist
+                    } else {
+                        R.string.chat_composer_send
+                    },
+                ),
                 onClick = onSend,
-                onLongClick = if (state.canSteer && canSubmit) {
+                // Steering cannot coexist with the park routing (the web
+                // interceptor runs before any intent handling).
+                onLongClick = if (state.canSteer && canSubmit && !state.routesToScratchlist) {
                     { steerMenuOpen = true }
                 } else {
                     null
                 },
                 enabled = canSubmit,
-                color = if (canSubmit) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
+                color = when {
+                    !canSubmit -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    state.routesToScratchlist -> ScratchlistAmber
+                    else -> MaterialTheme.colorScheme.primary
                 },
-                contentColor = if (canSubmit) {
-                    MaterialTheme.colorScheme.onPrimary
-                } else {
-                    MaterialTheme.hapi.hint
+                contentColor = when {
+                    !canSubmit -> MaterialTheme.hapi.hint
+                    state.routesToScratchlist -> Color.White
+                    else -> MaterialTheme.colorScheme.onPrimary
                 },
             ) {
                 Icon(ArrowUpGlyph, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -769,6 +887,17 @@ private fun ChatComposerPreview() {
                             status = ComposerAttachmentStatus.Ready,
                         ),
                     ),
+                )
+                ChatComposer(
+                    state = ComposerUiState(
+                        text = "Holding this thought until the tests pass",
+                        isSending = false,
+                        canSteer = false,
+                        routesToScratchlist = true,
+                    ),
+                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                    scratchlistCount = 120,
+                    onToggleScratchlist = {},
                 )
             }
         }
