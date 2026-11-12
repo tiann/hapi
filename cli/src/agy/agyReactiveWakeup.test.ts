@@ -4524,8 +4524,18 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         });
 
         // Between the user's approval click and reattachment, `read_file` already finished natively!
-        // Reattachment replays `read_file` as `completed`, and then proposes a gated `run_command`!
+        // Reattachment replays `read_file` as `in_progress` -> `completed` -> `tool_result`, and then proposes a gated `run_command`!
         backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'replayed-finished-read',
+                name: 'read_file',
+                title: 'read_file',
+                status: 'in_progress',
+                input: { Path: `${session.path}/config.json` },
+                nativeName: 'read_file',
+                nativeArgs: { Path: `${session.path}/config.json` }
+            });
             onUpdate({
                 type: 'tool_call',
                 id: 'replayed-finished-read',
@@ -4654,6 +4664,160 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             callId: syntheticReadId,
             is_error: false,
             output: '{"deploy":true}'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('preserves saved parked question answer when reattachment replays in_progress before pending and elicitation', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Checking in background...' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'deploy' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Checking in background...' }
+            ]);
+        });
+
+        let elicitationResponse: FormElicitationResponse | null = null;
+        backend.promptScripts.push(async (onUpdate) => {
+            const questionPayload = [{
+                is_multi_select: false,
+                options: ['(Recommended) RED', 'BLUE'],
+                question: 'Do you prefer RED or BLUE?'
+            }];
+            // Mirrors agy-question-turn.json: initial `in_progress` tool_call followed by `pending` update and elicitation!
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_q',
+                name: 'ask_question',
+                title: 'Run ask_question',
+                status: 'in_progress',
+                input: { questions: questionPayload },
+                nativeName: 'ask_question',
+                nativeArgs: { questions: questionPayload }
+            });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call_q',
+                name: 'ask_question',
+                title: 'Run ask_question',
+                status: 'pending',
+                input: { questions: questionPayload },
+                nativeName: 'ask_question',
+                nativeArgs: { questions: questionPayload }
+            });
+            elicitationResponse = await backend.formElicitationHandler!({
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'call_q',
+                message: 'The agent has a question.',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {
+                        q1: {
+                            type: 'string',
+                            title: 'Do you prefer RED or BLUE?',
+                            oneOf: [
+                                { const: '1', title: '1. (Recommended) RED' },
+                                { const: '2', title: '2. BLUE' }
+                            ]
+                        }
+                    },
+                    required: ['q1']
+                }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'call_q',
+                status: 'completed',
+                output: 'BLUE'
+            });
+            onUpdate({ type: 'text', text: 'Proceeding with BLUE.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('deploy', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Precheck done</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{
+                        name: 'ask_question',
+                        args: {
+                            questions: JSON.stringify([{
+                                is_multi_select: false,
+                                options: ['(Recommended) RED', 'BLUE'],
+                                question: 'Do you prefer RED or BLUE?'
+                            }])
+                        }
+                    }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticQuestionId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticQuestionId]).toBeDefined();
+        });
+
+        // User answers the parked question ONCE — reattachment must consume the saved answer without re-prompting!
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({
+            id: syntheticQuestionId,
+            approved: true,
+            decision: 'approved',
+            answers: { '0': ['BLUE'] }
+        });
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        expect(elicitationResponse).toEqual({
+            action: 'accept',
+            content: { q1: '2' }
+        });
+        // No second question card or live `call_q` request was ever opened!
+        expect(client.getAgentState().requests?.call_q).toBeUndefined();
+        const msgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(msgs.filter((m) => (m as { type?: string }).type === 'tool-call')).toHaveLength(1);
+        expect(msgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: syntheticQuestionId,
+            is_error: false,
+            output: 'BLUE'
         }));
 
         queue.close();

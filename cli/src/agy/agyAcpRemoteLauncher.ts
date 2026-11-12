@@ -1850,7 +1850,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     ): { message: AgentMessage; suppressForward: boolean; recordCallOrdinal?: boolean; skipTracking?: boolean } {
         if ((message.type === 'tool_call' || message.type === 'tool_result') && this.syntheticCallAliases.has(message.id)) {
             const syntheticId = this.syntheticCallAliases.get(message.id)!;
-            const isParkedCall = this.pendingParkedResolution?.parkedCallId === syntheticId;
+            const pendingParked = this.pendingParkedResolution;
+            const isParkedCall = pendingParked?.parkedCallId === syntheticId;
+            if (
+                isParkedCall
+                && pendingParked
+                && (message.type === 'tool_result' || message.status === 'completed' || message.status === 'failed')
+            ) {
+                pendingParked.decisionConsumed = true;
+            }
             if (message.type === 'tool_result') {
                 this.syntheticCallAliases.delete(message.id);
             }
@@ -1907,9 +1915,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     pendingParked.aliasedLiveId = message.id;
                     this.syntheticCallAliases.set(message.id, pendingParked.parkedCallId);
                     this.nativeToolNames.set(pendingParked.parkedCallId, pendingParked.toolName);
-                    if (message.status !== 'pending') {
-                        // Replay shows the original parked invocation already ran natively;
-                        // retire any saved approval grant so a later tool cannot inherit it.
+                    if (message.status === 'completed' || message.status === 'failed') {
+                        // Replay shows the original parked invocation already finished natively;
+                        // retire any saved approval/answer so a later tool cannot inherit it.
                         pendingParked.decisionConsumed = true;
                     }
                     return {
@@ -2062,17 +2070,31 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             && pendingParked.toolName === 'ask_question'
             && (!form.toolCallId || !pendingParked.suppressedPrefixLiveIds.has(form.toolCallId))
             && (!pendingParked.aliasedLiveId || !form.toolCallId || pendingParked.aliasedLiveId === form.toolCallId)
-            && (pendingParked.aliasedLiveId !== null || matchesParkedQuestionForm(pendingParked.decodedArgs, form.questions))
+            && (
+                (pendingParked.aliasedLiveId !== null && form.toolCallId === pendingParked.aliasedLiveId)
+                || matchesParkedQuestionForm(pendingParked.decodedArgs, form.questions)
+            )
         ) {
-            if (!pendingParked.aliasedLiveId && form.toolCallId) {
-                pendingParked.aliasedLiveId = form.toolCallId;
-                this.syntheticCallAliases.set(form.toolCallId, pendingParked.parkedCallId);
-                this.nativeToolNames.set(pendingParked.parkedCallId, 'ask_question');
+            if (
+                !pendingParked.aliasedLiveId
+                && this.acpSessionId
+                && hasAgyParkedCallProgressed(
+                    readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, pendingParked.replayAfterStepIndex),
+                    pendingParked.parkedCall
+                )
+            ) {
+                pendingParked.decisionConsumed = true;
+            } else {
+                if (!pendingParked.aliasedLiveId && form.toolCallId) {
+                    pendingParked.aliasedLiveId = form.toolCallId;
+                    this.syntheticCallAliases.set(form.toolCallId, pendingParked.parkedCallId);
+                    this.nativeToolNames.set(pendingParked.parkedCallId, 'ask_question');
+                }
+                pendingParked.decisionConsumed = true;
+                if (pendingParked.decision === 'denied') return { action: 'decline' };
+                const content = agyQuestionContent(form.questions, pendingParked.answers, pendingParked.shownLabels);
+                return Object.keys(content).length > 0 ? { action: 'accept', content } : { action: 'decline' };
             }
-            pendingParked.decisionConsumed = true;
-            if (pendingParked.decision === 'denied') return { action: 'decline' };
-            const content = agyQuestionContent(form.questions, pendingParked.answers, pendingParked.shownLabels);
-            return Object.keys(content).length > 0 ? { action: 'accept', content } : { action: 'decline' };
         }
 
         // Keyed by agy's tool call so the card shows on it, unless that id
