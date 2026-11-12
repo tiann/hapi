@@ -156,7 +156,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_image',
         {
-          description: `Display a local image file to the human user inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
+          description: 'Display a local image file to the human user inline in the current HAPI chat session. Call with the absolute filesystem path so HAPI can show it inline. This tool sends the image to the human user for inline display in HAPI; it does not provide image input to the model and cannot be used to read, inspect, or analyze image contents.',
           title: 'Display Image',
           inputSchema: displayImageInputSchema,
         },

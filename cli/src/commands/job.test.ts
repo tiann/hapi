@@ -177,6 +177,23 @@ describe('parseJobArgs', () => {
         ])).toThrow(/--progress until/)
     })
 
+    it('auto-infers until progress mode when running numeric sleep without explicit progress', () => {
+        const parsed = parseJobArgs([
+            'run',
+            'sid',
+            'wait',
+            '--label=wait',
+            '--',
+            'sleep',
+            '60'
+        ])
+        expect(parsed.progress).toBe('until')
+        expect(parsed.remaining).toBe(60)
+        expect(parsed.total).toBe(60)
+        expect(parsed.unit).toBe('s')
+        expect(parsed.untilMs).toBeDefined()
+    })
+
     it('rejects --started-at on update', () => {
         expect(() => parseJobArgs([
             'update',

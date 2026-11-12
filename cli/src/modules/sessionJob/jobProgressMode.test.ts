@@ -91,6 +91,14 @@ describe('parseUntilTimestamp', () => {
         expect(() => parseUntilTimestamp('2026-11-07T00:00:00.000Z', now))
             .toThrow(SessionJobError)
     })
+
+    it('parses relative durations (+5m, 300s, 1h)', () => {
+        const now = 1_000_000
+        expect(parseUntilTimestamp('+5m', now)).toBe(now + 5 * 60 * 1000)
+        expect(parseUntilTimestamp('300s', now)).toBe(now + 300 * 1000)
+        expect(parseUntilTimestamp('+1h', now)).toBe(now + 3600 * 1000)
+        expect(parseUntilTimestamp('2d', now)).toBe(now + 2 * 86400 * 1000)
+    })
 })
 
 describe('stampUntilProgress', () => {

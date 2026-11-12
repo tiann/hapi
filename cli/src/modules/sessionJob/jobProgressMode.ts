@@ -22,7 +22,24 @@ export type ProgressFields = {
 export function parseUntilTimestamp(raw: string, nowMs: number = Date.now()): number {
     const trimmed = raw.trim()
     if (!trimmed) {
-        throw new SessionJobError('bad_args', '--until requires an ISO-8601 timestamp or epoch ms')
+        throw new SessionJobError('bad_args', '--until requires an ISO-8601 timestamp, epoch ms, or duration (+5m, 300s)')
+    }
+    // Duration: +300s, 300s, +5m, 5m, +1h, 1h, +2d, 2d
+    const durationMatch = /^\+?(\d+)(s|m|h|d)$/i.exec(trimmed)
+    if (durationMatch && durationMatch[1] && durationMatch[2]) {
+        const count = Number(durationMatch[1])
+        const unit = durationMatch[2].toLowerCase()
+        const multipliers: Record<string, number> = {
+            s: 1000,
+            m: 60 * 1000,
+            h: 3600 * 1000,
+            d: 86400 * 1000
+        }
+        const deltaMs = count * (multipliers[unit] ?? 1000)
+        if (!Number.isFinite(deltaMs) || deltaMs <= 0) {
+            throw new SessionJobError('bad_args', '--until duration must be positive')
+        }
+        return nowMs + deltaMs
     }
     if (/^\d+$/.test(trimmed)) {
         const n = Number(trimmed)
