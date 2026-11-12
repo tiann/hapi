@@ -361,6 +361,7 @@
     <string name="chat_queued_scheduled">Запланировано на %1$s</string>
     <string name="chat_queued_steer">Направить</string>
     <string name="chat_queued_edit">Изменить</string>
+    <string name="chat_markdown_image_failed">Не удалось загрузить изображение · Нажмите, чтобы повторить</string>
     <string name="chat_picker_title">Прикрепить</string>
     <string name="chat_picker_photos">Галерея</string>
     <string name="chat_picker_camera">Камера</string>

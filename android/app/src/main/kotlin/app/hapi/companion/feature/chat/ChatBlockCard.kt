@@ -28,15 +28,22 @@ import java.io.File
 
 /**
  * Hub-scoped media plumbing for chat blocks: the authed Coil loader, the
- * generated-image URL builder (both from `HubGraph`) and the raw byte
- * fetcher used by non-image generated media (video/audio/file download to
- * the media cache). Null loader/fetcher (previews, tests) degrade: images
- * to a filename placeholder, gated media to the unavailable error line.
+ * generated-image URL builder (both from `HubGraph`), the raw byte fetcher
+ * used by non-image generated media (video/audio/file download to the media
+ * cache), and the hub-relative media resolver used by markdown inline
+ * images. Null loader/fetcher/resolver (previews, tests) degrade: images to
+ * a filename placeholder, gated media to the unavailable error line, inline
+ * images to a link fallback.
  */
 data class ChatMedia(
     val imageLoader: ImageLoader?,
     val generatedImageUrl: (imageId: String) -> String?,
     val fetchGeneratedMedia: (suspend (url: String, imageId: String, fileName: String) -> File)? = null,
+    /**
+     * Resolves a hub-relative markdown image src to an absolute URL for the
+     * authed loader; a null return (or the default) degrades to a link.
+     */
+    val hubMediaUrl: (path: String) -> String? = { null },
 )
 
 val LocalChatMedia = staticCompositionLocalOf {
