@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import {
+    getMergedSessionRedirectId,
     getSupersedingSessionId,
     prepareFollowSupersedingSession,
     shouldFollowSupersedingSession,
@@ -11,6 +12,17 @@ import {
 
 afterEach(() => {
     try { window.sessionStorage.clear() } catch { /* noop */ }
+})
+
+describe('getMergedSessionRedirectId', () => {
+    it('returns the surviving id when the hub answered with a different session', () => {
+        expect(getMergedSessionRedirectId('merged-away', { id: 'survivor' })).toBe('survivor')
+    })
+
+    it('returns null for the same session or while loading', () => {
+        expect(getMergedSessionRedirectId('same', { id: 'same' })).toBeNull()
+        expect(getMergedSessionRedirectId('same', null)).toBeNull()
+    })
 })
 
 describe('getSupersedingSessionId', () => {
