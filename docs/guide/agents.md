@@ -408,8 +408,11 @@ without a native rename tool.
 HAPI's `$` skill menu for Hermes sessions reads the same skill roots Hermes
 itself uses: `$HERMES_HOME/skills` (`~/.hermes/skills` by default), the
 project's `.hermes/skills`, and the shared `~/.agents/skills` / `.agents/skills`
-directories. HAPI does not bridge MCP servers to Hermes in v1; slash commands
-are routed by the Hermes gateway rather than read from files.
+directories. HAPI bridges its MCP server into Hermes sessions (session tools
+plus the `skill_lookup` bridge) on both `session/new` and `session/resume`,
+remounting it automatically when the ACP child is respawned; peer-session
+tools are hidden under `HAPI_DISABLE_PEER_TOOLS=1`. Slash commands are routed
+by the Hermes gateway rather than read from files.
 
 ## Other agents
 
