@@ -71,8 +71,10 @@ const updateStateSchema = z.object({
 // Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
 // (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
+    'opencodeRewind',
     'supersededBySessionId',
     'opencodeClearOperation',
+    'opencodeForkPending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'jobsAcceptedFromSessionIds',
@@ -90,6 +92,10 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     for (const key of HUB_OWNED_METADATA_KEYS) {
         if (Object.prototype.hasOwnProperty.call(existing, key)) next[key] = existing[key]
         else delete next[key]
+    }
+    const rewind = existing.opencodeRewind as { phase?: string } | undefined
+    if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
+        for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
     return next
 }
