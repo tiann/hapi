@@ -9,15 +9,17 @@ function fixture() {
     const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
     const markAttachmentDenied = vi.fn();
+    const markAttachmentApproved = vi.fn();
     const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: send,
         markAttachmentDenied,
+        markAttachmentApproved,
         updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); },
         rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => handlers.set(key, fn) } } as unknown as ApiSessionClient;
     const respond = vi.fn();
     const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation');
     const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
         questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }] }] } };
-    return { permissions, request, respond, handlers, send, markAttachmentDenied, state: () => state };
+    return { permissions, request, respond, handlers, send, markAttachmentDenied, markAttachmentApproved, state: () => state };
 }
 describe('shared request arbitration', () => {
     it.each([{ notes: [] }, { notes: ['user_note: custom answer'] }])('preserves isOther and canonical other answers (%j) without claiming a winner', async ({ notes }) => {
@@ -148,7 +150,7 @@ describe('shared request arbitration', () => {
         expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/private.txt');
     });
 
-    it('marks attachment denied when a file request is canceled or resolved via native terminal', () => {
+    it('marks attachment denied when a file request is canceled or resolved via native terminal without web approval', () => {
         const f = fixture();
         const request = {
             id: 3,
@@ -162,7 +164,28 @@ describe('shared request arbitration', () => {
             }
         };
         f.permissions.receive(request);
-        f.permissions.resolved('thread', 3, 'canceled');
+        // Neutral native resolution without web approval: serverRequest/resolved calls resolved(thread, 3)
+        f.permissions.resolved('thread', 3);
         expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/terminal-denied.txt');
+    });
+
+    it('marks attachment approved when a file request is web-approved and resolved natively', async () => {
+        const f = fixture();
+        const request = {
+            id: 4,
+            method: 'item/tool/requestApproval',
+            params: {
+                threadId: 'thread',
+                turnId: 'turn',
+                itemId: 'call-read-approved',
+                tool: 'read_file',
+                input: { path: '/workspace/web-approved.txt' }
+            }
+        };
+        f.permissions.receive(request);
+        const [id] = Object.entries(f.state().requests ?? {})[0]!;
+        await f.handlers.get('permission')!({ id, approved: true, decision: 'approved' });
+        f.permissions.resolved('thread', 4, 'resolved');
+        expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/web-approved.txt');
     });
 });

@@ -1235,7 +1235,7 @@ describe('ApiSessionClient attachment links', () => {
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterSharedCodex).toHaveLength(1) // codex-shared-denied.txt blocked
 
-                // Qualified tool name + native terminal cancellation in SharedCodexPermissions
+                // Qualified tool name + neutral native terminal resolution (root.ts production path)
                 await writeFile(join(workspace, 'terminal-codex.txt'), 'terminal secret')
                 sharedCodex.receive({
                     id: 102,
@@ -1248,7 +1248,8 @@ describe('ApiSessionClient attachment links', () => {
                         input: { path: join(workspace, 'terminal-codex.txt') }
                     }
                 })
-                sharedCodex.resolved('thread-1', 102, 'canceled')
+                // Production serverRequest/resolved calls resolved() without status argument
+                sharedCodex.resolved('thread-1', 102)
 
                 client.sendAgentMessage({ type: 'message', message: '[term](terminal-codex.txt)' })
                 expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
@@ -1340,7 +1341,7 @@ describe('ApiSessionClient attachment links', () => {
                 }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
                 expect(mediaAfterCodexMulti).toHaveLength(2) // neither codex-multi1 nor codex-multi2 was delivered
 
-                // Terminal-only approval (approved directly in terminal without web reply) MUST NOT be blocked
+                // Terminal approval reconciled by native execution evidence
                 await writeFile(join(workspace, 'terminal-approved.txt'), 'terminal approved')
                 sharedCodex.receive({
                     id: 106,
@@ -1353,7 +1354,8 @@ describe('ApiSessionClient attachment links', () => {
                         input: { path: join(workspace, 'terminal-approved.txt') }
                     }
                 })
-                sharedCodex.resolved('thread-1', 106, 'resolved')
+                sharedCodex.resolved('thread-1', 106) // serverRequest/resolved without web reply
+                sharedCodex.recordApproved(join(workspace, 'terminal-approved.txt')) // execution evidence reconciles outcome
 
                 client.sendAgentMessage({ type: 'message', message: '[term-appr](terminal-approved.txt)' })
                 expect(await client.flush({ timeoutMs: 1000 })).toBe(true)

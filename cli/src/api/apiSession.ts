@@ -1258,6 +1258,10 @@ export class ApiSessionClient extends EventEmitter {
         this.attachmentCompatibility.markDenied(path, this.metadata?.path ?? undefined)
     }
 
+    markAttachmentApproved(path: string): void {
+        this.attachmentCompatibility.markApproved(path, this.metadata?.path ?? undefined)
+    }
+
     keepAlive(
         thinking: boolean,
         mode: 'local' | 'remote' | undefined,

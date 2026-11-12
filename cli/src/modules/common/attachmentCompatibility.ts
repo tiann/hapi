@@ -123,6 +123,26 @@ export class AttachmentCompatibility {
         }).catch(() => {})
     }
 
+    markApproved(path: string, cwd?: string): void {
+        this.deniedPaths.delete(path)
+        const normalized = cwd && !isAbsolute(path) ? resolve(cwd, path) : (isAbsolute(path) ? resolve(path) : undefined)
+        if (normalized) {
+            this.deniedPaths.delete(normalized)
+            try {
+                this.deniedPaths.delete(realpathSync(normalized))
+            } catch {}
+        }
+        this.queue = this.queue.then(async () => {
+            const target = normalized ?? (cwd ? resolve(cwd, path) : undefined)
+            if (target) {
+                try {
+                    const canonical = await realpath(target)
+                    this.deniedPaths.delete(canonical)
+                } catch {}
+            }
+        }).catch(() => {})
+    }
+
     isDenied(path: string, canonicalPath?: string): boolean {
         return this.deniedPaths.has(path) || (canonicalPath !== undefined && this.deniedPaths.has(canonicalPath))
     }
@@ -171,14 +191,21 @@ export class AttachmentCompatibility {
                     const media = registerGeneratedImage({ id: randomUUID(), path: canonical, bytes, mimeType: detectDisplayMediaMimeType(bytes) })
                     // ChatMarkdownImage rejects sandbox:, file:, parent-relative ('..'),
                     // and files exceeding 10 MiB through resolveMarkdownFileImage / normalizeLocalPath.
-                    // Retain the web card unless inline rendering succeeds.
-                    const normalizedTarget = item.rawTarget.trim().replaceAll('\\', '/')
+                    // Evaluate the decoded target to catch percent-encoded parent traversals (%2e%2e).
+                    let decodedTarget = item.rawTarget.trim()
+                    try {
+                        decodedTarget = decodeURIComponent(decodedTarget.replace(/^sandbox:/, ''))
+                    } catch {}
+                    decodedTarget = decodedTarget.replaceAll('\\', '/')
+
                     const suppressWebCard =
                         item.isMarkdownImage
                         && !item.rawTarget.startsWith('sandbox:')
                         && !item.rawTarget.startsWith('file:')
-                        && !normalizedTarget.startsWith('../')
-                        && !normalizedTarget.includes('/../')
+                        && !decodedTarget.startsWith('sandbox:')
+                        && !decodedTarget.startsWith('file:')
+                        && !decodedTarget.startsWith('../')
+                        && !decodedTarget.includes('/../')
                         && bytes.length <= MAX_INLINE_WEB_IMAGE_BYTES
                     emit({
                         type: 'generated-image',

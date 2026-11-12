@@ -129,11 +129,12 @@ export class SharedCodexPermissions {
         for (const [key, request] of this.pending) {
             if (request.threadId !== threadId || request.nativeId !== nativeId) continue;
             this.pending.delete(key);
-            // Only mark denied when canceled/aborted natively — never on successful approval ('resolved')!
-            if (status === 'canceled') {
-                if (isDisplayOrReadFileTool(request.toolName)) {
-                    const targetPaths = extractTargetFilePaths(request.input);
-                    for (const targetPath of targetPaths) {
+            if (isDisplayOrReadFileTool(request.toolName)) {
+                const targetPaths = extractTargetFilePaths(request.input);
+                for (const targetPath of targetPaths) {
+                    if (request.submitted && status === 'resolved') {
+                        this.session.markAttachmentApproved?.(targetPath);
+                    } else {
                         this.session.markAttachmentDenied(targetPath);
                     }
                 }
@@ -148,6 +149,10 @@ export class SharedCodexPermissions {
                 } };
             });
         }
+    }
+
+    recordApproved(path: string): void {
+        this.session.markAttachmentApproved?.(path);
     }
 
     close(): void {

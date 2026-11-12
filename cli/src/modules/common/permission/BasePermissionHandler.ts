@@ -207,6 +207,7 @@ export type PermissionHandlerClient = {
     rpcHandlerManager: RpcHandlerManagerLike;
     updateAgentState: (handler: (state: AgentState) => AgentState) => void;
     markAttachmentDenied?: (path: string) => void;
+    markAttachmentApproved?: (path: string) => void;
 };
 
 export type PendingPermissionRequest<TResult> = {
