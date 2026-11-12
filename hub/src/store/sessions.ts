@@ -81,7 +81,9 @@ const HUB_OWNED_METADATA_FIELDS = [
     'codexResumePending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
-    'promptTitle'
+    'promptTitle',
+    'forkedFrom',
+    'conversationBranch'
 ] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -144,12 +146,13 @@ function preserveForkSummary(
     next: Record<string, unknown>,
     merged: Record<string, unknown> | null
 ): Record<string, unknown> | null {
-    // A fork's provisional title is Hub-generated. CLI bootstrap writes are
-    // sparse and historically drop it, leaving the child titled by its path.
-    // Explicit `summary: null` or a replacement summary still wins.
+    // A fork or branch's provisional title is Hub-generated. CLI bootstrap
+    // writes are sparse and historically drop it, leaving the child titled by
+    // its path. Explicit `summary: null` or a replacement summary still wins.
     if (next.summary !== undefined) return merged
     const summary = prior.summary
-    if (!isPlainObject(summary) || typeof summary.text !== 'string' || !summary.text.startsWith('Fork: ')) {
+    if (!isPlainObject(summary) || typeof summary.text !== 'string'
+        || !(summary.text.startsWith('Fork: ') || summary.text.startsWith('Branch: '))) {
         return merged
     }
     const result = merged ?? { ...next }
@@ -167,6 +170,13 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
     merged = preserveForkSummary(prior, next, merged)
+    // A stale CLI cache may still contain the pre-launch branch state. Once
+    // delivery succeeded, sparse/full CLI updates must not regress its outcome.
+    if (isPlainObject(prior.conversationBranch) && isPlainObject(next.conversationBranch)
+        && prior.conversationBranch.requestFingerprint === next.conversationBranch.requestFingerprint
+        && prior.conversationBranch.state === 'started') {
+        merged = { ...(merged ?? next), conversationBranch: prior.conversationBranch }
+    }
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }

@@ -658,6 +658,24 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+/** Portable visible-history branch; native fork remains a separate operation. */
+export const BranchConversationRequestSchema = z.object({
+    requestId: z.uuid(),
+    messageLocalId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    boundary: z.enum(['before', 'after']).default('before'),
+    agent: z.enum(['claude', 'codex']),
+    model: z.string().trim().min(1).max(256).optional(),
+    workspace: z.enum(['current', 'worktree']).default('current'),
+    worktreeName: z.string().trim().min(1).max(100).optional(),
+    instruction: z.string().trim().min(1).max(16_000)
+}).strict().refine(data => !(data.messageLocalId && data.messageId), {
+    message: 'Specify only one branch boundary identifier', path: ['messageId']
+})
+
+export type BranchConversationRequest = z.infer<typeof BranchConversationRequestSchema>
+export type BranchConversationResponse = { sessionId: string; warning?: string }
+
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
     latestCompleted: z.boolean().optional()
