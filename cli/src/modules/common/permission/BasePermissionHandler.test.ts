@@ -191,9 +191,12 @@ describe('BasePermissionHandler overlapping answers', () => {
 
         const client: PermissionHandlerClient = {
             rpcHandlerManager: {
-                registerHandler: vi.fn((_method: string, handler: (response: TestResponse) => Promise<void>) => {
-                    rpcHandler = handler
-                })
+                registerHandler: <TRequest = unknown, TResponse = unknown>(
+                    _method: string,
+                    handler: (params: TRequest) => TResponse | Promise<TResponse>
+                ) => {
+                    rpcHandler = handler as unknown as (response: TestResponse) => Promise<void>
+                }
             },
             updateAgentState: (fn) => {
                 agentState = fn(agentState)

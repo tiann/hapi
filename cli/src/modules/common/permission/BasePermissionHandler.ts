@@ -206,8 +206,16 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
     protected finalizeRequest(id: string, completion: PermissionCompletion): void {
         this.client.updateAgentState((currentState) => {
-            const request = currentState.requests?.[id];
+            const fromPending = currentState.requests?.[id];
+            const fromCompleted = currentState.completedRequests?.[id];
+            // Prefer the live pending entry; fall back to a canceled placeholder so a
+            // racing orphan/hub clear cannot make a successful answer disappear
+            // (tiann/hapi#2415 review).
+            const request = fromPending ?? fromCompleted;
             if (!request) return currentState;
+            if (!fromPending && fromCompleted && fromCompleted.status !== 'canceled') {
+                return currentState;
+            }
 
             const nextRequests = { ...currentState.requests };
             delete nextRequests[id];
