@@ -43,14 +43,21 @@ export interface AttachmentCompatibilityOptions {
     isAuthorized?: boolean
 }
 
+export type AttachmentLinkCandidate = {
+    path: string
+    isMarkdownImage: boolean
+}
+
 /** Only explicit delivery links, never tool output, reasoning, or bare file citations. */
-export function attachmentLinks(text: string): string[] {
+export function attachmentLinks(text: string): AttachmentLinkCandidate[] {
     const prose = text.replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1[^\n]*$/gm, '')
         .replace(/(`+)[^\n]*?\1/g, '')
-    const paths = new Set<string>()
-    const links = /!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s()]+(?:\([^()]*\)[^\s()]*)*))\s*(?:["'][^\n]*?["']\s*)?\)/g
+    const candidates: AttachmentLinkCandidate[] = []
+    const seen = new Set<string>()
+    const links = /(!?)\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s()]+(?:\([^()]*\)[^\s()]*)*))\s*(?:["'][^\n]*?["']\s*)?\)/g
     for (const match of prose.matchAll(links)) {
-        let target = match[1] ?? match[2]
+        const isMarkdownImage = match[1] === '!'
+        let target = match[2] ?? match[3]
         try {
             if (target.startsWith('file:')) target = fileURLToPath(target)
             else target = decodeURIComponent(target.replace(/^sandbox:/, ''))
@@ -60,10 +67,13 @@ export function attachmentLinks(text: string): string[] {
         // Source citations with line numbers remain ordinary links.
         if (/:\d+(?::\d+)?$/.test(target)) continue
         if (!/\.(?:pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|zip|tar|gz|png|jpe?g|gif|webp|svg|mp4|webm|mp3|wav|ogg|flac)$/i.test(target)) continue
-        paths.add(target)
-        if (paths.size === 16) break
+        if (!seen.has(target)) {
+            seen.add(target)
+            candidates.push({ path: target, isMarkdownImage })
+        }
+        if (candidates.length === 16) break
     }
-    return [...paths]
+    return candidates
 }
 
 export function assistantAttachmentText(body: unknown): string | null {
@@ -142,7 +152,8 @@ export class AttachmentCompatibility {
 
         this.queue = this.queue.then(async () => {
             const root = await realpath(cwd)
-            for (const path of paths) {
+            for (const item of paths) {
+                const path = item.path
                 try {
                     const resolved = resolve(root, path)
                     const canonical = await realpath(resolved)
@@ -155,7 +166,18 @@ export class AttachmentCompatibility {
                     const digest = createHash('sha256').update(bytes).digest('hex')
                     if (this.seen.has(digest)) continue
                     const media = registerGeneratedImage({ id: randomUUID(), path: canonical, bytes, mimeType: detectDisplayMediaMimeType(bytes) })
-                    emit({ type: 'generated-image', imageId: media.id, fileName: media.fileName, mimeType: media.mimeType, id: randomUUID() })
+                    emit({
+                        type: 'generated-image',
+                        imageId: media.id,
+                        fileName: media.fileName,
+                        mimeType: media.mimeType,
+                        id: randomUUID(),
+                        source: {
+                            ingress: 'attachment-fallback',
+                            isMarkdownImage: item.isMarkdownImage,
+                            linkTarget: path
+                        }
+                    })
                     this.remember(digest)
                 } catch { /* Missing or unsupported files must not break the agent's answer. */ }
             }

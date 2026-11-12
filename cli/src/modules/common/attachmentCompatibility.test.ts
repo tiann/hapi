@@ -6,7 +6,12 @@ import { AttachmentCompatibility, assistantAttachmentText, attachmentLinks } fro
 
 it('recognizes common delivery links', () => {
     expect(attachmentLinks('[report](sandbox:/tmp/report.pdf) ![image](file:///tmp/a.png) [doc](<./my file.docx>) [table](out/a%20b.csv)'))
-        .toEqual(['/tmp/report.pdf', '/tmp/a.png', './my file.docx', 'out/a b.csv'])
+        .toEqual([
+            { path: '/tmp/report.pdf', isMarkdownImage: false },
+            { path: '/tmp/a.png', isMarkdownImage: true },
+            { path: './my file.docx', isMarkdownImage: false },
+            { path: 'out/a b.csv', isMarkdownImage: false }
+        ])
 })
 it('ignores external links, citations, and code', () => {
     expect(attachmentLinks('[web](https://example.org/a.pdf) [source](a.md:12) [bad](javascript:a.pdf) [unc](//host/a.pdf) `[inline](a.pdf)`\n```md\n[example](a.pdf)\n```')).toEqual([])
