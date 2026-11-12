@@ -1919,7 +1919,13 @@ export function HappyThread(props: {
         // rewinds update epoch, snapshot head, and forward pagination cursors.
         const hasValidatedServerContext = !props.onLoadMessageContext
             || searchTargetValidatedRequestKeyRef.current === searchRequestKey
-        const target = hasValidatedServerContext
+        // Pending requests can be synthesized from live agent state without a
+        // stored transcript row. SessionChat has already validated that request,
+        // so a rendered anchor is authoritative; only missing anchors need the
+        // bounded server-context load for unloaded history.
+        const canUseRenderedTarget = hasValidatedServerContext
+            || props.targetHighlightKind === 'pending-request'
+        const target = canUseRenderedTarget
             ? findConversationMessageAnchor(targetMessageId, targetSearchQuery)
             : null
         if (target instanceof HTMLElement) {

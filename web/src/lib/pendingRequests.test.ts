@@ -41,6 +41,12 @@ describe('pending request helpers', () => {
             messageId: 'tool-call:call-1',
         })
     })
+    it('uses a generated request key for a synthesized Cursor question', () => {
+        expect(getPendingRequestNavigationTarget('generated-request', { tool: 'CursorAskQuestion', arguments: {} }, false)).toEqual({
+            kind: 'message',
+            messageId: 'tool-call:generated-request',
+        })
+    })
     it('extracts readable question and approval details for the popover', () => {
         const entries = getPendingRequestEntries({
             question: {
