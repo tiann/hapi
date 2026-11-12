@@ -26,7 +26,7 @@ for (const touch of [false, true]) {
                 await more.click()
                 const menu = page.getByTestId('scratchlist-action-menu')
                 await expect(menu).toBeVisible()
-                await expect(menu.getByRole('menuitem')).toHaveCount(4)
+                await expect(menu.getByRole('menuitem')).toHaveCount(5)
                 await expectInsideViewport(page, menu)
                 const geometry = await menu.evaluate(el => {
                     const rect = el.getBoundingClientRect()
@@ -72,10 +72,10 @@ for (const touch of [false, true]) {
                 await page.keyboard.press('Escape')
                 await expect(menu).toHaveCount(0)
 
-                // The attachment plus has a dedicated keyboard path and the
-                // action menu no longer duplicates that operation.
+                // Upload is available from the action menu for every draft. A
+                // draft with attachments also keeps the adjacent plus control.
                 await more.click()
-                await expect(menu.locator('[data-scratchlist-action="insert-attachments"]')).toHaveCount(0)
+                await expect(menu.locator('[data-scratchlist-action="insert-attachments"]')).toHaveCount(1)
                 await page.keyboard.press('Escape')
                 const plus = page.getByTestId('scratchlist-insert-attachment-plus')
                 await plus.focus()
