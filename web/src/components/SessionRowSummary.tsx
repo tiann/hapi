@@ -218,6 +218,7 @@ export function SessionRowSummary(props: {
     const activityLabel = isBackgroundOnly
         ? t('session.item.background')
         : t('session.item.running')
+    const pendingRequestId = s.pendingRequests?.[0]?.id
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
             <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
@@ -271,12 +272,14 @@ export function SessionRowSummary(props: {
                                 summary={s}
                                 label={attentionLabel ?? ''}
                                 tooltipId={attentionId}
+                                pendingRequestId={pendingRequestId}
                             />
                         ) : requestKind ? (
                             <span className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-warning-text)]">
                                 <SessionRequestIcon
                                     kind={requestKind}
                                     label={attentionLabel ?? t('session.item.pending')}
+                                    requestId={pendingRequestId}
                                 />
                                 {!urgentAttention && !inRunningSection ? (
                                     <span className="text-[11px] font-medium leading-none">{t('session.item.pending')}</span>

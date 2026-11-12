@@ -503,6 +503,10 @@ export async function opencodeLocalLauncher(
                 ?? record.pattern
                 ?? record.message
                 ?? record.metadata;
+            const toolCallId = getString(record.toolCallId)
+                ?? getString(record.tool_call_id)
+                ?? getString(metadata?.toolCallId)
+                ?? getString(metadata?.tool_call_id);
 
             session.client.updateAgentState((currentState) => ({
                 ...currentState,
@@ -510,6 +514,7 @@ export async function opencodeLocalLauncher(
                     ...currentState.requests,
                     [id]: {
                         tool: toolName,
+                        ...(toolCallId ? { toolCallId } : {}),
                         arguments: toolInput,
                         createdAt: Date.now()
                     }

@@ -1058,7 +1058,7 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
 
 const SessionItem = memo(function SessionItem(props: {
     session: SessionSummary
-    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string) => void
+    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
     api: ApiClient | null
     titleSuggestionAvailable?: boolean
@@ -1101,6 +1101,7 @@ const SessionItem = memo(function SessionItem(props: {
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [forkOpen, setForkOpen] = useState(false)
     const [forkPending, setForkPending] = useState(false)
+    const pendingRequestPressedRef = useRef(false)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1231,7 +1232,15 @@ const SessionItem = memo(function SessionItem(props: {
         },
         onClick: () => {
             if (!menuOpen) {
-                onSelect(s.id, targetMessageId, targetMessageQuery)
+                const pendingRequestId = pendingRequestPressedRef.current
+                    ? s.pendingRequests?.[0]?.id
+                    : undefined
+                pendingRequestPressedRef.current = false
+                if (pendingRequestId) {
+                    onSelect(s.id, undefined, undefined, pendingRequestId)
+                } else {
+                    onSelect(s.id, targetMessageId, targetMessageQuery)
+                }
             }
         },
         threshold: 500
@@ -1262,6 +1271,10 @@ const SessionItem = memo(function SessionItem(props: {
                 <button
                     type="button"
                     {...longPressHandlers}
+                    onPointerDownCapture={(event) => {
+                        pendingRequestPressedRef.current = event.target instanceof Element
+                            && event.target.closest('[data-session-pending-request-id]') !== null
+                    }}
                     data-session-scroll-anchor
                     className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                     style={{ WebkitTouchCallout: 'none' }}
@@ -1449,7 +1462,7 @@ function PullRefreshIcon(props: { rotation: number }) {
 
 export function SessionList(props: {
     sessions: SessionSummary[]
-    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string) => void
+    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     onNewSession: () => void
     onNewSessionInDirectory?: (args: { machineId: string | null; directory: string }) => void
     onBrowse?: () => void

@@ -59,6 +59,7 @@ See `src/router.tsx` for route definitions.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
+- Pending-request status and session-row symbols distinguish questions from approvals and locate the correlated card; async questions open the live question panel.
 - Agent name and model display.
 - Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
 - Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.

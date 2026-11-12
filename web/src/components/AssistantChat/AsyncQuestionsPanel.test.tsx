@@ -84,6 +84,32 @@ describe('AsyncQuestionsPanel', () => {
         expect(screen.queryByRole('region')).not.toBeInTheDocument()
     })
 
+    it('opens, scrolls to, focuses, and highlights a targeted live question', async () => {
+        const onTargetConsumed = vi.fn()
+        const requests = { first: question('First', 1), second: question('Second', 2) }
+        const api = { approvePermission: vi.fn(), denyPermission: vi.fn() } as unknown as ApiClient
+        const { container } = render(
+            <AsyncQuestionsPanel
+                api={api}
+                sessionId="session-1"
+                requests={requests}
+                disabled={false}
+                onRefresh={vi.fn()}
+                targetRequestId="second"
+                targetVersion={1}
+                onTargetConsumed={onTargetConsumed}
+            />
+        )
+
+        await waitFor(() => expect(onTargetConsumed).toHaveBeenCalledOnce())
+        expect(screen.getByRole('button', { name: /chat.asyncQuestions.title/ })).toHaveAttribute('aria-expanded', 'true')
+        const target = container.querySelector<HTMLDetailsElement>('[data-pending-request-id="second"]')
+        expect(target).not.toBeNull()
+        expect(target?.open).toBe(true)
+        expect(target).toHaveFocus()
+        expect(target?.className).toContain('ring-[#FF9500]/40')
+    })
+
     it('disables actions for inactive sessions and does not carry answers into another session', () => {
         const { props, rerender } = setup({ request: question('Question', 1) })
         expand()
