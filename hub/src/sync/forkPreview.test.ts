@@ -227,7 +227,7 @@ describe('fork preview boundary tokens on confirm', () => {
         const token: ForkBoundary = { ...response.boundary, mode: 'latestCompleted', nativeTurnId: 'turn-2' }
         addInvoked('u3')
         rpc.forkConversation = async (_id, payload) => {
-            expect(payload).toEqual({ latestCompleted: true })
+            expect(payload).toEqual({ latestCompleted: true, lastTurnId: 'turn-2' })
             return { nativeSessionId: 'native-child', sessionId: child.id, completedTurnId: 'turn-2' }
         }
         const result = await engine.forkConversation(source.id, 'default', undefined, true, token)
@@ -280,6 +280,81 @@ describe('fork preview boundary tokens on confirm', () => {
         rpc.spawnSession = async (...args: unknown[]) => ({ type: 'success', sessionId: args[12]! }) as never
         const result = await engine.forkConversation(source.id, 'default')
         expect(result.type).toBe('success')
+    })
+})
+
+describe('preview-capable shared runtime', () => {
+    function sharedFixture() {
+        return fixture({
+            capabilities: {
+                concurrentClients: true,
+                conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true, forkLatestCompleted: true, forkPreview: true }
+            }
+        })
+    }
+
+    it('asks the runtime for the boundary cut and carries the native pin', async () => {
+        const { engine, source, rpc, preview } = sharedFixture()
+        const previewCalls: unknown[] = []
+        rpc.previewForkBoundary = async (_id, payload) => {
+            previewCalls.push(payload)
+            return { nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' }
+        }
+        const response = expectPreview(await preview('current'))
+        expect(previewCalls).toEqual([{ mode: 'current' }])
+        expect(response.boundary.nativeTurnId).toBe('turn-2')
+        expect(response.keptTail.map((row) => row.localId)).toEqual(['u1', 'a1'])
+        expect(response.excluded.map((row) => row.localId)).toEqual(['u2'])
+        expect(response.counts).toEqual({ kept: 2, excluded: 2 })
+
+        rpc.forkConversation = async (_id, payload) => {
+            expect(payload).toEqual({ lastTurnId: 'turn-2' })
+            return { nativeSessionId: 'child-native' }
+        }
+        rpc.spawnSession = async (...args: unknown[]) => ({ type: 'success', sessionId: args[12]! }) as never
+        const result = await engine.forkConversation(source.id, 'default', undefined, false, response.boundary)
+        expect(result.type).toBe('success')
+    })
+
+    it('pins the latestCompleted confirm to the previewed turn', async () => {
+        const { engine, source, rpc, preview } = sharedFixture()
+        const child = engine.getOrCreateSession('child', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
+            codexSessionId: 'native-child', forkedFrom: source.id,
+            capabilities: { concurrentClients: true, conversationHistory: { forkCurrent: true, forkLatestCompleted: true } }
+        }, { controlledByUser: false }, 'default')
+        engine.handleSessionAlive({ sid: child.id, time: Date.now() })
+        engine.handleSessionReady({ sid: child.id, time: Date.now() })
+        rpc.previewForkBoundary = async () => ({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
+        const response = expectPreview(await preview('current'))
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: true, mode: 'remote' })
+        expect(response.mode).toBe('current')
+        const token: ForkBoundary = { ...response.boundary, mode: 'latestCompleted' }
+        rpc.forkConversation = async (_id, payload) => {
+            expect(payload).toEqual({ latestCompleted: true, lastTurnId: 'turn-2' })
+            return { nativeSessionId: 'native-child', sessionId: child.id, completedTurnId: 'turn-2' }
+        }
+        const result = await engine.forkConversation(source.id, 'default', undefined, true, token)
+        expect(result).toMatchObject({ type: 'success' })
+    })
+
+    it('propagates a runtime preview failure to the caller', async () => {
+        const { preview, rpc } = sharedFixture()
+        rpc.previewForkBoundary = async () => { throw new Error('Native history is ambiguous') }
+        expect(await preview('current')).toEqual({ type: 'error', message: 'Native history is ambiguous' })
+    })
+
+    it('still answers a latestCompleted intent for a running preview-capable source', async () => {
+        const { engine, source, preview, rpc } = sharedFixture()
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: true, mode: 'remote' })
+        rpc.previewForkBoundary = async (_id, payload) => {
+            expect(payload).toEqual({ mode: 'latestCompleted' })
+            return { nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' }
+        }
+        const response = expectPreview(await preview('current'))
+        expect(response.mode).toBe('latestCompleted')
+        expect(response.boundary.nativeTurnId).toBe('turn-2')
+        void source
     })
 })
 

@@ -749,6 +749,164 @@ describe('latest completed list fork', () => {
     });
 });
 
+describe('fork preview boundary answers', () => {
+    const preview = async (f: Awaited<ReturnType<typeof fixture>>, raw: unknown) =>
+        f.rpc.get(RPC_METHODS.PreviewForkBoundary)!(raw);
+
+    it('publishes the forkPreview capability for the shared runtime', async () => {
+        const f = await fixture();
+        await f.root.refresh(); await f.root.activate();
+        expect(f.metadata().capabilities?.conversationHistory?.forkPreview).toBe(true);
+    });
+
+    it('answers the latestCompleted preview with the completed cutoff and the excluded user row', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({
+            nativeTurnId: 'two', cutBeforeLocalId: 'running'
+        });
+    });
+
+    it('excludes a failed trailing turn from the running-source preview', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'failed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] },
+            { id: 'three', status: 'inProgress', items: [] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({
+            nativeTurnId: 'one', cutBeforeLocalId: 'second'
+        });
+    });
+
+    it('answers an idle current preview with the last turn and no cut', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({ nativeTurnId: 'two' });
+        await expect(preview(f, { mode: 'current' })).resolves.not.toHaveProperty('cutBeforeLocalId');
+    });
+
+    it('answers an empty thread current preview without a pin', async () => {
+        const f = await fixture();
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({});
+    });
+
+    it('answers a current preview with the completed cut once a turn starts running', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] },
+            { id: 'three', status: 'inProgress', items: [{ id: 'u3', type: 'userMessage', clientId: 'running' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({
+            nativeTurnId: 'two', cutBeforeLocalId: 'running'
+        });
+    });
+
+    it('answers a message preview with the pinned predecessor turn and the excluded row', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'message', messageLocalId: 'second' })).resolves.toEqual({
+            nativeTurnId: 'one', cutBeforeLocalId: 'second'
+        });
+    });
+
+    it('answers a first-turn message preview without a pin', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'message', messageLocalId: 'first' })).resolves.toEqual({
+            cutBeforeLocalId: 'first'
+        });
+    });
+
+    it('refuses a message preview inside a steered turn or without native history', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [
+                { id: 'u1', type: 'userMessage', clientId: 'first' },
+                { id: 'u2', type: 'userMessage', clientId: 'steer' }
+            ] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'message', messageLocalId: 'steer' })).rejects.toThrow('first message');
+        await expect(preview(f, { mode: 'message', messageLocalId: 'unknown' })).rejects.toThrow('native history point');
+    });
+});
+
+describe('pinned fork confirm', () => {
+    it('forks through the previewed turn while the source advances past it', async () => {
+        const initialSettings = vi.fn(async () => {});
+        const create = vi.fn<RootHost['create']>(async (_method, params) => {
+            expect(params).toMatchObject({ threadId: 'thread', lastTurnId: 'two' });
+            return { threadId: 'child', session: { sessionId: 'child-session' }, initialSettings,
+                readThread: async () => ({ turns: [{ id: 'one' }, { id: 'two' }] }) } as unknown as SharedCodexRoot;
+        });
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second' }] },
+            { id: 'three', status: 'inProgress', items: [] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'two' })).resolves.toEqual({
+            nativeSessionId: 'child', sessionId: 'child-session', completedTurnId: 'two'
+        });
+        expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects the confirm when the pinned turn left the native history', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first' }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'gone' }))
+            .rejects.toThrow('no longer part of the native history');
+        expect(create).not.toHaveBeenCalled();
+    });
+
+    it('rejects the confirm when the pinned prefix is no longer complete', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create });
+        f.native.thread.turns = [
+            { id: 'one', status: 'unknown', items: [] },
+            { id: 'two', status: 'completed', items: [] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ lastTurnId: 'two' }))
+            .rejects.toThrow('no longer has a completed native history prefix');
+        expect(create).not.toHaveBeenCalled();
+    });
+
+    it('keeps latestCompleted rejections when the pin is absent', async () => {
+        const create = vi.fn<RootHost['create']>();
+        const f = await fixture({ create }); await f.root.activate();
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ latestCompleted: true })).rejects.toThrow('No completed');
+        expect(create).not.toHaveBeenCalled();
+    });
+});
+
 describe('completed native prefix validation', () => {
     it('rejects duplicate or unknown native turn identities and states', () => {
         expect(() => latestCompletedForkCutoff([{ id: 'one', status: 'completed' }, { id: 'one', status: 'inProgress' }])).toThrow('ambiguous');

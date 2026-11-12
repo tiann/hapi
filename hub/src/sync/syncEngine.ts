@@ -2413,7 +2413,7 @@ export class SyncEngine {
             } catch (error) {
                 return guardError(error)
             }
-            return this.buildForkPreviewResponse(sessionId, 'rewind', messageLocalId)
+            return this.buildForkPreviewResponse(sessionId, source, flavor, 'rewind', messageLocalId)
         }
 
         if (!source.active) {
@@ -2425,7 +2425,7 @@ export class SyncEngine {
                     return guardError(error)
                 }
             }
-            return this.buildForkPreviewResponse(sessionId, intent === 'message' ? 'message' : 'current', messageLocalId)
+            return this.buildForkPreviewResponse(sessionId, source, flavor, intent === 'message' ? 'message' : 'current', messageLocalId)
         }
 
         // The hub resolves the mode from the live session; a running Codex
@@ -2462,20 +2462,35 @@ export class SyncEngine {
             return { type: 'error', message: 'Fork current is not supported for this session' }
         }
 
-        return this.buildForkPreviewResponse(sessionId, mode, messageLocalId)
+        return this.buildForkPreviewResponse(sessionId, source, flavor, mode, messageLocalId)
     }
 
-    private buildForkPreviewResponse(
+    private async buildForkPreviewResponse(
         sessionId: string,
+        source: Session,
+        flavor: AgentFlavor,
         mode: ForkBoundary['mode'],
         messageLocalId?: string
-    ): { type: 'success'; preview: ForkPreviewResponse } | { type: 'error'; message: string } {
+    ): Promise<{ type: 'success'; preview: ForkPreviewResponse } | { type: 'error'; message: string }> {
+        // A preview-capable shared runtime decides its own boundary: ask it
+        // where the native history cut sits instead of mirroring it from hub
+        // rows. Every other flavor is hub-decided and answered from rows.
+        let nativeCut: { nativeTurnId?: string; cutBeforeLocalId?: string } = {}
+        if (mode !== 'rewind' && source.active && flavor === 'codex'
+            && source.metadata?.capabilities?.conversationHistory?.forkPreview === true) {
+            try {
+                nativeCut = await this.rpcGateway.previewForkBoundary(sessionId,
+                    mode === 'message' ? { mode, messageLocalId } : { mode })
+            } catch (error) {
+                return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+            }
+        }
         const rows = this.store.messages.getAllMessages(sessionId)
         let resolved: ResolvedBoundary<StoredMessage>
         try {
             resolved = mode === 'rewind'
                 ? resolveRewindBoundary(rows, messageLocalId!)
-                : resolveForkBoundary(rows, { mode, messageLocalId })
+                : resolveForkBoundary(rows, { mode, messageLocalId, cutBeforeLocalId: nativeCut.cutBeforeLocalId })
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -2491,6 +2506,7 @@ export class SyncEngine {
                 v: 1,
                 mode,
                 ...(messageLocalId && (mode === 'message' || mode === 'rewind') ? { messageLocalId } : {}),
+                ...(nativeCut.nativeTurnId ? { nativeTurnId: nativeCut.nativeTurnId } : {}),
                 epoch: this.store.messages.getMessageEpoch(sessionId),
                 tailSeq: resolved.tailSeq
             },
@@ -2555,7 +2571,11 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.forkConversation(
                 sessionId,
-                latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {}
+                latestCompleted
+                    ? { latestCompleted: true, ...(boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}) }
+                    : messageLocalId
+                        ? { messageLocalId }
+                        : boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}
             )
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }

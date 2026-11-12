@@ -253,7 +253,7 @@ export class SharedCodexRoot {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
             // advertise a destructive operation we cannot make atomic yet.
-            conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: false, rewindToMessage: false }
+            conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: false, rewindToMessage: false, forkPreview: true }
         } }));
         this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
@@ -613,14 +613,16 @@ export class SharedCodexRoot {
             const child = await this.newConversation(); return { sessionId: child.session.sessionId };
         });
         rpc.registerHandler(RPC_METHODS.ForkConversation, async raw => {
-            const { messageLocalId, latestCompleted } = z.object({ messageLocalId: z.string().optional(), latestCompleted: z.boolean().optional() })
-                .refine(value => !(value.messageLocalId && value.latestCompleted)).parse(raw);
-            if (latestCompleted) {
+            const { messageLocalId, latestCompleted, lastTurnId } = z.object({ messageLocalId: z.string().optional(), latestCompleted: z.boolean().optional(),
+                lastTurnId: z.string().optional() })
+                .refine(value => !(value.messageLocalId && value.latestCompleted))
+                .refine(value => !(value.messageLocalId && value.lastTurnId)).parse(raw);
+            if (latestCompleted || lastTurnId) {
                 const thread = await this.readThread(this.threadId, true);
                 const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
-                const cutoff = latestCompletedForkCutoff(turns);
                 // An explicit inclusive native cutoff remains fixed even if the source advances.
                 // Shared children hydrate directly from native fork history, never a moving Hub tail.
+                const cutoff = lastTurnId ? this.verifyPinnedTurn(turns, lastTurnId) : latestCompletedForkCutoff(turns);
                 const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
                     lastTurnId: cutoff }, this);
                 try {
@@ -657,6 +659,51 @@ export class SharedCodexRoot {
         rpc.registerHandler(RPC_METHODS.RewindConversation, async () => {
             throw new Error('In-place rewind is not supported for concurrent Codex clients; fork at the message instead');
         });
+        rpc.registerHandler(RPC_METHODS.PreviewForkBoundary, async raw => {
+            const { mode, messageLocalId } = z.object({ mode: z.enum(['current', 'message', 'latestCompleted']),
+                messageLocalId: z.string().optional() })
+                .refine(value => (value.mode === 'message') === Boolean(value.messageLocalId)).parse(raw);
+            const thread = await this.readThread(this.threadId, true);
+            const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
+            if (mode === 'latestCompleted' || (mode === 'current' && this.currentTurn)) {
+                // A plain current fork cannot run mid-turn: the honest answer is
+                // the last completed turn, which is also what a pinned fork uses.
+                const cutoff = latestCompletedForkCutoff(turns);
+                const index = turns.findIndex(turn => turn.id === cutoff);
+                return { nativeTurnId: cutoff, ...this.firstExcludedUserLocalId(turns, index + 1) };
+            }
+            if (mode === 'current') {
+                if (!turns.length) return {};
+                return { nativeTurnId: string(turns.at(-1)?.id) };
+            }
+            const beforeTurnId = this.projection.turnFor(messageLocalId!);
+            if (!beforeTurnId) throw new Error('No native history point for this message');
+            await this.assertBoundary(messageLocalId!, beforeTurnId);
+            const index = turns.findIndex(turn => turn.id === beforeTurnId);
+            if (index < 0) throw new Error('No native history point for this message');
+            const previous = index > 0 ? string(turns[index - 1]?.id) : undefined;
+            return { ...(previous ? { nativeTurnId: previous } : {}), cutBeforeLocalId: messageLocalId };
+        });
+    }
+    /** Re-validate a preview-pinned turn before forking through it. */
+    private verifyPinnedTurn(turns: Record<string, unknown>[], pinnedTurnId: string): string {
+        const index = turns.findIndex(turn => turn.id === pinnedTurnId);
+        if (index < 0) throw new Error('The pinned fork turn is no longer part of the native history');
+        if (turns.slice(0, index + 1).some(turn => !['completed', 'interrupted', 'failed'].includes(string(turn.status) ?? ''))) {
+            throw new Error('The pinned fork turn no longer has a completed native history prefix');
+        }
+        return pinnedTurnId;
+    }
+    /** First hub localId at/after `startIndex`, the excluded side of the cut. */
+    private firstExcludedUserLocalId(turns: Record<string, unknown>[], startIndex: number): { cutBeforeLocalId?: string } {
+        for (const turn of turns.slice(Math.max(startIndex, 0))) {
+            const items = Array.isArray(turn.items) ? turn.items.map(record) : [];
+            const first = items.find(item => item.type === 'userMessage');
+            if (!first) continue;
+            const id = string(first.clientId ?? first.clientUserMessageId) ?? (first.id ? `codex:${this.threadId}:user:${string(first.id)}` : undefined);
+            if (id) return { cutBeforeLocalId: id };
+        }
+        return {};
     }
     private async assertBoundary(localId: string, turnId: string): Promise<Record<string, unknown>> {
         const thread = await this.readThread(this.threadId, true);
