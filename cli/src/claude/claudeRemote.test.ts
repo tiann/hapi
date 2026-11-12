@@ -631,6 +631,14 @@ describe('claudeRemote /compact result reporting', () => {
 
         expect(completionEvents).toEqual(['📦 Compaction started']);
         expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 100, tokensAfter: 10 });
+        const forwardedResults = lastForwarded.filter((message) => message.type === 'result');
+        expect(forwardedResults).toHaveLength(2);
+        // The autonomous round that completed before the compaction signal is
+        // a real assistant round: its result must stay unmarked so the
+        // converter keeps its tok/s fields.
+        expect(forwardedResults[0]).not.toHaveProperty('hapi_compact_turn');
+        // Only the actual compact turn result is marked.
+        expect(forwardedResults[1]).toHaveProperty('hapi_compact_turn', true);
     }, 15_000);
 
     it('does not relay the compact_boundary system message during a manual /compact', async () => {
