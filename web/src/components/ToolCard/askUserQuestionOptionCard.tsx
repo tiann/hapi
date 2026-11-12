@@ -1,6 +1,11 @@
 import { cn } from '@/lib/utils'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 
 export type AskUserQuestionChoiceMode = 'single' | 'multi'
+
+// Tightens the markdown block elements so a Markdown-rendered option row keeps
+// the same compact spacing and inherited colors as the plain-text rows.
+const askUserQuestionOptionMarkdownClassName = '[&_.aui-md]:text-inherit [&_.aui-md-p]:my-0 [&_.aui-md-p]:leading-6'
 
 export const askUserQuestionOptionTitleClassName = 'tracking-tight min-w-0 text-sm font-medium leading-tight break-words text-[var(--app-fg)]'
 export const askUserQuestionOptionDescriptionClassName = 'mt-1 font-mono text-xs break-all text-[var(--app-tool-card-subtitle)]'
@@ -15,6 +20,41 @@ export function getAskUserQuestionOptionFrameClassName(checked: boolean, classNa
             : 'border-transparent'
     )
 }
+
+export function AskUserQuestionOptionRow(props: {
+    checked: boolean
+    mode: AskUserQuestionChoiceMode
+    disabled: boolean
+    title: string
+    description?: string | null
+    onClick: () => void
+    markdown?: boolean
+}) {
+    return (
+        <button
+            type="button"
+            role={props.mode === 'multi' ? 'checkbox' : 'radio'}
+            aria-checked={props.checked}
+            className={getAskUserQuestionOptionFrameClassName(
+                props.checked,
+                'w-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:pointer-events-none disabled:opacity-50'
+            )}
+            disabled={props.disabled}
+            onClick={props.onClick}
+        >
+            <AskUserQuestionOptionBody
+                checked={props.checked}
+                mode={props.mode}
+                title={props.title}
+                description={props.description}
+                interactive
+                markdown={props.markdown}
+            />
+        </button>
+    )
+}
+
+export const askUserQuestionNavButtonClassName = 'h-8 rounded-full border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3.5 text-[var(--app-fg)] hover:border-[var(--app-md-quote-border)] hover:bg-[var(--app-subtle-bg)]'
 
 export function AskUserQuestionSelectionControl(props: {
     checked: boolean
@@ -71,6 +111,7 @@ export function AskUserQuestionOptionBody(props: {
     customLabel?: string | null
     interactive?: boolean
     showControl?: boolean
+    markdown?: boolean
 }) {
     const showControl = props.showControl ?? true
 
@@ -89,15 +130,16 @@ export function AskUserQuestionOptionBody(props: {
                 <span className={cn(
                     'block',
                     askUserQuestionOptionTitleClassName,
+                    props.markdown ? askUserQuestionOptionMarkdownClassName : null,
                     props.checked
                         ? 'text-[var(--app-fg)]'
                         : 'text-[var(--app-tool-card-subtitle)]'
                 )}>
-                    {props.title}
+                    {props.markdown ? <MarkdownRenderer content={props.title} /> : props.title}
                 </span>
                 {props.description ? (
-                    <span className={cn('block', askUserQuestionOptionDescriptionClassName)}>
-                        {props.description}
+                    <span className={cn('block', askUserQuestionOptionDescriptionClassName, props.markdown ? askUserQuestionOptionMarkdownClassName : null)}>
+                        {props.markdown ? <MarkdownRenderer content={props.description} /> : props.description}
                     </span>
                 ) : null}
                 {props.customLabel ? (
