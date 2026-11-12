@@ -120,7 +120,7 @@ export function SessionRowSummary(props: {
     prChipDisplay?: PrChipDisplayProfile
     /** Shared minute clock from the session list (avoids per-row timers). */
     prNowMs?: number
-    /** Rows inside the pinned "in progress" section skip the text label (dot only). */
+    /** Rows inside the pinned "in progress" section skip the pending text label. */
     inRunningSection?: boolean
     /** Short project name shown under the title (pinned "in progress" rows). */
     projectLabel?: string
