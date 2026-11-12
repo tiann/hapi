@@ -261,11 +261,59 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         });
     }
 
+    /**
+     * Move agentState.requests entries that are not in this.pendingRequests into
+     * completedRequests as canceled. Used on handler start and when a late
+     * answer arrives for a request the CLI no longer tracks (tiann/hapi#2414).
+     */
+    protected finalizeOrphanedAgentStateRequests(reason: string, onlyId?: string): void {
+        this.client.updateAgentState((currentState) => {
+            const pendingIds = this.pendingRequests;
+            const requests = currentState.requests ?? {};
+            const completedRequests = { ...currentState.completedRequests };
+            const nextRequests: typeof requests = {};
+            let changed = false;
+
+            for (const [id, request] of Object.entries(requests)) {
+                if (onlyId !== undefined && id !== onlyId) {
+                    nextRequests[id] = request;
+                    continue;
+                }
+                if (pendingIds.has(id)) {
+                    nextRequests[id] = request;
+                    continue;
+                }
+                changed = true;
+                completedRequests[id] = {
+                    ...request,
+                    completedAt: Date.now(),
+                    status: 'canceled',
+                    reason,
+                    decision: 'abort'
+                };
+            }
+
+            if (!changed) return currentState;
+            return {
+                ...currentState,
+                requests: nextRequests,
+                completedRequests
+            };
+        });
+    }
+
     private setupRpcHandler(): void {
         this.client.rpcHandlerManager.registerHandler<TResponse, void>(RPC_METHODS.Permission, async (response) => {
             const pending = this.pendingRequests.get(response.id);
 
             if (!pending) {
+                // Clear the sticky hub/web badge before surfacing the error —
+                // otherwise StatusBar keeps "permission required" after 409
+                // (tiann/hapi#2414, follow-on to #1735).
+                this.finalizeOrphanedAgentStateRequests(
+                    'Permission request not found or already resolved',
+                    response.id
+                );
                 this.handleMissingPendingResponse(response);
                 return;
             }

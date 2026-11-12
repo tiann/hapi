@@ -932,6 +932,65 @@ export class SessionCache {
         })
     }
 
+    /**
+     * Move a single agentState.requests entry into completedRequests as canceled.
+     * Used when the CLI reports the permission is no longer pending (HTTP 409
+     * path) so StatusBar / session badges clear even if the CLI could not
+     * finalize agentState itself (tiann/hapi#2414).
+     */
+    cancelStalePermissionRequest(sessionId: string, requestId: string, reason = 'Permission request is no longer active'): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) return false
+            const current = session.agentState
+            const request = current?.requests?.[requestId]
+            if (!request) return false
+
+            const nextRequests = { ...current.requests }
+            delete nextRequests[requestId]
+            const nextState = {
+                ...current,
+                requests: nextRequests,
+                completedRequests: {
+                    ...current.completedRequests,
+                    [requestId]: {
+                        ...request,
+                        completedAt: Date.now(),
+                        status: 'canceled' as const,
+                        reason,
+                        decision: 'abort' as const
+                    }
+                }
+            }
+
+            const result = this.store.sessions.updateSessionAgentState(
+                sessionId,
+                nextState,
+                session.agentStateVersion,
+                session.namespace
+            )
+            if (result.result === 'error') {
+                throw new Error('Failed to clear stale permission request from agentState')
+            }
+            if (result.result === 'version-mismatch') {
+                this.refreshSession(sessionId)
+                continue
+            }
+
+            const refreshed = this.refreshSession(sessionId)
+            this.publisher.emit({
+                type: 'session-updated',
+                sessionId,
+                namespace: session.namespace,
+                data: {
+                    agentState: { version: result.version, value: refreshed?.agentState ?? nextState }
+                } satisfies SessionPatch
+            })
+            return true
+        }
+        throw new Error('Session was modified concurrently while clearing a stale permission request')
+    }
+
     handleSessionEnd(payload: { sid: string; time: number }): void {
         const t = clampAliveTime(payload.time) ?? Date.now()
 

@@ -47,6 +47,7 @@ import { selectForkTranscriptPrefix } from './forkTranscript'
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
+    PermissionRequestNotFoundError,
     RpcGateway,
     RpcTargetMissingError,
     RunnerStopRpcError,
@@ -1906,7 +1907,16 @@ export class SyncEngine {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
-        await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        try {
+            await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        } catch (error) {
+            // tiann/hapi#2414: CLI no longer tracks this request, but hub may
+            // still have it in agentState.requests (sticky "permission required").
+            if (error instanceof PermissionRequestNotFoundError) {
+                this.sessionCache.cancelStalePermissionRequest(sessionId, requestId, error.message)
+            }
+            throw error
+        }
     }
 
     async denyPermission(
@@ -1914,7 +1924,14 @@ export class SyncEngine {
         requestId: string,
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     ): Promise<void> {
-        await this.rpcGateway.denyPermission(sessionId, requestId, decision)
+        try {
+            await this.rpcGateway.denyPermission(sessionId, requestId, decision)
+        } catch (error) {
+            if (error instanceof PermissionRequestNotFoundError) {
+                this.sessionCache.cancelStalePermissionRequest(sessionId, requestId, error.message)
+            }
+            throw error
+        }
     }
 
     async abortSession(sessionId: string): Promise<void> {
