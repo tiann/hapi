@@ -3553,6 +3553,90 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(preceding.localId).toBe('inflight-handoff-b')
     })
 
+    it('reconstructs a durable ordered handoff before allowing a new immediate send', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'restart-pending-handoff-new-send')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const scheduledAt = Date.now() - 1_000
+        const attachment = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'restart-pending-handoff-new-send')],
+                },
+            },
+            'restart-pending-handoff-a',
+            scheduledAt,
+        )
+        const preceding = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'restart-pending-handoff-b',
+        )
+        const clearCutoff = Date.now()
+        store.sessions.getOrCreateSession(
+            'restart-pending-handoff-new-send-source',
+            {
+                path: '/tmp/restart-pending-handoff-new-send-source',
+                host: 'localhost',
+                flavor: 'opencode',
+                supersededBySessionId: session.id,
+                opencodeClearOperation: {
+                    replacementSessionId: session.id,
+                    state: 'completed',
+                    updatedAt: clearCutoff,
+                },
+            },
+            null,
+            'default',
+        )
+        const restartedService = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => (
+                    attachments.map((entry) => ({ ...entry, path: '/tmp/restart-pending-handoff-prompt.png' }))
+                ),
+            },
+        )
+
+        await new Promise((resolve) => setTimeout(resolve, 2))
+        await restartedService.sendMessage(session.id, { text: 'immediate C', localId: 'restart-pending-handoff-c' })
+        expect(cliEmitted).toHaveLength(0)
+
+        await restartedService.releaseMatureScheduledMessages(Date.now())
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'restart-pending-handoff-a',
+            'restart-pending-handoff-b',
+        ])
+
+        store.messages.markMessagesInvoked(session.id, ['restart-pending-handoff-a', 'restart-pending-handoff-b'], Date.now())
+        expect(restartedService.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'restart-pending-handoff-a',
+            'restart-pending-handoff-b',
+            'restart-pending-handoff-c',
+        ])
+        expect(attachment.localId).toBe('restart-pending-handoff-a')
+        expect(preceding.localId).toBe('restart-pending-handoff-b')
+    })
+
     it('keeps periodic text-only delivery behind a cancelled attachment handoff', async () => {
         const store = makeStore()
         const session = makeSession(store, 'cancelled-handoff-serialization')

@@ -1390,6 +1390,7 @@ export class MessageService {
             // failed materialization; emitting here would overtake its prefix.
             && !this.matureReleaseInFlightSessions.has(actualSessionId)
             && !this.pendingOrderedDeliverableReleaseSessions.has(actualSessionId)
+            && !this.hasPendingClearHandoffPrefix(actualSessionId)
         ) {
             const update = {
                 id: msg.id,
@@ -1608,6 +1609,14 @@ export class MessageService {
             this.completedOrderedDeliverableSignatures.delete(sessionId)
         }
         return released
+    }
+
+    private hasPendingClearHandoffPrefix(sessionId: string): boolean {
+        const cutoff = this.completedClearHandoffCutoff(sessionId)
+        if (cutoff === null) return false
+        return this.store.messages
+            .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+            .some((message) => message.createdAt <= cutoff)
     }
 
     private completedClearHandoffCutoff(sessionId: string): number | null {
