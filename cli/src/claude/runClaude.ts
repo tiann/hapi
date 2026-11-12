@@ -26,7 +26,7 @@ import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
 import { execFileSync } from 'node:child_process';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getDefaultClaudeCodePath } from './sdk/utils';
-import { claudeConversationHistoryCapabilities, readNativeTurns, resolveForkAtMessagePlan } from './conversationHistory';
+import { claudeConversationHistoryCapabilities, nativeRewindApplied, planPendingRewindRestart, readNativeTurns, resolveForkAtMessagePlan, resolveRewindPlan, stripRewindFlags, type ClaudeRewindIntent } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -293,6 +293,83 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
     }))
 
+    // Crash consistency for rewinds (two systems: native branch, hub
+    // truncation): the session-metadata intent is the durable key. On start,
+    // an intent whose native branch applied re-requests the idempotent hub
+    // truncation; one whose branch never applied is cleared, changing nothing.
+    let rearmPendingIntent: ClaudeRewindIntent | null = null;
+    const reconcilePendingRewind = () => {
+        const intent = session.getMetadata()?.claudeRewind
+        const nativeSessionId = session.getMetadata()?.claudeSessionId
+            ?? sessionInfo.metadata?.claudeSessionId
+            ?? null
+        if (!intent || !nativeSessionId) return
+        const plan = planPendingRewindRestart(intent, readNativeTurns(workingDirectory, nativeSessionId))
+        if (plan.action === 'rearm') {
+            // Durable re-arm: the hub truncated at rewind-RPC success, but the
+            // native branch never applied. The boundary flags are armed on the
+            // claude session at onSessionReady (this launch) and the intent
+            // stays until the dropped turns leave the native chain.
+            logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch pending; re-arming boundary ${intent.keepBoundary} on launch`)
+            rearmPendingIntent = intent;
+        } else {
+            logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch applied; clearing intent`)
+            session.updateMetadata((metadata) => {
+                const { claudeRewind: _cleared, ...rest } = metadata;
+                return rest;
+            });
+        }
+    };
+    reconcilePendingRewind();
+
+    let pendingRewind: ClaudeRewindIntent | null = null;
+const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: ClaudeRewindIntent) => {
+        // resume-session-at alone truncates unconditionally after the boundary;
+        // droppedPrompts stays in the intent for crash-consistency evidence.
+        claudeSession.claudeArgs = [
+            ...(claudeSession.claudeArgs ?? []),
+            '--resume-session-at', intent.keepBoundary
+        ];
+    };
+
+    // The rewind's native branch materializes when the respawned process
+    // writes its first real input re-parented onto the kept boundary. The
+    // submitted prompt's uuid is that input; once the dropped turns leave the
+    // active chain, commit the hub side through the keyed metadata intent.
+    const handleNativeInputSubmitted = (nativePromptUuid: string) => {
+        const intent = pendingRewind;
+        if (!intent) return;
+        const nativeSessionId = currentSessionRef.current?.sessionId
+            ?? session.getMetadata()?.claudeSessionId
+            ?? null;
+        if (!nativeSessionId) return;
+        const deadline = Date.now() + 5_000;
+        const poll = () => {
+            if (pendingRewind !== intent) return;
+            if (nativeRewindApplied(workingDirectory, nativeSessionId, intent.droppedPrompts)) {
+                pendingRewind = null;
+                const claudeSession = currentSessionRef.current;
+                if (claudeSession) {
+                    claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs);
+                    claudeSession.onNativeInputSubmitted = null;
+                }
+                session.updateMetadata((metadata) => {
+                    const { claudeRewind: _cleared, ...rest } = metadata;
+                    return rest;
+                });
+                void session.flushMetadata();
+                logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch proven; intent cleared`);
+                return;
+            }
+            if (Date.now() < deadline) {
+                setTimeout(poll, 200);
+            } else {
+                logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: no branch proof for the submitted input; intent stays armed`);
+            }
+        };
+        poll();
+    };
+
     session.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
         const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
             ? (payload as { messageLocalId: string }).messageLocalId
@@ -324,8 +401,67 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             ...(plan.resumeSessionAt ? { resumeSessionAt: plan.resumeSessionAt } : {})
         }
     })
-    session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async () => {
-        throw new Error('Rewind is not supported for Claude')
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
+        const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
+        const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
+            ? (payload as { messageLocalId: string }).messageLocalId
+            : undefined
+        if (!messageLocalId) {
+            return pendingRewind ? rejected('Pending rewind retry has invalid correlation') : rejected('messageLocalId is required')
+        }
+        if (session.getMetadata()?.capabilities?.conversationHistory?.rewindToMessage !== true) {
+            return rejected('Rewind is not supported for Claude')
+        }
+        if (pendingRewind) {
+            return rejected('A rewind is already pending; send a message to settle it first')
+        }
+        const nativeSessionId = currentSessionRef.current?.sessionId
+            ?? session.getMetadata()?.claudeSessionId
+            ?? sessionInfo.metadata?.claudeSessionId
+            ?? null
+        if (!nativeSessionId) {
+            return rejected('Claude session id is not ready')
+        }
+        const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
+        if (!promptUuid) {
+            return rejected(`No native history point for message ${messageLocalId}`)
+        }
+        const turns = readNativeTurns(workingDirectory, nativeSessionId)
+        let keepBoundary: string
+        let droppedPrompts: string[]
+        try {
+            const plan = resolveRewindPlan(turns, promptUuid)
+            keepBoundary = plan.resumeSessionAt!
+            const index = turns.findIndex((turn) => turn.promptUuid === promptUuid)
+            droppedPrompts = turns.slice(index).map((turn) => turn.promptUuid)
+        } catch (error) {
+            return rejected(error instanceof Error ? error.message : String(error))
+        }
+        const intent: ClaudeRewindIntent = {
+            targetLocalId: messageLocalId,
+            truncateFromLocalId: messageLocalId,
+            keepBoundary,
+            droppedPrompts
+        }
+        // Persist the durable key BEFORE respawning: a crash after the native
+        // branch applies is recovered by the next start's reconciliation.
+        session.updateMetadata((metadata) => ({ ...metadata, claudeRewind: intent }))
+        if (!await session.flushMetadata()) {
+            return rejected('Rewind intent could not be persisted')
+        }
+        const claudeSession = currentSessionRef.current;
+        if (!claudeSession?.requestRemoteRestart) {
+            session.updateMetadata((metadata) => {
+                const { claudeRewind: _cleared, ...rest } = metadata;
+                return rest;
+            });
+            return rejected('Claude session is not ready for a rewind restart')
+        }
+        armRewindFlags(claudeSession, intent)
+        pendingRewind = intent
+        logger.debug(`[claude] rewind ${messageLocalId}: boundary ${keepBoundary}, ${droppedPrompts.length} dropped turn(s); restarting Claude`)
+        await claudeSession.requestRemoteRestart()
+        return { success: true, truncateFromLocalId: messageLocalId }
     })
 
     // Set initial agent state
@@ -634,6 +770,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (sessionInstance) => {
                 currentSessionRef.current = sessionInstance;
+                if (rearmPendingIntent && !pendingRewind) {
+                    armRewindFlags(sessionInstance, rearmPendingIntent);
+                    pendingRewind = rearmPendingIntent;
+                    rearmPendingIntent = null;
+                }
+                sessionInstance.onNativeInputSubmitted = handleNativeInputSubmitted;
                 resolveSessionReady(sessionInstance);
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));

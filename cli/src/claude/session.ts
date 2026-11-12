@@ -31,6 +31,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     /** Set by the remote launcher: abort the current SDK attempt so the main
      * loop respawns Claude with fresh one-shot args (history RPC restarts). */
     requestRemoteRestart: (() => Promise<void>) | null = null;
+    /** Set by the runner: called with the native prompt uuid when the launcher
+     * hands a queued batch to the SDK (rewind branch proof). */
+    onNativeInputSubmitted: ((nativePromptUuid: string) => void) | null = null;
     /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
     localTurnStartedAt = 0;
     private nativeSkillNames = new Set<string>();

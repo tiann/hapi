@@ -192,6 +192,18 @@ export const MetadataSchema = z.object({
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
+    // Durable re-arm record for Claude's native rewind (--resume-session-at,
+    // v2.1.223+). Presence means the native branch is still pending: the hub
+    // already truncated at rewind-RPC success, and the CLI re-arms the
+    // boundary flags on every start until the dropped turns leave the native
+    // active chain. History RPCs (fork/rewind/preview) must refuse while this
+    // is set.
+    claudeRewind: z.object({
+        targetLocalId: z.string().min(1),
+        truncateFromLocalId: z.string().min(1),
+        keepBoundary: z.string().min(1),
+        droppedPrompts: z.array(z.string().min(1))
+    }).optional(),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.
     piHistoryLeafEntryId: z.string().optional(),

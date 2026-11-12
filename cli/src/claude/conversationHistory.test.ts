@@ -4,11 +4,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     claudeConversationHistoryCapabilities,
+    nativeRewindApplied,
     parseClaudeVersion,
+    planPendingRewindRestart,
     readCompletedNativeTurn,
     readNativeTurns,
     resolveForkAtMessagePlan,
     resolveRewindPlan,
+    stripRewindFlags,
     supportsNativeRewind
 } from './conversationHistory'
 
@@ -168,6 +171,60 @@ describe('resolveForkAtMessagePlan', () => {
     it('rejects unknown prompts and forking before the first message', () => {
         expect(() => resolveForkAtMessagePlan(turns, 'missing')).toThrow(/No native history point/)
         expect(() => resolveForkAtMessagePlan(turns, 'u1')).toThrow(/first/i)
+    })
+})
+
+describe('planPendingRewindRestart', () => {
+    const keptTurns = [
+        { promptUuid: 'u1', endUuid: 'as1' },
+        { promptUuid: 'u9', endUuid: 'as9' }
+    ]
+    const intent = {
+        targetLocalId: 'local-2',
+        truncateFromLocalId: 'local-2',
+        keepBoundary: 'as1',
+        droppedPrompts: ['u2', 'u3']
+    }
+
+    it('re-arms the boundary when the native branch has not applied', () => {
+        const unapplied = [...keptTurns, { promptUuid: 'u2', endUuid: 'as2' }]
+        expect(planPendingRewindRestart(intent, unapplied)).toEqual({ action: 'rearm' })
+        expect(planPendingRewindRestart(intent, [])).toEqual({ action: 'rearm' })
+    })
+
+    it('clears the intent once the dropped turns left the native chain', () => {
+        expect(planPendingRewindRestart(intent, keptTurns)).toEqual({ action: 'clear' })
+    })
+})
+
+describe('nativeRewindApplied', () => {
+    it('reads the active chain from the transcript', () => {
+        const appliedRoot = writeTranscript([
+            prompt('u1', 'first'),
+            assistant('as1', 'first answer', 'u1'),
+            line({ type: 'user', uuid: 'u9', parentUuid: 'as1', message: { role: 'user', content: [{ type: 'text', text: 'after rewind' }] } })
+        ])
+        withConfigDir(appliedRoot, () => {
+            expect(nativeRewindApplied(CWD, 'session-a', ['u2'])).toBe(true)
+            expect(nativeRewindApplied(CWD, 'session-a', ['u1'])).toBe(false)
+        })
+        const unappliedRoot = writeTranscript([
+            prompt('u1', 'first'),
+            assistant('as1', 'first answer', 'u1'),
+            line({ type: 'user', uuid: 'u2', parentUuid: 'as1', message: { role: 'user', content: [{ type: 'text', text: 'second' }] } })
+        ])
+        withConfigDir(unappliedRoot, () => {
+            expect(nativeRewindApplied(CWD, 'session-a', ['u2'])).toBe(false)
+        })
+    })
+})
+
+describe('stripRewindFlags', () => {
+    it('removes one-shot resume-at flags with their values and keeps the rest', () => {
+        expect(stripRewindFlags(['--resume', 'sid', '--resume-session-at', 'b1', '--resume-drops-turn', 'u2', '--resume-drops-turn', 'u3']))
+            .toEqual(['--resume', 'sid'])
+        expect(stripRewindFlags(['--resume-session-at', 'b1'])).toBeUndefined()
+        expect(stripRewindFlags(undefined)).toBeUndefined()
     })
 })
 

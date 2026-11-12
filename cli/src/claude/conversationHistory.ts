@@ -165,6 +165,57 @@ export function resolveForkAtMessagePlan(turns: NativeTurn[], promptUuid: string
     }
 }
 
+/** Durable re-arm record for a pending Claude rewind. */
+export type ClaudeRewindIntent = {
+    targetLocalId: string
+    truncateFromLocalId: string
+    keepBoundary: string
+    droppedPrompts: string[]
+}
+
+export type PendingRewindRestart = { action: 'rearm' } | { action: 'clear' }
+
+/**
+ * Crash-consistency for a rewind's two systems under the immediate-hub-truncate
+ * design: the hub transcript is truncated once, at rewind-RPC success, and the
+ * NATIVE boundary re-arm is the durable part. The intent in session metadata is
+ * the key. On (re)start: dropped turns still on the active chain mean the
+ * native branch never applied, so the boundary flags are re-armed for this
+ * launch; dropped turns gone mean the native branch applied and the intent is
+ * cleared (pure housekeeping).
+ */
+export function planPendingRewindRestart(intent: ClaudeRewindIntent, turns: NativeTurn[]): PendingRewindRestart {
+    const applied = turns.length > 0 && turns.every((turn) => !intent.droppedPrompts.includes(turn.promptUuid))
+    return applied ? { action: 'clear' } : { action: 'rearm' }
+}
+
+/**
+ * Whether the active chain no longer contains the rewind's dropped turns -
+ * the transcript evidence that the native truncation took (dropped branches
+ * survive in the append-only file but leave the parentUuid chain).
+ */
+export function nativeRewindApplied(workingDirectory: string, sessionId: string, droppedPrompts: readonly string[]): boolean {
+    const turns = readNativeTurns(workingDirectory, sessionId)
+    return turns.length > 0 && turns.every((turn) => !droppedPrompts.includes(turn.promptUuid))
+}
+
+/**
+ * Removes one-shot resume-at flags from claudeArgs after a rewind commits, so
+ * later respawns do not re-truncate. Returns undefined for absent args.
+ */
+export function stripRewindFlags(args: string[] | undefined): string[] | undefined {
+    if (!args) return undefined
+    const filtered: string[] = []
+    for (let i = 0; i < args.length; i++) {
+        if ((args[i] === '--resume-session-at' || args[i] === '--resume-drops-turn') && i + 1 < args.length) {
+            i++
+            continue
+        }
+        filtered.push(args[i]!)
+    }
+    return filtered.length > 0 ? filtered : undefined
+}
+
 /**
  * Plan a rewind to the turn started by `promptUuid`: resume truncated to the
  * previous turn's last entry. `--resume-session-at` truncates everything

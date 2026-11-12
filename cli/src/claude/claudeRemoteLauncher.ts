@@ -552,6 +552,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     [localId]: nativePromptUuid
                                 }
                             }));
+                            session.onNativeInputSubmitted?.(nativePromptUuid);
                         },
                         nextMessage: async () => {
                             // Flush any pending outgoing messages before consuming the next user

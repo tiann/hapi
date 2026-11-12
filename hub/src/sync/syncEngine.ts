@@ -1938,6 +1938,14 @@ export class SyncEngine {
         if (queued.length > 0) {
             throw new Error('Session has queued messages')
         }
+        // A pending Claude rewind means the hub transcript and the native
+        // boundary are mid-handoff: the hub truncated at RPC success and the
+        // CLI is re-arming the native boundary. Forking or rewinding here
+        // would copy rows the native side already dropped (the #1673 class of
+        // drift), so history actions wait for the next prompt to settle it.
+        if (session.metadata?.claudeRewind) {
+            throw new Error('A Claude rewind is pending; send a message to settle it first')
+        }
     }
 
     /** Stale localIds must fail before native fork/rewind mutates agent history. */
@@ -2605,6 +2613,26 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * Hub-side half of a rewind: delete the transcript from the keyed localId
+     * on, refresh derived state, and tell clients to refetch. Runs once, at
+     * rewind-RPC success — the native re-arm is the CLI's durable intent, so
+     * no later metadata-driven truncation pass can eat post-rewind turns.
+     */
+    private truncateHubTranscriptFrom(sessionId: string, namespace: string, truncateFromLocalId: string): void {
+        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId)
+        this.scrubHistoryLocators(sessionId, namespace)
+        this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.eventPublisher.emit({
+            type: 'messages-invalidated',
+            sessionId,
+            namespace,
+            reason: 'rewind',
+            truncateFromLocalId
+        })
+        this.sessionCache.refreshSession(sessionId)
+    }
+
     private async rewindConversationUnlocked(
         sessionId: string,
         namespace: string,
@@ -2653,21 +2681,7 @@ export class SyncEngine {
         }
 
         try {
-            this.store.messages.truncateMessagesFromLocalId(
-                sessionId,
-                rpcResult.truncateFromLocalId ?? messageLocalId,
-                rpcResult.messages ?? []
-            )
-            this.scrubHistoryLocators(sessionId, namespace)
-            this.sessionCache.rebuildTodosFromTranscript(sessionId)
-            this.eventPublisher.emit({
-                type: 'messages-invalidated',
-                sessionId,
-                namespace,
-                reason: 'rewind',
-                truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
-            })
-            this.sessionCache.refreshSession(sessionId)
+            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId)
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.
