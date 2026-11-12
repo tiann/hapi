@@ -222,6 +222,15 @@ export class LocalPermissionBridge {
     }
 
     private finishTool(toolCallId: string, status: AgentStateCompletedRequest['status'], reason?: string, result?: unknown): void {
+        const observed = this.calls.get(toolCallId)
+        if (status === 'denied' || status === 'canceled') {
+            if (observed && isDisplayOrReadFileTool(observed.tool)) {
+                const targetPath = extractTargetFilePath(observed.input)
+                if (targetPath) {
+                    this.client.markAttachmentDenied?.(targetPath)
+                }
+            }
+        }
         this.calls.delete(toolCallId)
         for (const [id, pending] of this.pending) {
             if (pending.entry.toolCallId === toolCallId) this.finish(id, status, reason, result)

@@ -114,7 +114,8 @@ export function resolveToolAutoApprovalDecision(
  * Detect tools that display or read a local file.
  * Recognizes canonical names, snake_case variants, and ACP human-readable titles.
  */
-export function isDisplayOrReadFileTool(toolName?: string | null): boolean {
+export function isDisplayOrReadFileTool(toolName?: string | null, kind?: string | null): boolean {
+    if (kind === 'read') return true;
     if (!toolName) return false;
     const normalized = toolName.toLowerCase().replace(/[_-]/g, ' ').trim();
     return (
@@ -130,28 +131,53 @@ export function isDisplayOrReadFileTool(toolName?: string | null): boolean {
 }
 
 /**
- * Extract target file path from tool arguments or approval inputs.
- * Supports flat path/file_path, nested Codex toolParams, and arguments objects.
+ * Extract target file path from tool arguments, approval inputs, or ACP titles.
+ * Supports flat path/file_path, nested Codex toolParams, arguments objects,
+ * locations arrays, and ACP title shapes (e.g. "Read: private.txt").
  */
-export function extractTargetFilePath(input: unknown): string | null {
-    if (!input || typeof input !== 'object') return null;
-    const record = input as Record<string, unknown>;
-    if (typeof record.path === 'string') return record.path;
-    if (typeof record.file_path === 'string') return record.file_path;
-    if (typeof record.filePath === 'string') return record.filePath;
-    if (typeof record.target === 'string') return record.target;
+export function extractTargetFilePath(
+    input: unknown,
+    title?: string | null,
+    kind?: string | null
+): string | null {
+    if (input && typeof input === 'object') {
+        const record = input as Record<string, unknown>;
+        if (typeof record.path === 'string') return record.path;
+        if (typeof record.file_path === 'string') return record.file_path;
+        if (typeof record.filePath === 'string') return record.filePath;
+        if (typeof record.target === 'string') return record.target;
 
-    if (record.toolParams && typeof record.toolParams === 'object') {
-        const nested = record.toolParams as Record<string, unknown>;
-        if (typeof nested.path === 'string') return nested.path;
-        if (typeof nested.file_path === 'string') return nested.file_path;
-        if (typeof nested.filePath === 'string') return nested.filePath;
+        if (record.toolParams && typeof record.toolParams === 'object') {
+            const nested = record.toolParams as Record<string, unknown>;
+            if (typeof nested.path === 'string') return nested.path;
+            if (typeof nested.file_path === 'string') return nested.file_path;
+            if (typeof nested.filePath === 'string') return nested.filePath;
+        }
+        if (record.arguments && typeof record.arguments === 'object') {
+            const nested = record.arguments as Record<string, unknown>;
+            if (typeof nested.path === 'string') return nested.path;
+            if (typeof nested.file_path === 'string') return nested.file_path;
+            if (typeof nested.filePath === 'string') return nested.filePath;
+        }
+        if (Array.isArray(record.locations) && record.locations.length > 0) {
+            const first = record.locations[0];
+            if (first && typeof first === 'object' && typeof (first as { path?: unknown }).path === 'string') {
+                return (first as { path: string }).path;
+            }
+        }
     }
-    if (record.arguments && typeof record.arguments === 'object') {
-        const nested = record.arguments as Record<string, unknown>;
-        if (typeof nested.path === 'string') return nested.path;
-        if (typeof nested.file_path === 'string') return nested.file_path;
-        if (typeof nested.filePath === 'string') return nested.filePath;
+
+    // ACP fallback: when structured input is absent, derive from title and kind
+    if (title && (kind === 'read' || isDisplayOrReadFileTool(title, kind))) {
+        const cleanTitle = title.trim();
+        // Strip prefixes like "Read: ", "Read file: ", "Display Media: "
+        const colonMatch = /^([A-Za-z][A-Za-z _-]{0,31}):\s+(.+)$/.exec(cleanTitle);
+        if (colonMatch && colonMatch[2]) {
+            return colonMatch[2].trim();
+        }
+        if (kind === 'read') {
+            return cleanTitle;
+        }
     }
     return null;
 }

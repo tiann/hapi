@@ -166,6 +166,16 @@ describe('LocalPermissionBridge', () => {
         bridge.onTranscript({ sessionId: 'native-1', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-display-2', is_error: true, content: 'User denied' }] } })
         expect(deniedPaths).toContain('/workspace/video.mp4')
 
+        // Case 3: Ambiguous terminal-only observed call (without pending remote entry)
+        const terminalOnlyHook = {
+            hook_event_name: 'PreToolUse' as const, session_id: 'native-1',
+            tool_name: 'Read', tool_input: { file_path: '/workspace/ambiguous.txt' }, tool_use_id: 'tool-ambiguous-1'
+        }
+        bridge.onHook(terminalOnlyHook)
+        // No bridge.request called — user rejected directly in native terminal
+        bridge.onTranscript({ sessionId: 'native-1', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-ambiguous-1', is_error: true, content: 'User denied in terminal' }] } })
+        expect(deniedPaths).toContain('/workspace/ambiguous.txt')
+
         bridge.stop()
     })
 

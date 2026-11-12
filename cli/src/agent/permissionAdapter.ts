@@ -159,8 +159,9 @@ export class PermissionAdapter {
         }
 
         if (!response.approved || decision === 'denied' || decision === 'abort') {
-            if (isDisplayOrReadFileTool(toolName) || isDisplayOrReadFileTool(pending.title)) {
-                const targetPath = extractTargetFilePath(toolInput) ?? extractTargetFilePath(pending.rawInput);
+            if (isDisplayOrReadFileTool(toolName, pending.kind) || isDisplayOrReadFileTool(pending.title, pending.kind)) {
+                const targetPath = extractTargetFilePath(toolInput, pending.title, pending.kind)
+                    ?? extractTargetFilePath(pending.rawInput, pending.title, pending.kind);
                 if (targetPath) {
                     this.session.markAttachmentDenied(targetPath);
                 }
@@ -225,9 +226,10 @@ export class PermissionAdapter {
                 kind: request.kind,
                 rawInput: request.rawInput
             });
-            if (isDisplayOrReadFileTool(toolName) || isDisplayOrReadFileTool(request.title)) {
+            if (isDisplayOrReadFileTool(toolName, request.kind) || isDisplayOrReadFileTool(request.title, request.kind)) {
                 const toolInput = deriveToolInput(request);
-                const targetPath = extractTargetFilePath(toolInput) ?? extractTargetFilePath(request.rawInput);
+                const targetPath = extractTargetFilePath(toolInput, request.title, request.kind)
+                    ?? extractTargetFilePath(request.rawInput, request.title, request.kind);
                 if (targetPath) {
                     this.session.markAttachmentDenied(targetPath);
                 }

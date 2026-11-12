@@ -22,7 +22,7 @@ export const SESSION_JOB_INSTRUCTION = [
     'Fraction without a continuous updater freezes — keep job update feeder from t=0.',
     'FORBIDDEN: --progress fraction --done 0 --total N with no count writer (frozen 0/N).',
     'Known wall-clock windows MUST use --progress until, not unknown.',
-    'Numeric sleep N requires --progress until --until <ISO> (CLI refuses otherwise).',
+    'Numeric sleep N automatically infers --progress until (explicit until accepts ISO, epoch, or duration like +5m).',
 
     'Use "$HAPI_SESSION_ID" only when it matches the operator chat URL uuid;',
     'remote Cursor runner may export a worker-row id — pass /sessions/<id> explicitly.',

@@ -481,4 +481,25 @@ describe('PermissionAdapter', () => {
 
         expect(harness.markAttachmentDenied).toHaveBeenCalledWith('/workspace/denied-by-cursor.pdf');
     });
+
+    it('records denied attachment path from ACP read titles when rawInput is absent', async () => {
+        const harness = createHarness();
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-acp-read',
+            toolCallId: 'call-acp-read-1',
+            kind: 'read',
+            title: 'Read: private.txt',
+            rawInput: null
+        }));
+
+        const permissionRpc = harness.rpcHandlers.get('permission');
+        await permissionRpc?.({
+            id: 'perm-acp-read',
+            approved: false,
+            decision: 'denied'
+        });
+
+        expect(harness.markAttachmentDenied).toHaveBeenCalledWith('private.txt');
+    });
 });
