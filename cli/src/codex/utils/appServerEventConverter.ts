@@ -1,5 +1,6 @@
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
 import { fileURLToPath } from 'node:url';
+import { recordCodexRateLimitsUpdate } from '@/agent/agentQuotas';
 import { logger } from '@/ui/logger';
 import { codexAssistantText } from './assistantText';
 
@@ -679,6 +680,7 @@ export class AppServerEventConverter {
         }
 
         if (method === 'account/rateLimits/updated') {
+            recordCodexRateLimitsUpdate(paramsRecord);
             return events;
         }
 

@@ -18,6 +18,7 @@ export const queryKeys = {
     sqliteStorage: ['sqlite-storage'] as const,
     hubSettings: ['hub-settings'] as const,
     usageSummary: (range: string, timeZone: string) => ['usage-summary', range, timeZone] as const,
+    usageQuotas: ['usage-quotas'] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
     machineAgentAvailability: (machineId: string) => ['machine-agent-availability', machineId] as const,
     sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,

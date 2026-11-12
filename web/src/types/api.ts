@@ -14,6 +14,9 @@ export type {
     AgyModelsResponse,
     AgentAvailabilityResponse,
     AgentAvailabilityEntry,
+    AgentQuotaAccount,
+    AgentQuotaBucket,
+    AgentQuotasResponse,
     AgyModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
@@ -74,7 +77,9 @@ export type {
     CreateBoardItemRequest,
     CreateBoardItemResponse,
     GetIssueTemplatesResponse,
-    UploadFileResponse
+    UploadFileResponse,
+    UsageMachineQuotasEntry,
+    UsageQuotasResponse
 } from '@hapi/protocol/apiTypes'
 
 export type {
