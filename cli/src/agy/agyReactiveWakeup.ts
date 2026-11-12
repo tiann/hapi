@@ -82,16 +82,33 @@ export type AgySyntheticCommandMatch =
     | { kind: 'ambiguous' }
     | { kind: 'none' };
 
+export interface AgyParkedWakeupCall {
+    stepIndex: number;
+    callIndex: number;
+    toolName: string;
+    decodedArgs: Record<string, unknown>;
+}
+
+export interface InspectAgyReactiveOptions {
+    /**
+     * True when `agy acp` was launched with `--dangerously-skip-permissions`
+     * (`always-proceed`). In that mode `agy` never blocks on tool permission
+     * checks, so only `ask_question` (form elicitation) can park a wakeup.
+     */
+    skipPermissions?: boolean;
+}
+
 export type AgyReactiveInspection =
     | { state: 'none' }
     | { state: 'running'; latestStepIndex: number }
     | { state: 'completed'; steps: AgyTranscriptStep[]; latestStepIndex: number }
-    | { state: 'parked_on_tool'; latestStepIndex: number }
+    | {
+        state: 'parked_on_tool';
+        steps: AgyTranscriptStep[];
+        parkedCall: AgyParkedWakeupCall;
+        latestStepIndex: number;
+    }
     | { state: 'timed_out'; steps: AgyTranscriptStep[]; latestStepIndex: number };
-
-/** Internal prompt sent when a reactive wakeup parks on a tool approval or question. */
-export const AGY_WAKEUP_CONTINUE_PROMPT =
-    '[System note: background wakeup reattached — continue your in-progress response to the background notification above without mentioning this note.]';
 
 /** Tools executed internally by agy without ACP permission prompts. */
 const AGY_INTERNAL_TOOLS = new Set([
@@ -335,7 +352,8 @@ export function decodeAgyTranscriptArgs(rawArgs: Record<string, unknown> | undef
 function requiredParkMsForToolCalls(
     toolCalls: AgyTranscriptToolCall[],
     workspacePath: string,
-    timings: AgyReactiveTimingConfig
+    timings: AgyReactiveTimingConfig,
+    skipPermissions = false
 ): number | null {
     let waitMs: number | null = null;
     const lowerBound = (candidate: number) => {
@@ -346,6 +364,9 @@ function requiredParkMsForToolCalls(
         const name = call.name;
         if (name === 'ask_question') {
             lowerBound(timings.settleMs);
+            continue;
+        }
+        if (skipPermissions) {
             continue;
         }
         if (AGY_GATED_TOOLS.has(name)) {
@@ -377,8 +398,10 @@ export function inspectAgyReactiveSteps(
     workspacePath: string,
     nowMs: number,
     lastProgressAtMs: number,
-    timings: AgyReactiveTimingConfig
+    timings: AgyReactiveTimingConfig,
+    options: InspectAgyReactiveOptions = {}
 ): AgyReactiveInspection {
+    const skipPermissions = options.skipPermissions === true;
     const firstSystemIdx = stepsAfterTurn.findIndex(
         (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
     );
@@ -415,7 +438,7 @@ export function inspectAgyReactiveSteps(
                     .slice(lastPlannerIdx + 1)
                     .filter((step) => step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE');
 
-                const outstandingCalls: AgyTranscriptToolCall[] = [];
+                const outstandingEntries: Array<{ callIndex: number; call: AgyTranscriptToolCall }> = [];
                 for (let callIdx = 0; callIdx < toolCalls.length; callIdx += 1) {
                     const call = toolCalls[callIdx]!;
                     const action = trailingActions[callIdx];
@@ -425,14 +448,33 @@ export function inspectAgyReactiveSteps(
                         || action.status === 'WAITING'
                         || (call.name === 'ask_question' && action.status !== 'DONE' && action.status !== 'ERROR')
                     ) {
-                        outstandingCalls.push(call);
+                        outstandingEntries.push({ callIndex: callIdx, call });
                     }
                 }
 
-                if (outstandingCalls.length > 0) {
-                    const parkMs = requiredParkMsForToolCalls(outstandingCalls, workspacePath, timings);
+                if (outstandingEntries.length > 0) {
+                    const outstandingCalls = outstandingEntries.map((entry) => entry.call);
+                    const parkMs = requiredParkMsForToolCalls(
+                        outstandingCalls,
+                        workspacePath,
+                        timings,
+                        skipPermissions
+                    );
                     if (parkMs !== null && idleForMs >= parkMs) {
-                        return { state: 'parked_on_tool', latestStepIndex: last.step_index };
+                        const chosen = skipPermissions
+                            ? (outstandingEntries.find((entry) => entry.call.name === 'ask_question') ?? outstandingEntries[0]!)
+                            : outstandingEntries[0]!;
+                        return {
+                            state: 'parked_on_tool',
+                            steps: reactiveSteps,
+                            parkedCall: {
+                                stepIndex: planner.step_index,
+                                callIndex: chosen.callIndex,
+                                toolName: chosen.call.name,
+                                decodedArgs: decodeAgyTranscriptArgs(chosen.call.args)
+                            },
+                            latestStepIndex: last.step_index
+                        };
                     }
                 }
             }
@@ -1098,4 +1140,119 @@ export function convertAgyReactiveSteps(
         : null;
 
     return { messages, usage, durationMs };
+}
+
+/**
+ * Converts a reactive wakeup slice up through a parked tool call / `ask_question`
+ * so HAPI can display completed prefix steps and the pending approval/question
+ * card without sending any hidden message to `agy`.
+ */
+export function convertAgyParkedWakeupSlice(
+    sessionId: string,
+    steps: AgyTranscriptStep[],
+    parkedCall: AgyParkedWakeupCall,
+    openBackgroundCommands: AgyOpenBackgroundCommand[]
+): {
+    messages: AgentMessage[];
+    parkedCallId: string;
+    parkedToolCall: Extract<AgentMessage, { type: 'tool_call' }>;
+    preEmittedTexts: Map<string, number>;
+} {
+    const prefixSteps = steps.filter((step) => step.step_index < parkedCall.stepIndex);
+    const prefixConverted = convertAgyReactiveSteps(sessionId, prefixSteps, openBackgroundCommands);
+    const messages: AgentMessage[] = [...prefixConverted.messages];
+    const preEmittedTexts = new Map<string, number>();
+
+    const recordText = (text: string) => {
+        const trimmed = text.trim();
+        if (trimmed) {
+            preEmittedTexts.set(trimmed, (preEmittedTexts.get(trimmed) ?? 0) + 1);
+        }
+    };
+    for (const msg of messages) {
+        if (msg.type === 'text') recordText(msg.text);
+    }
+
+    const plannerIdx = steps.findIndex(
+        (step) => step.step_index === parkedCall.stepIndex && step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE'
+    );
+    if (plannerIdx >= 0) {
+        const planner = steps[plannerIdx]!;
+        const thinking = planner.thinking?.trim();
+        if (thinking) {
+            messages.push({ type: 'reasoning', text: thinking });
+        }
+        const content = planner.content?.trim();
+        if (content) {
+            messages.push({ type: 'text', text: planner.content! });
+            recordText(planner.content!);
+        }
+
+        const toolCalls = Array.isArray(planner.tool_calls) ? planner.tool_calls : [];
+        const actionSteps: AgyTranscriptStep[] = [];
+        for (
+            let cursor = plannerIdx + 1;
+            cursor < steps.length
+                && actionSteps.length < toolCalls.length
+                && steps[cursor]!.source === 'MODEL'
+                && steps[cursor]!.type !== 'PLANNER_RESPONSE';
+            cursor += 1
+        ) {
+            actionSteps.push(steps[cursor]!);
+        }
+
+        for (let callIdx = 0; callIdx < parkedCall.callIndex && callIdx < toolCalls.length; callIdx += 1) {
+            const call = toolCalls[callIdx]!;
+            const action = actionSteps[callIdx];
+            if (!action) continue;
+            const decodedArgs = decodeAgyTranscriptArgs(call.args);
+            const id = `agy-wakeup-${sessionId}-${planner.step_index}-${callIdx}`;
+            const resultInfo = buildGenericToolOutput(call.name, action);
+            messages.push({
+                type: 'tool_call',
+                id,
+                name: call.name,
+                input: decodedArgs,
+                status: resultInfo.status,
+                title: call.name,
+                nativeName: call.name,
+                nativeArgs: decodedArgs
+            });
+            messages.push({
+                type: 'tool_result',
+                id,
+                output: resultInfo.output,
+                status: resultInfo.status
+            });
+            if (resultInfo.backgrounded) {
+                const taskId = extractAgyBackgroundTaskId(action.content);
+                const commandLine = typeof decodedArgs.CommandLine === 'string'
+                    ? decodedArgs.CommandLine
+                    : undefined;
+                openBackgroundCommands.push({
+                    callId: id,
+                    stepIndex: action.step_index,
+                    synthetic: true,
+                    nativeArgs: decodedArgs,
+                    ...(commandLine !== undefined ? { commandLine } : {}),
+                    ...(taskId ? { taskId } : {})
+                });
+            }
+        }
+    }
+
+    const parkedCallId = `agy-wakeup-${sessionId}-${parkedCall.stepIndex}-${parkedCall.callIndex}`;
+    const parkedToolCall: Extract<AgentMessage, { type: 'tool_call' }> = {
+        type: 'tool_call',
+        id: parkedCallId,
+        name: parkedCall.toolName,
+        input: parkedCall.decodedArgs,
+        status: 'pending',
+        title: parkedCall.toolName,
+        nativeName: parkedCall.toolName,
+        nativeArgs: parkedCall.decodedArgs
+    };
+    messages.push(parkedToolCall);
+
+    return { messages, parkedCallId, parkedToolCall, preEmittedTexts };
 }

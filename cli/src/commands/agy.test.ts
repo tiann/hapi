@@ -10,7 +10,7 @@ describe('parseAgyCommandOptions', () => {
         expect(parseAgyCommandOptions(['--hapi-starting-mode', 'remote']).startingMode).toBe('remote')
     })
 
-    it.each(['request-review', 'acceptEdits', 'plan', 'always-proceed'])('takes the %s permission mode from the spawn', (mode) => {
+    it.each(['request-review', 'acceptEdits', 'auto', 'plan', 'always-proceed'])('takes the %s permission mode from the spawn', (mode) => {
         expect(parseAgyCommandOptions(['--permission-mode', mode]).permissionMode).toBe(mode)
     })
 

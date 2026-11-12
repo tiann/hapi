@@ -15,12 +15,15 @@ interface PermissionResponseMessage {
     id: string
     approved: boolean
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+    mode?: string
     reason?: string
     answers?: Record<string, string[]>
 }
 
 export type UserAnswer = {
     decision: NonNullable<PermissionResponseMessage['decision']>
+    mode?: string
+    reason?: string
     answers?: Record<string, string[]>
 }
 
@@ -70,6 +73,9 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             autoApproveOnce?: boolean
             // Questions need the user's answer in every mode.
             requiresUser?: (request: PermissionRequest) => boolean
+            // Resolves a live ACP permission request using an explicit user
+            // decision captured before the prompt stream reattached.
+            resolvePreDecided?: (request: PermissionRequest) => 'approved' | 'approved_for_session' | 'denied' | null
             // Called when a request starts waiting for the user; the returned
             // callback runs once it is answered (agents timing their own work).
             onUserWait?: () => () => void
@@ -80,6 +86,18 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     }
 
     private handlePermissionRequest(request: PermissionRequest): void {
+        const preDecided = this.options.resolvePreDecided?.(request) ?? null
+        if (preDecided) {
+            const effectiveDecision = this.options.autoApproveOnce && preDecided === 'approved_for_session'
+                ? 'approved'
+                : preDecided
+            void this.backend.respondToPermission(
+                request.sessionId,
+                request,
+                mapDecisionToOutcome(request, effectiveDecision)
+            )
+            return
+        }
         const toolName = deriveToolName({
             title: request.title,
             kind: request.kind,
@@ -158,11 +176,17 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             this.userQuestions.delete(response.id)
             const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
             this.endUserWait(response.id)
-            question(response.answers ? { decision, answers: response.answers } : { decision })
+            question({
+                decision,
+                ...(response.mode ? { mode: response.mode } : {}),
+                ...(response.reason ? { reason: response.reason } : {}),
+                ...(response.answers ? { answers: response.answers } : {})
+            })
             pending.resolve()
             return {
                 status: response.approved ? 'approved' : 'denied',
                 decision,
+                mode: response.mode,
                 reason: response.reason,
                 answers: response.answers
             }

@@ -18,10 +18,20 @@ export function buildAgyAcpEnv(source: NodeJS.ProcessEnv = process.env): Record<
     return env;
 }
 
-export function createAgyAcpBackend(): AcpSdkBackend {
+export type AgyAcpBackendOptions = {
+    skipPermissions?: boolean;
+};
+
+export function buildAgyAcpArgs(opts?: AgyAcpBackendOptions): string[] {
+    return opts?.skipPermissions
+        ? ['acp', '--dangerously-skip-permissions']
+        : ['acp'];
+}
+
+export function createAgyAcpBackend(opts?: AgyAcpBackendOptions): AcpSdkBackend {
     return new AcpSdkBackend({
         command: getAgentLaunchCommand('agy'),
-        args: ['acp'],
+        args: buildAgyAcpArgs(opts),
         env: buildAgyAcpEnv(),
         flavor: 'agy',
         // agy then asks its ask_question questions as form elicitations.

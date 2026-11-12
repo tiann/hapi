@@ -5,7 +5,7 @@ import { hashObject } from '@/utils/deterministicJson';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
-import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
+import { ACP_INDETERMINATE_SYMBOL, AcpStdioTransport } from '@/agent/backends/acp/AcpStdioTransport';
 import agySteeredTurn from '@/agent/backends/acp/__fixtures__/agy-steered-turn.json';
 import { AgySession } from './session';
 import type { AgyMode } from './types';
@@ -16,6 +16,7 @@ import {
     agyRoundSummary,
     resolveAgyAcpModelId
 } from './agyAcpRemoteLauncher';
+import { buildAgyAcpArgs, createAgyAcpBackend, type AgyAcpBackendOptions } from './utils/agyAcpBackend';
 import { generationTimeMs } from '@/agent/generationClock';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
@@ -236,17 +237,19 @@ function makeSession(sessionId: string | null = null) {
 
 function launch(session: AgySession, backends: FakeAgyBackend[], opts: { cancelHardStopMs?: number; killSettleMs?: number } = {}) {
     const created: FakeAgyBackend[] = [];
+    const createdOptions: Array<AgyAcpBackendOptions | undefined> = [];
     const launcher = new AgyAcpRemoteLauncher(session, {
         steerCancelGraceMs: 50,
         cancelHardStopMs: opts.cancelHardStopMs ?? 2_000,
         killSettleMs: opts.killSettleMs,
-        createBackend: () => {
+        createBackend: (backendOpts) => {
+            createdOptions.push(backendOpts);
             const backend = backends.shift() ?? new FakeAgyBackend();
             created.push(backend);
             return backend as unknown as AcpSdkBackend;
         }
     });
-    return { run: launcher.launch(), created };
+    return { run: launcher.launch(), created, createdOptions };
 }
 
 function steeringStates(client: ReturnType<typeof makeClient>): boolean[] {
@@ -346,22 +349,171 @@ describe('AgyAcpRemoteLauncher', () => {
         });
     });
 
-    it('applies the ACP mode every turn and the model only when it changes', async () => {
+    it('applies the ACP mode every turn and the model only when it changes without restarting across non-skip modes', async () => {
         const { session, queue } = makeSession();
         const backend = new FakeAgyBackend();
         const flashLow: AgyMode = { permissionMode: 'request-review', model: 'gemini-3.8-flash', effort: 'low' };
         queue.push('one', flashLow, 'a');
-        queue.push('two', { ...flashLow, permissionMode: 'always-proceed' }, 'b');
+        queue.push('two', { ...flashLow, permissionMode: 'auto' }, 'b');
         queue.push('three', { ...flashLow, effort: 'high' }, 'c');
         queue.push('four', { ...flashLow, effort: 'high', permissionMode: 'plan' }, 'd');
         queue.push('five', { ...flashLow, effort: 'high', permissionMode: 'acceptEdits' }, 'e');
         queue.close();
 
-        await launch(session, [backend]).run;
+        const { run, created, createdOptions } = launch(session, [backend]);
+        await run;
 
+        expect(created).toHaveLength(1);
+        expect(createdOptions).toEqual([{ skipPermissions: false }]);
         expect(backend.prompts).toHaveLength(5);
-        expect(backend.setModeCalls).toEqual(['default', 'default', 'default', 'plan', 'accept-edits']);
+        expect(backend.setModeCalls).toEqual(['default', 'auto', 'default', 'plan', 'accept-edits']);
         expect(backend.setModelCalls).toEqual(['gemini-3.8-flash-low', 'gemini-3.8-flash-high']);
+    });
+
+    it('launches with --dangerously-skip-permissions only in always-proceed mode', async () => {
+        expect(buildAgyAcpArgs()).toEqual(['acp']);
+        expect(buildAgyAcpArgs({ skipPermissions: false })).toEqual(['acp']);
+        expect(buildAgyAcpArgs({ skipPermissions: true })).toEqual(['acp', '--dangerously-skip-permissions']);
+
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockResolvedValue({
+            onNotification: vi.fn(),
+            onStderrError: vi.fn(),
+            registerRequestHandler: vi.fn(),
+            isAlive: () => true,
+            sendNotification: vi.fn(),
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: { loadSession: true } };
+                return {};
+            }),
+            close: vi.fn(async () => {})
+        } as unknown as AcpStdioTransport);
+
+        const normalBackend = createAgyAcpBackend({ skipPermissions: false });
+        await normalBackend.initialize();
+        expect(createSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            args: ['acp']
+        }));
+        await normalBackend.disconnect();
+
+        const skipBackend = createAgyAcpBackend({ skipPermissions: true });
+        await skipBackend.initialize();
+        expect(createSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            args: ['acp', '--dangerously-skip-permissions']
+        }));
+        await skipBackend.disconnect();
+        createSpy.mockRestore();
+
+        // Launcher passes skipPermissions=true when session starts in always-proceed.
+        const { session: skipSession, queue: skipQueue } = makeSession();
+        skipSession.setPermissionMode('always-proceed');
+        skipQueue.close();
+        const skipResult = launch(skipSession, [new FakeAgyBackend()]);
+        await skipResult.run;
+        expect(skipResult.createdOptions).toEqual([{ skipPermissions: true }]);
+
+        // And skipPermissions=false for all other modes.
+        for (const mode of ['request-review', 'acceptEdits', 'auto', 'plan'] as const) {
+            const { session: otherSession, queue: otherQueue } = makeSession();
+            otherSession.setPermissionMode(mode);
+            otherQueue.close();
+            const otherResult = launch(otherSession, [new FakeAgyBackend()]);
+            await otherResult.run;
+            expect(otherResult.createdOptions).toEqual([{ skipPermissions: false }]);
+        }
+    });
+
+    it('restarts agy and resumes session preserving model and effort only when switching into or out of always-proceed', async () => {
+        const { session, queue, client } = makeSession();
+        session.setModel('gemini-3.8-flash');
+        session.setEffort('high');
+
+        const b1 = new FakeAgyBackend();
+        const b2 = new FakeAgyBackend();
+        const b3 = new FakeAgyBackend();
+        const { run, created, createdOptions } = launch(session, [b1, b2, b3]);
+
+        // Turn 1 in request-review (initial process b1, skipPermissions: false)
+        queue.push('turn 1', { permissionMode: 'request-review', model: 'gemini-3.8-flash', effort: 'high' }, 'm1');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(created).toHaveLength(1);
+        expect(createdOptions).toEqual([{ skipPermissions: false }]);
+        expect(b1.setModelCalls).toEqual(['gemini-3.8-flash-high']);
+
+        // Idle switch request-review -> acceptEdits -> plan -> auto: NO restart, only setMode!
+        session.setPermissionMode('acceptEdits');
+        await vi.waitFor(() => expect(b1.setModeCalls).toContain('accept-edits'));
+        session.setPermissionMode('auto');
+        await vi.waitFor(() => expect(b1.setModeCalls).toContain('auto'));
+        expect(created).toHaveLength(1);
+        expect(b1.disconnected).toBe(false);
+
+        // Idle switch auto -> always-proceed while no turn is active: restarts into b2 with skipPermissions=true,
+        // resumes 'agy-conv-new', and restores model + effort!
+        session.setPermissionMode('always-proceed');
+        await vi.waitFor(() => {
+            expect(created).toHaveLength(2);
+            expect(b2.setModelCalls).toEqual(['gemini-3.8-flash-high']);
+        });
+        expect(b1.disconnected).toBe(true);
+        expect(createdOptions[1]).toEqual({ skipPermissions: true });
+        expect(b2.resumeCalls).toEqual(['agy-conv-new']);
+        expect(b2.setModeCalls).toContain('default');
+
+        // Turn 2 in always-proceed reuses b2 without restarting again.
+        client.sendSessionEvent.mockClear();
+        queue.push('turn 2', { permissionMode: 'always-proceed', model: 'gemini-3.8-flash', effort: 'high' }, 'm2');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(created).toHaveLength(2);
+        expect(b2.prompts).toEqual([[{ type: 'text', text: 'turn 2' }]]);
+
+        // Turn 3 switches back out of always-proceed -> plan: restarts into b3 with skipPermissions=false,
+        // resumes 'agy-conv-new', and restores plan mode + model + effort!
+        client.sendSessionEvent.mockClear();
+        queue.push('turn 3', { permissionMode: 'plan', model: 'gemini-3.8-flash', effort: 'high' }, 'm3');
+        await vi.waitFor(() => expect(sessionEvents(client)).toContainEqual({ type: 'ready' }));
+        expect(created).toHaveLength(3);
+        expect(b2.disconnected).toBe(true);
+        expect(createdOptions[2]).toEqual({ skipPermissions: false });
+        expect(b3.resumeCalls).toEqual(['agy-conv-new']);
+        expect(b3.setModeCalls).toEqual(['plan']);
+        expect(b3.setModelCalls).toEqual(['gemini-3.8-flash-high']);
+        expect(b3.prompts).toEqual([[{ type: 'text', text: 'turn 3' }]]);
+
+        queue.close();
+        await run;
+    });
+
+    it('waits until an active turn finishes before restarting agy on a mid-turn always-proceed switch', async () => {
+        const { session, queue } = makeSession();
+        const b1 = new FakeAgyBackend();
+        const b2 = new FakeAgyBackend();
+        let releaseTurn!: () => void;
+        b1.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'working...' });
+            await new Promise<void>((resolve) => { releaseTurn = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const { run, created, createdOptions } = launch(session, [b1, b2]);
+        queue.push('in-flight', REVIEW, 'm1');
+        await vi.waitFor(() => expect(b1.prompts).toHaveLength(1));
+
+        // Flip permissionMode while turn 1 is still active: b1 must NOT be killed mid-turn.
+        session.setPermissionMode('always-proceed');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(created).toHaveLength(1);
+        expect(b1.disconnected).toBe(false);
+
+        // Once turn 1 settles, idle config sync restarts into b2 with skipPermissions=true.
+        releaseTurn();
+        await vi.waitFor(() => {
+            expect(created).toHaveLength(2);
+            expect(b2.resumeCalls).toEqual(['agy-conv-new']);
+        });
+        expect(createdOptions).toEqual([{ skipPermissions: false }, { skipPermissions: true }]);
+
+        queue.close();
+        await run;
     });
 
     it('switches back to agy default model when the selection is cleared', async () => {
@@ -1639,6 +1791,7 @@ describe('agy ACP helpers', () => {
         expect(agyAcpModeForPermission('request-review')).toBe('default');
         expect(agyAcpModeForPermission('always-proceed')).toBe('default');
         expect(agyAcpModeForPermission('acceptEdits')).toBe('accept-edits');
+        expect(agyAcpModeForPermission('auto')).toBe('auto');
         expect(agyAcpModeForPermission('plan')).toBe('plan');
         expect(agyAcpModeForPermission(undefined)).toBe('default');
     });

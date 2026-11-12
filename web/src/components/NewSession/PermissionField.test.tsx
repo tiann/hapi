@@ -47,10 +47,11 @@ describe('PermissionField', () => {
 
     it('renders the Antigravity permission modes as a native select', () => {
         const onChange = vi.fn()
-        renderField({ agent: 'agy', nativeValue: 'request-review', onNativeChange: onChange })
+        renderField({ agent: 'agy', nativeValue: 'request-review', autoPermissionModeSupported: false, onNativeChange: onChange })
         expect(screen.queryByRole('switch')).toBeNull()
         expect(screen.getAllByRole('option').map(option => (option as HTMLOptionElement).value))
-            .toEqual(['request-review', 'acceptEdits', 'plan', 'always-proceed'])
+            .toEqual(['request-review', 'acceptEdits', 'auto', 'plan', 'always-proceed'])
+        expect(screen.getByRole('option', { name: 'Auto' })).not.toBeDisabled()
         fireEvent.change(screen.getByRole('combobox'), { target: { value: 'plan' } })
         expect(onChange).toHaveBeenCalledWith('plan')
     })
