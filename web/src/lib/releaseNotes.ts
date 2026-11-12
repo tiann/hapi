@@ -132,7 +132,7 @@ export const RELEASE_NOTES = [
         [
             group('ACP, notifications, and collaboration', 'ACP、通知与协作', [
                 change('feature', 'Re-enable ACP title changes with manual title precedence and add notification controls plus unread dots.', '重新启用 ACP 标题修改并保持手动标题优先，同时增加通知控制与未读圆点。'),
-                change('feature', 'Keep unread sessions visible, auto-steer peer messages into active turns, and support peer replies through waitForReply.', '让未读会话保持可见，将未读消息自主介入活动回合，并通过 waitForReply 支持对等回复。'),
+                change('feature', 'Keep unread sessions visible, auto-steer peer messages into active turns, and support peer replies through waitForReply.', '让未读会话保持可见，将对等消息自动介入活动回合，并通过 waitForReply 支持对等回复。'),
                 change('feature', 'Show Antigravity and OpenCode questions and canonical tool cards, and expose Pi peer-session MCP tools.', '显示 Antigravity 与 OpenCode 的问题和标准工具卡片，并开放 Pi 对等会话 MCP 工具。'),
                 change('feature', 'Cache model-list RPCs with single-flight and stale-while-revalidate behavior.', '使用单次请求合并与陈旧优先刷新缓存模型列表 RPC。'),
             ]),
