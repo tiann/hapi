@@ -211,6 +211,39 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
         }
     }
 
+    // Antigravity (agy) emits per-turn round-summary payloads rather than token_count.
+    if (data.type === 'round-summary') {
+        const summary = asRecord(data.summary)
+        if (summary?.provider === 'agy') {
+            const agyUsage = asRecord(summary.agy_usage)
+            if (!agyUsage) return null
+            const inputTokens = firstCount(agyUsage, 'input_tokens', 'inputTokens')
+            const outputTokens = firstCount(agyUsage, 'output_tokens', 'outputTokens')
+            const cacheReadTokens = firstCount(agyUsage, 'cache_read_tokens', 'cacheReadTokens')
+            if (inputTokens + outputTokens + cacheReadTokens <= 0) return null
+            const model = typeof summary.model === 'string' && summary.model.trim()
+                ? summary.model.trim()
+                : null
+            return {
+                sessionId: session.id,
+                sourceKey: `delta|${message.id}`,
+                sourceSeq: message.seq,
+                createdAt: message.createdAt,
+                agent: 'agy',
+                model,
+                kind: 'delta',
+                inputTokens: inputTokens + cacheReadTokens,
+                outputTokens,
+                cacheReadTokens,
+                cacheCreationTokens: 0,
+                lastInputTokens: null,
+                lastOutputTokens: null,
+                lastCacheReadTokens: null,
+                lastCacheCreationTokens: null
+            }
+        }
+    }
+
     return null
 }
 
