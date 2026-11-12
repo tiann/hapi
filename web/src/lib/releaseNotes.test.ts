@@ -49,6 +49,19 @@ describe('release notes catalog', () => {
         }
     })
 
+    it('does not use generic placeholder copy as a release note', () => {
+        const placeholder = 'No user-facing functional changes were listed in the official release notes.'
+
+        for (const release of RELEASE_NOTES) {
+            expect(release.summary.en).not.toContain('Maintenance release; the official')
+            for (const releaseGroup of release.groups) {
+                for (const change of releaseGroup.changes) {
+                    expect(change.text.en).not.toBe(placeholder)
+                }
+            }
+        }
+    })
+
     it('hides a prepared future entry from the current app', () => {
         const currentIndex = RELEASE_NOTES.findIndex((release) => release.version === __APP_VERSION__)
         const expected = RELEASE_NOTES.slice(currentIndex)

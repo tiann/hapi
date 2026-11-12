@@ -200,11 +200,11 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.33.5', '2026-11-01',
-        'Maintenance release; the official release notes list no user-facing functional changes.',
-        '维护版本；官方 Release 未列出面向用户的功能变更。',
+        'A test-only maintenance release that synchronizes version metadata and makes Android home-search keyboard tests follow real platform IME behavior.',
+        '仅包含测试维护的版本：同步版本元数据，并让 Android 首页搜索键盘测试遵循真实的平台 IME 行为。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Android test reliability', 'Android 测试可靠性', [
+                change('note', 'Send real Back events and inspect the actual window IME insets so home-search keyboard behavior is verified against the platform instead of the activity dispatcher.', '发送真实返回键事件并读取实际窗口 IME 内边距，让首页搜索键盘行为按平台状态验证，而不是只检查 Activity 分发器。'),
             ]),
         ]),
     releaseNote('0.33.4', '2026-11-01',
@@ -288,11 +288,11 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.31.3', '2026-10-27',
-        'Maintenance release; the official release notes list no user-facing functional changes.',
-        '维护版本；官方 Release 未列出面向用户的功能变更。',
+        'Move npm publishing into the tag-triggered release workflow with Trusted Publishing, and leave local releases responsible for versioning, committing, tagging, and pushing.',
+        '将 npm 发布迁移到由标签触发的 Release 工作流并使用 Trusted Publishing；本地发布流程只负责更新版本、提交、打标签和推送。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Release reliability', '发布可靠性', [
+                change('note', 'Publish platform and main npm packages from the release workflow through OIDC, retry safely when versions already exist, and avoid storing a long-lived npm token.', '通过 OIDC 在 Release 工作流中发布平台包和主 npm 包，在版本已存在时安全重试，并避免保存长期有效的 npm Token。'),
             ]),
         ]),
     releaseNote('0.31.2', '2026-10-27',
@@ -657,11 +657,11 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.25.1', '2026-07-28',
-        'Maintenance release; the official notes list no user-facing functional changes.',
-        '维护版本；官方说明未列出面向用户的功能变更。',
+        'Stabilize Web conversation history scrolling by loading one older page at a time and restoring the scroll anchor after the matching history version is applied.',
+        '稳定 Web 对话历史滚动：每次只加载一页更早消息，并在对应历史版本渲染后恢复滚动锚点。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Session history', '会话历史', [
+                change('fix', 'Load one older page per top-of-conversation intersection and restore the scroll anchor only after the matching history version renders.', '每次滚动到对话顶部时只加载一页更早消息，并在对应历史版本渲染完成后恢复滚动锚点。'),
             ]),
         ]),
     releaseNote('0.25.0', '2026-07-28',
@@ -730,11 +730,11 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.23.2', '2026-07-22',
-        'Maintenance release; the official notes list no user-facing functional changes.',
-        '维护版本；官方说明未列出面向用户的功能变更。',
+        'A version-only release that synchronizes application version metadata; no source or runtime behavior changed.',
+        '仅更新版本号的发行版：同步各应用的版本元数据，未改变源码或运行时行为。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Version metadata', '版本元数据', [
+                change('note', 'Update only the shared app version, CLI package version, and the CLI platform-package dependency versions.', '此版本仅更新 Shared 应用版本、CLI 包版本和 CLI 平台包依赖版本。'),
             ]),
         ]),
     releaseNote('0.23.1', '2026-07-19',
@@ -790,11 +790,14 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.21.1', '2026-07-13',
-        'Maintenance release; the official notes list no user-facing functional changes.',
-        '维护版本；官方说明未列出面向用户的功能变更。',
+        'Refresh message actions and metadata, and align Codex local transcript projection with semantic events and ordered plan cards.',
+        '重整消息操作与元数据显示，并让 Codex 本地对话记录按语义事件投影为可见文本和有序计划卡片。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Conversation actions', '对话操作', [
+                change('feature', 'Use one consistent action row for copying messages and opening message details, with hover controls on desktop and always-available controls on touch devices.', '统一使用一行操作控件来复制消息和查看消息详情；桌面端悬停显示，触屏设备保持可用。'),
+            ]),
+            group('Codex transcript reliability', 'Codex 对话记录可靠性', [
+                change('fix', 'Use semantic transcript events as the visible text source and preserve completed plans as ordered plan proposal cards.', '使用语义化对话事件作为可见文本来源，并将已完成的计划保留为有序计划提案卡片。'),
             ]),
         ]),
     releaseNote('0.21.0', '2026-07-12',
@@ -1170,11 +1173,18 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.12.1', '2026-01-26',
-        'Maintenance release; the official notes list no user-facing functional changes.',
-        '维护版本；官方说明未列出面向用户的功能变更。',
+        'Add Codex interactive input cards, context-compaction details, per-session model selection, and image paste; correct option highlighting in Codex questions.',
+        '增加 Codex 交互输入卡片、上下文压缩详情、按会话选择模型和图片粘贴，并修正 Codex 问题选项的选中高亮。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Agent input and models', 'Agent 输入与模型', [
+                change('feature', 'Render Codex request_user_input questions as interactive Web cards and forward accepted answers through the CLI permission flow.', '将 Codex request_user_input 问题渲染为可交互的 Web 卡片，并通过 CLI 权限流程提交用户答案。'),
+                change('feature', 'Choose Claude, Codex, or Gemini models when creating a session and pass the selected model through the CLI pipeline.', '创建会话时可为 Claude、Codex 或 Gemini 选择模型，并通过 CLI 流程传递所选的模型。'),
+            ]),
+            group('Composer and context', '输入框与上下文', [
+                change('feature', 'Paste images directly into the composer and show context microcompaction events with the number of tokens saved.', '支持直接向输入框粘贴图片，并显示上下文微压缩事件及节省的 Token 数。'),
+            ]),
+            group('Interactive input fixes', '交互输入修复', [
+                change('fix', 'Keep the selected option highlighted by trimming answer values and parsing stored tool results from history.', '通过规范化答案值并解析历史中保存的工具结果，保持所选选项正确高亮。'),
             ]),
         ]),
     releaseNote('0.12.0', '2026-01-22',
@@ -1300,11 +1310,14 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.5.0', '2026-01-03',
-        'Major code refactor; the official notes list no functional changes.',
-        '大规模代码重构；官方说明未列出功能变更。',
+        'Split the CLI and Hub runtime into focused modules, and repair Docker and npm release packaging.',
+        '将 CLI 与 Hub 运行时拆分为职责明确的模块，并修复 Docker 与 npm 发布打包。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Distribution fixes', '分发修复', [
+                change('fix', 'Repair the Docker image build and the npm release wrapper package after the runtime restructuring.', '在运行时重构后修复 Docker 镜像构建和 npm 发布包装包。'),
+            ]),
+            group('Internal architecture', '内部架构', [
+                change('note', 'Split SyncEngine, CLI command routing and RPC handlers, versioned API updates, message utilities, and permission utilities into focused modules without a separately advertised behavior change.', '将 SyncEngine、CLI 命令路由与 RPC 处理器、版本化 API 更新、消息工具和权限工具拆分为独立模块，未单独公布行为变更。'),
             ]),
         ]),
     releaseNote('0.4.2', '2026-01-03',
@@ -1319,11 +1332,17 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.4.1', '2026-01-03',
-        'Maintenance release; the official notes list no user-facing functional changes.',
-        '维护版本；官方说明未列出面向用户的功能变更。',
+        'Fix PWA push-notification paths and session archiving, prepare multi-channel notification routing, and repair Docker builds.',
+        '修复 PWA 推送通知路径与会话归档，准备多渠道通知路由，并修复 Docker 构建。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Notifications and sessions', '通知与会话', [
+                change('fix', 'Use relative session paths in PWA push notifications and make archive actions sync correctly from the session header and list.', '在 PWA 推送通知中使用相对会话路径，并让会话头部和列表中的归档操作正确同步。'),
+            ]),
+            group('Distribution', '分发', [
+                change('fix', 'Include workspace manifests required by the Docker image build.', '补齐 Docker 镜像构建所需的工作区清单文件。'),
+            ]),
+            group('Internal infrastructure', '内部基础设施', [
+                change('note', 'Route notifications through a shared NotificationHub abstraction and allow metadata updates without changing the session updated timestamp.', '通过共享 NotificationHub 抽象路由通知，并允许更新元数据时不变更会话更新时间。'),
             ]),
         ]),
     releaseNote('0.4.0', '2026-01-02',
@@ -1339,22 +1358,23 @@ export const RELEASE_NOTES = [
             ]),
         ]),
     releaseNote('0.3.3', '2025-12-31',
-        'Add namespace isolation for multiple users, improve Telegram binding, and group sessions by default.',
-        '增加多用户命名空间隔离，改进 Telegram 绑定，并默认按组显示会话。',
+        'Harden namespace support with safer database migration, token normalization, and actionable access-denied errors.',
+        '通过更安全的数据库迁移、Token 规范化和明确的访问拒绝提示来加固命名空间支持。',
         [
-            group('Namespaces and session organization', '命名空间与会话组织', [
-                change('feature', 'Support multiple users through namespaces and group sessions by default.', '通过命名空间支持多用户，并默认按组显示会话。'),
-            ]),
-            group('Telegram and stability', 'Telegram 与稳定性', [
-                change('fix', 'Improve the Telegram binding flow and address minor release issues.', '改进 Telegram 绑定流程，并修复若干小问题。'),
+            group('Namespace reliability', '命名空间可靠性', [
+                change('fix', 'Create namespace indexes after schema migration, strip namespace suffixes from the server token, and explain how to resolve machine or session access-denied errors.', '在数据库结构迁移后创建命名空间索引，移除服务端 Token 中的命名空间后缀，并说明如何解决设备或会话访问被拒绝的问题。'),
             ]),
         ]),
     releaseNote('0.3.2', '2025-12-31',
-        'Maintenance release; the official notes list no user-facing functional changes.',
-        '维护版本；官方说明未列出面向用户的功能变更。',
+        'Add namespace-based multi-user isolation, sticky session group headers, and stored Telegram binding authentication.',
+        '增加基于命名空间的多用户隔离、粘性会话分组标题和持久化 Telegram 绑定认证。',
         [
-            group('Release maintenance', '版本维护', [
-                change('note', 'No user-facing functional changes were listed in the official release notes.', '官方 Release 未列出面向用户的功能变更。'),
+            group('Namespaces and accounts', '命名空间与账号', [
+                change('feature', 'Isolate sessions, machines, users, real-time events, and access tokens by namespace for shared team servers.', '为共享团队服务器按命名空间隔离会话、设备、用户、实时事件和访问 Token。'),
+                change('feature', 'Persist Telegram binding data and authenticate the binding flow through the Hub.', '持久化 Telegram 绑定数据，并通过 Hub 认证绑定流程。'),
+            ]),
+            group('Session organization', '会话组织', [
+                change('feature', 'Keep folder group headers visible while scrolling long session lists.', '滚动较长的会话列表时保持文件夹分组标题可见。'),
             ]),
         ]),
     releaseNote('0.3.1', '2025-12-30',
