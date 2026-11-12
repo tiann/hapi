@@ -12,6 +12,8 @@ import { configuration } from '@/configuration';
 import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
+import { isBunCompiled } from '@/projectPath';
+import { describeChildFatalContext } from './childFatalDiagnostics';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
@@ -936,6 +938,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               message += ` (exit code ${observedExitCode})`;
             } else {
               message += ` (signal ${observedExitSignal})`;
+            }
+          }
+
+          // A child that died before its webhook left no session logs — Bun's
+          // pre-init fatal crash is the classic silent case (low inherited
+          // RLIMIT_NOFILE), so name it when the signature matches.
+          if (reason === 'exit-before-webhook' || reason === 'process-error-before-webhook') {
+            const fatalContext = describeChildFatalContext({
+              exitCode: observedExitCode,
+              signal: observedExitSignal,
+              stderrTail,
+              compiledMode: isBunCompiled()
+            });
+            if (fatalContext) {
+              message += `. ${fatalContext}`;
             }
           }
 

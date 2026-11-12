@@ -632,6 +632,7 @@ export default {
   'tool.other': 'Другое',
   'tool.otherDescription': 'Введите свой ответ',
   'tool.question': 'Вопрос',
+  'tool.waitingForReply': 'Ожидание вашего ответа',
   'tool.selectOption': 'Выберите хотя бы один вариант или введите ответ.',
   'tool.waitingForApproval': 'Ожидание одобрения…',
   'tool.resolved': 'Разрешено в Codex',

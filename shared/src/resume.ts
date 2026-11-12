@@ -38,6 +38,19 @@ export const LocalResumeTargetResponseSchema = z.object({
 
 export type LocalResumeTargetResponse = z.infer<typeof LocalResumeTargetResponseSchema>
 
+/**
+ * Lookup of the HAPI session that owns a native agent session id.
+ * `target: null` means no HAPI session owns it (start a fresh one).
+ * `historical: true` means the id matched an earlier, rotated-away native id;
+ * `target.agentSessionId` is then the owner's current native id.
+ */
+export const LocalResumeTargetByAgentResponseSchema = z.object({
+    target: LocalResumeTargetSchema.nullable(),
+    historical: z.boolean().optional()
+})
+
+export type LocalResumeTargetByAgentResponse = z.infer<typeof LocalResumeTargetByAgentResponseSchema>
+
 export const ResumableSessionsResponseSchema = z.object({
     sessions: z.array(ResumableSessionSchema)
 })
@@ -49,3 +62,11 @@ export const LocalHandoffResponseSchema = z.object({
 })
 
 export type LocalHandoffResponse = z.infer<typeof LocalHandoffResponseSchema>
+
+/** `POST /cli/sessions/:id/prepare-local-resume`; `revived` = a hub archive was cleared. */
+export const LocalResumePrepareResponseSchema = z.object({
+    ok: z.boolean(),
+    revived: z.boolean().optional()
+})
+
+export type LocalResumePrepareResponse = z.infer<typeof LocalResumePrepareResponseSchema>
