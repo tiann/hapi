@@ -1950,6 +1950,13 @@ export function HappyThread(props: {
                     targetMessageId
                 )
                 : null
+            if (target instanceof HTMLElement && props.targetHighlightKind === 'pending-request') {
+                let collapsed = target.closest<HTMLDetailsElement>('details')
+                while (collapsed) {
+                    collapsed.open = true
+                    collapsed = collapsed.parentElement?.closest<HTMLDetailsElement>('details') ?? null
+                }
+            }
             scrollSearchTargetIntoView(matchMarker ?? target, viewportRef.current)
             scheduleSearchTargetScroll(targetMessageId, targetSearchQuery, target)
             if (!matchMarker) {

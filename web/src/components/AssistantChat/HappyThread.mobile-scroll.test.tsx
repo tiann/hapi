@@ -610,7 +610,10 @@ describe('search target loading', () => {
         const onInitialTargetConsumed = vi.fn()
         searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
         searchTargetTestState.renderMessages = () => (
-            <div id="hapi-message-tool-call:call-1" data-hapi-source-message-id="tool-call:call-1">tool card</div>
+            <details>
+                <summary>Collapsed details</summary>
+                <div id="hapi-message-tool-call:call-1" data-hapi-source-message-id="tool-call:call-1">tool card</div>
+            </details>
         )
 
         const { renderHappyThread } = renderSearchThread({
@@ -638,6 +641,7 @@ describe('search target loading', () => {
         })
         expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ behavior: 'instant' }))
         const target = result.container.querySelector<HTMLElement>('[data-hapi-source-message-id="tool-call:call-1"]')
+        expect(result.container.querySelector('details')).toHaveProperty('open', true)
         expect(target).toHaveClass('hapi-message-pending-target')
         expect(target).not.toHaveClass('hapi-message-search-target')
         act(() => { vi.advanceTimersByTime(1_800) })

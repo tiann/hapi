@@ -60,8 +60,8 @@ function contentContainsToolCallId(value: unknown, targetId: string, depth = 0):
     }
     if (!isObject(value)) return false
 
-    if (value.type === 'tool-call') {
-        const ids = [value.id, value.callId, value.toolCallId]
+    if (value.type === 'tool-call' || value.type === 'tool_use') {
+        const ids = [value.id, value.callId, value.toolCallId, value.toolUseId, value.tool_use_id]
         if (ids.some((id) => id === targetId)) return true
     }
     if (value.type === AGENT_MESSAGE_PAYLOAD_TYPE && isObject(value.data) && value.data.type === 'tool-call') {

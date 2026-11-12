@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
@@ -1246,6 +1246,13 @@ const SessionItem = memo(function SessionItem(props: {
         threshold: 500
     })
 
+    const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+        if (event.target !== event.currentTarget || !selected) return
+        const pendingRequestId = s.pendingRequests?.[0]?.id
+        if (!pendingRequestId || (event.key !== 'Enter' && event.key !== ' ')) return
+        event.preventDefault()
+        onSelect(s.id, undefined, undefined, pendingRequestId)
+    }
     const sessionName = getSessionTitle(s)
     const attention = useMemo(
         () => showDetailedStatus
@@ -1271,6 +1278,7 @@ const SessionItem = memo(function SessionItem(props: {
                 <button
                     type="button"
                     {...longPressHandlers}
+                    onKeyDown={handleRowKeyDown}
                     onPointerDownCapture={(event) => {
                         pendingRequestPressedRef.current = event.target instanceof Element
                             && event.target.closest('[data-session-pending-request-id]') !== null

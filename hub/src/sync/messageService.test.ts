@@ -445,6 +445,34 @@ describe('MessageService message pagination', () => {
         expect(context?.messages.map(message => message.id)).toContain(target.id)
     })
 
+    it('resolves a Claude tool_use anchor to its stored message', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'claude-tool-use-context')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'before' } }, 'before')
+        const target = store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: {
+                        content: [{
+                            type: 'tool_use',
+                            id: 'call-claude-question',
+                            name: 'AskUserQuestion',
+                            input: { questions: [{ id: 'choice', question: 'Pick one' }] }
+                        }]
+                    }
+                }
+            }
+        }, 'target')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'after' } }, 'after')
+
+        const context = makeService(store).getMessageContext(session.id, 'tool-call:call-claude-question')
+
+        expect(context?.targetMessageId).toBe(target.id)
+        expect(context?.messages.map(message => message.id)).toContain(target.id)
+    })
     it('includes pending local messages without changing the context pagination cursor', () => {
         const store = makeStore()
         const session = makeSession(store, 'page-context-pending')

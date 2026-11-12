@@ -35,14 +35,14 @@ function session(): SessionSummary {
 
 type SelectHandler = (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
 
-function renderList(onSelect: SelectHandler) {
+function renderList(onSelect: SelectHandler, selectedSessionId: string | null = null) {
     return render(
         <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
             <ToastProvider>
                 <I18nProvider>
                     <SessionList
                         sessions={[session()]}
-                        selectedSessionId={null}
+                        selectedSessionId={selectedSessionId}
                         onSelect={onSelect}
                         onNewSession={vi.fn()}
                         onRefresh={vi.fn()}
@@ -67,6 +67,12 @@ describe('SessionList pending request navigation', () => {
         expect(onSelect).toHaveBeenCalledExactlyOnceWith('session-1', undefined, undefined, 'request-1')
     })
 
+    it('routes Enter from an already selected session to its pending request', () => {
+        const onSelect = vi.fn<SelectHandler>()
+        renderList(onSelect, 'session-1')
+        fireEvent.keyDown(screen.getByRole('button', { name: /Pending question/ }), { key: 'Enter' })
+        expect(onSelect).toHaveBeenCalledExactlyOnceWith('session-1', undefined, undefined, 'request-1')
+    })
     it('keeps ordinary row activation as a plain session open', () => {
         const onSelect = vi.fn<SelectHandler>()
         renderList(onSelect)

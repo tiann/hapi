@@ -22,10 +22,17 @@ export function AsyncQuestionsPanel(props: {
     const [highlightedRequestId, setHighlightedRequestId] = useState<string | null>(null)
     const contentId = useId()
     const requestRefs = useRef(new Map<string, HTMLDetailsElement>())
+    const highlightTimerRef = useRef<number | null>(null)
     const requests = Object.entries(props.requests ?? {})
         .filter(([, request]) => isAsyncRequestUserInput(request.tool, request.arguments))
         .sort(([aId, a], [bId, b]) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || aId.localeCompare(bId))
     const requestIds = requests.map(([id]) => id).join('\u0000')
+
+    useEffect(() => () => {
+        if (highlightTimerRef.current !== null) {
+            window.clearTimeout(highlightTimerRef.current)
+        }
+    }, [])
 
     useEffect(() => {
         const targetRequestId = props.targetRequestId
@@ -40,10 +47,15 @@ export function AsyncQuestionsPanel(props: {
             target.focus({ preventScroll: true })
             props.onTargetConsumed?.()
         }, 0)
-        const highlightTimer = window.setTimeout(() => setHighlightedRequestId(null), 1_800)
+        if (highlightTimerRef.current !== null) {
+            window.clearTimeout(highlightTimerRef.current)
+        }
+        highlightTimerRef.current = window.setTimeout(() => {
+            setHighlightedRequestId(null)
+            highlightTimerRef.current = null
+        }, 1_800)
         return () => {
             window.clearTimeout(openTimer)
-            window.clearTimeout(highlightTimer)
         }
     }, [props.onTargetConsumed, props.targetRequestId, props.targetVersion, requestIds])
 
