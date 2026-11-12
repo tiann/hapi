@@ -32,7 +32,7 @@ describe('schema migration v27 to v28', () => {
         const migrated = new Store(dbPath)
         const internalDb = (migrated as unknown as { db: Database }).db
         const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
 
         expect(migrated.turns.open(session.id, 'default', 1_000, 'agent')).toBe(true)
         expect(migrated.turns.open(session.id, 'default', 2_000, 'agent')).toBe(false)
@@ -65,7 +65,7 @@ describe('schema migration v30 to v31', () => {
             'id', 'namespace', 'session_id', 'original_path', 'temp_path',
             'state', 'created_at', 'resolved_at'
         ])
-        expect(version.user_version).toBe(35)
+        expect(version.user_version).toBe(36)
         migrated.close()
     })
 })

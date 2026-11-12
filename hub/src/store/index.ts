@@ -92,7 +92,7 @@ function sameMessageIds(left: Set<string>, right: Set<string>): boolean {
     }
     return true
 }
-const SCHEMA_VERSION: number = 35
+const SCHEMA_VERSION: number = 36
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -691,6 +691,7 @@ export class Store {
             32: () => this.migrateFromV32ToV33(),
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
+            35: () => this.migrateFromV35ToV36(),
         })
 
         if (currentVersion === 0) {
@@ -729,6 +730,7 @@ export class Store {
             this.migrateFromV32ToV33()
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
+            this.migrateFromV35ToV36()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -1823,10 +1825,20 @@ export class Store {
      * v34→v35: durable redirects from merged-away session ids to the surviving
      * row, so links and peer references to a merged session keep resolving.
      */
-    /**
-     * v34→v35: journal durable attachments and add durable session redirects.
-     */
     private migrateFromV34ToV35(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_redirects (
+                old_id TEXT PRIMARY KEY,
+                new_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
+                ON session_redirects(namespace, new_id);
+        `)
+    }
+    /** v35→v36: journal durable attachment originals and recovery state. */
+    private migrateFromV35ToV36(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
@@ -1857,18 +1869,8 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_attachment_creations_state
                 ON attachment_creations(state, created_at);
-
-            CREATE TABLE IF NOT EXISTS session_redirects (
-                old_id TEXT PRIMARY KEY,
-                new_id TEXT NOT NULL,
-                namespace TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
-                ON session_redirects(namespace, new_id);
         `)
     }
-
     private ensureUsageScanParserVersion(): void {
         const columns = this.db.prepare('PRAGMA table_info(usage_scan_state)').all() as Array<{ name: string }>
         if (columns.length === 0) return
