@@ -1300,25 +1300,6 @@ export class Store {
         if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
     }
 
-    /** v31→v32: add structured-task source positions and durable backfill state. */
-    private migrateFromV34ToV35(): void {
-        this.db.exec(`
-            CREATE TABLE IF NOT EXISTS migration_state (
-                migration_id TEXT PRIMARY KEY,
-                completed_at INTEGER NOT NULL
-            );
-        `)
-
-        const columns = this.getSessionColumnNames()
-        if (columns.size > 0) {
-            if (!columns.has('todos_source_at')) {
-                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_at INTEGER')
-            }
-            if (!columns.has('todos_source_seq')) {
-                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
-            }
-        }
-    }
 
     private hasMessageContentSearchSourceSchema(): boolean {
         const columns = this.getMessageColumnNames()
@@ -1411,8 +1392,15 @@ export class Store {
      * v34→v35: durable redirects from merged-away session ids to the surviving
      * row, so links and peer references to a merged session keep resolving.
      */
+    /**
+     * v34→v35: add durable session redirects and structured-task backfill state.
+     */
     private migrateFromV34ToV35(): void {
         this.db.exec(`
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS session_redirects (
                 old_id TEXT PRIMARY KEY,
                 new_id TEXT NOT NULL,
@@ -1422,6 +1410,16 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
                 ON session_redirects(namespace, new_id);
         `)
+
+        const columns = this.getSessionColumnNames()
+        if (columns.size > 0) {
+            if (!columns.has('todos_source_at')) {
+                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_at INTEGER')
+            }
+            if (!columns.has('todos_source_seq')) {
+                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
+            }
+        }
     }
 
     private ensureUsageScanParserVersion(): void {
