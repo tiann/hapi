@@ -438,10 +438,11 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         let currentUserStep = -1;
         let completedCurrentResponse = false;
         let sawCurrentError = false;
-        let historicalErrorCandidate: { conversationId: string; userStep: number; error: string } | null = null;
+        let historicalErrorCandidate: { conversationId: string; userStep: number; responseStep: number; error: string; response: string } | null = null;
         // Flush every pending planner step (result envelope AND turn close, so
         // prose emitted before a pre-result crash is not lost).
         let lastPlannerContent: string | null = null;
+        let lastPlannerStep = -1;
         // Best-effort model resolution for default-model turns: when no explicit
         // --model was selected, the actual generation model is read from agy's
         // conversation DB (mirrors the removed scanner's enrichment).
@@ -483,6 +484,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         };
         const sendPlanner = (entry: AgyTranscriptEntry) => {
             if (typeof entry.content === 'string') lastPlannerContent = entry.content;
+            lastPlannerStep = entry.step_index ?? -1;
             enqueueTranscript(async () => {
                 // Carry the turn's model (display label) on every planner entry so
                 // the web's per-turn attribution survives model switches and
@@ -532,7 +534,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     this.session.client.emitMessagesConsumed(localIds);
                 }
                 if (historicalErrorCandidate && !signal.aborted && resultFailure
-                    && await isHistoricalAgyError(historicalErrorCandidate.conversationId, historicalErrorCandidate.userStep, historicalErrorCandidate.error)) {
+                    && await isHistoricalAgyError(historicalErrorCandidate.conversationId, historicalErrorCandidate.userStep, historicalErrorCandidate.responseStep, historicalErrorCandidate.error, historicalErrorCandidate.response)) {
                     resultFailure = null;
                 }
                 if (signal.aborted) {
@@ -670,9 +672,9 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     // turn failed; surface it (exit code may still be 0).
                     if (event.status === 'ERROR' && event.error?.trim() && event.response?.trim()
                         && resumedConversationId && resumedConversationId === this.conversationId
-                        && currentUserStep > 0 && completedCurrentResponse && !sawCurrentError
+                        && currentUserStep > 0 && lastPlannerStep > currentUserStep && completedCurrentResponse && !sawCurrentError
                         && event.response.trim() === lastPlannerContent?.trim()) {
-                        historicalErrorCandidate = { conversationId: resumedConversationId, userStep: currentUserStep, error: event.error };
+                        historicalErrorCandidate = { conversationId: resumedConversationId, userStep: currentUserStep, responseStep: lastPlannerStep, error: event.error, response: event.response };
                     }
                     if (event.status !== 'SUCCESS') {
                         // The reason lives in `error`; `response` is the

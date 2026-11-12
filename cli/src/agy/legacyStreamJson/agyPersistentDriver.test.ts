@@ -414,6 +414,6 @@ describe('stale agy result errors', () => {
         expect(errors.length > 0).toBe(expectError);
         if (expectError) expect(errors[0][0].message).toBe('Previous quota failure');
         if (currentError) expect(historicalError).not.toHaveBeenCalled();
-        else expect(historicalError).toHaveBeenCalledWith(CONVERSATION, 10, 'Previous quota failure');
+        else expect(historicalError).toHaveBeenCalledWith(CONVERSATION, 10, 11, 'Previous quota failure', 'The answer');
     });
 });
