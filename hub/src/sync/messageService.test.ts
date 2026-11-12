@@ -3393,6 +3393,166 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('keeps a new immediate send behind a pending ordered handoff retry', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'pending-handoff-new-send')
+        const { io, cliEmitted } = makeTrackingIo()
+        let materializeCalls = 0
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    if (materializeCalls === 1) throw new Error('initial upload failed')
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/pending-handoff-prompt.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        const attachment = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'pending-handoff-new-send')],
+                },
+            },
+            'pending-handoff-a',
+            scheduledAt,
+        )
+        const preceding = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'pending-handoff-b',
+        )
+        const clearCutoff = Date.now()
+        store.sessions.getOrCreateSession(
+            'pending-handoff-new-send-source',
+            {
+                path: '/tmp/pending-handoff-new-send-source',
+                host: 'localhost',
+                flavor: 'opencode',
+                supersededBySessionId: session.id,
+                opencodeClearOperation: {
+                    replacementSessionId: session.id,
+                    state: 'completed',
+                    updatedAt: clearCutoff,
+                },
+            },
+            null,
+            'default',
+        )
+
+        await expect(service.releaseDeliverableQueuedMessages(session.id, Date.now(), clearCutoff)).resolves.toBe(0)
+        await new Promise((resolve) => setTimeout(resolve, 2))
+        await service.sendMessage(session.id, { text: 'immediate C', localId: 'pending-handoff-c' })
+        expect(cliEmitted).toHaveLength(0)
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(materializeCalls).toBe(2)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'pending-handoff-a',
+            'pending-handoff-b',
+        ])
+
+        store.messages.markMessagesInvoked(session.id, ['pending-handoff-a', 'pending-handoff-b'], Date.now())
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'pending-handoff-a',
+            'pending-handoff-b',
+            'pending-handoff-c',
+        ])
+        expect(attachment.localId).toBe('pending-handoff-a')
+        expect(preceding.localId).toBe('pending-handoff-b')
+    })
+
+    it('keeps a new immediate send behind an in-flight ordered handoff', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'inflight-handoff-new-send')
+        const { io, cliEmitted } = makeTrackingIo()
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/inflight-handoff-prompt.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        const attachment = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'inflight-handoff-new-send')],
+                },
+            },
+            'inflight-handoff-a',
+            scheduledAt,
+        )
+        const preceding = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'inflight-handoff-b',
+        )
+        const clearCutoff = Date.now()
+        store.sessions.getOrCreateSession(
+            'inflight-handoff-new-send-source',
+            {
+                path: '/tmp/inflight-handoff-new-send-source',
+                host: 'localhost',
+                flavor: 'opencode',
+                supersededBySessionId: session.id,
+                opencodeClearOperation: {
+                    replacementSessionId: session.id,
+                    state: 'completed',
+                    updatedAt: clearCutoff,
+                },
+            },
+            null,
+            'default',
+        )
+
+        const initial = service.releaseDeliverableHandoffMessages(session.id, Date.now())
+        await started
+        await new Promise((resolve) => setTimeout(resolve, 2))
+        await service.sendMessage(session.id, { text: 'immediate C', localId: 'inflight-handoff-c' })
+        expect(cliEmitted).toHaveLength(0)
+
+        resolveMaterialization()
+        await initial
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'inflight-handoff-a',
+            'inflight-handoff-b',
+        ])
+
+        store.messages.markMessagesInvoked(session.id, ['inflight-handoff-a', 'inflight-handoff-b'], Date.now())
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'inflight-handoff-a',
+            'inflight-handoff-b',
+            'inflight-handoff-c',
+        ])
+        expect(attachment.localId).toBe('inflight-handoff-a')
+        expect(preceding.localId).toBe('inflight-handoff-b')
+    })
+
     it('keeps periodic text-only delivery behind a cancelled attachment handoff', async () => {
         const store = makeStore()
         const session = makeSession(store, 'cancelled-handoff-serialization')

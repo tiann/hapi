@@ -1385,6 +1385,11 @@ export class MessageService {
             && !isFutureScheduled
             && !hasScheduledAttachments
             && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)
+            // Queue later immediate sends behind an ordered handoff drain. The
+            // drain may be staging an earlier attachment or retrying after a
+            // failed materialization; emitting here would overtake its prefix.
+            && !this.matureReleaseInFlightSessions.has(actualSessionId)
+            && !this.pendingOrderedDeliverableReleaseSessions.has(actualSessionId)
         ) {
             const update = {
                 id: msg.id,
