@@ -740,7 +740,8 @@ export function createSessionsRoutes(
         const result = await engine.forkConversation(
             sessionResult.sessionId,
             c.get('namespace'),
-            parsed.data.messageLocalId
+            parsed.data.messageLocalId,
+            parsed.data.latestCompleted
         )
         if (result.type === 'error') {
             return c.json({ error: result.message }, 409)
@@ -1735,11 +1736,14 @@ export function createSessionsRoutes(
             }
             return sessionResult
         }
+        // requestedSessionId stays the raw URL id: the session lookup follows a
+        // merged-away id to its survivor, but `<old id>/<job key>` remaps are
+        // keyed by the id the supervisor still holds.
         const namespace = c.get('namespace')
         const ownerId = engine.resolveAttachedJobSessionId(sessionResult.sessionId, namespace)
         if (ownerId === sessionResult.sessionId) {
             return {
-                requestedSessionId: sessionResult.sessionId,
+                requestedSessionId: rawId,
                 sessionId: sessionResult.sessionId,
                 session: sessionResult.session,
             }
@@ -1747,13 +1751,13 @@ export function createSessionsRoutes(
         const access = engine.resolveSessionAccess(ownerId, namespace)
         if (!access.ok) {
             return {
-                requestedSessionId: sessionResult.sessionId,
+                requestedSessionId: rawId,
                 sessionId: sessionResult.sessionId,
                 session: sessionResult.session,
             }
         }
         return {
-            requestedSessionId: sessionResult.sessionId,
+            requestedSessionId: rawId,
             sessionId: access.sessionId,
             session: access.session,
         }

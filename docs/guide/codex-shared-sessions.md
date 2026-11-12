@@ -199,3 +199,18 @@ not a fake Codex executable. Coverage includes keyboard/Web answers, sibling
 question isolation, native queue editing/deletion, fork, primary-terminal exit,
 secondary attachment/detachment, Web→Runner resume with the same HAPI/native
 identity, and safe pending-message recovery.
+
+### Fork the latest completed turn from the session list
+
+For an updated Shared Codex runtime, **Fork session** remains available while a
+turn is running if a completed turn is known. The confirmation explains that the
+unfinished turn is excluded and the source continues running. A first running
+turn without completed history is disabled; older runtimes retain the busy guard.
+
+The Hub requests an explicit latest-completed boundary. The Runner reads native
+history and forks inclusively through the selected completed turn with
+`lastTurnId`. That cutoff is fixed before the native mutation, so later source
+progress cannot widen the child. Shared children hydrate from the native fork;
+the Hub does not copy the source's changing message tail. Unsupported or
+unverified boundaries are rejected rather than falling back to a current fork.
+Manual **Fork at message** keeps its existing exclusive boundary semantics.

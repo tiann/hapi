@@ -7,6 +7,7 @@ const {
     listResumableSessionsMock,
     getLocalResumeTargetMock,
     handoffSessionToLocalMock,
+    prepareSessionForLocalResumeMock,
     renderMock,
     runCodexMock,
     runClaudeMock,
@@ -23,6 +24,7 @@ const {
     listResumableSessionsMock: vi.fn(),
     getLocalResumeTargetMock: vi.fn(),
     handoffSessionToLocalMock: vi.fn(async () => {}),
+    prepareSessionForLocalResumeMock: vi.fn(async () => {}),
     renderMock: vi.fn(),
     runCodexMock: vi.fn(async () => {}),
     runClaudeMock: vi.fn(async () => {}),
@@ -42,7 +44,8 @@ vi.mock('@/api/api', () => ({
         create: async () => ({
             listResumableSessions: listResumableSessionsMock,
             getLocalResumeTarget: getLocalResumeTargetMock,
-            handoffSessionToLocal: handoffSessionToLocalMock
+            handoffSessionToLocal: handoffSessionToLocalMock,
+            prepareSessionForLocalResume: prepareSessionForLocalResumeMock
         })
     }
 }))
@@ -77,6 +80,7 @@ describe('resumeCommand', () => {
         listResumableSessionsMock.mockReset()
         getLocalResumeTargetMock.mockReset()
         handoffSessionToLocalMock.mockClear()
+        prepareSessionForLocalResumeMock.mockClear()
         renderMock.mockReset()
         renderMock.mockImplementation((element: { props?: { onSelect?: (sessionId: string) => void } }) => {
             queueMicrotask(() => element.props?.onSelect?.('picked-session'))
@@ -250,6 +254,10 @@ describe('resumeCommand', () => {
         await resumeCommand.run(createContext(['hapi-session-2']))
 
         expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        // The hub clears a hub-authored archive before the reopen (#1911 guard).
+        expect(prepareSessionForLocalResumeMock).toHaveBeenCalledWith('hapi-session-2')
+        expect(prepareSessionForLocalResumeMock.mock.invocationCallOrder[0])
+            .toBeLessThan(runClaudeMock.mock.invocationCallOrder[0]!)
         expect(runClaudeMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-2',
             workingDirectory: '/tmp/project',

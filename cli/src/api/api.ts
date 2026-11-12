@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
-import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import type { LocalResumeTarget, LocalResumeTargetByAgentResponse, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
     ClearOpencodeSessionResponseSchema,
@@ -10,6 +10,8 @@ import {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     RunnerStateSchema,
     MachineMetadataSchema,
     MetadataSchema,
@@ -268,6 +270,49 @@ export class ApiClient {
             throw apiValidationError('Invalid /cli/sessions/:id/resume-target response', response)
         }
         return parsed.data.target
+    }
+
+    /**
+     * HAPI session that owns a native Claude session id (current or rotated
+     * away), or `target: null` when none does.
+     */
+    async getLocalResumeTargetByAgentSessionId(
+        agentSessionId: string,
+        machineId?: string
+    ): Promise<LocalResumeTargetByAgentResponse> {
+        const params = new URLSearchParams({ flavor: 'claude', agentSessionId })
+        if (machineId) params.set('machineId', machineId)
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/resume-target-by-agent?${params.toString()}`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalResumeTargetByAgentResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/resume-target-by-agent response', response)
+        }
+        return parsed.data
+    }
+
+    /**
+     * Before reopening an inactive session from this terminal: the hub clears a
+     * hub-authored archive (which `--existing-session-id` bootstrap refuses).
+     */
+    async prepareSessionForLocalResume(sessionId: string): Promise<void> {
+        const response = await axios.post(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/prepare-local-resume`,
+            {},
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalResumePrepareResponseSchema.safeParse(response.data)
+        if (!parsed.success || !parsed.data.ok) {
+            throw apiValidationError('Invalid /cli/sessions/:id/prepare-local-resume response', response)
+        }
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {

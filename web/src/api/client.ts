@@ -77,6 +77,7 @@ import type {
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
+import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
@@ -264,6 +265,8 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
+        // The session route rebinds to a survivor's id (getMergedSessionRedirectId).
+        headers.set(FOLLOW_SESSION_REDIRECTS_HEADER, '1')
         if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
@@ -765,12 +768,12 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
             }
         )
     }

@@ -452,6 +452,8 @@ export default {
   'session.action.copy': 'Copy',
   'session.action.copyReference': 'Copy reference',
   'session.action.fork': 'Fork session',
+  'session.action.forkNoCompleted': 'No completed turn is available to fork.',
+  'dialog.sessionFork.completedDescription': 'Fork through the last completed turn. The running turn is excluded and the source keeps running.',
   'session.action.forkRunning': 'Wait for the current turn to finish before forking this session.',
 
   // Dialogs
@@ -814,6 +816,7 @@ export default {
   'tool.other': 'Other',
   'tool.otherDescription': 'Type your own answer',
   'tool.question': 'Question',
+  'tool.waitingForReply': 'Waiting for your reply',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
   'tool.resolved': 'Resolved in Codex',

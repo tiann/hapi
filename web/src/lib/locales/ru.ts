@@ -396,6 +396,8 @@ export default {
   'session.action.copy': 'Копировать',
   'session.action.copyReference': 'Копировать ссылку',
   'session.action.fork': 'Форк сессии',
+  'session.action.forkNoCompleted': 'Нет завершённых ходов для создания ветки.',
+  'dialog.sessionFork.completedDescription': 'Создать ветку до последнего завершённого хода. Текущий ход исключён; исходная сессия продолжит работу.',
   'session.action.forkRunning': 'Дождитесь завершения текущего хода, прежде чем создавать форк.',
 
   // Диалоги
@@ -733,6 +735,7 @@ export default {
   'tool.other': 'Другое',
   'tool.otherDescription': 'Введите свой ответ',
   'tool.question': 'Вопрос',
+  'tool.waitingForReply': 'Ожидание вашего ответа',
   'tool.selectOption': 'Выберите хотя бы один вариант или введите ответ.',
   'tool.waitingForApproval': 'Ожидание одобрения…',
   'tool.resolved': 'Разрешено в Codex',

@@ -86,12 +86,19 @@ function normalizeRoundSummary(value: unknown): RoundSummary | undefined {
         return undefined
     }
 
+    const generationMs = nonNegativeSafeInteger(value.generation_ms)
+    const generationOutputTokens = nonNegativeSafeInteger(value.generation_output_tokens)
+    const generation = generationMs !== undefined && generationMs > 0
+        && generationOutputTokens !== undefined && generationOutputTokens > 0
+        ? { generationMs, generationOutputTokens } : {}
+
     return {
         usage,
         modelUsage,
         totalCostUsd: totalCostUsd && totalCostUsd > 0 ? totalCostUsd : undefined,
         numTurns: numTurns && numTurns > 0 ? numTurns : undefined,
-        durationMs
+        durationMs,
+        ...generation
     }
 }
 
@@ -1256,12 +1263,17 @@ export function normalizeAgentRecord(
             const scopeRole = asString(data.scope_role ?? data.scopeRole ?? scope?.role)
             if (data.flavor !== 'codex' || data.hapiUsageScope === 'imported-history'
                 || scopeRole === 'child' || !turnId || durationMs === undefined) return null
+            const generationMs = nonNegativeSafeInteger(data.generationMs)
+            const generationOutputTokens = nonNegativeSafeInteger(data.generationOutputTokens)
+            const generation = generationMs !== undefined && generationMs > 0
+                && generationOutputTokens !== undefined && generationOutputTokens > 0
+                ? { generationMs, generationOutputTokens } : {}
             return {
                 id: messageId,
                 localId,
                 createdAt,
                 role: 'event',
-                content: { type: 'turn-duration', provider: 'codex', durationMs, turnId },
+                content: { type: 'turn-duration', provider: 'codex', durationMs, turnId, ...generation },
                 isSidechain: false,
                 meta
             }

@@ -423,6 +423,8 @@ describe('claudeRemote async message handling', () => {
             await runPromise;
             await new Promise((resolve) => setTimeout(resolve, 0));
             expect(received.map((m) => m.type)).toEqual(['assistant', 'result']);
+            // A normal round result carries no compaction marker.
+            expect(received[1]).not.toHaveProperty('hapi_compact_turn');
             expect(unhandled).toEqual([]);
         } finally {
             queryMock.mockReset();
@@ -589,6 +591,24 @@ describe('claudeRemote /compact result reporting', () => {
         expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 34492, tokensAfter: 2082 });
     }, 15_000);
 
+    it('marks the compact turn result so the converter skips its tok/s fields', async () => {
+        await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        const forwardedResult = lastForwarded.find((message) => message.type === 'result');
+        expect(forwardedResult).toBeTruthy();
+        // The compaction call is not an assistant round: no tok/s from it.
+        expect(forwardedResult).toHaveProperty('hapi_compact_turn', true);
+    }, 15_000);
+
     it('ignores an autonomous result until the compact stream signal arrives', async () => {
         const completionEvents = await runCompact([
             resultMessage,
@@ -611,6 +631,14 @@ describe('claudeRemote /compact result reporting', () => {
 
         expect(completionEvents).toEqual(['📦 Compaction started']);
         expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 100, tokensAfter: 10 });
+        const forwardedResults = lastForwarded.filter((message) => message.type === 'result');
+        expect(forwardedResults).toHaveLength(2);
+        // The autonomous round that completed before the compaction signal is
+        // a real assistant round: its result must stay unmarked so the
+        // converter keeps its tok/s fields.
+        expect(forwardedResults[0]).not.toHaveProperty('hapi_compact_turn');
+        // Only the actual compact turn result is marked.
+        expect(forwardedResults[1]).toHaveProperty('hapi_compact_turn', true);
     }, 15_000);
 
     it('does not relay the compact_boundary system message during a manual /compact', async () => {
