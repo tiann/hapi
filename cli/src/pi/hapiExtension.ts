@@ -2,7 +2,19 @@ import { access, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configuration } from '@/configuration';
-import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
+import {
+    buildSessionCitationSteerInstruction,
+    SESSION_CITATION_DISABLED_STEER,
+    INSPECT_PEER_TOOL_DESCRIPTION,
+    PING_PEER_TOOL_DESCRIPTION,
+    LIST_PEERS_TOOL_DESCRIPTION,
+    SPAWN_PEER_TOOL_DESCRIPTION,
+    SESSION_ID_PREFIX_PARAM_DESCRIPTION,
+    PEER_DELIVERY_MODE_DESCRIPTION,
+    PEER_WAKE_PARAM_DESCRIPTION,
+    PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION,
+    LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
+} from '@hapi/protocol/sessionCitation';
 import packageJson from '../../package.json';
 import { IMAGE_DELIVERY_GUIDANCE } from '@/modules/common/displayImagePrompt';
 
@@ -112,7 +124,7 @@ export default function hapiPiExtension(pi) {
     function registerDirectPeerTools(piInstance, serverUrl) {
         let cachedMcpSessionId = null;
 
-        async function callMcpTool(toolName, args) {
+        async function callMcpTool(toolName, args, signal) {
             async function doCall(sessionId) {
                 const headers = {
                     'Content-Type': 'application/json',
@@ -130,19 +142,17 @@ export default function hapiPiExtension(pi) {
                             arguments: args || {}
                         },
                         id: Math.floor(Math.random() * 100000)
-                    })
+                    }),
+                    signal
                 });
             }
 
             let res = null;
             if (cachedMcpSessionId) {
-                try {
-                    res = await doCall(cachedMcpSessionId);
-                    if (res.status === 400 || res.status === 404) {
-                        cachedMcpSessionId = null;
-                        res = null;
-                    }
-                } catch {
+                res = await doCall(cachedMcpSessionId);
+                // Only clear session and re-initialize if the server explicitly rejected the session id
+                // with 404 before execution. Do not retry ambiguous transport/network errors.
+                if (res.status === 404) {
                     cachedMcpSessionId = null;
                     res = null;
                 }
@@ -164,7 +174,8 @@ export default function hapiPiExtension(pi) {
                             clientInfo: { name: 'hapi-pi-extension', version: '1.0.0' }
                         },
                         id: 1
-                    })
+                    }),
+                    signal
                 });
                 if (!initRes.ok) {
                     throw new Error('MCP initialize failed (' + initRes.status + ' ' + initRes.statusText + ')');
@@ -201,73 +212,76 @@ export default function hapiPiExtension(pi) {
             return data.result;
         }
 
-        async function executePeerTool(toolName, params) {
-            try {
-                const result = await callMcpTool(toolName, params);
-                return {
-                    content: result && Array.isArray(result.content) ? result.content : [{ type: 'text', text: String(result && result.content ? result.content : result) }],
-                    details: {},
-                    isError: Boolean(result && result.isError)
-                };
-            } catch (error) {
-                const detail = error && error.message ? error.message : String(error);
-                return {
-                    content: [{ type: 'text', text: 'Error executing ' + toolName + ': ' + detail }],
-                    details: {},
-                    isError: true
-                };
+        async function executePeerTool(toolName, params, signal) {
+            const result = await callMcpTool(toolName, params, signal);
+            if (result && result.isError) {
+                const errorText = Array.isArray(result.content)
+                    ? result.content.map((c) => (c && c.text) || '').join('\\n').trim()
+                    : 'Tool reported failure';
+                throw new Error(errorText || 'Tool reported failure');
             }
+            return {
+                content: result && Array.isArray(result.content) ? result.content : [{ type: 'text', text: String(result && result.content ? result.content : result) }],
+                details: {},
+                isError: false
+            };
+        }
+
+        function extractSignal(third, fifth) {
+            if (third && typeof third === 'object' && 'aborted' in third) return third;
+            if (fifth && typeof fifth === 'object' && 'aborted' in fifth) return fifth;
+            return undefined;
         }
 
         piInstance.registerTool({
             name: PEER_TOOL_NAMES.inspect,
             label: 'Inspect Peer Session',
-            description: 'Inspect another HAPI session: read its metadata, status, working directory, and recent messages.',
+            description: ${JSON.stringify(INSPECT_PEER_TOOL_DESCRIPTION)},
             parameters: Type.Object({
-                sessionIdPrefix: Type.String({ minLength: 1, description: 'Target session ID or prefix' }),
+                sessionIdPrefix: Type.String({ minLength: 1, description: ${JSON.stringify(SESSION_ID_PREFIX_PARAM_DESCRIPTION)} }),
                 messageLimit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'Recent message page size (default 30, max 100). Text snippets only.' }))
             }),
-            async execute(_toolCallId, params) {
-                return await executePeerTool('inspect_peer', params);
+            async execute(_toolCallId, params, third, _fourth, fifth) {
+                return await executePeerTool('inspect_peer', params, extractSignal(third, fifth));
             }
         });
 
         piInstance.registerTool({
             name: PEER_TOOL_NAMES.ping,
             label: 'Ping Peer Session',
-            description: 'Send a message to another HAPI session (peer handoff / nudge).',
+            description: ${JSON.stringify(PING_PEER_TOOL_DESCRIPTION)},
             parameters: Type.Object({
-                sessionIdPrefix: Type.String({ minLength: 1, description: 'Target session ID or prefix' }),
+                sessionIdPrefix: Type.String({ minLength: 1, description: ${JSON.stringify(SESSION_ID_PREFIX_PARAM_DESCRIPTION)} }),
                 message: Type.String({ minLength: 1, description: 'Message text to deliver to the target session' }),
-                deliveryMode: Type.Optional(Type.String({ description: 'Delivery mode: auto (default), steer, or queue' })),
-                wake: Type.Optional(Type.Boolean({ description: 'Wake an inactive peer session' })),
-                waitForReply: Type.Optional(Type.Boolean({ description: 'Wait for reply and forward it to this session' }))
+                deliveryMode: Type.Optional(Type.String({ description: ${JSON.stringify(PEER_DELIVERY_MODE_DESCRIPTION)} })),
+                wake: Type.Optional(Type.Boolean({ description: ${JSON.stringify(PEER_WAKE_PARAM_DESCRIPTION)} })),
+                waitForReply: Type.Optional(Type.Boolean({ description: ${JSON.stringify(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION)} }))
             }),
-            async execute(_toolCallId, params) {
-                return await executePeerTool('ping_peer', params);
+            async execute(_toolCallId, params, third, _fourth, fifth) {
+                return await executePeerTool('ping_peer', params, extractSignal(third, fifth));
             }
         });
 
         piInstance.registerTool({
             name: PEER_TOOL_NAMES.list,
             label: 'List Peer Sessions',
-            description: 'List active HAPI sessions across the connected hub.',
+            description: ${JSON.stringify(LIST_PEERS_TOOL_DESCRIPTION)},
             parameters: Type.Object({
                 limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'Max sessions to return (default 30, max 100). Newest updatedAt first.' })),
-                includeInactive: Type.Optional(Type.Boolean({ description: 'Include inactive sessions' }))
+                includeInactive: Type.Optional(Type.Boolean({ description: ${JSON.stringify(LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION)} }))
             }),
-            async execute(_toolCallId, params) {
-                return await executePeerTool('list_peers', params);
+            async execute(_toolCallId, params, third, _fourth, fifth) {
+                return await executePeerTool('list_peers', params, extractSignal(third, fifth));
             }
         });
 
         piInstance.registerTool({
             name: PEER_TOOL_NAMES.spawn,
             label: 'Spawn Peer Session',
-            description: 'Spawn a new HAPI session on a target machine with an initial remit message.',
+            description: ${JSON.stringify(SPAWN_PEER_TOOL_DESCRIPTION)},
             parameters: Type.Object({
                 directory: Type.String({ minLength: 1, description: 'Working directory for the new session on the target machine (must exist there)' }),
-                message: Type.String({ minLength: 1, description: 'Required first user message (the remit)' }),
+                message: Type.String({ minLength: 1, description: 'Required first user message (the remit). Empty spawn is a failed spawn.' }),
                 name: Type.Optional(Type.String({ description: 'Session display name' })),
                 machine: Type.Optional(Type.String({ description: 'Optional target runner machine UUID or hostname' })),
                 agent: Type.Optional(Type.String({ description: 'Agent flavor override' })),
@@ -275,10 +289,10 @@ export default function hapiPiExtension(pi) {
                 effort: Type.Optional(Type.String({ description: 'Effort override' })),
                 sessionType: Type.Optional(Type.String({ description: 'simple or worktree' })),
                 permissionMode: Type.Optional(Type.String({ description: 'Permission mode for the new session' })),
-                waitForReply: Type.Optional(Type.Boolean({ description: 'Wait for reply and forward it to this session' }))
+                waitForReply: Type.Optional(Type.Boolean({ description: ${JSON.stringify(PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION)} }))
             }),
-            async execute(_toolCallId, params) {
-                return await executePeerTool('spawn_peer', params);
+            async execute(_toolCallId, params, third, _fourth, fifth) {
+                return await executePeerTool('spawn_peer', params, extractSignal(third, fifth));
             }
         });
     }

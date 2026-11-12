@@ -242,6 +242,69 @@ describe('pi peer MCP integration', () => {
         });
         expect(fetchMock).toHaveBeenCalledTimes(2);
     });
+
+    it('propagates cancellation signal to fetch calls', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const spawnTool = harness.registeredTools.get('mcp__hapi__spawn_peer');
+        expect(spawnTool).toBeDefined();
+
+        const controller = new AbortController();
+        const fetchMock = vi.fn().mockImplementation((_url, options) => {
+            expect(options?.signal).toBe(controller.signal);
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'test-session-abc' }),
+                text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"spawned"}],"isError":false},"jsonrpc":"2.0","id":1}\n\n',
+            });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await spawnTool.execute('call-id-2', { directory: '/tmp', message: 'test' }, controller.signal);
+        expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it('throws on tool failure so older and newer Pi versions record errors', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const pingTool = harness.registeredTools.get('mcp__hapi__ping_peer');
+        expect(pingTool).toBeDefined();
+
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'test-session-err' }),
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"Target peer refused"}],"isError":true},"jsonrpc":"2.0","id":1}\n\n',
+            });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(pingTool.execute('call-id-3', { sessionIdPrefix: 'abc', message: 'hello' })).rejects.toThrow('Target peer refused');
+    });
+
+    it('does not replay mutating calls on ambiguous transport failures', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const pingTool = harness.registeredTools.get('mcp__hapi__ping_peer');
+
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'session-1' }),
+            })
+            .mockRejectedValueOnce(new TypeError('network failure after headers'));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(pingTool.execute('call-id-4', { sessionIdPrefix: 'abc', message: 'msg' })).rejects.toThrow('network failure after headers');
+        // Initialized once, called once, failed - must NOT re-initialize and retry
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
 });
 describe('materializePiExtension', () => {
     it('writes the extension into the target dir and returns its path', async () => {
