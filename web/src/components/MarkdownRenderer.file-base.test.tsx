@@ -16,6 +16,7 @@ const listSessionDirectory = vi.hoisted(() => vi.fn(async () => ({
 
 vi.mock('@tanstack/react-router', () => ({
     useNavigate: () => vi.fn(),
+    useRouter: () => undefined,
 }))
 
 vi.mock('@/lib/app-context', () => ({

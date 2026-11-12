@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { HappyChatProvider, type HappyChatContextValue } from '@/components/AssistantChat/context'
@@ -24,12 +24,19 @@ function chatValue(api: ApiClient, metadataPath: string | null = '/home/ada/codi
     }
 }
 
-function renderImage(props: { src: string; alt: string; api?: ApiClient; metadataPath?: string | null }) {
+function renderImage(props: {
+    src: string
+    alt: string
+    api?: ApiClient
+    metadataPath?: string | null
+    onLoad?: React.ReactEventHandler<HTMLImageElement>
+    onError?: React.ReactEventHandler<HTMLImageElement>
+}) {
     const api = props.api ?? ({ readSessionFile: vi.fn() } as unknown as ApiClient)
     return render(
         <I18nProvider>
             <HappyChatProvider value={chatValue(api, props.metadataPath)}>
-                <ChatMarkdownImage src={props.src} alt={props.alt} />
+                <ChatMarkdownImage src={props.src} alt={props.alt} onLoad={props.onLoad} onError={props.onError} />
             </HappyChatProvider>
         </I18nProvider>
     )
@@ -49,6 +56,27 @@ describe('ChatMarkdownImage', () => {
         await waitFor(() => expect(screen.getByRole('img', { name: 'Chart', hidden: false }).tagName).toBe('IMG'))
         expect(screen.getByRole('img', { name: 'Chart' })).toHaveAttribute('src', 'data:image/png;base64,cG5nLWJ5dGVz')
         expect(readSessionFile).toHaveBeenCalledWith('session-1', 'images/chart.png', MAX_MARKDOWN_IMAGE_BYTES)
+    })
+
+    it('wraps a local image in the shared preview trigger while it loads', async () => {
+        const readSessionFile = vi.fn(async () => ({
+            success: true,
+            content: encodeBase64('png-bytes'),
+            size: 9,
+        }))
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'images/chart.png', alt: 'Chart', api })
+
+        await waitFor(() => expect(screen.getByRole('img', { name: 'Chart' }).tagName).toBe('IMG'))
+        const image = screen.getByRole('img', { name: 'Chart' })
+        const trigger = screen.getByRole('button', { name: /chart/i })
+        expect(trigger).toBeDisabled()
+        expect(trigger).toHaveAttribute('title', 'Loading image')
+        expect(trigger).toHaveAttribute('data-image-preview-file-name', 'chart.png')
+        expect(trigger).toHaveAttribute('data-image-preview-file-size', '9')
+        expect(image).toHaveAttribute('src', 'data:image/png;base64,cG5nLWJ5dGVz')
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it('renders a relative workspace image through the conversation Markdown renderer', async () => {
@@ -81,13 +109,38 @@ describe('ChatMarkdownImage', () => {
         expect(readSessionFile).not.toHaveBeenCalled()
     })
 
+    it('opens a successfully loaded remote image in the shared fullscreen preview', async () => {
+        const readSessionFile = vi.fn()
+        const api = { readSessionFile } as unknown as ApiClient
+
+        renderImage({ src: 'https://example.com/chart.png', alt: 'Remote chart', api })
+
+        const image = screen.getByRole('img', { name: 'Remote chart' })
+        const trigger = screen.getByRole('button', { name: /remote chart/i })
+        expect(trigger).toBeDisabled()
+        expect(image).toHaveAttribute('referrerpolicy', 'no-referrer')
+
+        fireEvent.load(image)
+        expect(trigger).toBeEnabled()
+        fireEvent.click(trigger)
+
+        const dialog = screen.getByRole('dialog', { name: 'Remote chart' })
+        expect(within(dialog).getByRole('img', { name: 'Remote chart' }))
+            .toHaveAttribute('referrerpolicy', 'no-referrer')
+        expect(dialog).toHaveTextContent('chart.png')
+        expect(readSessionFile).not.toHaveBeenCalled()
+    })
+
     it('shows a fallback when a remote image fails to load', async () => {
-        renderImage({ src: 'https://example.com/missing.png', alt: 'Missing remote' })
+        const onError = vi.fn()
+        renderImage({ src: 'https://example.com/missing.png', alt: 'Missing remote', onError })
 
         const image = screen.getByRole('img', { name: 'Missing remote' })
         fireEvent.error(image)
 
         await waitFor(() => expect(screen.getByRole('img', { name: 'Missing remote' })).toHaveAttribute('data-hapi-markdown-image-fallback', 'true'))
+        expect(onError).toHaveBeenCalledTimes(1)
+        expect(screen.queryByRole('button', { name: /missing remote/i })).not.toBeInTheDocument()
     })
 
     it.each([

@@ -7,11 +7,12 @@ import '../src/index.css'
 
 const SVG_CONTENT = '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="160"><rect width="480" height="160" rx="20" fill="#0f766e"/><text x="24" y="92" fill="white" font-family="Arial" font-size="32">chat local image</text></svg>'
 const SVG_BASE64 = btoa(SVG_CONTENT)
+const REMOTE_IMAGE_URL = new URL('/favicon.ico', window.location.origin).href
 const CONTENT = `# Chat Markdown image fixture
 
 ![Local chart](images/chart.svg)
 
-![Remote chart](https://example.com/chart.png)
+![Remote chart](${REMOTE_IMAGE_URL})
 
 ![Blocked chart](/outside/secret.png)`
 
