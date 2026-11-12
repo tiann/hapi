@@ -390,6 +390,11 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   stream-json integration (no approval prompts in
   HAPI: tools without an allow-rule in agy's `settings.json` are auto-denied).
 
+  **Experimental:** HAPI makes agy usable, but Antigravity/agy itself has
+  protocol and runtime limitations that can affect reliability and usability.
+  These limitations are in agy, not HAPI; we do not recommend agy for routine
+  work when a more reliable agent is available.
+
   On ACP, one `agy acp` process serves the whole session. The agy conversation
   id is the ACP session id, so a session continues the same conversation
   through `session/resume` without replaying history, whichever integration
@@ -415,7 +420,8 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   edits. `always-proceed` approves every request automatically, including
   one a PreToolUse hook marks `force_ask` (agy does not tell HAPI a request
   came from a hook). On ACP, mode changes apply to the next message without
-  restarting agy. Conversation titles come from agy; on ACP each response's
+  restarting agy. Conversation titles come from agy when available; otherwise
+  HAPI uses a cleaned first-prompt preview. On ACP each response's
   details show the turn's token usage.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
