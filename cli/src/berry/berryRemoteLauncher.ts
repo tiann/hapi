@@ -190,7 +190,6 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
             // — including the picker's null "Default" — is ignored instead of
             // being answered with a 'Cannot switch model' failure every turn.
 
-            this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
             // Image attachments are read once here (authorized per session)
             // and the built content is reused verbatim by the respawn retry,
@@ -214,6 +213,30 @@ export class BerryRemoteLauncher extends RemoteLauncherBase {
                 logger.warn('[berry-acp] prompt preparation failed', { message })
                 prompt = [{ type: 'text', text: batch.message }]
             }
+
+            // Honor a Stop that landed after this batch left the queue.
+            // Preparation is async (image reads) and the respawn rebuild
+            // above can await too, so a user Stop can arrive before the
+            // prompt is dispatched. handleAbort already reset the queue and
+            // showed the user 'Session aborted' — but a batch that was
+            // already dequeued is beyond the reset's reach, so dispatching
+            // it would run a whole turn after the user believes it was
+            // stopped. The iteration's captured signal stays aborted
+            // forever (handleAbort swaps in a fresh controller), so it
+            // witnesses every stop of this iteration: drop the prepared
+            // prompt and settle the session back to idle instead.
+            if (signal.aborted) {
+                this.messageBuffer.addMessage('Aborted before dispatch; dropping the queued message', 'status')
+                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                    this.session.sendSessionEvent({ type: 'ready' })
+                }
+                continue
+            }
+
+            // Thinking starts exactly when a turn is dispatched, so a batch
+            // dropped by the gate above never flips the session into
+            // thinking.
+            this.session.onThinkingChange(true)
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {

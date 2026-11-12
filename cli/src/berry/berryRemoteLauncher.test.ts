@@ -52,6 +52,9 @@ const harness = vi.hoisted(() => ({
     promptError: null as Error | null,
     // When set, prompt() parks on this promise — lets tests abort mid-turn.
     promptBlocker: null as null | Promise<void>,
+    // When set, buildBerryPromptContent() parks on this promise — lets
+    // tests land a Stop in the window between preparation and dispatch.
+    prepareBlocker: null as null | Promise<void>,
     // When set, cancelPrompt() parks on this promise — lets tests overlap
     // prompt completion with a pending cancel (the queue-reset ordering).
     cancelBlocker: null as null | Promise<void>
@@ -140,6 +143,9 @@ vi.mock('./utils/berryPromptContent', async (importOriginal) => {
             opts: { sessionId?: string } | undefined
         ) => {
             harness.promptContentInputs.push({ text, images, sessionId: opts?.sessionId })
+            if (harness.prepareBlocker) {
+                await harness.prepareBlocker
+            }
             const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }]
             if (images && images.length > 0 && harness.supportsImages) {
                 for (const image of images) {
@@ -237,6 +243,7 @@ describe('BerryRemoteLauncher', () => {
         harness.dieAfterPrompts = null
         harness.promptError = null
         harness.promptBlocker = null
+        harness.prepareBlocker = null
         harness.cancelBlocker = null
     })
 
@@ -745,6 +752,45 @@ describe('BerryRemoteLauncher', () => {
         await done
 
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: 'Session aborted' })
+    })
+
+    it('drops the batch and never enters thinking when a stop lands between preparation and dispatch', async () => {
+        // Regression: the dequeued batch is beyond handleAbort's queue
+        // reset, so a Stop arriving while the prompt is being prepared
+        // (image reads are async) used to dispatch anyway — the user saw
+        // 'Session aborted' yet the whole turn ran. The pre-dispatch gate
+        // must discard the prepared prompt, keep the session out of
+        // thinking, and settle it back to idle.
+        let releasePrepare!: () => void
+        harness.prepareBlocker = new Promise((resolve) => { releasePrepare = resolve })
+        const queue = new MessageQueue2<BerryMode>((m) => JSON.stringify(m))
+        queue.push('first', {})
+        const session = createSessionFromQueue(queue)
+        const launcher = new BerryRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.promptContentInputs).toHaveLength(1))
+
+        // Stop lands after the batch was dequeued and prepared has begun,
+        // but before the prompt is dispatched.
+        const killPromise = launcher.kill()
+        releasePrepare()
+        await killPromise
+
+        queue.close()
+        await done
+
+        // The prepared batch was discarded: nothing was dispatched.
+        expect(harness.prompts).toEqual([])
+        expect(harness.backend?.prompt).not.toHaveBeenCalled()
+        expect(session.sendAgentMessage).not.toHaveBeenCalled()
+        // The aborted batch never flipped the session into thinking; the
+        // abort path's thinking=false is the only state the hub saw.
+        expect(session.onThinkingChange).not.toHaveBeenCalledWith(true)
+        expect(session.onThinkingChange).toHaveBeenLastCalledWith(false)
+        // The session was settled back to idle for the dropped batch.
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: 'Session aborted' })
     })
 })
