@@ -5,6 +5,7 @@ import {
     MachineFilterMenu,
     MachineSummaryRow,
     getMachineFilterMenuClampStyle,
+    getCenteredFilterMenuLeft,
     machineFilterMenuAlignsStart,
 } from './MachineFilterBar'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -312,5 +313,20 @@ describe('MachineFilterMenu', () => {
 
         expect(screen.queryByRole('menu')).toBeNull()
         expect(document.activeElement).toBe(trigger)
+    })
+})
+
+describe('centered content-sized menu positioning', () => {
+    it('centers over its trigger when there is enough room', () => {
+        expect(getCenteredFilterMenuLeft({ left: 200, width: 36 }, 140, 600)).toBe(-52)
+    })
+    it('retains an eight pixel viewport margin at either edge', () => {
+        expect(getCenteredFilterMenuLeft({ left: 10, width: 36 }, 180, 393)).toBe(-2)
+        expect(getCenteredFilterMenuLeft({ left: 350, width: 36 }, 180, 393)).toBe(-145)
+    })
+    it('allows centered content to use the full available width without a rem cap', () => {
+        const style = getMachineFilterMenuClampStyle({ left: 200, right: 236, bottom: 40 }, { horizontal: 'center', maxHeightRem: null })
+        expect(style.maxWidth).toBe('calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right))')
+        expect(style.maxHeight).not.toContain('min(20rem')
     })
 })

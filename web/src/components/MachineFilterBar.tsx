@@ -173,7 +173,7 @@ export function MachineSummaryRow(props: { machine: MachineFilterItem }) {
     )
 }
 
-function MachineFilterMenuRow(props: {
+export function MachineFilterMenuRow(props: {
     label: string
     count: number
     selected: boolean
@@ -219,14 +219,34 @@ export type MachineFilterMenuAnchor = {
     bottom: number
 }
 
-export function getMachineFilterMenuClampStyle(anchor: MachineFilterMenuAnchor): CSSProperties {
+/** Center around the trigger, then keep the menu inside the viewport. */
+export function getCenteredFilterMenuLeft(
+    anchor: { left: number; width: number },
+    menuWidth: number,
+    viewportWidth: number,
+    margin = MENU_VIEWPORT_MARGIN_PX
+): number {
+    const desiredLeft = anchor.left + anchor.width / 2 - menuWidth / 2
+    const maxLeft = Math.max(margin, viewportWidth - margin - menuWidth)
+    return Math.min(maxLeft, Math.max(margin, desiredLeft)) - anchor.left
+}
+
+export function getMachineFilterMenuClampStyle(
+    anchor: MachineFilterMenuAnchor,
+    options: { widthRem?: number; maxHeightRem?: number | null; horizontal?: 'center' } = {}
+): CSSProperties {
     const spaceOpeningLeft = Math.max(0, anchor.right - MENU_VIEWPORT_MARGIN_PX)
+    const availableHeight = `calc(var(--tg-viewport-stable-height, var(--app-viewport-height, 100dvh)) - ${anchor.bottom + MENU_TOP_GAP_PX}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-bottom))`
     return {
         // Wider of: room to the left of the trigger's right edge, or room to the
         // right of the trigger's left edge (so a left-edge More trigger still
         // gets a readable menu when we flip to left-align).
-        maxWidth: `min(16rem, max(calc(${spaceOpeningLeft}px - env(safe-area-inset-left)), calc(100vw - ${anchor.left}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-right))))`,
-        maxHeight: `min(20rem, calc(var(--tg-viewport-stable-height, var(--app-viewport-height, 100dvh)) - ${anchor.bottom + MENU_TOP_GAP_PX}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-bottom)))`
+        maxWidth: options.horizontal === 'center'
+            ? 'calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right))'
+            : `min(${options.widthRem ?? 16}rem, max(calc(${spaceOpeningLeft}px - env(safe-area-inset-left)), calc(100vw - ${anchor.left}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-right))))`,
+        maxHeight: options.maxHeightRem === null
+            ? availableHeight
+            : `min(${options.maxHeightRem ?? 20}rem, ${availableHeight})`
     }
 }
 

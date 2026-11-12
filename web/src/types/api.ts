@@ -60,6 +60,7 @@ export type {
     SessionContentMatch,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse,
     SpawnResponse,

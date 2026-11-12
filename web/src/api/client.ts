@@ -32,6 +32,7 @@ import type {
     SessionResponse,
     SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
     SessionContentSearchResponse
 } from '@/types/api'
@@ -345,6 +346,11 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async getScratchlistSessionIds(): Promise<string[]> {
+        const response = await this.request<ScratchlistSessionIdsResponse>('/api/sessions/scratchlist-status')
+        return response.sessionIds
     }
 
     async getHealth(): Promise<HubHealthResponse> {

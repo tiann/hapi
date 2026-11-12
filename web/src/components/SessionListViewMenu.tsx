@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 import { cn } from '@/lib/utils'
 import { CheckIcon } from '@/components/icons'
@@ -6,9 +6,12 @@ import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import {
     getMachineFilterMenuClampStyle,
-    machineFilterMenuAlignsStart,
+    MachineFilterMenuRow,
+    getCenteredFilterMenuLeft,
+    type MachineFilterItem,
     type MachineFilterMenuAnchor
 } from '@/components/MachineFilterBar'
+import { SessionDateFilterMenuRow, SessionDateRangePicker } from '@/components/SessionDateFilter'
 import {
     isDefaultSessionListView,
     type SessionListSort,
@@ -63,7 +66,7 @@ function MenuRow(props: {
             aria-checked={props.role === 'menuitem' ? undefined : Boolean(props.checked)}
             onClick={props.onSelect}
             className={cn(
-                'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors',
                 'hover:bg-[var(--app-subtle-bg)] focus-visible:bg-[var(--app-subtle-bg)] focus-visible:outline-none',
                 props.checked ? 'text-[var(--app-link)]' : 'text-[var(--app-fg)]'
             )}
@@ -93,42 +96,82 @@ export function SessionListViewMenu(props: {
     view: SessionListView
     onChange: (patch: Partial<SessionListView>) => void
     onReset: () => void
+    scratchlistOnly?: boolean
+    onScratchlistChange?: (value: boolean) => void
+    workingOnly?: boolean
+    onWorkingChange?: (value: boolean) => void
+    customStart?: string
+    customEnd?: string
+    sessionActivityDates?: ReadonlySet<string>
+    onDateRangeChange?: (start: string, end: string) => void
+    datePickerCenterRef?: RefObject<HTMLElement | null>
+    machines?: MachineFilterItem[]
+    machineFilter?: string | null
+    onMachineChange?: (id: string | null) => void
+    totalCount?: number
 }) {
     const { t } = useTranslation()
     const [open, setOpen] = useState(false)
+    const [datePickerOpen, setDatePickerOpen] = useState(false)
+    const dateFilterButtonRef = useRef<HTMLButtonElement>(null)
     const triggerRef = useRef<HTMLButtonElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
     const [anchor, setAnchor] = useState<MachineFilterMenuAnchor | null>(null)
+    const [menuLeft, setMenuLeft] = useState<number | null>(null)
     const customized = !isDefaultSessionListView(props.view)
+        || Boolean(props.scratchlistOnly || props.workingOnly || props.customStart || props.customEnd || props.machineFilter)
+    const closeDatePicker = useCallback(() => {
+        setDatePickerOpen(false)
+        dateFilterButtonRef.current?.focus()
+    }, [])
     const fue = useFue('session-list-view-menu')
 
     const close = useCallback(() => {
         setOpen(false)
+        setDatePickerOpen(false)
         triggerRef.current?.focus()
+    }, [])
+
+    const updateMenuPosition = useCallback(() => {
+        const wrapper = wrapperRef.current
+        const menu = menuRef.current
+        if (!wrapper || !menu) return
+        const rect = wrapper.getBoundingClientRect()
+        setAnchor({ left: rect.left, right: rect.right, bottom: rect.bottom })
+        setMenuLeft(getCenteredFilterMenuLeft(rect, menu.getBoundingClientRect().width, window.innerWidth))
     }, [])
 
     useLayoutEffect(() => {
         if (!open) {
             setAnchor(null)
+            setMenuLeft(null)
             return
         }
-        const updateAnchor = () => {
-            const rect = wrapperRef.current?.getBoundingClientRect()
-            if (!rect) return
-            setAnchor({ left: rect.left, right: rect.right, bottom: rect.bottom })
+        updateMenuPosition()
+        const frame = window.requestAnimationFrame(updateMenuPosition)
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateMenuPosition)
+        if (menuRef.current) observer?.observe(menuRef.current)
+        if (wrapperRef.current) observer?.observe(wrapperRef.current)
+        window.addEventListener('resize', updateMenuPosition)
+        window.addEventListener('scroll', updateMenuPosition, true)
+        return () => {
+            window.cancelAnimationFrame(frame)
+            observer?.disconnect()
+            window.removeEventListener('resize', updateMenuPosition)
+            window.removeEventListener('scroll', updateMenuPosition, true)
         }
-        updateAnchor()
-        window.addEventListener('resize', updateAnchor)
-        return () => window.removeEventListener('resize', updateAnchor)
-    }, [open])
+    }, [open, updateMenuPosition])
 
     useEffect(() => {
-        if (!open) return
+        if (!open || datePickerOpen) return
         const frame = window.requestAnimationFrame(() => {
-            menuRef.current?.querySelector<HTMLElement>(ITEM_SELECTOR)?.focus()
+            if (!menuRef.current?.contains(document.activeElement)) {
+                menuRef.current?.querySelector<HTMLElement>(ITEM_SELECTOR)?.focus()
+            }
         })
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (datePickerOpen) return
             if (event.key === 'Escape') {
                 event.preventDefault()
                 close()
@@ -150,9 +193,8 @@ export function SessionListViewMenu(props: {
             window.cancelAnimationFrame(frame)
             document.removeEventListener('keydown', handleKeyDown)
         }
-    }, [open, close])
+    }, [open, close, datePickerOpen])
 
-    const alignStart = anchor ? machineFilterMenuAlignsStart(anchor, window.innerWidth) : false
     const label = t('sessions.view.label')
 
     return (
@@ -209,11 +251,12 @@ export function SessionListViewMenu(props: {
                         ref={menuRef}
                         role="menu"
                         aria-label={label}
-                        style={anchor ? getMachineFilterMenuClampStyle(anchor) : undefined}
-                        className={cn(
-                            'absolute top-full z-30 mt-1 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl',
-                            alignStart ? 'left-0' : 'right-0'
-                        )}
+                        style={{
+                            ...(anchor ? getMachineFilterMenuClampStyle(anchor, { horizontal: 'center', maxHeightRem: null }) : {}),
+                            left: menuLeft ?? '50%',
+                            transform: menuLeft === null ? 'translateX(-50%)' : undefined
+                        }}
+                        className="absolute top-full z-30 mt-1 w-max max-w-[calc(100vw-1rem)] overflow-x-hidden overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
                     >
                         <div role="group" aria-label={t('sessions.view.sort')}>
                             <SectionLabel>{t('sessions.view.sort')}</SectionLabel>
@@ -251,7 +294,46 @@ export function SessionListViewMenu(props: {
                                 checked={props.view.unreadOnly}
                                 onSelect={() => props.onChange({ unreadOnly: !props.view.unreadOnly })}
                             />
+                            {props.onDateRangeChange ? (
+                                <SessionDateFilterMenuRow
+                                    start={props.customStart ?? ''}
+                                    end={props.customEnd ?? ''}
+                                    expanded={datePickerOpen}
+                                    buttonRef={dateFilterButtonRef}
+                                    onSelect={() => setDatePickerOpen(value => !value)}
+                                />
+                            ) : null}
+                            {props.onWorkingChange ? (
+                                <MenuRow
+                                    role="menuitemcheckbox"
+                                    label={t('sessions.view.working')}
+                                    checked={props.workingOnly}
+                                    onSelect={() => props.onWorkingChange?.(!props.workingOnly)}
+                                />
+                            ) : null}
+                            {props.onScratchlistChange ? (
+                                <MenuRow
+                                    role="menuitemcheckbox"
+                                    label={t('sessions.filter.scratchlist')}
+                                    checked={props.scratchlistOnly}
+                                    onSelect={() => props.onScratchlistChange?.(!props.scratchlistOnly)}
+                                />
+                            ) : null}
                         </div>
+                        {props.machines && props.onMachineChange ? (
+                            <div role="group" aria-label={t('sessions.machineFilter.label')}>
+                                <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
+                                <SectionLabel>{t('sessions.machineFilter.label')}</SectionLabel>
+                                {[{ id: null, label: t('sessions.machineFilter.all'), sessionCount: props.totalCount ?? 0, healthPresentation: null }, ...props.machines].map(machine => (
+                                    <MachineFilterMenuRow key={machine.id ?? 'all'}
+                                        label={machine.label}
+                                        count={machine.sessionCount}
+                                        selected={props.machineFilter === machine.id}
+                                        healthPresentation={machine.healthPresentation}
+                                        onSelect={() => props.onMachineChange?.(machine.id)} />
+                                ))}
+                            </div>
+                        ) : null}
                         {customized ? (
                             <>
                                 <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
@@ -260,6 +342,22 @@ export function SessionListViewMenu(props: {
                         ) : null}
                     </div>
                 </>
+            ) : null}
+            {open && datePickerOpen && props.onDateRangeChange ? (
+                <SessionDateRangePicker
+                    start={props.customStart ?? ''}
+                    end={props.customEnd ?? ''}
+                    sessionActivityDates={props.sessionActivityDates ?? new Set()}
+                    onChange={props.onDateRangeChange}
+                    onClear={() => {
+                        props.onDateRangeChange?.('', '')
+                        dateFilterButtonRef.current?.focus()
+                    }}
+                    onClose={closeDatePicker}
+                    align="right"
+                    anchorRef={dateFilterButtonRef}
+                    horizontalCenterRef={props.datePickerCenterRef}
+                />
             ) : null}
         </div>
     )
