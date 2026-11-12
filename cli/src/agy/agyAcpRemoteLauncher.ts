@@ -499,11 +499,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (queue.size() > 0 || queue.isClosed() || outerSignal.aborted) {
             return { kind: 'batch', batch: await queue.waitForMessagesAndGetAsString(outerSignal) };
         }
-        if (this.pendingIdleModeSync) {
-            return { kind: 'config' };
-        }
         if (this.hasPendingReactiveWakeup()) {
             return { kind: 'wakeup' };
+        }
+        if (this.pendingIdleModeSync) {
+            return { kind: 'config' };
         }
 
         const waitController = new AbortController();
@@ -515,7 +515,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         outerSignal.addEventListener('abort', onOuterAbort, { once: true });
         this.idleConfigWake = () => {
             if (waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
-            configTriggered = true;
+            if (this.hasPendingReactiveWakeup()) {
+                wakeupTriggered = true;
+            } else {
+                configTriggered = true;
+            }
             waitController.abort();
         };
 
@@ -534,14 +538,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         const checkWakeup = () => {
             if (wakeupTriggered || configTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
-            if (this.pendingIdleModeSync) {
-                configTriggered = true;
-                waitController.abort();
-                return;
-            }
             tryAttachWatcher();
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
+                waitController.abort();
+                return;
+            }
+            if (this.pendingIdleModeSync) {
+                configTriggered = true;
                 waitController.abort();
             }
         };
@@ -807,6 +811,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         session.onThinkingChange(true);
                         continue;
                     }
+                    if (parkedResult === 'superseded_idle') {
+                        this.emittedWakeupThrough = inspection.parkedCall;
+                        return;
+                    }
                     this.emittedWakeupThrough = null;
                     return;
                 }
@@ -826,7 +834,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         parkedCall: AgyParkedWakeupCall,
         emittedThrough: AgyParkedWakeupCall | null,
         abortController: AbortController
-    ): Promise<'resolved' | 'progressed'> {
+    ): Promise<'resolved' | 'progressed' | 'superseded_idle'> {
         const session = this.session;
         const permissionHandler = this.permissionHandler;
         if (!permissionHandler || this.shouldExit) {
@@ -969,10 +977,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     remainingPrefixCalls: [...slice.preEmittedCalls],
                     suppressedPrefixLiveIds: new Set()
                 };
-            } else {
-                this.pausedWakeupStepIndex = steps[steps.length - 1]?.step_index ?? null;
+                return 'resolved';
             }
-            return 'resolved';
+            this.pausedWakeupStepIndex = steps[steps.length - 1]?.step_index ?? null;
+            return 'superseded_idle';
         }
 
         if (this.reactiveWakeupAbort === abortController) {
@@ -1141,11 +1149,64 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    /**
+     * Delivers any completed, unforwarded autonomous wakeup steps written to
+     * `transcript.jsonl` before `relaunchBackend` calls `session/resume` and
+     * `syncTranscriptCursor` (which would otherwise advance both `agy`'s and
+     * HAPI's cursors past those steps without forwarding them).
+     */
+    private flushUnforwardedWakeupBeforeResume(): void {
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId) return;
+        this.reconcileRetainedAmbiguousCompletions(null);
+        this.advanceCursorFromLastTurnState();
+
+        const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
+        const firstSystemIdx = steps.findIndex(
+            (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
+        );
+        if (firstSystemIdx < 0) return;
+
+        const reactiveSteps = steps.slice(firstSystemIdx);
+        const wakeupFirstStepIndex = reactiveSteps[0]?.step_index;
+        resolveAgyBackgroundTaskIds(
+            this.brainDir,
+            acpSessionId,
+            this.backgroundCommands,
+            wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
+        );
+        this.reconcileRetainedAmbiguousCompletions(null);
+
+        const emittedThrough = this.emittedWakeupThrough;
+        const converted = convertAgyReactiveSteps(
+            acpSessionId,
+            reactiveSteps,
+            this.backgroundCommands,
+            emittedThrough
+        );
+        if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
+            this.retainedAmbiguousCompletions.length = 0;
+        }
+        for (const msg of converted.messages) {
+            this.forwardAgentMessage(this.showQuestionCard(msg));
+        }
+        if (converted.messages.length > 0 && converted.usage) {
+            this.session.sendAgentMessage(
+                agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null)
+            );
+        }
+        const latestReactiveStep = reactiveSteps[reactiveSteps.length - 1]!.step_index;
+        this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, latestReactiveStep);
+        this.pausedWakeupStepIndex = null;
+        this.emittedWakeupThrough = null;
+    }
+
     private async relaunchBackend(skipPermissions?: boolean): Promise<void> {
         const previous = this.backend;
         this.backend = null;
         this.backendSkipPermissions = null;
         if (previous) await this.retireBackend(previous);
+        this.flushUnforwardedWakeupBeforeResume();
         await this.startBackend(this.acpSessionId, skipPermissions);
     }
 

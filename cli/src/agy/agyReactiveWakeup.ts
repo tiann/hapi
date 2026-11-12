@@ -429,11 +429,11 @@ export function inspectAgyReactiveSteps(
         }
     }
 
-    if (lastPlannerIdx > lastSystemIdx) {
+    if (lastPlannerIdx >= 0) {
         const planner = reactiveSteps[lastPlannerIdx]!;
         if (planner.status === 'DONE') {
             const toolCalls = Array.isArray(planner.tool_calls) ? planner.tool_calls : [];
-            if (toolCalls.length === 0 && lastPlannerIdx === reactiveSteps.length - 1) {
+            if (toolCalls.length === 0 && lastPlannerIdx > lastSystemIdx && lastPlannerIdx === reactiveSteps.length - 1) {
                 if (idleForMs >= timings.settleMs) {
                     return { state: 'completed', steps: reactiveSteps, latestStepIndex: last.step_index };
                 }
@@ -517,6 +517,11 @@ export function hasAgyParkedCallProgressed(
         const step = stepsAfterTurn[idx]!;
         if (step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE') {
             trailingActions.push(step);
+            continue;
+        }
+        if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+            // An unrelated background task or timer can append a SYSTEM_MESSAGE
+            // while the parked tool call is still blocked awaiting approval.
             continue;
         }
         return true;
@@ -1189,17 +1194,18 @@ export function convertAgyReactiveSteps(
         if (toolCalls.length === 0) continue;
 
         const actionSteps: AgyTranscriptStep[] = [];
-        let cursor = i + 1;
-        while (
-            cursor < steps.length
-            && actionSteps.length < toolCalls.length
-            && steps[cursor]!.source === 'MODEL'
-            && steps[cursor]!.type !== 'PLANNER_RESPONSE'
+        for (
+            let cursor = i + 1;
+            cursor < steps.length && actionSteps.length < toolCalls.length;
+            cursor += 1
         ) {
-            actionSteps.push(steps[cursor]!);
-            cursor += 1;
+            const candidate = steps[cursor]!;
+            if (candidate.source === 'MODEL' && candidate.type === 'PLANNER_RESPONSE') break;
+            if (candidate.source === 'USER_EXPLICIT' && candidate.type === 'USER_INPUT') break;
+            if (candidate.source === 'MODEL') {
+                actionSteps.push(candidate);
+            }
         }
-        i = cursor - 1;
 
         if (isBeforeEmitted) continue;
 
@@ -1209,11 +1215,12 @@ export function convertAgyReactiveSteps(
             }
             const call = toolCalls[callIdx]!;
             const action = actionSteps[callIdx];
+            if (!action || action.status === 'PENDING' || action.status === 'WAITING') {
+                continue;
+            }
             const decodedArgs = decodeAgyTranscriptArgs(call.args);
             const id = `agy-wakeup-${sessionId}-${step.step_index}-${callIdx}`;
-            const resultInfo = action
-                ? buildGenericToolOutput(call.name, action)
-                : { output: '', status: 'completed' as const, backgrounded: false };
+            const resultInfo = buildGenericToolOutput(call.name, action);
             if (!(isAtEmitted && callIdx === emittedThrough.callIndex)) {
                 messages.push({
                     type: 'tool_call',
@@ -1226,27 +1233,25 @@ export function convertAgyReactiveSteps(
                     nativeArgs: decodedArgs
                 });
             }
-            if (action) {
-                messages.push({
-                    type: 'tool_result',
-                    id,
-                    output: resultInfo.output,
-                    status: resultInfo.status
+            messages.push({
+                type: 'tool_result',
+                id,
+                output: resultInfo.output,
+                status: resultInfo.status
+            });
+            if (resultInfo.backgrounded) {
+                const taskId = extractAgyBackgroundTaskId(action.content);
+                const commandLine = typeof decodedArgs.CommandLine === 'string'
+                    ? decodedArgs.CommandLine
+                    : undefined;
+                openBackgroundCommands.push({
+                    callId: id,
+                    stepIndex: action.step_index,
+                    synthetic: true,
+                    nativeArgs: decodedArgs,
+                    ...(commandLine !== undefined ? { commandLine } : {}),
+                    ...(taskId ? { taskId } : {})
                 });
-                if (resultInfo.backgrounded) {
-                    const taskId = extractAgyBackgroundTaskId(action.content);
-                    const commandLine = typeof decodedArgs.CommandLine === 'string'
-                        ? decodedArgs.CommandLine
-                        : undefined;
-                    openBackgroundCommands.push({
-                        callId: id,
-                        stepIndex: action.step_index,
-                        synthetic: true,
-                        nativeArgs: decodedArgs,
-                        ...(commandLine !== undefined ? { commandLine } : {}),
-                        ...(taskId ? { taskId } : {})
-                    });
-                }
             }
         }
     }
@@ -1332,13 +1337,15 @@ export function convertAgyParkedWakeupSlice(
         const actionSteps: AgyTranscriptStep[] = [];
         for (
             let cursor = plannerIdx + 1;
-            cursor < steps.length
-                && actionSteps.length < toolCalls.length
-                && steps[cursor]!.source === 'MODEL'
-                && steps[cursor]!.type !== 'PLANNER_RESPONSE';
+            cursor < steps.length && actionSteps.length < toolCalls.length;
             cursor += 1
         ) {
-            actionSteps.push(steps[cursor]!);
+            const candidate = steps[cursor]!;
+            if (candidate.source === 'MODEL' && candidate.type === 'PLANNER_RESPONSE') break;
+            if (candidate.source === 'USER_EXPLICIT' && candidate.type === 'USER_INPUT') break;
+            if (candidate.source === 'MODEL') {
+                actionSteps.push(candidate);
+            }
         }
 
         for (let callIdx = 0; callIdx < parkedCall.callIndex && callIdx < toolCalls.length; callIdx += 1) {

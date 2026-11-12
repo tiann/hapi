@@ -4132,4 +4132,247 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('keeps pending approval intact when an unrelated SYSTEM_MESSAGE arrives during approval wait', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Waiting on timers.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Waiting on timers.' }
+            ]);
+        });
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-gated-after-sys',
+                name: 'echo GATED_CMD',
+                title: 'echo GATED_CMD',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'echo GATED_CMD' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-gated-sys',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'live-gated-after-sys',
+                title: 'echo GATED_CMD',
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-gated-after-sys',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nGATED_CMD', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Handled gated command and second notification.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35,
+            reactiveMaxIdleMs: 120
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // First timer wakes agy and parks on gated `run_command` (step 3, no action step)
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nFirst timer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('echo GATED_CMD') } }
+                    ]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        // While still waiting on user approval, a second timer/background task appends an unrelated SYSTEM_MESSAGE!
+        appendFileSync(
+            compactPath,
+            `${JSON.stringify({
+                step_index: 4,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: '<SYSTEM_MESSAGE>\nSecond unrelated background notification\n</SYSTEM_MESSAGE>'
+            })}\n`,
+            'utf8'
+        );
+
+        // Wait past reactivePollMs + reactiveMaxIdleMs to prove the approval request is NOT retired or timed out!
+        await new Promise((resolve) => setTimeout(resolve, 160));
+        expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        expect(client.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' });
+        expect(backend.prompts).toHaveLength(1);
+
+        // User approves the still-pending card -> resumes cleanly!
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        await permHandler!({ id: parkedCallId, approved: true, decision: 'approved' });
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        expect(backend.permissionResponses).toEqual([
+            { outcome: 'selected', optionId: 'allow_once' }
+        ]);
+        expect(client.getAgentState().requests?.[parkedCallId]).toBeUndefined();
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('delivers completed unforwarded wakeup output before restarting backend on an overlapping permission-mode change', async () => {
+        const { session, client, queue } = makeHarness('always-proceed');
+        const b1 = new WakeupTestBackend();
+        const b2 = new WakeupTestBackend();
+        b2.sessionIdToCreate = b1.sessionIdToCreate;
+        const createdSkipFlags: Array<boolean | undefined> = [];
+        let backendIdx = 0;
+
+        b1.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Timer armed in always-proceed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, b1.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Timer armed in always-proceed.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: (opts) => {
+                createdSkipFlags.push(opts?.skipPermissions);
+                const chosen = backendIdx === 0 ? b1 : b2;
+                backendIdx += 1;
+                return chosen as unknown as AcpSdkBackend;
+            },
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Autonomous wakeup completes in transcript.jsonl at the exact moment the user switches
+        // permission mode out of `always-proceed` -> `request-review` (which restarts agy & calls session/resume).
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, b1.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>',
+                    created_at: '2026-11-12T04:00:00Z'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    input_tokens: 90,
+                    output_tokens: 15,
+                    created_at: '2026-11-12T04:00:01Z',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('date +%T') } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'DONE',
+                    content: 'Command exited with code 0.\n\nCommand output:\n04:00:01',
+                    created_at: '2026-11-12T04:00:01Z'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Wakeup finished right before mode switch.',
+                    input_tokens: 110,
+                    output_tokens: 18,
+                    created_at: '2026-11-12T04:00:02Z'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+        session.setPermissionMode('request-review');
+
+        await vi.waitFor(() => {
+            expect(createdSkipFlags).toEqual([true, false]);
+            expect(b2.resumeCalls).toEqual([b1.sessionIdToCreate]);
+            expect(b2.setModeCalls).toContain('default');
+        });
+
+        const sentMsgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        const wakeupCallId = `agy-wakeup-${b1.sessionIdToCreate}-3-0`;
+        expect(sentMsgs.filter((m) => (m as { type?: string; callId?: string }).type === 'tool-call' && (m as { callId?: string }).callId === wakeupCallId)).toHaveLength(1);
+        expect(sentMsgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: wakeupCallId,
+            is_error: false,
+            output: { stdout: '04:00:01', exit_code: 0 }
+        }));
+        expect(sentMsgs).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'Wakeup finished right before mode switch.'
+        }));
+        expect(sentMsgs).toContainEqual(expect.objectContaining({
+            type: 'round-summary'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
 });
