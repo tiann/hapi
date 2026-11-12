@@ -94,6 +94,86 @@ describe('cli resume routes', () => {
         })
     })
 
+    it('looks up the HAPI session that owns a Claude session id', async () => {
+        const calls: unknown[] = []
+        const app = createApp({
+            resolveLocalResumeTargetByAgentSessionId: (agentSessionId: string, namespace: string, opts?: { machineId?: string }) => {
+                calls.push({ agentSessionId, namespace, opts })
+                return {
+                    type: 'success',
+                    historical: true,
+                    target: {
+                        sessionId: 'session-1',
+                        flavor: 'claude',
+                        directory: '/tmp/project',
+                        machineId: 'machine-1',
+                        active: false,
+                        thinking: false,
+                        controlledByUser: false,
+                        agentSessionId: 'claude-current'
+                    }
+                }
+            }
+        } as never)
+
+        const response = await app.request(
+            '/cli/sessions/resume-target-by-agent?flavor=claude&agentSessionId=claude-old&machineId=machine-1',
+            { headers: authHeaders() }
+        )
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({
+            historical: true,
+            target: { sessionId: 'session-1', agentSessionId: 'claude-current' }
+        })
+        expect(calls).toEqual([{ agentSessionId: 'claude-old', namespace: 'default', opts: { machineId: 'machine-1' } }])
+    })
+
+    it('rejects by-agent lookups for unsupported flavors or a missing id', async () => {
+        const app = createApp({} as never)
+        for (const query of ['flavor=codex&agentSessionId=x', 'flavor=claude', 'agentSessionId=x']) {
+            const response = await app.request(`/cli/sessions/resume-target-by-agent?${query}`, {
+                headers: authHeaders()
+            })
+            expect(response.status).toBe(400)
+        }
+    })
+
+    it('prepares a session for local resume and maps errors to status codes', async () => {
+        const results: Record<string, unknown> = {
+            revive: { type: 'success', revived: true },
+            active: { type: 'error', message: 'Session is active', code: 'session_active' },
+            missing: { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        }
+        const app = createApp({
+            prepareLocalResume: async (sessionId: string) => results[sessionId]
+        } as never)
+
+        const ok = await app.request('/cli/sessions/revive/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(ok.status).toBe(200)
+        expect(await ok.json()).toEqual({ ok: true, revived: true })
+
+        const active = await app.request('/cli/sessions/active/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(active.status).toBe(409)
+        const missing = await app.request('/cli/sessions/missing/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(missing.status).toBe(404)
+    })
+
+    it('follows merged-away session redirects for CLI lookups', async () => {
+        const calls: unknown[] = []
+        const app = createApp({
+            resolveSessionAccess: (sessionId: string, namespace: string, opts?: { followRedirects?: boolean }) => {
+                calls.push({ sessionId, namespace, opts })
+                return { ok: false, reason: 'not-found' }
+            }
+        } as never)
+
+        const response = await app.request('/cli/sessions/merged-away', { headers: authHeaders() })
+
+        expect(response.status).toBe(404)
+        expect(calls).toEqual([{ sessionId: 'merged-away', namespace: 'default', opts: { followRedirects: true } }])
+    })
+
     it('returns handoff errors with status codes', async () => {
         const app = createApp({
             handoffSessionToLocal: async () => ({

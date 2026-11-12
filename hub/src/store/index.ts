@@ -12,6 +12,7 @@ import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionJobsStore } from './sessionJobsStore'
+import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 import { TurnStore } from './turnStore'
@@ -112,7 +113,8 @@ const REQUIRED_TABLES = [
     'attachments',
     'attachment_deletions',
     'attachment_creations',
-    'session_turns'
+    'session_turns',
+    'session_redirects'
 ] as const
 
 export class Store {
@@ -128,6 +130,7 @@ export class Store {
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
     readonly sessionJobs: SessionJobsStore
+    readonly sessionRedirects: SessionRedirectStore
     readonly usage: UsageStore
     readonly turns: TurnStore
     readonly workGraph: WorkGraphStore
@@ -185,6 +188,7 @@ export class Store {
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
         this.sessionJobs = new SessionJobsStore(this.db)
+        this.sessionRedirects = new SessionRedirectStore(this.db)
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
@@ -671,7 +675,7 @@ export class Store {
             // upstream session_turns at v27→v28; last_user_message_at at v28→v29;
             // upstream read-state at v29→v30;
             // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
-            // #1489 wake-on-terminal at v33→v34
+            // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35
             // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
@@ -705,11 +709,13 @@ export class Store {
                 // Backfill any *missing* tables (sessions, machines, ...) that
                 // a partially-built legacy DB may not have yet.
                 this.createSchema()
+                this.ensureUsageScanParserVersion()
                 this.setUserVersion(SCHEMA_VERSION)
                 return
             }
 
             this.createSchema()
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -723,6 +729,7 @@ export class Store {
             this.migrateFromV32ToV33()
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -732,6 +739,7 @@ export class Store {
                 if (!step) throw this.buildSchemaMismatchError(currentVersion)
                 step()
             }
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -741,6 +749,7 @@ export class Store {
         }
 
         this.assertRequiredTablesPresent()
+        this.ensureUsageScanParserVersion()
     }
 
     private createSchema(): void {
@@ -904,6 +913,15 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_session_jobs_session_status_updated
                 ON session_jobs(session_id, status, updated_at DESC);
 
+            CREATE TABLE IF NOT EXISTS session_redirects (
+                old_id TEXT PRIMARY KEY,
+                new_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
+                ON session_redirects(namespace, new_id);
+
             CREATE TABLE IF NOT EXISTS usage_events (
                 session_id TEXT NOT NULL,
                 source_key TEXT NOT NULL,
@@ -932,6 +950,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
@@ -1356,6 +1375,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_events;
@@ -1375,6 +1395,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_scan_state;
@@ -1829,6 +1850,32 @@ export class Store {
         }
         if (!names.has('wake_emitted_run_id')) {
             this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_emitted_run_id TEXT')
+        }
+    }
+
+    /**
+     * v34→v35: durable redirects from merged-away session ids to the surviving
+     * row, so links and peer references to a merged session keep resolving.
+     */
+    private migrateFromV34ToV35(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_redirects (
+                old_id TEXT PRIMARY KEY,
+                new_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
+                ON session_redirects(namespace, new_id);
+        `)
+    }
+
+    private ensureUsageScanParserVersion(): void {
+        const columns = this.db.prepare('PRAGMA table_info(usage_scan_state)').all() as Array<{ name: string }>
+        if (columns.length === 0) return
+        if (!columns.some((col) => col.name === 'parser_version')) {
+            this.db.exec('ALTER TABLE usage_scan_state ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 2')
+            this.db.exec('DELETE FROM usage_scan_state')
         }
     }
 

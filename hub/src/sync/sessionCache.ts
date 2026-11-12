@@ -1,4 +1,4 @@
-import { mergeReadState } from '@hapi/protocol'
+import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -129,6 +129,31 @@ export class SessionCache {
         }
 
         return { ok: false, reason: 'not-found' }
+    }
+
+    /**
+     * Boundary variant of `resolveSessionAccess` for ids supplied by clients
+     * (web/native routes, CLI REST): a merged-away id follows its durable
+     * redirect to the surviving row, so links, peer references and
+     * reopen-by-id keep working after a merge. Callers must continue with the
+     * returned `sessionId`. Internal paths (sockets, job ownership) keep the
+     * strict lookup so a stale process cannot write into the survivor.
+     * Redirect rows are namespace-scoped, so this never crosses namespaces.
+     */
+    resolveSessionAccessFollowingRedirects(
+        sessionId: string,
+        namespace: string
+    ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
+        const direct = this.resolveSessionAccess(sessionId, namespace)
+        if (direct.ok || direct.reason === 'access-denied') {
+            return direct
+        }
+        const redirectedId = this.store.sessionRedirects.resolve(sessionId, namespace)
+        if (!redirectedId || redirectedId === sessionId) {
+            return direct
+        }
+        const target = this.resolveSessionAccess(redirectedId, namespace)
+        return target.ok ? target : direct
     }
 
     getActiveSessions(): Session[] {
@@ -1595,6 +1620,10 @@ export class SessionCache {
         const session = this.sessions.get(sessionId)
         if (!session || session.namespace !== namespace) return
 
+        // Explicit delete ends the conversation; ids merged into it must not
+        // resolve to a different row later.
+        this.store.sessionRedirects.deleteTargeting(sessionId, namespace)
+
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
@@ -1970,6 +1999,9 @@ export class SessionCache {
                     throw new Error('Cannot merge a session that became active')
                 }
                 this.transferAttachedJobs(oldSessionId, newSessionId, namespace)
+                // Write the redirect before the source row disappears so a
+                // concurrent lookup can never observe neither row nor redirect.
+                this.store.sessionRedirects.record(oldSessionId, newSessionId, namespace)
                 const moved = this.store.mergeSessionMessagesAndAttachmentsAndDeleteSession(
                     namespace,
                     oldSessionId,
@@ -2491,6 +2523,12 @@ export class SessionCache {
         }
         if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
             merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
+            changed = true
+        }
+
+        const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
+        if (claudeHistory) {
+            merged.claudeSessionIdHistory = claudeHistory
             changed = true
         }
 

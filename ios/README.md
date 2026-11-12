@@ -708,7 +708,7 @@ Home keeps a fixed Sessions title: hub switching on the leading edge,
 the web sort and filter menu: **Sort By** last message (default) or date
 created, **Active First** (on by default: connected sessions lead the pinned
 and recent sections, below manual pins), **Show** all / active only / archived
-only, an **Unread Only** lens, machine single-selection (two or more machines)
+only, an **Unread Only** lens, a **Machine** submenu (two or more machines)
 and **Mark All as Read** (shared read state, confirmed first). Only applied
 filters add a summary line; a non-default order just tints the menu button.
 The status and unread filters keep the iPad's selected chat listed.

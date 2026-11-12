@@ -1227,4 +1227,37 @@ describe('machines routes', () => {
         expect(response.status).toBe(503)
         expect(await response.json()).toMatchObject({ success: false, code: RPC_TARGET_MISSING_ERROR_CODE })
     })
+
+    it('forwards agent-quotas requests and refresh flag to SyncEngine.getAgentQuotas and rejects older runners with 409', async () => {
+        const legacyMachine = createMachine()
+        const capableMachine = createMachine({
+            id: 'machine-2',
+            metadata: {
+                host: 'localhost',
+                platform: 'darwin',
+                happyCliVersion: '1.0.0',
+                capabilities: [MACHINE_CAPABILITIES.AgentAvailability, MACHINE_CAPABILITIES.AgentQuotas]
+            }
+        })
+        const calls: Array<{ refresh?: boolean } | undefined> = []
+        const engine = {
+            getMachine: (id: string) => id === 'machine-2' ? capableMachine : legacyMachine,
+            getMachineByNamespace: (id: string) => id === 'machine-2' ? capableMachine : legacyMachine,
+            getAgentQuotas: async (_machineId: string, options?: { refresh?: boolean }) => {
+                calls.push(options)
+                return {
+                    accounts: [],
+                    fetchedAt: 1700000000000
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        expect((await app.request('/api/machines/machine-1/agent-quotas')).status).toBe(409)
+        expect((await app.request('/api/machines/machine-2/agent-quotas')).status).toBe(200)
+        expect((await app.request('/api/machines/machine-2/agent-quotas?refresh=1')).status).toBe(200)
+        expect(calls).toEqual([{ refresh: false }, { refresh: true }])
+    })
 })
