@@ -323,6 +323,36 @@ describe('reduceTimeline', () => {
         expect((blocks[0] as { roundSummary?: { durationMs?: number } }).roundSummary?.durationMs).toBeUndefined()
     })
 
+    it('keeps the generation pair when token usage arrives after the turn duration', () => {
+        const messages = [
+            { turn_id: 'turn', type: 'message', message: 'answer' },
+            { turn_id: 'turn', type: 'turn_duration', flavor: 'codex', durationMs: 4_000, generationMs: 2_200, generationOutputTokens: 50 },
+            { turn_id: 'turn', type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } }
+        ].map((data, index) => normalizeAgentRecord(`late-usage-${index}`, null, index, { type: 'codex', data })!)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks[0]).toMatchObject({ roundSummary: { provider: 'codex', turnId: 'turn', numTurns: 1,
+            durationMs: 4_000, generationMs: 2_200, generationOutputTokens: 50,
+            usage: { input_tokens: 100, output_tokens: 10 },
+            modelUsage: { 'gpt-5.4': { inputTokens: 100, outputTokens: 10 } } } })
+        expect(buildMessageMetadataLabels({ roundSummary: (blocks[0] as { roundSummary?: Record<string, unknown> }).roundSummary as never }))
+            .toContain('Round: 4s · 1 turn · 22.7 tok/s')
+    })
+
+    it('carries the Codex generation pair into the round summary for the tok/s footer', () => {
+        const messages = [
+            { turn_id: 'turn', type: 'message', message: 'answer' },
+            { turn_id: 'turn', type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+            { turn_id: 'turn', type: 'turn_duration', flavor: 'codex', durationMs: 4_000, generationMs: 2_200, generationOutputTokens: 50 }
+        ].map((data, index) => normalizeAgentRecord(`generation-${index}`, null, index, { type: 'codex', data })!)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks[0]).toMatchObject({ roundSummary: { provider: 'codex', turnId: 'turn',
+            durationMs: 4_000, generationMs: 2_200, generationOutputTokens: 50 } })
+        expect(buildMessageMetadataLabels({ roundSummary: (blocks[0] as { roundSummary?: Record<string, unknown> }).roundSummary as never }))
+            .toContain('Round: 4s · 1 turn · 22.7 tok/s')
+    })
+
     it('rejects unmatched Codex metadata when the response has a different native turn ID', () => {
         const messages = [
             { type: 'message', message: 'new answer', turn_id: 'new' },
