@@ -2207,6 +2207,8 @@ function SessionChatInner(props: SessionChatProps) {
                         unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
                         normalizedMessagesCount={normalizedMessages.length}
+                        visibleBlocksCount={visibleBlocks.length}
+                        conciseViewActive={conciseViewActive}
                         messagesVersion={props.messagesVersion}
                         historyVersion={props.historyVersion}
                         forceScrollToken={forceScrollToken}

@@ -693,3 +693,35 @@ test('scroll events cannot bypass backoff before an epoch-reset stop', async ({ 
     )
     expect(afterStop).toBe(2)
 })
+
+test('concise view automatically pages past tool-only tail and older pages when switching sessions', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?concise=1&coldInitial=1&conciseToolTail=220')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    // The latest 20 messages and the first 200-message older page are all
+    // non-interactive Bash tool calls hidden by concise view. Without manual
+    // upward scrolling, HappyThread must automatically page through both until
+    // visible conversation history (`Fixture message 980`) is rendered.
+    await expect(page.getByText('Fixture message 980', { exact: true })).toBeVisible()
+
+    const stateAfterInitialFill = await page.evaluate(() => ({
+        beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+        childCount: document.querySelector('.happy-thread-messages')?.childElementCount ?? 0,
+        scrollTop: Math.round((document.querySelector('.app-scroll-y') as HTMLElement).scrollTop)
+    }))
+    expect(stateAfterInitialFill.beforeReqs).toBe(2)
+    expect(stateAfterInitialFill.childCount).toBe(200)
+    expect(stateAfterInitialFill.scrollTop).toBeGreaterThan(1000)
+
+    // Switching to another session with concise view already active must also
+    // automatically load older history until conversation messages appear.
+    await page.evaluate(() => {
+        window.__probe.requests.length = 0
+        window.__probe.switchSession('history-load-fixture-2')
+    })
+    await expect(page.getByText('Fixture message 980', { exact: true })).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() =>
+        window.__probe.requests.filter((r) => r.direction === 'before').length
+    )).toBe(2)
+})

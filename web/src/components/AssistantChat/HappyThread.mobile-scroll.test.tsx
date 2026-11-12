@@ -973,3 +973,240 @@ describe('tail following survives layout-driven movement', () => {
         expect(onViewModeChange).not.toHaveBeenCalledWith('history')
     })
 })
+
+describe('concise view history coverage', () => {
+    it('immediately pages older history across tool-only pages when switching sessions in concise view', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
+        } as unknown as ApiClient
+
+        const state = {
+            sessionId: 'concise-session-b',
+            isSyncingTail: false,
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 20,
+            normalizedMessagesCount: 20,
+            visibleBlocksCount: 0,
+            conciseViewActive: true,
+            messagesVersion: 1,
+            historyVersion: 0
+        }
+
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderConciseThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId={state.sessionId}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={state.isSyncingTail}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        const result = render(renderConciseThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')!
+        const sentinel = result.container.querySelector<HTMLElement>('.chat-scroll-content > [aria-hidden="true"]')!
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 530 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        // First older page fires immediately without waiting for the 1,800ms initial scroll settle timer.
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        // Page 1 finishes with 200 raw tool/reasoning messages that are still 100% filtered in concise view.
+        state.rawMessagesCount = 220
+        state.normalizedMessagesCount = 220
+        state.visibleBlocksCount = 0
+        state.historyVersion = 1
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 1 }
+        act(() => {
+            result.rerender(renderConciseThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        // Loader does not auto-pause on an empty concise view; it automatically chains page 2.
+        expect(onLoadMore).toHaveBeenCalledTimes(2)
+
+        // Page 2 reveals 12 visible conversation blocks that cover the viewport and pin to the bottom.
+        state.rawMessagesCount = 420
+        state.normalizedMessagesCount = 420
+        state.visibleBlocksCount = 12
+        state.historyVersion = 2
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 2 }
+        Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1_400 })
+        act(() => {
+            result.rerender(renderConciseThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(50)
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(viewport.scrollTop).toBe(870)
+        expect(onLoadMore).toHaveBeenCalledTimes(2)
+    })
+
+    it('re-arms automatic coverage when toggling concise view on collapses the thread', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        const api = {
+            getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
+        } as unknown as ApiClient
+
+        const state = {
+            hasMoreMessages: true,
+            isLoadingMoreMessages: false,
+            rawMessagesCount: 200,
+            normalizedMessagesCount: 200,
+            visibleBlocksCount: 200,
+            conciseViewActive: false,
+            messagesVersion: 1,
+            historyVersion: 0
+        }
+
+        const onLoadMore = vi.fn().mockImplementation(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+            const nextHistoryVersion = state.historyVersion + 1
+            onBeforeApply?.(nextHistoryVersion)
+            return {
+                kind: 'applied' as const,
+                historyVersion: nextHistoryVersion,
+                hasMore: true,
+                addedRenderableCount: 200
+            }
+        })
+
+        const renderToggleThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={api}
+                        session={{ metadata: {} } as Session}
+                        sessionId="concise-toggle-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={false}
+                        messagesWarning={null}
+                        hasMoreMessages={state.hasMoreMessages}
+                        isLoadingMoreMessages={state.isLoadingMoreMessages}
+                        onLoadMore={onLoadMore}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={state.rawMessagesCount}
+                        normalizedMessagesCount={state.normalizedMessagesCount}
+                        visibleBlocksCount={state.visibleBlocksCount}
+                        conciseViewActive={state.conciseViewActive}
+                        messagesVersion={state.messagesVersion}
+                        historyVersion={state.historyVersion}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        const result = render(renderToggleThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')!
+        const sentinel = result.container.querySelector<HTMLElement>('.chat-scroll-content > [aria-hidden="true"]')!
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 530 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        // First page in normal mode loads and sets autoPaused = true.
+        act(() => {
+            vi.advanceTimersByTime(2_000)
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        state.historyVersion = 1
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 1 }
+        act(() => {
+            result.rerender(renderToggleThread())
+        })
+        act(() => {
+            vi.advanceTimersByTime(500)
+        })
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+
+        // Enabling concise mode hides tool/reasoning blocks, leaving 0 visible blocks;
+        // autoPaused is cleared and older history loads automatically without scrolling.
+        state.conciseViewActive = true
+        state.visibleBlocksCount = 0
+        Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 530 })
+        act(() => {
+            result.rerender(renderToggleThread())
+        })
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(onLoadMore).toHaveBeenCalledTimes(2)
+    })
+})

@@ -10,6 +10,7 @@ import { useMessages } from '../src/hooks/queries/useMessages'
 import { normalizeDecryptedMessage } from '../src/chat/normalize'
 import { reduceChatBlocks } from '../src/chat/reducer'
 import { reconcileChatBlocks } from '../src/chat/reconcile'
+import { filterConciseChatBlocks } from '../src/chat/conciseView'
 import { buildVisibleChatBlocks } from '../src/chat/toolGroups'
 import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
@@ -34,6 +35,8 @@ type Probe = {
     releaseLatest: () => void
     holdBefore: () => void
     releaseBefore: () => void
+    setConciseMode: (enabled: boolean) => void
+    switchSession: (nextSessionId: string) => void
     windowState: () => {
         messageCount: number
         oldestSeq: number | null
@@ -67,8 +70,10 @@ window.__probe = {
         beforeResponseGate = null
         releaseBeforeResponse()
     },
+    setConciseMode: () => {},
+    switchSession: () => {},
     windowState: () => {
-        const state = getMessageWindowState(SESSION_ID)
+        const state = getMessageWindowState(activeSessionIdForProbe)
         return {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
@@ -77,6 +82,8 @@ window.__probe = {
         }
     }
 }
+
+let activeSessionIdForProbe = SESSION_ID
 
 // Test knobs via query params:
 // - ?shortPages=1  — `before` pages return 2 messages regardless of limit, so
@@ -111,6 +118,8 @@ const coldInitial = fixtureParams.has('coldInitial')
 const slowBefore = fixtureParams.has('slowBefore')
 const cachedReentry = fixtureParams.has('cachedReentry')
 const holdLatest = fixtureParams.has('holdLatest')
+const initialConcise = fixtureParams.has('concise')
+const conciseToolTailCount = Number(fixtureParams.get('conciseToolTail') ?? (initialConcise ? '220' : '0'))
 if (holdLatest) {
     latestResponseGate = new Promise<void>((resolve) => {
         releaseLatestResponse = resolve
@@ -121,6 +130,7 @@ let beforeAttempts = 0
 const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
+    const isConciseHiddenWork = conciseToolTailCount > 0 && seq > TOTAL_MESSAGES - conciseToolTailCount
     return {
         id: `m-${seq}`,
         seq,
@@ -132,6 +142,20 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
                     type: 'codex',
                     data: { type: 'generated-image', imageId: `img-${seq}`, fileName: `image-${seq}.svg`, mimeType: 'image/svg+xml' },
                 },
+            }
+            : isConciseHiddenWork
+            ? {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        callId: `call-${seq}`,
+                        name: 'Bash',
+                        input: { command: `echo step ${seq}` },
+                        status: 'completed'
+                    }
+                }
             }
             : filtered
             ? { role: 'agent', content: { type: 'output', data: { isMeta: true } } }
@@ -284,8 +308,12 @@ const noopSend = () => {}
 const noopAbort = async () => {}
 
 function FixtureThread() {
+    const [sessionId, setSessionId] = useState(SESSION_ID)
+    const [conciseMode, setConciseMode] = useState(initialConcise)
     const [outlineOpen, setOutlineOpen] = useState(false)
     const [forceScrollToken, setForceScrollToken] = useState(0)
+    activeSessionIdForProbe = sessionId
+    const activeSession = useMemo(() => ({ ...fakeSession, id: sessionId }), [sessionId])
     const {
         messages,
         warning,
@@ -298,10 +326,12 @@ function FixtureThread() {
         cancelLoadMore,
         refetch,
         setViewMode
-    } = useMessages(fakeApi, SESSION_ID)
+    } = useMessages(fakeApi, sessionId)
 
     window.__probe.loadMore = loadMore
     window.__probe.refetch = refetch
+    window.__probe.setConciseMode = setConciseMode
+    window.__probe.switchSession = setSessionId
 
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
 
@@ -321,13 +351,17 @@ function FixtureThread() {
         [reduced.blocks]
     )
     blocksByIdRef.current = reconciled.byId
+    const threadBlocks = useMemo(
+        () => conciseMode ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks,
+        [conciseMode, reconciled.blocks]
+    )
     const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, { hasMoreMessages: hasMore }),
-        [reconciled.blocks, hasMore]
+        () => buildVisibleChatBlocks(threadBlocks, { hasMoreMessages: hasMore }),
+        [threadBlocks, hasMore]
     )
 
     const runtime = useHappyRuntime({
-        session: fakeSession,
+        session: activeSession,
         blocks: visibleBlocks,
         messagesVersion,
         historyVersion,
@@ -350,9 +384,10 @@ function FixtureThread() {
                         </header>
                     ) : null}
                     <HappyThread
+                        key={`thread-${sessionId}`}
                         api={fakeApi}
-                        session={fakeSession}
-                        sessionId={SESSION_ID}
+                        session={activeSession}
+                        sessionId={sessionId}
                         metadata={null}
                         disabled={false}
                         onRefresh={() => {}}
@@ -368,6 +403,8 @@ function FixtureThread() {
                         unseenCount={0}
                         rawMessagesCount={messages.length}
                         normalizedMessagesCount={normalizedMessages.length}
+                        visibleBlocksCount={visibleBlocks.length}
+                        conciseViewActive={conciseMode}
                         messagesVersion={messagesVersion}
                         historyVersion={historyVersion}
                         forceScrollToken={forceScrollToken}
