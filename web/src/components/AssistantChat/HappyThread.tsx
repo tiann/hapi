@@ -861,6 +861,11 @@ export function HappyThread(props: {
     const initialConciseCoverageDoneRef = useRef(!conciseViewActive)
     const conciseCoveragePagesRef = useRef(0)
     const conciseTailEvictedRef = useRef(false)
+    const [conciseTailEvicted, setConciseTailEvicted] = useState(false)
+    const updateConciseTailEvicted = useCallback((evicted: boolean) => {
+        conciseTailEvictedRef.current = evicted
+        setConciseTailEvicted(evicted)
+    }, [])
     const prevConciseViewActiveRef = useRef(conciseViewActive)
     const viewportRef = useRef<HTMLDivElement | null>(null)
     useTransientScrollbar(viewportRef, 'right')
@@ -964,7 +969,10 @@ export function HappyThread(props: {
     }, [props.hasMoreMessages])
     useLayoutEffect(() => {
         isSyncingTailRef.current = props.isSyncingTail
-    }, [props.isSyncingTail])
+        if (props.isSyncingTail && conciseTailEvictedRef.current) {
+            updateConciseTailEvicted(false)
+        }
+    }, [props.isSyncingTail, updateConciseTailEvicted])
     useLayoutEffect(() => {
         isLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])
@@ -1060,14 +1068,14 @@ export function HappyThread(props: {
             }
         } else if (!conciseViewActive && wasConcise) {
             const hadEvictedConciseTail = conciseTailEvictedRef.current
-            conciseTailEvictedRef.current = false
+            updateConciseTailEvicted(false)
             initialConciseCoverageDoneRef.current = true
             conciseCoveragePagesRef.current = 0
             if (hadEvictedConciseTail && atBottomRef.current) {
                 onViewModeChangeRef.current('tail')
             }
         }
-    }, [conciseViewActive])
+    }, [conciseViewActive, updateConciseTailEvicted])
 
     useLayoutEffect(() => {
         const inputKey = hasSearchTarget
@@ -1733,7 +1741,7 @@ export function HappyThread(props: {
             scrollToBottomSmooth()
             lastScrollTopRef.current = viewport.scrollTop
         }
-        conciseTailEvictedRef.current = false
+        updateConciseTailEvicted(false)
         autoScrollEnabledRef.current = true
         atBottomRef.current = true
         if (props.onJumpToTail) {
@@ -1745,13 +1753,13 @@ export function HappyThread(props: {
         } else {
             onViewModeChangeRef.current('tail')
         }
-    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, releaseSearchTargetHistoryLock, scrollToBottomSmooth])
+    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, releaseSearchTargetHistoryLock, scrollToBottomSmooth, updateConciseTailEvicted])
 
     // Reset state when session changes
     useLayoutEffect(() => {
         const hasInitialSearchTarget = Boolean(props.initialTargetMessageId?.trim())
         searchTargetHistoryLockRef.current = false
-        conciseTailEvictedRef.current = false
+        updateConciseTailEvicted(false)
         setShowScrollToBottom(false)
         autoScrollEnabledRef.current = true
         tailScrollInProgressRef.current = false
@@ -1798,7 +1806,8 @@ export function HappyThread(props: {
         clearSearchTargetScrollTimers,
         clearCoverageCheckTimer,
         clearFailureRetryTimer,
-        settlePendingLoad
+        settlePendingLoad,
+        updateConciseTailEvicted
     ])
 
     useLayoutEffect(() => {
@@ -2104,7 +2113,8 @@ export function HappyThread(props: {
         clearSearchTargetScrollTimers,
         clearCoverageCheckTimer,
         clearFailureRetryTimer,
-        settlePendingLoad
+        settlePendingLoad,
+        updateConciseTailEvicted
     ])
 
     useEffect(() => {
@@ -2218,13 +2228,16 @@ export function HappyThread(props: {
             initialConciseCoverageDoneRef.current = true
         }
         if (retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT) {
-            if (conciseViewActiveRef.current && renderedMessagesCountRef.current === 0) {
-                conciseTailEvictedRef.current = true
-                onViewModeChangeRef.current('history')
+            if (
+                state.source === 'coverage'
+                && conciseViewActiveRef.current
+                && renderedMessagesCountRef.current === 0
+            ) {
+                updateConciseTailEvicted(true)
             } else if (atBottomRef.current) {
                 atBottomRef.current = false
                 if (conciseViewActiveRef.current) {
-                    conciseTailEvictedRef.current = true
+                    updateConciseTailEvicted(true)
                 }
                 onViewModeChangeRef.current('history')
             }
@@ -2273,7 +2286,7 @@ export function HappyThread(props: {
                             initialConciseCoverageDoneRef.current = true
                             return false
                         }
-                        conciseTailEvictedRef.current = true
+                        updateConciseTailEvicted(true)
                     }
                     if (current.source !== 'consumer' && !needsViewportCoverage()) {
                         return false
@@ -2839,7 +2852,7 @@ export function HappyThread(props: {
                     </div>
                 </ThreadPrimitive.Viewport>
                 <NewMessagesIndicator count={props.unseenCount} onClick={scrollToBottom} />
-                {shouldRenderScrollToBottomButton(showScrollToBottom, props.unseenCount) ? (
+                {shouldRenderScrollToBottomButton(showScrollToBottom || conciseTailEvicted, props.unseenCount) ? (
                     <ScrollToBottomButton onClick={scrollToBottom} />
                 ) : null}
                 {props.outlineOpen ? (

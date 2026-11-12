@@ -96,6 +96,10 @@ type InternalState = MessageWindowState & {
     contextNewestAt: number | null
     contextNewestSeq: number | null
     requiresLatestReset: boolean
+    // True when older-page prepend trimming evicted the tail while the window
+    // was still following the tail (e.g. automatic concise coverage across >800
+    // hidden tool rows), as opposed to user-selected history mode.
+    tailEvictedWhileFollowing: boolean
     preferLatestOnActivation: boolean
     // A gap resume asked for an authoritative latest page applied as an
     // upsert: rows the window holds are replaced by id, but already-loaded
@@ -300,6 +304,7 @@ function createState(sessionId: string): InternalState {
         contextNewestSeq: null,
         hasMoreNewer: false,
         requiresLatestReset: false,
+        tailEvictedWhileFollowing: false,
         preferLatestOnActivation: false,
         pendingGapRecovery: false,
         syncGeneration: 0,
@@ -476,6 +481,7 @@ function buildState(
         | 'contextNewestSeq'
         | 'hasMoreNewer'
         | 'requiresLatestReset'
+        | 'tailEvictedWhileFollowing'
         | 'preferLatestOnActivation'
         | 'pendingGapRecovery'
         | 'syncGeneration'
@@ -670,9 +676,14 @@ function mergeIntoWindow(
     if (retainedIncoming.length === 0) {
         return previous
     }
-    const mode = options.mode ?? (previous.viewMode === 'history' ? 'prepend' : 'append')
+    const userSelectedHistory = previous.viewMode === 'history' && !previous.tailEvictedWhileFollowing
+    const mode = options.mode ?? (userSelectedHistory ? 'prepend' : 'append')
     const regularLimit = options.regularLimit
-        ?? (previous.viewMode === 'history' ? HISTORY_WINDOW_SIZE : VISIBLE_WINDOW_SIZE)
+        ?? (userSelectedHistory
+            ? HISTORY_WINDOW_SIZE
+            : previous.tailEvictedWhileFollowing
+                ? OLDER_LOAD_WINDOW_SIZE
+                : VISIBLE_WINDOW_SIZE)
     const merged = mergeMessages(previous.messages, retainedIncoming)
     const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(merged, regularLimit, mode)
     let next = buildState(previous, {
@@ -804,6 +815,7 @@ function applyLatestResponse(
         newestPositionSeq: newest?.seq ?? null,
         tailRevision: previous.tailRevision + 1,
         requiresLatestReset: false,
+        tailEvictedWhileFollowing: false,
         // An authoritative latest window replaces the context entirely.
         ...(options.replaceServerRows
             ? { contextNewestAt: null, contextNewestSeq: null, hasMoreNewer: false }
@@ -1228,6 +1240,7 @@ function enterTailMode(previous: InternalState): InternalState {
         messages: kept,
         hasMore: previous.hasMore || dropped.length > 0,
         viewMode: 'tail',
+        tailEvictedWhileFollowing: false,
         epoch: forceLatest ? null : previous.epoch,
         oldestPositionAt: oldest?.at ?? null,
         oldestPositionSeq: oldest?.seq ?? null,
@@ -1489,7 +1502,12 @@ export async function fetchOlderMessages(
             // mergeIntoWindow, so every path that trims from the newest end
             // behaves the same.
             return buildState(merged, {
-                ...(merged.requiresLatestReset ? { viewMode: 'history' as const } : {}),
+                ...(merged.requiresLatestReset
+                    ? {
+                        viewMode: 'history' as const,
+                        tailEvictedWhileFollowing: previous.viewMode === 'tail' || previous.tailEvictedWhileFollowing
+                    }
+                    : {}),
                 hasMore: response.page.hasMore,
                 epoch: response.page.epoch,
                 oldestPositionAt: response.page.nextBeforeAt,
@@ -1643,6 +1661,7 @@ export async function loadMessageContext(
                     && snapshotHead !== null
                     && comparePosition(contextNewest, snapshotHead) < 0,
                 requiresLatestReset: true,
+                tailEvictedWhileFollowing: false,
                 isLoadingMore: false,
                 historyVersion: previous.historyVersion + 1,
                 warning: null
@@ -1822,11 +1841,17 @@ export function setMessageViewMode(sessionId: string, mode: MessageViewMode): vo
         messageWindowTargetLocks.delete(sessionId)
     }
     updateState(sessionId, (previous) => {
-        if (previous.viewMode === mode) {
-            return previous
-        }
         if (mode === 'history') {
-            return buildState(previous, { viewMode: 'history' })
+            if (previous.viewMode === 'history' && !previous.tailEvictedWhileFollowing) {
+                return previous
+            }
+            return buildState(previous, {
+                viewMode: 'history',
+                tailEvictedWhileFollowing: false
+            })
+        }
+        if (previous.viewMode === 'tail') {
+            return previous
         }
         return enterTailMode(previous)
     }, true)
@@ -1907,6 +1932,7 @@ function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedM
         newestPositionAt: null,
         newestPositionSeq: null,
         requiresLatestReset: true,
+        tailEvictedWhileFollowing: false,
         preferLatestOnActivation: false,
         isSyncingTail: true,
         isLoadingMore: false,
@@ -2013,7 +2039,6 @@ export function reconcileQueuedLocalIds(
 export function appendOptimisticMessage(sessionId: string, message: DecryptedMessage): void {
     updateState(sessionId, (previous) => {
         return mergeIntoWindow(previous, [message], {
-            mode: previous.viewMode === 'history' ? 'prepend' : 'append',
             advanceTailRevision: true
         })
     }, true)

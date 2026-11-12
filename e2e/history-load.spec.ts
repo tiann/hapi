@@ -802,4 +802,14 @@ test('concise view reaches preceding conversation and finishes loading when 900 
 
     await page.waitForTimeout(500)
     await expect(page.getByText('Fixture message 300', { exact: true })).toBeVisible()
+    // A jump-to-latest control stays available while the tail has been evicted.
+    await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
+
+    // Delivering an SSE final reply while auto-follow is still enabled must
+    // append and render the reply rather than discarding it under the 600-row
+    // user-selected history prepend budget.
+    await page.evaluate(() => {
+        window.__probe.deliverLiveFinalReply('Live final reply 1201')
+    })
+    await expect(page.getByText('Live final reply 1201', { exact: true })).toBeVisible()
 })

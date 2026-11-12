@@ -1394,7 +1394,10 @@ describe('concise view history coverage', () => {
             await Promise.resolve()
         })
         expect(onLoadMore).toHaveBeenCalledTimes(1)
-        expect(onViewModeChange).toHaveBeenLastCalledWith('history')
+        // Automatic concise coverage does not mark the window as user-selected
+        // history via onViewModeChange('history'), while still rendering the
+        // jump-to-latest button once the tail has been evicted.
+        expect(result.getByRole('button', { name: 'Scroll to bottom' })).toBeTruthy()
 
         // When the older page renders visible preceding messages, initial
         // scroll settling must not re-enter tail mode (which would reset back

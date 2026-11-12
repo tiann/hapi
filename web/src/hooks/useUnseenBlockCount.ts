@@ -28,6 +28,8 @@ export function useUnseenBlockCount(
     if (viewMode !== prevViewMode) {
         setPrevViewMode(viewMode)
         setWatermark(viewMode === 'history' ? createUnseenWatermark(blocks) : null)
+    } else if (viewMode === 'history' && watermark !== null && watermark.ids.size === 0 && blocks.length > 0) {
+        setWatermark(createUnseenWatermark(blocks))
     }
 
     return useMemo(() => countUnseenBlocks(blocks, watermark), [blocks, watermark])

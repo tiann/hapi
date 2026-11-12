@@ -16,8 +16,9 @@ import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState, getRegularPrependBudgetCount } from '../src/lib/message-window-store'
+import { getMessageWindowState, getRegularPrependBudgetCount, ingestIncomingMessages } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
+import { useUnseenBlockCount } from '../src/hooks/useUnseenBlockCount'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -37,6 +38,7 @@ type Probe = {
     releaseBefore: () => void
     setConciseMode: (enabled: boolean) => void
     switchSession: (nextSessionId: string) => void
+    deliverLiveFinalReply: (text: string) => void
     windowState: () => {
         messageCount: number
         oldestSeq: number | null
@@ -74,6 +76,28 @@ window.__probe = {
     },
     setConciseMode: () => {},
     switchSession: () => {},
+    deliverLiveFinalReply: (text: string) => {
+        const seq = allMessages.length + 1
+        const message = {
+            id: `m-${seq}`,
+            seq,
+            localId: null,
+            content: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'message',
+                        message: text
+                    }
+                }
+            },
+            createdAt: BASE_AT + seq,
+            invokedAt: BASE_AT + seq
+        } as DecryptedMessage
+        allMessages.push(message)
+        ingestIncomingMessages(activeSessionIdForProbe, [message])
+    },
     windowState: () => {
         const state = getMessageWindowState(activeSessionIdForProbe)
         return {
@@ -345,12 +369,14 @@ function FixtureThread() {
         isSyncingTail,
         isLoadingMore,
         hasMore,
+        viewMode,
         messagesVersion,
         historyVersion,
         loadMore,
         cancelLoadMore,
         refetch,
-        setViewMode
+        setViewMode,
+        jumpToTail
     } = useMessages(fakeApi, sessionId)
 
     window.__probe.loadMore = loadMore
@@ -393,6 +419,7 @@ function FixtureThread() {
         () => buildVisibleChatBlocks(threadBlocks, { hasMoreMessages: hasMore }),
         [threadBlocks, hasMore]
     )
+    const unseenCount = useUnseenBlockCount(viewMode, visibleBlocks)
 
     const runtime = useHappyRuntime({
         session: activeSession,
@@ -426,15 +453,14 @@ function FixtureThread() {
                         disabled={false}
                         onRefresh={() => {}}
                         onViewModeChange={setViewMode}
+                        onJumpToTail={jumpToTail}
                         isSyncingTail={isSyncingTail}
                         messagesWarning={warning}
                         hasMoreMessages={hasMore}
                         isLoadingMoreMessages={isLoadingMore}
                         onLoadMore={loadMore}
                         onCancelLoadMore={cancelLoadMore}
-                        // This fixture drives HappyThread directly, bypassing the
-                        // SessionChat block reduction that computes the real count.
-                        unseenCount={0}
+                        unseenCount={unseenCount}
                         rawMessagesCount={visibleMessages.length}
                         retainedMessagesCount={retainedMessagesCount}
                         normalizedMessagesCount={normalizedMessages.length}
