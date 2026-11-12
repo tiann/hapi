@@ -554,6 +554,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             }));
                             session.onNativeInputSubmitted?.(nativePromptUuid);
                         },
+                        onUpdateClaudeArgs: (update) => {
+                            session.claudeArgs = update(session.claudeArgs);
+                        },
                         nextMessage: async () => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires

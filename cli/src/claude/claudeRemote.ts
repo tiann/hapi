@@ -102,6 +102,9 @@ export async function claudeRemote(opts: {
     onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void,
+    /** Apply a transformation to the launcher session's claudeArgs in place
+     * (one-shot flag consumption after the native boundary materialized). */
+    onUpdateClaudeArgs?: (update: (args: string[] | undefined) => string[] | undefined) => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
     onSteerTargetChange?: (target: ClaudeSteerTarget | null) => void
 }) {
@@ -375,6 +378,29 @@ export async function claudeRemote(opts: {
         }
         initial = first;
         return true;
+    };
+
+    // One-shot boundary flags: --resume-session-at truncates at spawn time and
+    // must never re-apply on a later relaunch of this process - a fork child
+    // (or a settled rewind) that gains new turns would have them truncated
+    // from native context again while the hub transcript keeps them. The
+    // pending-rewind re-arm is the exception: the runner re-writes the flag
+    // into claudeArgs for each respawn until the durable intent settles, so
+    // consuming it here cannot break rewind crash consistency.
+    const consumeResumeAtFlag = (): void => {
+        if (resumeSessionAt === undefined) return;
+        opts.onUpdateClaudeArgs?.((args) => {
+            if (!args) return args;
+            const filtered: string[] = [];
+            for (let i = 0; i < args.length; i++) {
+                if (args[i] === '--resume-session-at' && i + 1 < args.length) {
+                    i++;
+                    continue;
+                }
+                filtered.push(args[i]!);
+            }
+            return filtered;
+        });
     };
 
     // Prepare SDK options. For --fork-session, start query() before waiting for the
@@ -773,6 +799,10 @@ export async function claudeRemote(opts: {
                         : undefined;
                     opts.onSessionFound(systemInit.session_id, extras);
                 }
+
+                // The boundary truncation materialized with this init: consume
+                // the one-shot flag so later relaunches keep post-boundary turns.
+                consumeResumeAtFlag();
 
                 // Fallback unlock when no SessionStart hook ran: only accept
                 // the first prompt once the native branch exists (init).
