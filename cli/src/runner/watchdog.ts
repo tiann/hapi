@@ -16,11 +16,12 @@
  *    watchdog can refuse to kill a recycled pid.
  * 2. A macOS LaunchAgent runs a pure-bash watchdog script every 60s. If the
  *    heartbeat is stale while its recorded pid still looks like a live
- *    `hapi runner start` process AND the runner advertised a supervisor, the
- *    script kill -9's that exact pid so the external guard can respawn a
- *    fresh runner. An unsupervised runner is never killed: nothing would
- *    restart it, so the kill would trade a frozen-but-recoverable machine
- *    for an offline one.
+ *    runner process (`hapi runner start`, or `… index.ts runner start`
+ *    when launched from a source checkout) AND the runner advertised a
+ *    supervisor, the script kill -9's that exact pid so the external guard
+ *    can respawn a fresh runner. An unsupervised runner is never killed:
+ *    nothing would restart it, so the kill would trade a frozen but
+ *    recoverable machine for an offline one.
  *
  * Per-instance scoping: every piece of watchdog state (heartbeat file,
  * script, launchd label, kill victim) is keyed to the runner's HAPI_HOME.
@@ -46,7 +47,18 @@ import { getProcessStartMarker } from '@/utils/process';
 
 export const WATCHDOG_LABEL = 'com.hapi.watchdog';
 export const WATCHDOG_STALE_SECONDS = 300;
-export const WATCHDOG_RUNNER_PATTERN = 'hapi runner start';
+/**
+ * pgrep -f pattern (ERE) recognizing a live runner process in EITHER launch
+ * shape: the compiled CLI (`hapi runner start`, bare or path-prefixed) or a
+ * source checkout (`bun …/hapi/cli/src/index.ts runner start`) — a
+ * checkout-launched runner needs the same watchdog protection as a compiled
+ * one, and its recorded pid must pass the script's pattern-membership
+ * check too (a pattern it cannot match would silently disarm both).
+ * Deliberately a narrow union: a bare `runner start` would match unrelated
+ * processes, and neither alternative matches the watchdog script itself
+ * (/bin/bash …/watchdog.sh).
+ */
+export const WATCHDOG_RUNNER_PATTERN = '(hapi|index\\.ts) runner start';
 export const WATCHDOG_INTERVAL_SECONDS = 60;
 
 /**
@@ -113,7 +125,7 @@ function runnerProcessStartMarker(pid: number): string | null {
  * unsupervised runner overwrites a stale supervised marker before it can
  * authorize a kill. The third line records THIS runner's pid so the
  * watchdog's victim selection is exact (see buildWatchdogScript) instead of
- * guessing among every `hapi runner start` process on the machine, and the
+ * guessing among every runner process on the machine, and the
  * fourth line records the process start time of that pid so the watchdog
  * can detect OS pid reuse before acting on the claim (an empty marker means
  * "generation unknown"; the script then falls back to its pattern check).
@@ -178,15 +190,19 @@ export interface WatchdogScriptOptions {
     runnerPattern?: string;
     label?: string;
     /**
-     * Fall back to the historical oldest-pgrep-hit victim when the heartbeat
-     * carries no pid line (pre per-instance-scoping writers). Only valid for
-     * the DEFAULT home's upgrade-transition script: pre-scoping runners ran
-     * under the single-instance premise (every instance shared one
-     * heartbeat), so the heuristic is as exact as victim selection ever was
-     * there — and without the fallback the transition would silently disarm
-     * the watchdog protecting a still-running old runner. A home owned by a
-     * current runner must never set this: on a multi-instance machine the
-     * oldest pgrep hit can be a different, healthy instance.
+     * Fall back to a pgrep-selected victim when the heartbeat carries no
+     * pid line (pre per-instance-scoping writers). Only valid for the
+     * DEFAULT home's upgrade-transition script: without any fallback the
+     * transition would silently disarm the watchdog protecting a
+     * still-running old runner. The fallback is narrowed to the one case a
+     * pid-less heartbeat can still prove: pgrep must return EXACTLY ONE
+     * candidate. With several candidates (a runner from another HAPI_HOME,
+     * or lock-less default-home processes from source checkouts / old
+     * versions) the heartbeat cannot say which one it belongs to, so the
+     * script logs and skips instead of guessing. A home owned by a current
+     * runner must never set this: its heartbeats always carry a pid, and on
+     * a multi-instance machine any pgrep pick can be a different, healthy
+     * instance.
      */
     legacyHeartbeatVictimFallback?: boolean;
 }
@@ -195,9 +211,18 @@ export interface WatchdogScriptOptions {
 function legacyVictimFallbackBlock(): string {
     return `  # Legacy heartbeat (pre per-instance-scoping writer): timestamp and
   # supervision claim only, no pid line. This script shape is generated for
-  # the DEFAULT home alone, whose pre-scoping runners ran under the
-  # single-instance premise, so the historical oldest-pgrep-hit victim stays
-  # as faithful as victim selection ever was there.
+  # the DEFAULT home alone — but the single-instance premise those old
+  # runners ran under no longer holds on today's machines (runners from
+  # other HAPI_HOMEs, lock-less default-home processes from source
+  # checkouts or old versions all match the same pattern), so the
+  # historical first-pgrep-line pick would be a guess that can kill a
+  # healthy instance. Only act when the process table itself proves the
+  # premise: exactly ONE matching candidate.
+  candidate_count=$(printf '%s\\n' "$pids" | grep -c .)
+  if [ "$candidate_count" -ne 1 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') stale runner heartbeat: age=\${age}s but pgrep found \${candidate_count} runner processes; cannot tell which one owns the legacy heartbeat, not killing" >> "$LOG_PATH" 2>/dev/null || true
+    exit 0
+  fi
   pid=$(printf '%s\\n' "$pids" | head -n 1)
   if [ -z "$pid" ] || [ "$pid" = "$$" ]; then
     exit 0
@@ -270,12 +295,12 @@ fi
 
 # Victim selection must be instance-exact: the heartbeat's third line
 # records the pid of the runner that owns THIS heartbeat file. A bare
-# \`pgrep -f\` matches every \`hapi runner start\` process on the machine —
-# including runner instances from other HAPI_HOMEs — so killing the oldest
-# pgrep hit could kill the wrong instance. Only kill the recorded pid, and
-# only while it still matches the runner pattern (guards against OS pid
-# reuse). A recorded pid that no longer matches is never substituted with a
-# guess: skip and let the guard do its job.
+# \`pgrep -f\` matches every runner process on the machine — both launch
+# shapes, including runner instances from other HAPI_HOMEs — so picking
+# any pgrep line could kill the wrong instance. Only kill the recorded
+# pid, and only while it still matches the runner pattern (guards against
+# OS pid reuse). A recorded pid that no longer matches is never
+# substituted with a guess: skip and let the guard do its job.
 pid=$(sed -n '3p' "$HEARTBEAT" 2>/dev/null | tr -d '[:space:]')
 if [ -z "$pid" ]; then
 ${legacyFallback}fi
@@ -447,18 +472,20 @@ export async function ensureWatchdogInstalled(): Promise<WatchdogInstallResult> 
         chmodSync(scriptPath, 0o755);
 
         // Upgrade transition: a runner from before per-instance scoping may
-        // have left a default-home script whose pgrep-oldest victim logic
-        // can no longer be trusted on a multi-instance machine. Rewrite the
-        // default-home script with the pid-exact form. Unlike a home owned
-        // by a current runner, the default home may still be running its
-        // pre-scoping runner, whose heartbeats carry no pid line — for that
-        // writer the script keeps the historical oldest-pgrep-hit victim
-        // (valid under the pre-scoping single-instance premise), so the
-        // rewrite stays protection-equivalent instead of silently disarming
-        // the default home's watchdog. The stale threshold is preserved
-        // from the installed script (this instance's env-derived value
-        // describes a home it does not own). Never removes the default
-        // label itself: a concurrent default-home instance owns it.
+        // have left a default-home script whose first-pgrep-line victim
+        // logic can no longer be trusted on a multi-instance machine.
+        // Rewrite the default-home script with the pid-exact form. Unlike a
+        // home owned by a current runner, the default home may still be
+        // running its pre-scoping runner, whose heartbeats carry no pid
+        // line — for that writer the script keeps a legacy fallback narrowed
+        // to a UNIQUE pgrep candidate (the single-instance premise those
+        // runners ran under, re-proven against the live process table;
+        // several candidates are logged and skipped, never guessed at), so
+        // the rewrite stays protection-equivalent instead of silently
+        // disarming the default home's watchdog. The stale threshold is
+        // preserved from the installed script (this instance's env-derived
+        // value describes a home it does not own). Never removes the
+        // default label itself: a concurrent default-home instance owns it.
         if (label !== WATCHDOG_LABEL) {
             try {
                 const defaultHome = resolveHapiHomeDir({ ...process.env, HAPI_HOME: undefined });

@@ -79,7 +79,7 @@ describe('buildWatchdogScript', () => {
     expect(script).toContain('set -u');
     expect(script).toContain("HEARTBEAT='/Users/tester/.hapi/runner-heartbeat'");
     expect(script).toContain('STALE_SECONDS=300');
-    expect(script).toContain("RUNNER_PATTERN='hapi runner start'");
+    expect(script).toContain("RUNNER_PATTERN='(hapi|index\\.ts) runner start'");
     expect(script).toContain("LOG_PATH='/Users/tester/.hapi/logs/watchdog.log'");
     // darwin-first stat probe with a linux fallback
     expect(script).toContain('stat -f %m "$HEARTBEAT"');
@@ -136,7 +136,7 @@ describe('buildWatchdogScript', () => {
     expect(script).toContain('(pid reuse); not killing');
   });
 
-  it('keeps the historical oldest-pgrep victim only for explicitly legacy scripts', async () => {
+  it('narrows the legacy fallback to a unique pgrep candidate', async () => {
     const { buildWatchdogScript } = await import('./watchdog');
 
     const legacy = buildWatchdogScript({
@@ -146,12 +146,41 @@ describe('buildWatchdogScript', () => {
     });
 
     // The legacy branch is the fallback for heartbeats WITHOUT a pid line
-    // (pre per-instance-scoping writers) only…
+    // (pre per-instance-scoping writers) only, and it may act only when
+    // pgrep proves the single-instance premise: exactly one candidate.
+    // Several candidates (another HAPI_HOME's runner, a lock-less
+    // source-checkout launch) cannot be attributed to a pid-less
+    // heartbeat — log and skip, never guess.
+    expect(legacy).toContain('| grep -c .');
+    expect(legacy).toContain('[ "$candidate_count" -ne 1 ]');
+    expect(legacy).toContain('cannot tell which one owns the legacy heartbeat, not killing');
+    // The sole surviving candidate becomes the victim…
     expect(legacy).toContain('| head -n 1');
     // …while a heartbeat that does carry a pid claim still gets exact
     // victim selection plus the generation check.
     expect(legacy).toContain("pid=$(sed -n '3p' \"$HEARTBEAT\"");
     expect(legacy).toContain('LC_ALL=C TZ=UTC ps -p "$pid" -o lstart=');
+  });
+
+  it('matches both compiled and source-checkout launch shapes, nothing wider', async () => {
+    const { WATCHDOG_RUNNER_PATTERN } = await import('./watchdog');
+
+    // A runner launched from a source checkout (`bun …/index.ts runner
+    // start`) used to be invisible to the bare `hapi runner start`
+    // pattern, silently disarming the watchdog for it. The fix is a
+    // narrow union; these checks lock its ERE semantics (the script tests
+    // additionally prove it against the host's real pgrep).
+    expect(WATCHDOG_RUNNER_PATTERN).toBe('(hapi|index\\.ts) runner start');
+    const pattern = new RegExp(WATCHDOG_RUNNER_PATTERN);
+    expect(pattern.test('hapi runner start')).toBe(true);
+    expect(pattern.test('/usr/local/bin/hapi runner start --workspace-root /w')).toBe(true);
+    expect(pattern.test('bun /Users/x/repo/hapi/cli/src/index.ts runner start')).toBe(true);
+    expect(pattern.test('bun run /repo/hapi/cli/src/index.ts runner start')).toBe(true);
+    // Not so wide that arbitrary "runner start" processes match…
+    expect(pattern.test('mything runner start')).toBe(false);
+    expect(pattern.test('runner start')).toBe(false);
+    // …and the watchdog script itself never matches its own pattern.
+    expect(pattern.test('/bin/bash /Users/x/.hapi/watchdog.sh')).toBe(false);
   });
 
   it('honors custom staleSeconds and runnerPattern', async () => {
@@ -358,7 +387,7 @@ describe('ensureWatchdogInstalled', () => {
     const [scriptFile, scriptContent] = writeFileSyncMock.mock.calls[0] as unknown[];
     expect(scriptFile).toBe(scriptPath);
     expect(String(scriptContent)).toContain('STALE_SECONDS=300');
-    expect(String(scriptContent)).toContain("RUNNER_PATTERN='hapi runner start'");
+    expect(String(scriptContent)).toContain("RUNNER_PATTERN='(hapi|index\\.ts) runner start'");
     // The default-home runner owns its script: strict pid-exact victim
     // selection, no legacy oldest-pgrep fallback.
     expect(String(scriptContent)).not.toContain('head -n 1');
