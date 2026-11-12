@@ -33,6 +33,7 @@ const VIEW: ForkPreviewView = {
     excludedTurns: [],
     prefixTruncated: false,
     excludedTruncated: false,
+    excludedHidden: 0,
     counts: { kept: 3, excluded: 1 }
 }
 

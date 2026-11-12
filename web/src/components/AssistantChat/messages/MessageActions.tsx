@@ -63,9 +63,7 @@ export function MessageActions({
     const threadIsRunning = useAuiState((state) => selectThreadIsRunning(state))
     const canCopy = Boolean(copyText)
     const hasMetadata = metadata ? buildMessageMetadataLabels(metadata).length > 0 : false
-    const [rewindOpen, setRewindOpen] = useState(false)
-    const [rewindPending, setRewindPending] = useState(false)
-    const actionsLocked = historyActionPending || rewindPending
+    const actionsLocked = historyActionPending
 
     const shareButton = messageElementId ? (
         <ShareTurnButton
@@ -79,7 +77,7 @@ export function MessageActions({
             {showRewind && onRewind && !threadIsRunning ? (
                 <MessageActionButton
                     label={t('message.rewind')}
-                    onClick={() => setRewindOpen(true)}
+                    onClick={() => { void onRewind() }}
                 >
                     <RewindIcon className="h-3.5 w-3.5" />
                 </MessageActionButton>
@@ -124,30 +122,6 @@ export function MessageActions({
                 {align === 'start' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
                 {align === 'start' ? <DesktopTimestamp /> : null}
             </div>
-
-            <ConfirmDialog
-                isOpen={rewindOpen}
-                onClose={() => {
-                    if (!rewindPending) setRewindOpen(false)
-                }}
-                title={t('message.rewind.confirmTitle')}
-                description={t('message.rewind.confirmDescription')}
-                confirmLabel={t('message.rewind')}
-                confirmingLabel={t('message.rewind.confirming')}
-                isPending={rewindPending}
-                destructive
-                centerTitle
-                onConfirm={async () => {
-                    if (!onRewind) return
-                    setRewindPending(true)
-                    try {
-                        await onRewind()
-                        setRewindOpen(false)
-                    } finally {
-                        setRewindPending(false)
-                    }
-                }}
-            />
         </>
     )
 }

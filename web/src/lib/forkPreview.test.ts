@@ -110,12 +110,31 @@ describe('buildForkPreviewView', () => {
         }))
         expect(view.kind).toBe('rewind')
         expect(view.boundaryText).toBe('second question')
+        // The boundary row is quoted once; the removed list starts after it.
         expect(view.excludedTurns).toEqual([
-            { role: 'user', text: 'second question' },
             { role: 'assistant', text: 'second answer' }
         ])
         expect(view.excludedTruncated).toBe(true)
+        expect(view.excludedHidden).toBe(3)
         expect(view.counts.excluded).toBe(5)
+    })
+
+    it('does not repeat the boundary row in the rewind removed list', () => {
+        const view = buildForkPreviewView(response({
+            mode: 'rewind',
+            boundary: { v: 1, mode: 'rewind', messageLocalId: 'u2-local', epoch: 1, tailSeq: 6 },
+            keptTail: [userRow('u1', 1, 'first question')],
+            excluded: [
+                userRow('u2', 3, 'second question'),
+                agentRow('a2', 4, 'second answer'),
+                userRow('u3', 5, 'third question')
+            ],
+            counts: { kept: 1, excluded: 3 }
+        }))
+        expect(view.boundaryText).toBe('second question')
+        expect(view.excludedTurns.map((turn) => turn.text)).toEqual(['second answer', 'third question'])
+        expect(view.excludedTruncated).toBe(false)
+        expect(view.excludedHidden).toBe(0)
     })
 
     it('marks the rewind region complete when everything deleted is shown', () => {

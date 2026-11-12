@@ -37,11 +37,11 @@ export type ForkPreviewRequest = z.infer<typeof ForkPreviewRequestSchema>
  *  web can run its regular normalize/reduce pipeline for display. */
 export type ForkPreviewRow = {
     id: string
-    seq: number
+    seq: number | null
     localId: string | null
     content: unknown
     createdAt: number
-    invokedAt: number | null
+    invokedAt?: number | null
 }
 
 /** Read-only answer from the boundary owner; carrying the confirm token. */

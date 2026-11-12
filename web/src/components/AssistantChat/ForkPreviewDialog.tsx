@@ -98,7 +98,7 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
                                     ))}
                                     {view.excludedTruncated ? (
                                         <div className="text-center text-[10px] text-red-600 dark:text-red-400">
-                                            {t('forkPreview.excludedTruncated', { n: view.counts.excluded })}
+                                            {t('forkPreview.excludedTruncated', { n: view.excludedHidden })}
                                         </div>
                                     ) : (
                                         <div className="text-center text-[10px] text-red-600 dark:text-red-400">

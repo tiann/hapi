@@ -15,12 +15,15 @@ export type ForkPreviewView = {
     keptTurns: ForkPreviewTurn[]
     /** Text of the first row beyond the fork cut; null when nothing is excluded. */
     boundaryText: string | null
-    /** rewind only: compact text turns the source would delete. */
+    /** rewind only: compact text turns the source would delete, starting AFTER
+     *  the boundary row (the boundary itself is quoted once, not repeated). */
     excludedTurns: ForkPreviewTurn[]
     /** True when the preview omits copied content (hub window or non-text rows). */
     prefixTruncated: boolean
     /** rewind only: true when more rows would be deleted than shown. */
     excludedTruncated: boolean
+    /** rewind only: deleted rows visible nowhere (beyond the previewed window). */
+    excludedHidden: number
     counts: { kept: number; excluded: number }
 }
 
@@ -87,21 +90,26 @@ function compactTurns(blocks: VisibleChatBlock[]): { turns: ForkPreviewTurn[]; i
 export function buildForkPreviewView(response: ForkPreviewResponse): ForkPreviewView {
     const keptBlocks = rowsToBlocks(response.keptTail)
     const kept = compactTurns(keptBlocks)
-    const excludedBlocks = rowsToBlocks(response.excluded)
-    const excluded = compactTurns(excludedBlocks)
     const keptTurns = kept.turns.slice(-MAX_KEPT_TURNS)
+    // The boundary row (always excluded[0]) is quoted once in the boundary box;
+    // the rewind removed list starts after it so the boundary message, which
+    // the source keeps, is never rendered as a deleted row too.
+    const boundaryText = compactTurns(rowsToBlocks(response.excluded.slice(0, 1)))
+        .turns[0]?.text ?? null
+    const removed = compactTurns(rowsToBlocks(
+        response.mode === 'rewind' ? response.excluded.slice(1) : []
+    ))
     return {
         kind: response.mode,
         keptTurns,
-        boundaryText: response.excluded.length > 0
-            ? (excluded.turns[0]?.text ?? null)
-            : null,
-        excludedTurns: response.mode === 'rewind' ? excluded.turns : [],
+        boundaryText,
+        excludedTurns: removed.turns,
         prefixTruncated: kept.incomplete
             || kept.turns.length > keptTurns.length
             || response.counts.kept > response.keptTail.length,
         excludedTruncated: response.mode === 'rewind'
             && response.counts.excluded > response.excluded.length,
+        excludedHidden: Math.max(0, response.counts.excluded - response.excluded.length),
         counts: response.counts
     }
 }

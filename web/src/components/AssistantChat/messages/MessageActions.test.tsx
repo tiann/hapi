@@ -226,12 +226,9 @@ describe('MessageActions', () => {
         expect(screen.queryByRole('dialog')).toBeNull()
     })
 
-    it('localizes the Rewind confirmation dialog in Simplified Chinese', async () => {
+    it('invokes Rewind directly without a confirmation dialog', async () => {
         localStorage.setItem('hapi-lang', 'zh-CN')
-        let resolveRewind: (() => void) | undefined
-        const onRewind = vi.fn(() => new Promise<void>((resolve) => {
-            resolveRewind = resolve
-        }))
+        const onRewind = vi.fn(async () => {})
 
         renderActions({
             align: 'end',
@@ -241,31 +238,8 @@ describe('MessageActions', () => {
         })
 
         fireEvent.click(screen.getByRole('button', { name: '回退' }))
-        const dialog = screen.getByRole('dialog')
-        expect(dialog.textContent).toContain('回退对话')
-        expect(dialog.textContent).toContain('将此会话回退到此处？')
-        expect(dialog.textContent).toContain('将此会话回退到此处？之后的对话历史将永久移除。文件不会被修改。')
-
-        fireEvent.click(within(dialog).getByRole('button', { name: '回退' }))
-        expect(onRewind).toHaveBeenCalledTimes(1)
-        expect(within(dialog).getByRole('button', { name: '回退中…' })).not.toBeNull()
-
-        resolveRewind?.()
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    })
-
-    it('centers the Rewind confirmation title like other ConfirmDialogs', () => {
-        renderActions({
-            align: 'end',
-            copyText: 'body',
-            showFork: true,
-            showRewind: true,
-            onFork: async () => {},
-            onRewind: async () => {}
-        })
-
-        fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
-        expect(screen.getByRole('dialog')).toHaveAttribute('data-center-title', 'true')
+        await waitFor(() => expect(onRewind).toHaveBeenCalledTimes(1))
+        expect(screen.queryByRole('dialog')).toBeNull()
     })
 
     it('hides Fork and Rewind while the thread is running', () => {
@@ -328,31 +302,19 @@ describe('MessageActions', () => {
         expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
     })
 
-    it('hides all history actions while a confirmation is pending', async () => {
-        let resolveRewind: (() => void) | undefined
-        const onRewind = vi.fn(() => new Promise<void>((resolve) => {
-            resolveRewind = resolve
-        }))
-
+    it('hides all history actions while a history action is pending', () => {
         renderActions({
             align: 'end',
             copyText: 'body',
             showFork: true,
             showRewind: true,
+            historyActionPending: true,
             onFork: async () => {},
-            onRewind
+            onRewind: async () => {}
         })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
-        fireEvent.click(screen.getAllByRole('button', { name: 'Rewind' }).at(-1)!)
-
-        await waitFor(() => {
-            expect(document.querySelector('.happy-message-actions')?.querySelectorAll('button')).toHaveLength(1)
-        })
         expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
-
-        resolveRewind?.()
-        await waitFor(() => expect(onRewind).toHaveBeenCalledTimes(1))
+        expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
     })
 
     it('orders user actions as Share, Rewind, Fork, Copy', () => {
@@ -424,19 +386,12 @@ describe('MessageActions', () => {
         expect(screen.queryByText('Fork conversation')).toBeNull()
     })
 
-    it('shows Rewind destructive confirm and calls onRewind only after confirm', async () => {
+    it('calls onRewind immediately when the Rewind action is clicked', async () => {
         const onRewind = vi.fn(async () => {})
         renderActions({ align: 'end', copyText: 'body', showRewind: true, onRewind })
 
         fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
-        expect(onRewind).not.toHaveBeenCalled()
-        expect(screen.getByText('Rewind conversation')).toBeTruthy()
-
-        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-        expect(onRewind).not.toHaveBeenCalled()
-
-        fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
-        fireEvent.click(screen.getAllByRole('button', { name: 'Rewind' }).at(-1)!)
-        expect(onRewind).toHaveBeenCalledTimes(1)
+        await waitFor(() => expect(onRewind).toHaveBeenCalledTimes(1))
+        expect(screen.queryByText('Rewind conversation')).toBeNull()
     })
 })

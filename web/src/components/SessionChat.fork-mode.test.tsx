@@ -224,8 +224,8 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
             mode: 'rewind',
             boundary: { v: 1, mode: 'rewind', messageLocalId: 'u2-local', epoch: 1, tailSeq: 4 },
             keptTail: [userRow('u1', 1, 'first question')],
-            excluded: [userRow('u2', 3, 'second question')],
-            counts: { kept: 1, excluded: 1 }
+            excluded: [userRow('u2', 3, 'second question'), agentRow('a2', 4, 'second answer')],
+            counts: { kept: 1, excluded: 2 }
         }
         const forkPreview = vi.fn()
         forkPreview.mockResolvedValueOnce(rewindResponse)

@@ -48,8 +48,10 @@ type UseForkFlowOptions = {
     api: ApiClient
     /** Called with the child session id after a confirmed fork. */
     onForked: (childSessionId: string) => void
-    /** Called after a confirmed rewind (refresh the message window). */
-    onRewound?: () => void | Promise<void>
+    /** Called with the boundary localId after a confirmed rewind. */
+    onRewound?: (messageLocalId: string) => void | Promise<void>
+    /** The runner can only fork at this boundary instead of rewinding. */
+    onRewindForkSafeFallback?: (messageLocalId: string) => void
 }
 
 function apiErrorText(error: unknown, fallback: string): string {
@@ -72,7 +74,7 @@ function apiErrorText(error: unknown, fallback: string): string {
  * 404 (older hub) falls back to the legacy confirm dialog.
  */
 export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
-    const { api, onForked, onRewound } = options
+    const { api, onForked, onRewound, onRewindForkSafeFallback } = options
     const { t } = useTranslation()
     const [state, setState] = useState<ForkFlowState | null>(null)
     const [loading, setLoading] = useState(false)
@@ -135,7 +137,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         if (request.intent === 'rewind') {
             await api.rewindConversation(target.id, request.messageLocalId!)
             closePreview()
-            await onRewound?.()
+            await onRewound?.(request.messageLocalId!)
             return
         }
         const supportsCompletedFork = (target as unknown as {
@@ -157,7 +159,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
             if (intent === 'rewind') {
                 await api.rewindConversation(sessionRef.current.id, messageLocalId!, boundary)
                 closePreview()
-                await onRewound?.()
+                await onRewound?.(messageLocalId!)
                 return
             }
             const message = intent === 'message' ? messageLocalId : undefined
@@ -173,9 +175,15 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
                 await fetchPreview(intent, messageLocalId)
                 return
             }
+            if (intent === 'rewind' && error instanceof ApiError
+                && error.code === 'ambiguous_native_boundary_fork_safe') {
+                closePreview()
+                onRewindForkSafeFallback?.(messageLocalId!)
+                return
+            }
             throw error
         }
-    }, [api, closePreview, fetchPreview, onForked, onRewound])
+    }, [api, closePreview, fetchPreview, onForked, onRewindForkSafeFallback, onRewound])
 
     // The hub resolves the mode from the live session. Re-answer the preview
     // while the dialog is open when the source starts or stops running, so the
