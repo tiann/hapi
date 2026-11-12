@@ -164,6 +164,28 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         expect(backend.respondToPermission).not.toHaveBeenCalled()
     })
 
+    it('never auto-approves an unclassifiable request from title keywords alone', async () => {
+        // Regression: the title-keyword auto-approve path used to run
+        // before the unclassifiable guard, so a berry-style request (no
+        // kind, no rawInput) whose human summary happened to contain an
+        // auto-approve keyword ('think', 'hapi_change_title', 'list peer
+        // sessions') was approved in every mode. The summary is prose, not
+        // a tool classification — the request must surface to the user.
+        const { backend, request } = setup('default', { sessionScopedPermissionGrants: true })
+        request({
+            id: 'perm-kw-1',
+            sessionId: 'acp-1',
+            toolCallId: 'APPROVAL-abc',
+            title: 'Think about saving memory of the hapi_change_title step',
+            options: [
+                { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        } as PermissionRequest)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(backend.respondToPermission).not.toHaveBeenCalled()
+    })
+
     it('never auto-answers a request the agent marks as needing the user', () => {
         const { backend, client, request } = setup('always-proceed', { requiresUser: () => true })
 
