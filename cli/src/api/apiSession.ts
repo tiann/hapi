@@ -256,6 +256,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
+    private currentPermissionMode: SessionPermissionMode | undefined
     private readonly incomingFilter = new IncomingMessageFilter()
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -299,6 +300,7 @@ export class ApiSessionClient extends EventEmitter {
         this.token = token
         this.sessionId = session.id
         this.metadata = session.metadata
+        this.currentPermissionMode = session.permissionMode ?? undefined
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
         this.agentStateVersion = session.agentStateVersion
@@ -987,7 +989,12 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
-        this.attachmentCompatibility.enqueue(body, this.metadata?.path, media => this.sendAgentMessage(media))
+        this.attachmentCompatibility.enqueue(
+            body,
+            this.metadata?.path,
+            media => this.sendAgentMessage(media),
+            { permissionMode: this.getEffectivePermissionMode() }
+        )
         let content: MessageContent
         // Preserve transcript time for agent output and genuine local input.
         // Replaying a historical user row must not promote the session as if
@@ -1087,7 +1094,12 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     sendAgentMessage(body: unknown, localId?: string): void {
-        this.attachmentCompatibility.enqueue(body, this.metadata?.path, media => this.sendAgentMessage(media))
+        this.attachmentCompatibility.enqueue(
+            body,
+            this.metadata?.path,
+            media => this.sendAgentMessage(media),
+            { permissionMode: this.getEffectivePermissionMode() }
+        )
         const content = {
             role: 'agent',
             content: {
@@ -1136,6 +1148,10 @@ export class ApiSessionClient extends EventEmitter {
         tokensAfter?: number
         estimatedTokensAfter?: number
     }, id?: string, options?: { localId: string }): void {
+        if (event.type === 'permission-mode-changed') {
+            this.currentPermissionMode = event.mode
+        }
+
         const content = {
             role: 'agent',
             content: {
@@ -1226,6 +1242,18 @@ export class ApiSessionClient extends EventEmitter {
         }, 30)
     }
 
+    getEffectivePermissionMode(): SessionPermissionMode | undefined {
+        return this.currentPermissionMode ?? this.latestKeepAlive?.permissionMode
+    }
+
+    setPermissionMode(mode: SessionPermissionMode): void {
+        this.currentPermissionMode = mode
+    }
+
+    markAttachmentDenied(path: string): void {
+        this.attachmentCompatibility.markDenied(path)
+    }
+
     keepAlive(
         thinking: boolean,
         mode: 'local' | 'remote' | undefined,
@@ -1239,6 +1267,9 @@ export class ApiSessionClient extends EventEmitter {
             copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
         }
     ): void {
+        if (runtime?.permissionMode) {
+            this.currentPermissionMode = runtime.permissionMode
+        }
         this.latestKeepAlive = { thinking, mode, ...(runtime ?? {}) }
         if (this.state !== 'active' || !this.socket.connected) {
             return

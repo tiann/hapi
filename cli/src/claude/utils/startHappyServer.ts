@@ -369,6 +369,7 @@ function createHapiMcpServer(
                 isError: false,
             };
         } catch (error) {
+            client.markAttachmentDenied(args.path);
             const message = error instanceof Error ? error.message : String(error);
             logger.debug('[hapiMCP] Failed to display image:', message);
             return {
@@ -403,6 +404,7 @@ function createHapiMcpServer(
                 isError: false,
             };
         } catch (error) {
+            client.markAttachmentDenied(args.path);
             const message = error instanceof Error ? error.message : String(error);
             logger.debug('[hapiMCP] Failed to display video:', message);
             return {
@@ -431,6 +433,7 @@ function createHapiMcpServer(
                 isError: false,
             };
         } catch (error) {
+            client.markAttachmentDenied(args.path);
             const message = error instanceof Error ? error.message : String(error);
             logger.debug('[hapiMCP] Failed to display media:', message);
             return {

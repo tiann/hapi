@@ -1053,9 +1053,9 @@ describe('ApiSessionClient durable status identity', () => {
 
 
 describe('ApiSessionClient attachment links', () => {
-    it('flushes link attachments from each assistant ingress without changing the original messages', async () => {
+    it('flushes link attachments from each assistant ingress in authorized permission modes', async () => {
         const workspace = await mkdtemp(join(tmpdir(), 'hapi-session-attachment-'))
-        const client = new ApiSessionClient('token', createSession({ metadata: { path: workspace, host: 'test' } }))
+        const client = new ApiSessionClient('token', createSession({ permissionMode: 'bypassPermissions', metadata: { path: workspace, host: 'test' } }))
         const socket = socketHarness.sockets.at(-1)!
         socket.emitted.length = 0
         try {
@@ -1078,6 +1078,46 @@ describe('ApiSessionClient attachment links', () => {
             const media = payloads.map(payload => payload.message.content.data).filter(data => data.type === 'generated-image')
             expect(media.map(data => data.fileName).sort()).toEqual(Object.keys(files).sort())
             for (const item of media) expect(getGeneratedImage(item.imageId as string)?.content.toString()).toBe(files[item.fileName as string])
+        } finally {
+            client.close()
+            await rm(workspace, { recursive: true, force: true })
+        }
+    })
+
+    it('withholds attachment delivery in restrictive mode (default) and respects denied files', async () => {
+        const workspace = await mkdtemp(join(tmpdir(), 'hapi-session-restrictive-'))
+        const client = new ApiSessionClient('token', createSession({ permissionMode: 'default', metadata: { path: workspace, host: 'test' } }))
+        const socket = socketHarness.sockets.at(-1)!
+        socket.emitted.length = 0
+        try {
+            await writeFile(join(workspace, 'report.pdf'), 'confidential')
+            client.sendAgentMessage({ type: 'message', message: '[report](report.pdf)' })
+            expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+
+            // Restrictive session without auto-approval must not auto-emit generated-image attachments
+            const mediaInDefault = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                message: { content: { data: Record<string, unknown> } }
+            }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+            expect(mediaInDefault).toHaveLength(0)
+
+            // Switching to YOLO mode authorizes the delivery
+            client.setPermissionMode('yolo')
+            client.sendAgentMessage({ type: 'message', message: '[report](report.pdf)' })
+            expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+            const mediaInYolo = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                message: { content: { data: Record<string, unknown> } }
+            }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+            expect(mediaInYolo).toHaveLength(1)
+
+            // Explicitly denied file must not be delivered even in YOLO
+            await writeFile(join(workspace, 'denied.pdf'), 'denied')
+            client.markAttachmentDenied(join(workspace, 'denied.pdf'))
+            client.sendAgentMessage({ type: 'message', message: '[denied](denied.pdf)' })
+            expect(await client.flush({ timeoutMs: 1000 })).toBe(true)
+            const mediaAfterDenial = socket.emitted.filter(entry => entry.event === 'message').map(entry => entry.args[0] as {
+                message: { content: { data: Record<string, unknown> } }
+            }).map(p => p.message.content.data).filter(d => d.type === 'generated-image')
+            expect(mediaAfterDenial).toHaveLength(1) // still only report.pdf
         } finally {
             client.close()
             await rm(workspace, { recursive: true, force: true })

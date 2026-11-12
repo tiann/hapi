@@ -4,6 +4,44 @@ import { fileURLToPath } from 'node:url'
 import { createHash, randomUUID } from 'node:crypto'
 import { detectDisplayMediaMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage } from './generatedImages'
 
+/**
+ * Determine if a permission mode permits autonomous/auto-approved execution.
+ * Only explicit full-autonomy modes (yolo, bypassPermissions, always-proceed)
+ * are authorized to read workspace attachments automatically.
+ */
+export function isAutoApprovedPermissionMode(mode?: string | null): boolean {
+    if (!mode) return false
+    return mode === 'yolo' || mode === 'bypassPermissions' || mode === 'always-proceed'
+}
+
+/**
+ * Authorization gate for automatic attachment links.
+ * In restrictive sessions (default, read-only, plan, ask), link-triggered
+ * reads must not silently bypass user approval unless explicitly enabled
+ * via environment variable.
+ */
+export function isAttachmentFallbackAuthorized(
+    mode?: string | null,
+    env: NodeJS.ProcessEnv = process.env
+): boolean {
+    const raw = env.HAPI_AUTO_ATTACHMENT_LINKS
+    if (raw !== undefined && raw !== '') {
+        const normalized = raw.trim().toLowerCase()
+        if (normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes') {
+            return true
+        }
+        if (normalized === '0' || normalized === 'false' || normalized === 'off' || normalized === 'no') {
+            return false
+        }
+    }
+    return isAutoApprovedPermissionMode(mode)
+}
+
+export interface AttachmentCompatibilityOptions {
+    permissionMode?: string | null
+    isAuthorized?: boolean
+}
+
 /** Only explicit delivery links, never tool output, reasoning, or bare file citations. */
 export function attachmentLinks(text: string): string[] {
     const prose = text.replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1[^\n]*$/gm, '')
@@ -44,8 +82,22 @@ export function assistantAttachmentText(body: unknown): string | null {
 export class AttachmentCompatibility {
     private queue = Promise.resolve()
     private seen = new Set<string>()
+    private deniedPaths = new Set<string>()
 
-    enqueue(body: unknown, cwd: string | undefined, emit: (body: unknown) => void): void {
+    markDenied(path: string): void {
+        this.deniedPaths.add(path)
+    }
+
+    isDenied(path: string): boolean {
+        return this.deniedPaths.has(path)
+    }
+
+    enqueue(
+        body: unknown,
+        cwd: string | undefined,
+        emit: (body: unknown) => void,
+        options?: AttachmentCompatibilityOptions
+    ): void {
         // A dedicated MCP/ACP upload may precede the final Markdown link.
         if (body && typeof body === 'object') {
             const value = body as Record<string, unknown>
@@ -59,11 +111,18 @@ export class AttachmentCompatibility {
         if (!text || !cwd) return
         const paths = attachmentLinks(text)
         if (!paths.length) return
+
+        // Authorization boundary: in restrictive sessions without YOLO/bypassPermissions/always-proceed,
+        // link-triggered file reads must not silently bypass permission gates without user approval.
+        const authorized = options?.isAuthorized ?? isAttachmentFallbackAuthorized(options?.permissionMode)
+        if (!authorized) return
+
         this.queue = this.queue.then(async () => {
             const root = await realpath(cwd)
             for (const path of paths) {
                 try {
                     const canonical = await realpath(resolve(root, path))
+                    if (this.deniedPaths.has(canonical) || this.deniedPaths.has(path)) continue
                     const local = relative(root, canonical)
                     if (!local || local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) continue
                     const info = await stat(canonical)
