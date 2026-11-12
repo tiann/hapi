@@ -351,7 +351,6 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
                 const claudeSession = currentSessionRef.current;
                 if (claudeSession) {
                     claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs);
-                    claudeSession.onNativeInputSubmitted = null;
                 }
                 session.updateMetadata((metadata) => {
                     const { claudeRewind: _cleared, ...rest } = metadata;
@@ -458,6 +457,10 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
             return rejected('Claude session is not ready for a rewind restart')
         }
         armRewindFlags(claudeSession, intent)
+        // The proof handler must be live for THIS respawn too: the previous
+        // rewind in this wrapper lifetime already consumed one proof, and
+        // settle must never detach the notification the next one depends on.
+        claudeSession.onNativeInputSubmitted = handleNativeInputSubmitted
         pendingRewind = intent
         logger.debug(`[claude] rewind ${messageLocalId}: boundary ${keepBoundary}, ${droppedPrompts.length} dropped turn(s); restarting Claude`)
         await claudeSession.requestRemoteRestart()
