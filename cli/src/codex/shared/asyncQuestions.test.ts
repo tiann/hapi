@@ -98,6 +98,22 @@ describe('Codex queued follow-up questions', () => {
             output: { status: 'resolved' } })
     })
 
+    it('defers a scanned answer even when the question was already loaded', () => {
+        const f = fixture()
+        const q = questions[0]
+        const reply = nativeReply(q.questionItemId, 'Web')
+        f.manager.observeItem('thread', item)
+        expect(f.state().requests?.[q.id]).toBeDefined()
+
+        f.manager.history('thread', { turns: [{ items: [reply] }] })
+        expect(f.send).not.toHaveBeenCalled()
+
+        f.manager.observeItem('thread', reply)
+        expect(f.send).toHaveBeenCalledOnce()
+        expect(f.send.mock.lastCall![0]).toMatchObject({ type: 'tool-call-result', callId: q.id,
+            output: { status: 'resolved' } })
+    })
+
     it('clears answer-only completions when the question was never loaded', () => {
         const f = fixture()
         const q = questions[0]

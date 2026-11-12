@@ -195,17 +195,22 @@ export class SharedCodexAsyncQuestions {
         for (const turn of turns) {
             const items = record(turn).items;
             if (!Array.isArray(items)) continue;
-            for (const item of items) {
-                if (record(item).type !== 'userMessage') continue;
-                if (Array.isArray(record(item).content)) {
-                    for (const part of record(item).content as unknown[]) {
-                        if (record(part).type !== 'text') continue;
-                        for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
-                            this.deferredHistoryResults.add(requestId(threadId, reply.questionItemId));
-                        }
-                    }
+            for (const item of items) this.preScanHistory(threadId, item)
+        }
+    }
+
+    /** Record answers without projecting them before their native user item. */
+    private preScanHistory(threadId: string, value: unknown): void {
+        const item = record(value);
+        if (item.type !== 'userMessage' || !Array.isArray(item.content)) return;
+        for (const part of item.content) {
+            if (record(part).type !== 'text') continue;
+            for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
+                const id = requestId(threadId, reply.questionItemId);
+                if (this.completed.get(id)?.status !== 'resolved') {
+                    this.completed.set(id, { status: 'resolved', answer: reply.answer });
                 }
-                this.observeItem(threadId, item, emitResults);
+                this.deferredHistoryResults.add(id);
             }
         }
     }
