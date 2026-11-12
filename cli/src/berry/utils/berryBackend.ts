@@ -1,6 +1,8 @@
-import { mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { AcpSdkBackend } from '@/agent/backends/acp'
+import { logger } from '@/ui/logger'
 import { resolveHapiHomeDir } from '@/configuration'
 
 type BerryAcpEnvironment = Record<string, string | undefined>
@@ -57,6 +59,11 @@ export function resolveBerryAcpCommand(env: BerryAcpEnvironment = process.env): 
  * the HAPI session that made them, while staying stable across backend
  * respawns and runner restarts (the row id outlives both, so
  * `session/load` always finds the session in the same sessions.db).
+ *
+ * The isolation intentionally does NOT strand the user's provider setup:
+ * {@link ensureBerryDataDir} seeds a freshly created dir with the
+ * interactive dir's provider configuration (custom providers + stored
+ * API keys), which berry resolves strictly relative to its data dir.
  */
 export function resolveBerryDataDir(
     sessionId?: string | null,
@@ -64,6 +71,116 @@ export function resolveBerryDataDir(
 ): string {
     const base = join(resolveHapiHomeDir(env), 'berry-data')
     return join(base, sessionId && sessionId.length > 0 ? sessionId : 'default')
+}
+
+/**
+ * The interactive berry data dir berry itself defaults to when
+ * `BERRY_AGENT_DATA_DIR` is unset (berry `persist/paths.ts`:
+ * `$HOME/.berry-agent`).
+ */
+export function resolveInteractiveBerryDataDir(env: BerryAcpEnvironment = process.env): string {
+    const home = env.HOME ?? env.USERPROFILE ?? homedir()
+    return join(home, '.berry-agent')
+}
+
+const BERRY_SETTINGS_BASENAME = 'settings.json'
+const BERRY_CUSTOM_PROVIDERS_KEY = 'customProviders'
+
+/**
+ * Provider-credential files copied from the interactive data dir when HAPI
+ * first creates an isolated one. Berry keeps every provider API key in the
+ * `credentials` table of `sessions.db` (AES-256-GCM) decryptable only with
+ * the data dir's `secret.key` — neither has an env fallback — so a fresh
+ * isolated dir silently loses the user's stored provider auth. The WAL
+ * sidecar rides along when present: berry opens the store in WAL mode, and
+ * commits that were never checkpointed (a key added minutes ago) live only
+ * there.
+ */
+const BERRY_PROVIDER_CREDENTIAL_BASENAMES = ['sessions.db', 'sessions.db-wal', 'secret.key'] as const;
+
+function warnSeedSkipped(what: string, error: unknown): void {
+    logger.warn(
+        `[berry] provider config seed skipped (${what}): ${error instanceof Error ? error.message : String(error)}`
+    )
+}
+
+function copyCredentialFile(sourceDir: string, dataDir: string, basename: string): void {
+    const source = join(sourceDir, basename)
+    const target = join(dataDir, basename)
+    if (!existsSync(source) || existsSync(target)) return
+    const staging = join(dataDir, `${basename}.hapi-seed-${process.pid}`)
+    try {
+        copyFileSync(source, staging)
+        renameSync(staging, target)
+    } catch (error) {
+        warnSeedSkipped(basename, error)
+        try {
+            unlinkSync(staging)
+        } catch {
+            // Best effort: a stale staging file is inert to berry.
+        }
+    }
+}
+
+function seedProviderSettings(sourceDir: string, dataDir: string): void {
+    const source = join(sourceDir, BERRY_SETTINGS_BASENAME)
+    const target = join(dataDir, BERRY_SETTINGS_BASENAME)
+    if (!existsSync(source) || existsSync(target)) return
+    try {
+        const parsed: unknown = JSON.parse(readFileSync(source, 'utf8'))
+        const customProviders = (parsed as Record<string, unknown> | null)?.[BERRY_CUSTOM_PROVIDERS_KEY]
+        if (
+            customProviders === undefined || customProviders === null
+            || typeof customProviders !== 'object' || Array.isArray(customProviders)
+            || Object.keys(customProviders).length === 0
+        ) {
+            return
+        }
+        // Only the provider-config key rides over. Berry's settings file
+        // also carries its own sandbox/approval defaults for the user's
+        // interactive setup; those must not change how HAPI-spawned
+        // sessions gate tools.
+        const staging = join(dataDir, `${BERRY_SETTINGS_BASENAME}.hapi-seed-${process.pid}`)
+        writeFileSync(
+            staging,
+            `${JSON.stringify({ [BERRY_CUSTOM_PROVIDERS_KEY]: customProviders }, null, 2)}\n`,
+            'utf8'
+        )
+        renameSync(staging, target)
+    } catch (error) {
+        warnSeedSkipped(BERRY_SETTINGS_BASENAME, error)
+    }
+}
+
+/**
+ * Create the isolated berry data dir and, on FIRST creation only, seed it
+ * with the user's provider configuration from the interactive data dir
+ * (see {@link resolveInteractiveBerryDataDir}).
+ *
+ * Without the seed, upgrading to isolated dirs drops every configured
+ * provider: berry resolves `settings.json` custom providers and the
+ * credentials store strictly relative to the data dir, so a fresh
+ * directory means "no custom providers, no stored API keys". The seed is
+ * a one-time copy-on-create — it never runs again for a directory that
+ * already exists (idempotent across respawns and runner restarts, and it
+ * never overwrites anything berry wrote), never copies
+ * `tool-policy.json` (sticky permission grants are exactly what the
+ * isolation exists to contain), and any failure degrades to the previous
+ * behavior (empty dir; berry still boots) with a warning.
+ */
+export function ensureBerryDataDir(dataDir: string, env: BerryAcpEnvironment = process.env): void {
+    const created = !existsSync(dataDir)
+    // Berry manages the contents; HAPI only guarantees the directory
+    // exists before the child first resolves its dataDir. Idempotent
+    // across respawns.
+    mkdirSync(dataDir, { recursive: true })
+    if (!created) return
+    const sourceDir = resolveInteractiveBerryDataDir(env)
+    if (sourceDir === dataDir) return
+    for (const basename of BERRY_PROVIDER_CREDENTIAL_BASENAMES) {
+        copyCredentialFile(sourceDir, dataDir, basename)
+    }
+    seedProviderSettings(sourceDir, dataDir)
 }
 
 /**
@@ -99,10 +216,7 @@ export function createBerryBackend(
     const { command, args } = resolveBerryAcpCommand(env)
     const overlay = berrySpawnEnvOverlay(opts, env)
     if (overlay.BERRY_AGENT_DATA_DIR) {
-        // Berry manages the contents; HAPI only guarantees the directory
-        // exists before the child first resolves its dataDir. Idempotent
-        // across respawns.
-        mkdirSync(overlay.BERRY_AGENT_DATA_DIR, { recursive: true })
+        ensureBerryDataDir(overlay.BERRY_AGENT_DATA_DIR, env)
     }
     return new AcpSdkBackend({
         command,

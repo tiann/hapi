@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -19,8 +19,10 @@ vi.mock('@/configuration', async (importOriginal) => {
 import {
     berrySpawnEnvOverlay,
     createBerryBackend,
+    ensureBerryDataDir,
     resolveBerryAcpCommand,
-    resolveBerryDataDir
+    resolveBerryDataDir,
+    resolveInteractiveBerryDataDir
 } from './berryBackend'
 
 describe('resolveBerryAcpCommand', () => {
@@ -118,10 +120,11 @@ describe('createBerryBackend spawn configuration', () => {
     it('pins the model lever, the isolated data dir, and delta chunk streaming', () => {
         // Berry streams pure agent_message_chunk deltas; the default overlap
         // dedupe drops repeated tokens (grok pins the same mode for the same
-        // reason).
+        // reason). HOME is pinned to an empty temp home so the provider
+        // config seed never reads the developer's real ~/.berry-agent.
         const dataDir = mkdtempSync(join(tmpdir(), 'berry-data-test-'))
         const backend = createBerryBackend(
-            { PATH: '/usr/bin' },
+            { PATH: '/usr/bin', HOME: mkdtempSync(join(tmpdir(), 'berry-home-empty-')) },
             { model: 'newapi/glm-5.3', dataDir }
         )
         const options = (backend as unknown as {
@@ -163,5 +166,135 @@ describe('createBerryBackend spawn configuration', () => {
 
     it('constructs an AcpSdkBackend', () => {
         expect(createBerryBackend({})).toBeInstanceOf(AcpSdkBackend)
+    })
+})
+
+/** Builds a fake interactive berry home (`<home>/.berry-agent/...`). */
+function makeInteractiveBerryHome(): { home: string; interactiveDir: string } {
+    const home = mkdtempSync(join(tmpdir(), 'berry-home-'))
+    const interactiveDir = join(home, '.berry-agent')
+    mkdirSync(interactiveDir)
+    return { home, interactiveDir }
+}
+
+function writeInteractiveProviderConfig(interactiveDir: string): {
+    customProviders: Record<string, unknown>
+    settingsJson: string
+} {
+    const customProviders = {
+        newapi: {
+            protocol: 'openai-completions',
+            baseUrl: 'https://newapi.example/v1',
+            models: ['glm-5.3']
+        }
+    }
+    const settingsJson = JSON.stringify({
+        // Berry's own interactive defaults must NOT ride along.
+        sandboxMode: 'danger-full-access',
+        approvalPolicy: 'never',
+        customProviders
+    })
+    writeFileSync(join(interactiveDir, 'settings.json'), settingsJson, 'utf8')
+    writeFileSync(join(interactiveDir, 'sessions.db'), 'FAKE-SESSIONS-DB', 'utf8')
+    writeFileSync(join(interactiveDir, 'sessions.db-wal'), 'FAKE-WAL', 'utf8')
+    writeFileSync(join(interactiveDir, 'secret.key'), 'FAKE-SECRET-KEY', 'utf8')
+    // Sticky permission grants are the one thing the isolated dir exists
+    // to keep out.
+    writeFileSync(join(interactiveDir, 'tool-policy.json'), '{"toolcall_bash":{"outcome":"allow_always"}}', 'utf8')
+    return { customProviders, settingsJson }
+}
+
+describe('ensureBerryDataDir provider config seed', () => {
+    it('resolves the interactive dir from the home directory env', () => {
+        expect(resolveInteractiveBerryDataDir({ HOME: '/srv/home' })).toBe(join('/srv/home', '.berry-agent'))
+        expect(resolveInteractiveBerryDataDir({ USERPROFILE: 'C:\\Users\\berry' })).toBe(join('C:\\Users\\berry', '.berry-agent'))
+    })
+
+    it('seeds provider config from the interactive dir on first creation', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        const { customProviders } = writeInteractiveProviderConfig(interactiveDir)
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-seed-')), 'row-1')
+
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        // Provider definitions ride over — and ONLY them: berry's own
+        // sandbox/approval defaults must not change HAPI session gating.
+        expect(JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8'))).toEqual({ customProviders })
+        // Stored provider auth: credentials table (sessions.db + its WAL
+        // sidecar) and the key that decrypts it.
+        expect(readFileSync(join(dataDir, 'sessions.db'), 'utf8')).toBe('FAKE-SESSIONS-DB')
+        expect(readFileSync(join(dataDir, 'sessions.db-wal'), 'utf8')).toBe('FAKE-WAL')
+        expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+        // Sticky permission grants stay isolated.
+        expect(existsSync(join(dataDir, 'tool-policy.json'))).toBe(false)
+    })
+
+    it('seeds through createBerryBackend when it creates the isolated dir', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeInteractiveProviderConfig(interactiveDir)
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-create-')), 'row-2')
+
+        const backend = createBerryBackend({ HOME: home, PATH: '/usr/bin' }, { dataDir })
+
+        expect(backend).toBeInstanceOf(AcpSdkBackend)
+        expect(existsSync(join(dataDir, 'secret.key'))).toBe(true)
+        expect(existsSync(join(dataDir, 'settings.json'))).toBe(true)
+    })
+
+    it('never reseeds or overwrites an existing directory', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeInteractiveProviderConfig(interactiveDir)
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-reseed-')), 'row-3')
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        // Berry (or a later run) owns the dir from here on: new source
+        // content must not leak in, and files berry wrote stay untouched.
+        const settingsPath = join(dataDir, 'settings.json')
+        writeFileSync(settingsPath, '{"customProviders":{"other":{"protocol":"openai-completions","baseUrl":"https://x.example","models":[]}}}', 'utf8')
+        writeFileSync(join(interactiveDir, 'settings.json'), JSON.stringify({ customProviders: { added: 'later' } }), 'utf8')
+        writeFileSync(join(interactiveDir, 'secret.key'), 'ROTATED-KEY', 'utf8')
+
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        expect(readFileSync(settingsPath, 'utf8')).toContain('other')
+        expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+    })
+
+    it('skips provider settings when the interactive dir has no custom providers', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeFileSync(join(interactiveDir, 'settings.json'), JSON.stringify({ sandboxMode: 'read-only' }), 'utf8')
+        writeFileSync(join(interactiveDir, 'secret.key'), 'FAKE-SECRET-KEY', 'utf8')
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-nocp-')), 'row-4')
+
+        ensureBerryDataDir(dataDir, { HOME: home })
+
+        // No custom providers → no settings seed, but stored provider auth
+        // (built-in providers keep their keys in the same store) still
+        // rides over.
+        expect(existsSync(join(dataDir, 'settings.json'))).toBe(false)
+        expect(readFileSync(join(dataDir, 'secret.key'), 'utf8')).toBe('FAKE-SECRET-KEY')
+    })
+
+    it('degrades to an empty dir when the interactive dir is missing or unreadable', () => {
+        const emptyHome = mkdtempSync(join(tmpdir(), 'berry-home-empty-'))
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-failopen-')), 'row-5')
+
+        expect(() => ensureBerryDataDir(dataDir, { HOME: emptyHome })).not.toThrow()
+        expect(existsSync(dataDir)).toBe(true)
+        // Fresh machine: nothing seeded, berry still boots on an empty dir.
+        const backend = createBerryBackend(
+            { PATH: '/usr/bin', HOME: emptyHome },
+            { dataDir: join(mkdtempSync(join(tmpdir(), 'berry-data-failopen2-')), 'row-6') }
+        )
+        expect(backend).toBeInstanceOf(AcpSdkBackend)
+    })
+
+    it('tolerates a malformed interactive settings.json', () => {
+        const { home, interactiveDir } = makeInteractiveBerryHome()
+        writeFileSync(join(interactiveDir, 'settings.json'), '{not json', 'utf8')
+        const dataDir = join(mkdtempSync(join(tmpdir(), 'berry-data-badjson-')), 'row-7')
+
+        expect(() => ensureBerryDataDir(dataDir, { HOME: home })).not.toThrow()
+        expect(existsSync(join(dataDir, 'settings.json'))).toBe(false)
     })
 })
