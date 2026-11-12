@@ -98,6 +98,8 @@ export async function claudeRemote(opts: {
      * still deferred (compact summary lookup, or a steer follow-up turn).
      */
     onResultAccepted?: () => void,
+    /** The native prompt uuid of a just-submitted user message (queue batches only). */
+    onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
@@ -173,6 +175,7 @@ export async function claudeRemote(opts: {
     const pushUserMessage = (content: string, uuid: string = randomUUID()) => {
         pushedUuids.add(uuid);
         messages.push({ type: 'user', uuid, message: { role: 'user', content } });
+        return uuid;
     };
     // Steered messages Claude has not echoed yet. A result while any is
     // pending is not the end of the turn: Claude runs a follow-up turn for it.
@@ -318,7 +321,10 @@ export async function claudeRemote(opts: {
         }
 
         mode = next.mode;
-        pushUserMessage(next.message);
+        // Push first: an optional call would short-circuit its argument when
+        // no hook is set, and the message must reach the prompt regardless.
+        const submittedUuid = pushUserMessage(next.message);
+        opts.onInputSubmitted?.(submittedUuid);
         setSteerable(specialCommand.type === null);
         return next;
     };
@@ -508,7 +514,8 @@ export async function claudeRemote(opts: {
                 }
                 mode = next.mode;
                 specialCommand = nextSpecialCommand;
-                pushUserMessage(next.message);
+                const followUpUuid = pushUserMessage(next.message);
+                opts.onInputSubmitted?.(followUpUuid);
                 setSteerable(nextSpecialCommand.type === null);
                 // A follow-up prompt starts a new turn; only the first turn gets system/init.
                 updateThinking(true);

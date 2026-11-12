@@ -12,6 +12,8 @@ const harness = vi.hoisted(() => ({
     callCount: 0,
     claudeArgsPerCall: [] as (string[] | undefined)[],
     initialMessages: [] as string[],
+    inputSubmittedCalls: [] as string[],
+    metadataWrites: [] as Record<string, any>,
     triggerSwitch: null as (() => void) | null,
     switchAfterCall: 2,
     compactContextTokens: null as number | null,
@@ -46,6 +48,11 @@ vi.mock('./claudeRemote', () => ({
         // Mirrors a launch that actually spawns Claude and observes the
         // session id via the SDK's system/init message.
         opts.onSessionFound('captured-session-id')
+        // Mirrors the SDK echo of a submitted user message: the native prompt
+        // uuid the transcript entry carries for this turn.
+        const nativePromptUuid = `native-uuid-${harness.callCount}`
+        opts.onInputSubmitted?.(nativePromptUuid)
+        harness.inputSubmittedCalls.push(nativePromptUuid)
 
         if (harness.compactSummary !== null) await opts.onReady(undefined, harness.compactSummary)
         if (harness.compactContextTokens !== null) {
@@ -112,7 +119,9 @@ function createClientStub() {
         },
         rpcHandlers,
         keepAlive: () => {},
-        updateMetadata: (mutator: (metadata: any) => any) => { mutator({}) },
+        updateMetadata: (mutator: (metadata: any) => any) => {
+            harness.metadataWrites.push(mutator({}))
+        },
         emitMessagesConsumed: () => {},
         sendClaudeSessionMessage: () => {},
         sendSessionEvent: (_event: unknown) => {},
@@ -159,11 +168,37 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.callCount = 0
         harness.claudeArgsPerCall = []
         harness.initialMessages = []
+        harness.inputSubmittedCalls = []
+        harness.metadataWrites = []
         harness.triggerSwitch = null
         harness.switchAfterCall = 2
         harness.compactContextTokens = null
         harness.compactSummary = null
         vi.clearAllMocks()
+    })
+
+    it('publishes conversation history points and native entry ids for submitted user turns', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => {
+            client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+
+        try {
+            queue.push('hello there', { permissionMode: 'default' }, 'local-1')
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(harness.inputSubmittedCalls).toContain('native-uuid-1')
+            const pointWrites = (harness.metadataWrites as Record<string, any>[]).filter(
+                (metadata: Record<string, any>) => metadata.conversationHistoryPoints?.['local-1'] === true
+            )
+            expect(pointWrites.length).toBeGreaterThan(0)
+            expect(pointWrites.at(-1)?.conversationHistoryEntryIds?.['local-1']).toBe('native-uuid-1')
+        } finally {
+            session.stopKeepAlive()
+        }
     })
 
     it('keeps --resume available for the launch that actually captures the session id', async () => {

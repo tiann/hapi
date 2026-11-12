@@ -515,6 +515,25 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         isAborted: (toolCallId: string) => {
                             return permissionHandler.isAborted(toolCallId);
                         },
+                        onInputSubmitted: (nativePromptUuid: string) => {
+                            // The submitted batch becomes one native user entry;
+                            // the hub transcript's first localId maps to it, so
+                            // fork-at-message and rewind can resolve boundaries
+                            // and the web can show the per-message affordances.
+                            const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
+                            if (!localId || !nativePromptUuid) return;
+                            session.client.updateMetadata((metadata) => ({
+                                ...metadata,
+                                conversationHistoryPoints: {
+                                    ...metadata?.conversationHistoryPoints,
+                                    [localId]: true
+                                },
+                                conversationHistoryEntryIds: {
+                                    ...metadata?.conversationHistoryEntryIds,
+                                    [localId]: nativePromptUuid
+                                }
+                            }));
+                        },
                         nextMessage: async () => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires

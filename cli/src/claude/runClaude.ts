@@ -23,11 +23,10 @@ import { formatAttachmentsForClaude, formatMessageWithAttachments } from '@/util
 import { normalizeClaudeSessionModel } from './model';
 import { normalizeClaudeSessionEffort } from './effort';
 import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
+import { execFileSync } from 'node:child_process';
 import { getInvokedCwd } from '@/utils/invokedCwd';
-import {
-    CLAUDE_CONVERSATION_HISTORY,
-    toConversationHistoryCapabilities
-} from '@hapi/protocol/conversationHistory';
+import { getDefaultClaudeCodePath } from './sdk/utils';
+import { claudeConversationHistoryCapabilities } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -268,7 +267,22 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
-    const conversationHistory = toConversationHistoryCapabilities(CLAUDE_CONVERSATION_HISTORY)
+    // Rewind and fork-at-message need native resume-time truncation
+    // (Claude Code v2.1.223+); fork-current works on any version. Detect the
+    // actual binary version once at startup so the web UI only shows the
+    // affordances when they can work; a failed probe conservatively keeps
+    // fork-current only.
+    let claudeVersionOutput: string | null = null;
+    try {
+        claudeVersionOutput = execFileSync(getDefaultClaudeCodePath(), ['--version'], {
+            encoding: 'utf8',
+            timeout: 10_000,
+            stdio: ['pipe', 'pipe', 'pipe']
+        }).trim();
+    } catch (error) {
+        logger.debug(`[claude] --version probe failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const conversationHistory = claudeConversationHistoryCapabilities(claudeVersionOutput);
     session.updateMetadata((metadata) => ({
         ...metadata,
         path: metadata?.path ?? workingDirectory,
