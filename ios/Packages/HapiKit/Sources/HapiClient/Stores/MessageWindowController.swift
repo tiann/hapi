@@ -645,8 +645,8 @@ public actor MessageWindowController {
         case .messagesRequeued(_, let eventSessionId, let localIds)
             where eventSessionId == sessionId:
             markRequeued(localIds: localIds)
-        case .messageCancelled(_, let eventSessionId, let messageId, _) where eventSessionId == sessionId:
-            removeMessage(localIdOrId: messageId)
+        case .messageCancelled(_, let eventSessionId, let messageId, let localId) where eventSessionId == sessionId:
+            removeMessage(messageId: messageId, localId: localId)
         case .messagesInvalidated(_, let eventSessionId) where eventSessionId == sessionId:
             clear()
             Task { await self.syncTail() }
@@ -685,6 +685,20 @@ public actor MessageWindowController {
     /// (web `removeOptimisticMessage`).
     public func removeMessage(localIdOrId: String) {
         update { MessageWindowLogic.removeByLocalIdOrId($0, localId: localIdOrId) }
+        persist()
+    }
+
+    /// A failed optimistic send may be retried with a client localId after its
+    /// original POST reached the Hub. Reconcile both identities on cancellation.
+    public func removeMessage(messageId: String, localId: String?) {
+        guard let localId, localId != messageId else {
+            removeMessage(localIdOrId: messageId)
+            return
+        }
+        update { state in
+            let withoutServer = MessageWindowLogic.removeByLocalIdOrId(state, localId: messageId)
+            return MessageWindowLogic.removeByLocalIdOrId(withoutServer, localId: localId)
+        }
         persist()
     }
 
