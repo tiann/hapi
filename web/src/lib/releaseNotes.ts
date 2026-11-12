@@ -76,7 +76,28 @@ function releaseNote(
  * guide and reusable authoring prompt.
  */
 export const RELEASE_NOTES = [
-    releaseNote('0.34.6', '2026-11-11',
+    releaseNote('0.35.0', '2026-11-12',
+        'Rotate Hub entries after repeated connection failures, show Codex generation rate, stabilize Claude session IDs, display CLI account quotas, and improve session, tool-card, and voice workflows.',
+        '在重复连接失败后轮换 Hub 地址，显示 Codex 生成速率，稳定 Claude 会话 ID，展示 CLI 账号额度，并改进会话、工具卡片和语音流程。',
+        [
+            group('New capabilities', '新功能', [
+                change('feature', 'Show the generation rate in tokens per second for Codex rounds.', '显示 Codex 回合的每秒生成 Token 速率。'),
+                change('feature', 'Keep one stable HAPI session ID per Claude conversation.', '为每个 Claude 对话保持一个稳定的 HAPI 会话 ID。'),
+                change('feature', 'Preserve completed-fork availability across stale session refreshes.', '在会话刷新数据过期时继续保留已完成轮次的派生能力。'),
+                change('feature', 'Wake sessions and stream reactive background turns over Agy ACP.', '通过 Agy ACP 唤醒会话并流式传输响应式后台轮次。'),
+                change('feature', 'Display CLI account quotas and rate limits in Settings > Usage.', '在“设置 > 用量”中显示 CLI 账号额度和速率限制。'),
+                change('feature', 'Combine session activity and unread indicators.', '合并会话活动与未读状态指示。'),
+            ]),
+            group('Reliability fixes', '可靠性修复', [
+                change('fix', 'Mark only the Claude compaction result instead of pending compaction rounds.', '仅标记 Claude 压缩结果，不再误标待处理的压缩轮次。'),
+                change('fix', 'Rotate Hub entries after repeated connect failures.', '在连续连接失败后轮换 Hub 地址。'),
+                change('fix', 'Diagnose Bun pre-init fatal crashes in webhook failure messages.', '在 Webhook 失败消息中诊断 Bun 初始化前的致命崩溃。'),
+                change('fix', 'Keep attached-job progress visible when the label is long.', '标签较长时仍保持附加任务进度可见。'),
+                change('fix', 'Make pending question cards clearly read as waiting for a reply.', '让待处理问题卡片明确表示正在等待回复。'),
+                change('fix', 'Give every tool-card header the same shape.', '统一所有工具卡片头部的外观。'),
+                change('fix', 'Keep the runtime voice backend aligned with the Settings preview.', '让运行时语音后端与设置预览保持一致。'),
+            ]),
+        ]),    releaseNote('0.34.6', '2026-11-11',
         'Add Claude generation-rate telemetry, fork running Codex sessions at their latest completed turn, fade non-resident session rows, fold repeated ACP tool calls, and patch WebSocket and math dependencies.',
         '显示 Claude 生成速率，支持 Codex 运行中会话按最近完成轮次派生，弱化非驻留会话行，合并重复 ACP 工具调用，并修复 WebSocket 与数学渲染依赖。',
         [
