@@ -59,6 +59,7 @@ describe('ImagePreview gallery navigation', () => {
 
         fireEvent.click(screen.getByRole('button', { name: /gated image/i }))
         const dialog = screen.getByRole('dialog', { name: 'Gated image' })
+        expect(document.body.querySelector('[data-image-preview-viewer]')).toBe(dialog)
         expect(within(dialog).getByRole('img', { name: 'Gated image' }))
             .toHaveAttribute('referrerpolicy', 'no-referrer')
     })

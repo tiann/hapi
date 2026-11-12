@@ -99,6 +99,35 @@ describe('ChatMarkdownImage', () => {
         expect(readSessionFile).toHaveBeenCalledWith('session-1', 'images/chart.png', MAX_MARKDOWN_IMAGE_BYTES)
     })
 
+    it('does not nest the image preview trigger inside a Markdown link', async () => {
+        const readSessionFile = vi.fn(async () => ({
+            success: true,
+            content: encodeBase64('png-bytes'),
+            size: 9,
+        }))
+        const api = { readSessionFile } as unknown as ApiClient
+
+        render(
+            <I18nProvider>
+                <HappyChatProvider value={chatValue(api)}>
+                    <MarkdownRenderer content={'[![Linked chart](images/chart.png)](report.md)'} />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+
+        await waitFor(() => expect(screen.getByRole('img', { name: 'Linked chart' }).tagName).toBe('IMG'))
+        const trigger = screen.getByRole('button', { name: /linked chart/i })
+        expect(trigger.closest('a')).toBeNull()
+
+        fireEvent.load(screen.getByRole('img', { name: 'Linked chart' }))
+        fireEvent.click(trigger)
+        const dialog = screen.getByRole('dialog', { name: 'Linked chart' })
+        fireEvent.click(within(dialog).getByTitle('Zoom in', { exact: true }))
+        expect(screen.getByRole('dialog', { name: 'Linked chart' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByTitle('Close', { exact: true }))
+        expect(screen.queryByRole('dialog', { name: 'Linked chart' })).not.toBeInTheDocument()
+    })
+
     it('loads reachable HTTPS images directly without reading a session file', () => {
         const readSessionFile = vi.fn()
         const api = { readSessionFile } as unknown as ApiClient

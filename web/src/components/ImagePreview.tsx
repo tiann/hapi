@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
+import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { useRouter } from '@tanstack/react-router'
 import { ArrowLeftIcon, ArrowRightIcon, CloseIcon, MinusIcon, PlusIcon } from '@/components/icons'
 import { formatFileSize } from '@/lib/file-metadata'
@@ -361,15 +362,25 @@ export function ImagePreview(props: {
                 <span className="sr-only">{props.fileName}</span>
             </button>
 
-            {viewerOpen ? (
-                <div
-                    className="fixed inset-0 z-50 flex flex-col bg-black/90 text-white"
-                    role="dialog"
-                    aria-modal="true"
+            <DialogPrimitive.Root
+                open={viewerOpen}
+                onOpenChange={(open) => {
+                    if (!open) closeViewer()
+                }}
+            >
+                <DialogPrimitive.Portal>
+                    <DialogPrimitive.Content
+                    className="pointer-events-auto fixed inset-0 z-[60] flex flex-col bg-black/90 text-white"
                     aria-label={activePreview.label}
+                    aria-describedby={undefined}
+                    data-image-preview-viewer=""
                     // Keep preview gestures from starting an ancestor's attachment drag.
                     onPointerDown={stopEvent}
+                    // Portaled DOM events still follow React's logical tree. Stop
+                    // clicks so viewer controls cannot activate an enclosing link.
+                    onClick={stopEvent}
                 >
+                    <DialogPrimitive.Title className="sr-only">{activePreview.label}</DialogPrimitive.Title>
                     <div className="flex shrink-0 items-center gap-2 border-b border-white/10 bg-black/50 px-3 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] max-sm:gap-1">
                         <button
                             type="button"
@@ -491,8 +502,9 @@ export function ImagePreview(props: {
                             </span>
                         ) : null}
                     </div>
-                </div>
-            ) : null}
+                    </DialogPrimitive.Content>
+                </DialogPrimitive.Portal>
+            </DialogPrimitive.Root>
         </>
     )
 }

@@ -17,6 +17,7 @@ test('renders and previews local and remote chat Markdown images', async ({ page
     await expect(localImage).toHaveAttribute('src', /^data:image\/svg\+xml;base64,/)
     const localTrigger = page.getByRole('button', { name: /Local chart/i })
     await expect(localTrigger).toBeEnabled()
+    await expect(localTrigger.locator('xpath=ancestor::a')).toHaveCount(0)
     await capture(page, 'markdown-image-inline.png')
 
     await localTrigger.click()
@@ -42,6 +43,35 @@ test('renders and previews local and remote chat Markdown images', async ({ page
     const blockedImage = page.locator('[data-hapi-markdown-image-fallback="true"][aria-label="Blocked chart"]')
     await expect(blockedImage).toHaveCount(1)
     await expect(page.getByRole('button', { name: /Blocked chart/i })).toHaveCount(0)
+})
+
+test('portals Markdown image previews above tool detail dialogs', async ({ page }) => {
+    await page.goto('/e2e-fixtures/chat-markdown-images.html')
+    await page.getByRole('button', { name: 'Open tool detail' }).click()
+    const toolDialog = page.getByRole('dialog', { name: 'Tool detail' })
+    await expect(toolDialog).toBeVisible()
+
+    const trigger = toolDialog.getByRole('button', { name: /Dialog chart/i })
+    await expect(trigger).toBeEnabled()
+    await trigger.click()
+
+    const preview = page.getByRole('dialog', { name: 'Dialog chart' })
+    await expect(preview).toBeVisible()
+    await expect(preview.getByTitle('Close', { exact: true })).toBeFocused()
+    const viewport = page.viewportSize()
+    const box = await preview.boundingBox()
+    expect(viewport).not.toBeNull()
+    expect(box).not.toBeNull()
+    expect(box!.x).toBeCloseTo(0, 0)
+    expect(box!.y).toBeCloseTo(0, 0)
+    expect(box!.width).toBeCloseTo(viewport!.width, 0)
+    expect(box!.height).toBeCloseTo(viewport!.height, 0)
+
+    await preview.getByTitle('Zoom in', { exact: true }).click()
+    await expect(preview).toBeVisible()
+    await capture(page, 'markdown-image-tool-dialog.png')
+    await preview.getByTitle('Close', { exact: true }).click()
+    await expect(toolDialog).toBeVisible()
 })
 
 test.describe('mobile Markdown image previews', () => {

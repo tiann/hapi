@@ -1,7 +1,7 @@
 import '@assistant-ui/react-markdown/styles/dot.css'
 
 import type { ComponentPropsWithoutRef, ComponentType, MouseEvent, ReactNode } from 'react'
-import { useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
+import { Children, isValidElement, useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
 import {
     MarkdownTextPrimitive,
     unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -598,6 +598,14 @@ function InertMarkdownHref(props: { href: string; children?: ReactNode; classNam
     )
 }
 
+function containsMarkdownImage(children: ReactNode): boolean {
+    return Children.toArray(children).some((child) => {
+        if (!isValidElement<{ children?: ReactNode; src?: unknown; alt?: unknown }>(child)) return false
+        if (child.type === Image || child.type === 'img' || child.props.src !== undefined) return true
+        return containsMarkdownImage(child.props.children)
+    })
+}
+
 function A(props: ComponentPropsWithoutRef<'a'>) {
     const chat = useOptionalHappyChatContext()
     // useContext must be called unconditionally before any early return so that
@@ -617,6 +625,17 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     const targetSessionId = typeof props.href === 'string' ? parseSessionPathHref(props.href) : null
     const fileBase = useContext(MarkdownFileBaseContext)
     const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
+
+    if (containsMarkdownImage(props.children)) {
+        // ImagePreview exposes an interactive button. Do not nest that button
+        // inside a link: clicking the image should open the viewer rather than
+        // activating the surrounding file/session navigation target.
+        return (
+            <span data-hapi-markdown-image-link="" className={cn('inline-block max-w-full', props.className)}>
+                {props.children}
+            </span>
+        )
+    }
 
     if (filePath) {
         if (!chat) {
