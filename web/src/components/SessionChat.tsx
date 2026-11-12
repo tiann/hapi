@@ -162,6 +162,20 @@ export function isRewindForkFallbackError(error: unknown): boolean {
     return error instanceof ApiError && error.code === 'ambiguous_native_boundary_fork_safe'
 }
 
+/** Mirrors the session-list fork gate: a running session with a proven
+ *  completed turn forks through that turn instead of being refused as busy,
+ *  while a chosen historical boundary and the idle current fork stay plain. */
+export function forkConversationCallArgs(
+    session: { id: string; thinking: boolean; metadata?: { capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } } } },
+    messageLocalId?: string
+): { sessionId: string; messageLocalId?: string; latestCompleted: boolean } {
+    const supportsCompletedFork = session.metadata?.capabilities?.conversationHistory?.forkLatestCompleted === true
+    if (!messageLocalId && session.thinking && supportsCompletedFork) {
+        return { sessionId: session.id, latestCompleted: true }
+    }
+    return { sessionId: session.id, messageLocalId, latestCompleted: false }
+}
+
 export function resolvePiContextWindow(
     models: PiModelSummary[] | undefined,
     selectedModel: { provider: string; modelId: string } | null | undefined,
@@ -748,7 +762,10 @@ function SessionChatInner(props: SessionChatProps) {
     const executeForkConversation = useCallback(async (messageLocalId?: string) => {
         setHistoryActionPending(true)
         try {
-            const result = await props.api.forkConversation(props.session.id, messageLocalId)
+            const call = forkConversationCallArgs(props.session, messageLocalId)
+            const result = call.latestCompleted
+                ? await props.api.forkConversation(call.sessionId, undefined, true)
+                : await props.api.forkConversation(call.sessionId, call.messageLocalId)
             setForkPreviewRequest(null)
             await navigate({
                 to: '/sessions/$sessionId',
@@ -758,7 +775,7 @@ function SessionChatInner(props: SessionChatProps) {
         } finally {
             setHistoryActionPending(false)
         }
-    }, [navigate, props.api, props.session.id])
+    }, [navigate, props.api, props.session])
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
         setForkPreviewRequest({ messageLocalId })

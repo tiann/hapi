@@ -20,6 +20,30 @@ import {
 import { ApiError } from '@/api/client'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+import { forkConversationCallArgs } from '@/components/SessionChat'
+
+describe('forkConversationCallArgs', () => {
+    const base = { id: 'ses-1', metadata: { capabilities: { conversationHistory: {} } } }
+    const capable = { id: 'ses-1', metadata: { capabilities: { conversationHistory: { forkLatestCompleted: true } } } }
+
+    it('forks a running capable session through the last completed turn', () => {
+        expect(forkConversationCallArgs({ ...capable, thinking: true } as never)).toEqual({
+            sessionId: 'ses-1', latestCompleted: true
+        })
+    })
+
+    it('keeps the historical boundary, the idle current fork and the unsupported running fork plain', () => {
+        expect(forkConversationCallArgs({ ...capable, thinking: true } as never, 'local-2')).toEqual({
+            sessionId: 'ses-1', messageLocalId: 'local-2', latestCompleted: false
+        })
+        expect(forkConversationCallArgs({ ...capable, thinking: false } as never)).toEqual({
+            sessionId: 'ses-1', latestCompleted: false
+        })
+        expect(forkConversationCallArgs({ ...base, thinking: true } as never)).toEqual({
+            sessionId: 'ses-1', latestCompleted: false
+        })
+    })
+})
 
 describe('isRewindForkFallbackError', () => {
     it('recognizes the structured safe-Fork boundary code', () => {

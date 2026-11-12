@@ -114,6 +114,7 @@ export type SessionMetadataSummary = {
         terminal?: boolean
         conversationHistory?: {
             forkCurrent?: boolean
+            forkLatestCompleted?: boolean
             forkAtMessage?: boolean
             rewindToMessage?: boolean
         }
