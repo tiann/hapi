@@ -35,7 +35,8 @@ const MCP_SERVER_NAME = 'hapi';
 const PEER_TOOL_NAMES = Object.freeze({
     inspect: 'mcp__hapi__inspect_peer',
     ping: 'mcp__hapi__ping_peer',
-    spawn: 'mcp__hapi__spawn_peer'
+    spawn: 'mcp__hapi__spawn_peer',
+    list: 'mcp__hapi__list_peers'
 });
 const PEER_TOOL_APPROVALS = Object.freeze({
     [PEER_TOOL_NAMES.inspect]: 'Read metadata and recent messages from another HAPI session?',
@@ -62,18 +63,27 @@ export default function hapiPiExtension(pi) {
     const mcpUrl = String(process.env.HAPI_PI_MCP_URL || '').trim();
     let peerToolsAvailable = false;
 
-    if (!peerToolsDisabled && mcpUrl && typeof pi.registerMcpServer === 'function') {
-        try {
-            pi.registerMcpServer(MCP_SERVER_NAME, {
-                url: mcpUrl,
-                exposure: 'direct',
-                description: 'HAPI peer-session tools for this HAPI session'
-            });
-            peerToolsAvailable = true;
-        } catch (error) {
-            // Fail closed: without a registered server the citation instruction
-            // below must tell the model that peer tools are unavailable.
-            process.stderr.write('[hapi] Failed to register peer MCP server: ' + (error && error.message ? error.message : String(error)) + '\\n');
+    if (!peerToolsDisabled && mcpUrl) {
+        if (typeof pi.registerMcpServer === 'function') {
+            try {
+                pi.registerMcpServer(MCP_SERVER_NAME, {
+                    url: mcpUrl,
+                    exposure: 'direct',
+                    description: 'HAPI peer-session tools for this HAPI session'
+                });
+                peerToolsAvailable = true;
+            } catch (error) {
+                // Fail closed: without a registered server the citation instruction
+                // below must tell the model that peer tools are unavailable.
+                process.stderr.write('[hapi] Failed to register peer MCP server: ' + (error && error.message ? error.message : String(error)) + '\\n');
+            }
+        } else if (typeof pi.registerTool === 'function') {
+            try {
+                registerDirectPeerTools(pi, mcpUrl);
+                peerToolsAvailable = true;
+            } catch (error) {
+                process.stderr.write('[hapi] Failed to register peer tools via registerTool: ' + (error && error.message ? error.message : String(error)) + '\\n');
+            }
         }
     }
 
@@ -98,6 +108,180 @@ export default function hapiPiExtension(pi) {
             return { block: true, reason: 'The user did not approve this HAPI peer tool call.' };
         }
     });
+
+    function registerDirectPeerTools(piInstance, serverUrl) {
+        let cachedMcpSessionId = null;
+
+        async function callMcpTool(toolName, args) {
+            async function doCall(sessionId) {
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/event-stream'
+                };
+                if (sessionId) headers['mcp-session-id'] = sessionId;
+                return await fetch(serverUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        method: 'tools/call',
+                        params: {
+                            name: toolName,
+                            arguments: args || {}
+                        },
+                        id: Math.floor(Math.random() * 100000)
+                    })
+                });
+            }
+
+            let res = null;
+            if (cachedMcpSessionId) {
+                try {
+                    res = await doCall(cachedMcpSessionId);
+                    if (res.status === 400 || res.status === 404) {
+                        cachedMcpSessionId = null;
+                        res = null;
+                    }
+                } catch {
+                    cachedMcpSessionId = null;
+                    res = null;
+                }
+            }
+
+            if (!res) {
+                const initRes = await fetch(serverUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/event-stream'
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        method: 'initialize',
+                        params: {
+                            protocolVersion: '2024-11-05',
+                            capabilities: {},
+                            clientInfo: { name: 'hapi-pi-extension', version: '1.0.0' }
+                        },
+                        id: 1
+                    })
+                });
+                if (!initRes.ok) {
+                    throw new Error('MCP initialize failed (' + initRes.status + ' ' + initRes.statusText + ')');
+                }
+                cachedMcpSessionId = initRes.headers.get('mcp-session-id') || null;
+                res = await doCall(cachedMcpSessionId);
+            }
+
+            if (!res.ok) {
+                throw new Error('MCP tools/call failed (' + res.status + ' ' + res.statusText + ')');
+            }
+
+            const text = await res.text();
+            let data = null;
+            for (const line of text.split('\\n')) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        data = JSON.parse(line.slice(6));
+                        break;
+                    } catch {}
+                }
+            }
+            if (!data && text.trim().startsWith('{')) {
+                try {
+                    data = JSON.parse(text);
+                } catch {}
+            }
+            if (!data) {
+                throw new Error('Invalid MCP response format');
+            }
+            if (data.error) {
+                throw new Error(data.error.message || 'MCP tool error');
+            }
+            return data.result;
+        }
+
+        async function executePeerTool(toolName, params) {
+            try {
+                const result = await callMcpTool(toolName, params);
+                return {
+                    content: result && Array.isArray(result.content) ? result.content : [{ type: 'text', text: String(result && result.content ? result.content : result) }],
+                    details: {},
+                    isError: Boolean(result && result.isError)
+                };
+            } catch (error) {
+                const detail = error && error.message ? error.message : String(error);
+                return {
+                    content: [{ type: 'text', text: 'Error executing ' + toolName + ': ' + detail }],
+                    details: {},
+                    isError: true
+                };
+            }
+        }
+
+        piInstance.registerTool({
+            name: PEER_TOOL_NAMES.inspect,
+            label: 'Inspect Peer Session',
+            description: 'Inspect another HAPI session: read its metadata, status, working directory, and recent messages.',
+            parameters: Type.Object({
+                sessionIdPrefix: Type.String({ minLength: 1, description: 'Target session ID or prefix' }),
+                messageLimit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'Recent message page size (default 30, max 100). Text snippets only.' }))
+            }),
+            async execute(_toolCallId, params) {
+                return await executePeerTool('inspect_peer', params);
+            }
+        });
+
+        piInstance.registerTool({
+            name: PEER_TOOL_NAMES.ping,
+            label: 'Ping Peer Session',
+            description: 'Send a message to another HAPI session (peer handoff / nudge).',
+            parameters: Type.Object({
+                sessionIdPrefix: Type.String({ minLength: 1, description: 'Target session ID or prefix' }),
+                message: Type.String({ minLength: 1, description: 'Message text to deliver to the target session' }),
+                deliveryMode: Type.Optional(Type.String({ description: 'Delivery mode: auto (default), steer, or queue' })),
+                wake: Type.Optional(Type.Boolean({ description: 'Wake an inactive peer session' })),
+                waitForReply: Type.Optional(Type.Boolean({ description: 'Wait for reply and forward it to this session' }))
+            }),
+            async execute(_toolCallId, params) {
+                return await executePeerTool('ping_peer', params);
+            }
+        });
+
+        piInstance.registerTool({
+            name: PEER_TOOL_NAMES.list,
+            label: 'List Peer Sessions',
+            description: 'List active HAPI sessions across the connected hub.',
+            parameters: Type.Object({
+                limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'Max sessions to return (default 30, max 100). Newest updatedAt first.' })),
+                includeInactive: Type.Optional(Type.Boolean({ description: 'Include inactive sessions' }))
+            }),
+            async execute(_toolCallId, params) {
+                return await executePeerTool('list_peers', params);
+            }
+        });
+
+        piInstance.registerTool({
+            name: PEER_TOOL_NAMES.spawn,
+            label: 'Spawn Peer Session',
+            description: 'Spawn a new HAPI session on a target machine with an initial remit message.',
+            parameters: Type.Object({
+                directory: Type.String({ minLength: 1, description: 'Working directory for the new session on the target machine (must exist there)' }),
+                message: Type.String({ minLength: 1, description: 'Required first user message (the remit)' }),
+                name: Type.Optional(Type.String({ description: 'Session display name' })),
+                machine: Type.Optional(Type.String({ description: 'Optional target runner machine UUID or hostname' })),
+                agent: Type.Optional(Type.String({ description: 'Agent flavor override' })),
+                model: Type.Optional(Type.String({ description: 'Model override' })),
+                effort: Type.Optional(Type.String({ description: 'Effort override' })),
+                sessionType: Type.Optional(Type.String({ description: 'simple or worktree' })),
+                permissionMode: Type.Optional(Type.String({ description: 'Permission mode for the new session' })),
+                waitForReply: Type.Optional(Type.Boolean({ description: 'Wait for reply and forward it to this session' }))
+            }),
+            async execute(_toolCallId, params) {
+                return await executePeerTool('spawn_peer', params);
+            }
+        });
+    }
 
     // The tool name is namespaced ('hapi_change_title', matching the OpenCode
     // launcher convention) so user extensions registering their own tools
