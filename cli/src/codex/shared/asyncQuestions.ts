@@ -74,6 +74,9 @@ export class SharedCodexAsyncQuestions {
     private readonly pending = new Map<string, Pending>();
     private readonly questions = new Map<string, AsyncQuestion>();
     private readonly completed = new Map<string, Resolution>();
+    // History replays scan all answers before emitting items. Hold those results
+    // until the answer-bearing turn so Hub truncation rewinds them together.
+    private readonly deferredHistoryResults = new Set<string>();
     private closed = false;
 
     constructor(private readonly session: ApiSessionClient,
@@ -87,7 +90,14 @@ export class SharedCodexAsyncQuestions {
                 if (record(part).type !== 'text') continue;
                 for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
                     const id = requestId(threadId, reply.questionItemId);
-                    if (this.completed.get(id)?.status === 'resolved') continue;
+                    const completed = this.completed.get(id);
+                    if (completed?.status === 'resolved') {
+                        if (this.deferredHistoryResults.delete(id)) {
+                            const question = this.questions.get(id);
+                            if (question) this.resolve(question, completed, emitResults);
+                        }
+                        continue;
+                    }
                     const resolution = { status: 'resolved' as const, answer: reply.answer };
                     this.completed.set(id, resolution);
                     const question = this.questions.get(id);
@@ -98,7 +108,10 @@ export class SharedCodexAsyncQuestions {
         for (const question of asyncQuestionsForItem(threadId, item)) {
             this.questions.set(question.id, question);
             const resolution = this.completed.get(question.id);
-            if (resolution) { this.resolve(question, resolution, emitResults); continue; }
+            if (resolution) {
+                this.resolve(question, resolution, emitResults && !this.deferredHistoryResults.has(question.id));
+                continue;
+            }
             if (this.pending.has(question.id)) continue;
             this.pending.set(question.id, { question, submitted: false });
             this.session.updateAgentState(state => {
@@ -153,10 +166,12 @@ export class SharedCodexAsyncQuestions {
             this.pending.delete(id)
             this.questions.delete(id)
             this.completed.delete(id)
+            this.deferredHistoryResults.delete(id)
         }
         for (const id of reset) {
             this.pending.delete(id)
             this.completed.delete(id)
+            this.deferredHistoryResults.delete(id)
         }
         const cleared = new Set([...stale, ...reset])
         if (cleared.size > 0) {
@@ -180,7 +195,18 @@ export class SharedCodexAsyncQuestions {
         for (const turn of turns) {
             const items = record(turn).items;
             if (!Array.isArray(items)) continue;
-            for (const item of items) if (record(item).type === 'userMessage') this.observeItem(threadId, item, emitResults);
+            for (const item of items) {
+                if (record(item).type !== 'userMessage') continue;
+                if (Array.isArray(record(item).content)) {
+                    for (const part of record(item).content as unknown[]) {
+                        if (record(part).type !== 'text') continue;
+                        for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
+                            this.deferredHistoryResults.add(requestId(threadId, reply.questionItemId));
+                        }
+                    }
+                }
+                this.observeItem(threadId, item, emitResults);
+            }
         }
     }
 

@@ -559,6 +559,17 @@ describe('shared conversation rewind', () => {
         await f.root.refresh()
         await f.drain()
         await vi.waitFor(() => expect(f.state().completedRequests?.[q.id]?.status).toBe('resolved'))
+        const isResult = (message: unknown) => {
+            const value = message as { type?: string; callId?: string }
+            return value.type === 'tool-call-result' && value.callId === q.id
+        }
+        const resultSends = () => f.send.mock.calls.filter(([message]) => isResult(message))
+        const resultIndex = f.send.mock.calls.findIndex(([message]) => isResult(message))
+        expect(resultIndex).toBeGreaterThanOrEqual(0)
+        expect(resultSends()).toHaveLength(1)
+        const answerIndex = f.sendUserMessage.mock.calls.findIndex(([text]) => String(text).includes(q.title))
+        expect(answerIndex).toBeGreaterThanOrEqual(0)
+        expect(f.send.mock.invocationCallOrder[resultIndex]!).toBeGreaterThan(f.sendUserMessage.mock.invocationCallOrder[answerIndex]!)
 
         const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
             rewindToken: string

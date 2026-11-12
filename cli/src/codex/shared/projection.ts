@@ -149,7 +149,6 @@ export class SharedCodexProjection {
             }
             return;
         }
-        if (method === 'item/completed') this.observeItem?.(this.threadId, item);
         // Settings may already describe the next turn by the time queued
         // notifications are projected. Never attribute usage to that model.
         if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
@@ -271,6 +270,9 @@ export class SharedCodexProjection {
                 }, `agent:${agentId}:${itemId}:${method}:${JSON.stringify(state)}`);
             }
         }
+        // Observe after the user item is projected so a historical answer's
+        // tool result lands in the answer turn, not at its earlier question.
+        if (method === 'item/completed') this.observeItem?.(this.threadId, item);
     }
 
     /**
