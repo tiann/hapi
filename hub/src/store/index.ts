@@ -1199,35 +1199,6 @@ export class Store {
         if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
     }
 
-    /** v31→v32: persist scratchlist order and add its lookup index. */
-    private migrateFromV34ToV35(): void {
-        const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
-        if (scratchlistColumns.length === 0) return
-        if (!scratchlistColumns.some((column) => column.name === 'position')) {
-            this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
-
-            const sessionRows = this.db.prepare(
-                'SELECT DISTINCT session_id FROM session_scratchlist'
-            ).all() as Array<{ session_id: string }>
-            const rowsForSession = this.db.prepare(
-                `SELECT entry_id FROM session_scratchlist
-                 WHERE session_id = ?
-                 ORDER BY created_at DESC, entry_id DESC`
-            )
-            const updatePosition = this.db.prepare(
-                'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
-            )
-            for (const { session_id } of sessionRows) {
-                const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
-                rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
-            }
-        }
-
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
-                ON session_scratchlist(session_id, position)
-        `)
-    }
 
     /** v28→v29: persist a stable, user-input-only list ordering clock. */
     private migrateFromV28ToV29(): void {
@@ -1428,8 +1399,33 @@ export class Store {
      * v34→v35: durable redirects from merged-away session ids to the surviving
      * row, so links and peer references to a merged session keep resolving.
      */
+    /**
+     * v34→v35: persist scratchlist positions and durable session redirects.
+     */
     private migrateFromV34ToV35(): void {
+        const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
+        if (scratchlistColumns.length > 0 && !scratchlistColumns.some((column) => column.name === 'position')) {
+            this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
+            const sessionRows = this.db.prepare(
+                'SELECT DISTINCT session_id FROM session_scratchlist'
+            ).all() as Array<{ session_id: string }>
+            const rowsForSession = this.db.prepare(
+                `SELECT entry_id FROM session_scratchlist
+                 WHERE session_id = ?
+                 ORDER BY created_at DESC, entry_id DESC`
+            )
+            const updatePosition = this.db.prepare(
+                'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+            )
+            for (const { session_id } of sessionRows) {
+                const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
+                rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+            }
+        }
+
         this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
+                ON session_scratchlist(session_id, position);
             CREATE TABLE IF NOT EXISTS session_redirects (
                 old_id TEXT PRIMARY KEY,
                 new_id TEXT NOT NULL,
