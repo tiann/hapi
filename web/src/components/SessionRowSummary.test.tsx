@@ -585,6 +585,20 @@ describe('SessionRowSummary time label', () => {
         expect(screen.getByText('2m ago')).toBeInTheDocument()
     })
 
+    it('accents the time for unread output only once work stops', () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(1_800_000_000_000)
+        let session = makeSummary({ updatedAt: 1_800_000_000_000, contentRevision: 2, thinking: true, backgroundTaskCount: 0 })
+        const row = () => <I18nProvider><SessionRowSummary session={session} /></I18nProvider>
+        const view = render(row())
+        expect(screen.getByText('just now')).toHaveClass('text-[var(--app-hint)]')
+        expect(screen.getByText('just now')).not.toHaveClass('font-semibold')
+
+        session = { ...session, thinking: false }
+        view.rerender(row())
+        expect(screen.getByText('just now')).toHaveClass('font-semibold', 'text-[var(--app-link)]')
+    })
+
     it('shows a Codex import marker set after the first render', () => {
         render(
             <I18nProvider>
