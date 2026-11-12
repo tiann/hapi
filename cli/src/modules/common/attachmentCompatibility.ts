@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,8 +69,9 @@ export function attachmentLinks(text: string): string[] {
 export function assistantAttachmentText(body: unknown): string | null {
     if (!body || typeof body !== 'object') return null
     const value = body as Record<string, unknown>
-    if (value.streamSnapshot === true || value.isSidechain === true) return null
+    if (value.live === true || value.isSidechain === true) return null
     if (value.type === 'message' && typeof value.message === 'string') return value.message
+    if (value.type === 'text' && typeof value.text === 'string') return value.text
     if (value.type === 'agy_message' && typeof value.content === 'string') return value.content
     if (value.type !== 'assistant' || !value.message || typeof value.message !== 'object') return null
     const assistantMsg = value.message as Record<string, unknown>
@@ -88,9 +90,25 @@ export class AttachmentCompatibility {
 
     markDenied(path: string, cwd?: string): void {
         this.deniedPaths.add(path)
-        if (cwd && !isAbsolute(path)) {
-            this.deniedPaths.add(resolve(cwd, path))
+        const normalized = cwd && !isAbsolute(path) ? resolve(cwd, path) : (isAbsolute(path) ? resolve(path) : undefined)
+        if (normalized) {
+            this.deniedPaths.add(normalized)
+            try {
+                this.deniedPaths.add(realpathSync(normalized))
+            } catch {
+                // file may not exist yet
+            }
         }
+        // Serialize async canonicalization onto queue before subsequent enqueue runs
+        this.queue = this.queue.then(async () => {
+            const target = normalized ?? (cwd ? resolve(cwd, path) : undefined)
+            if (target) {
+                try {
+                    const canonical = await realpath(target)
+                    this.deniedPaths.add(canonical)
+                } catch {}
+            }
+        }).catch(() => {})
     }
 
     isDenied(path: string, canonicalPath?: string): boolean {
@@ -126,8 +144,9 @@ export class AttachmentCompatibility {
             const root = await realpath(cwd)
             for (const path of paths) {
                 try {
-                    const canonical = await realpath(resolve(root, path))
-                    if (this.isDenied(path, canonical)) continue
+                    const resolved = resolve(root, path)
+                    const canonical = await realpath(resolved)
+                    if (this.isDenied(path, canonical) || this.isDenied(resolved, canonical)) continue
                     const local = relative(root, canonical)
                     if (!local || local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) continue
                     const info = await stat(canonical)

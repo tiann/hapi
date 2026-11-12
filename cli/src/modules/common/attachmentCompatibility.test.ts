@@ -18,8 +18,10 @@ it('only extracts settled assistant prose and excludes sidechain output', () => 
     // Exclude subagent / sidechain transcripts
     expect(assistantAttachmentText({ type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'sidechain notes' }] } })).toBeNull()
     expect(assistantAttachmentText({ type: 'assistant', message: { isSidechain: true, content: [{ type: 'text', text: 'sidechain notes' }] } })).toBeNull()
-    for (const type of ['user', 'reasoning', 'tool-call-result', 'generated-image']) expect(assistantAttachmentText({ type, message: 'hello' })).toBeNull()
-    expect(assistantAttachmentText({ type: 'message', message: 'partial', streamSnapshot: true })).toBeNull()
+    // Exclude interim live streams but accept settled terminal text snapshots (Pi/ACP)
+    expect(assistantAttachmentText({ type: 'text', text: 'live streaming', streamSnapshot: true, live: true })).toBeNull()
+    expect(assistantAttachmentText({ type: 'text', text: 'settled terminal answer', streamSnapshot: true })).toBe('settled terminal answer')
+    expect(assistantAttachmentText({ type: 'message', message: 'settled message', streamSnapshot: true })).toBe('settled message')
 })
 it('deduplicates files, rejects escapes and retries missing files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hapi-attachments-'))
@@ -94,6 +96,21 @@ it('preserves authorization boundaries: withholds reads in restrictive modes and
         } finally {
             delete process.env.HAPI_AUTO_ATTACHMENT_LINKS
         }
+        // Symlink alias denied handling: denying an alias blocks the target canonical file
+        await writeFile(join(workspace, 'target.pdf'), 'target content')
+        await symlink(join(workspace, 'target.pdf'), join(workspace, 'alias.pdf'))
+        compat.markDenied(join(workspace, 'alias.pdf'), workspace)
+        await compat.flush()
+        compat.enqueue({ type: 'message', message: '[target](target.pdf)' }, workspace, message => messages.push(message), { permissionMode: 'yolo' })
+        await compat.flush()
+        expect(messages).toHaveLength(2) // target.pdf was blocked by alias denial
+
+        // Terminal text snapshots from Pi/ACP are processed when settled
+        await writeFile(join(workspace, 'pi-terminal.pdf'), 'pi content')
+        compat.enqueue({ type: 'text', text: '[pi](pi-terminal.pdf)', streamSnapshot: true }, workspace, message => messages.push(message), { permissionMode: 'yolo' })
+        await compat.flush()
+        expect(messages).toHaveLength(3)
+        expect(messages[2]).toMatchObject({ type: 'generated-image', fileName: 'pi-terminal.pdf' })
     } finally {
         await rm(root, { recursive: true, force: true })
     }

@@ -156,6 +156,16 @@ export class PermissionAdapter {
             await this.backend.respondToPermission(pending.sessionId, pending, outcome);
         }
 
+        if (!response.approved || decision === 'denied' || decision === 'abort') {
+            const lowerTool = toolName.toLowerCase();
+            if (lowerTool.includes('display_media') || lowerTool.includes('display_image') || lowerTool.includes('display_video')) {
+                const targetPath = (toolInput as { path?: unknown })?.path ?? (pending.rawInput as { path?: unknown })?.path;
+                if (typeof targetPath === 'string') {
+                    this.session.markAttachmentDenied(targetPath);
+                }
+            }
+        }
+
         this.session.updateAgentState((currentState) => {
             const requestEntry = currentState.requests?.[response.id];
             const { [response.id]: _, ...remaining } = currentState.requests ?? {};
@@ -209,6 +219,19 @@ export class PermissionAdapter {
         this.pendingRequests.clear();
 
         for (const request of pending) {
+            const toolName = deriveToolName({
+                title: request.title,
+                kind: request.kind,
+                rawInput: request.rawInput
+            });
+            const lowerTool = toolName.toLowerCase();
+            if (lowerTool.includes('display_media') || lowerTool.includes('display_image') || lowerTool.includes('display_video')) {
+                const toolInput = deriveToolInput(request);
+                const targetPath = (toolInput as { path?: unknown })?.path ?? (request.rawInput as { path?: unknown })?.path;
+                if (typeof targetPath === 'string') {
+                    this.session.markAttachmentDenied(targetPath);
+                }
+            }
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         }
 

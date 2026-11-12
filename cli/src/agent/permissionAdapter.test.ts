@@ -24,7 +24,9 @@ function createHarness() {
         response: PermissionResponse;
     }> = [];
 
+    const markAttachmentDenied = vi.fn();
     const session = {
+        markAttachmentDenied,
         rpcHandlerManager: {
             registerHandler(method: string, handler: (params: unknown) => Promise<unknown> | unknown) {
                 rpcHandlers.set(method, handler);
@@ -56,6 +58,7 @@ function createHarness() {
     return {
         rpcHandlers,
         respondCalls,
+        markAttachmentDenied,
         getAgentState: () => agentState,
         emitPermissionRequest(request: PermissionRequest) {
             if (!permissionHandler) {
@@ -457,5 +460,25 @@ describe('PermissionAdapter', () => {
 
         expect(intercept).toHaveBeenCalledOnce();
         expect(harness.respondCalls).toHaveLength(1);
+    });
+
+    it('records denied attachment path when display tool is declined or aborted in PermissionAdapter', async () => {
+        const harness = createHarness();
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-display-media',
+            toolCallId: 'call-display-1',
+            title: 'display_media',
+            rawInput: { path: '/workspace/denied-by-cursor.pdf' }
+        }));
+
+        const permissionRpc = harness.rpcHandlers.get('permission');
+        await permissionRpc?.({
+            id: 'perm-display-media',
+            approved: false,
+            decision: 'denied'
+        });
+
+        expect(harness.markAttachmentDenied).toHaveBeenCalledWith('/workspace/denied-by-cursor.pdf');
     });
 });
