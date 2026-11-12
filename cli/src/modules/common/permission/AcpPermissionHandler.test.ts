@@ -151,6 +151,29 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         const update = client.updateAgentState.mock.calls[0]![0] as (state: object) => { requests: Record<string, unknown> }
         expect(update({}).requests['perm-1']).toBeDefined()
     })
+
+    it('preserves explicit approved_for_session in resolvePreDecided even when autoApproveOnce is true', () => {
+        const standingRequest: PermissionRequest = {
+            ...commandRequest,
+            options: [
+                { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                { optionId: 'allow_always', name: 'Allow for session', kind: 'allow_always' },
+                { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+        }
+        const { backend, request } = setup('request-review', {
+            autoApproveOnce: true,
+            resolvePreDecided: () => 'approved_for_session'
+        })
+
+        request(standingRequest)
+
+        expect(backend.respondToPermission).toHaveBeenCalledWith(
+            'acp-1',
+            standingRequest,
+            { outcome: 'selected', optionId: 'allow_always' }
+        )
+    })
 })
 
 describe('AcpPermissionHandler questions for the user', () => {
@@ -208,5 +231,34 @@ describe('AcpPermissionHandler questions for the user', () => {
 
         await expect(handler.cancelAll('Antigravity stopped')).rejects.toThrow('agy is gone')
         await expect(open).resolves.toEqual({ decision: 'abort' })
+    })
+
+    it('retireUserQuestion removes a pending request without recording a canceled completion', () => {
+        const waits: string[] = []
+        const { client, handler } = setupWithHandler('request-review', {
+            onUserWait: () => {
+                waits.push('start')
+                return () => waits.push('end')
+            }
+        })
+        void handler.askUser('call_retire', 'Read', { file_path: 'README.md' })
+        expect(handler.hasPendingRequests()).toBe(true)
+
+        let state: { requests?: Record<string, unknown>; completedRequests?: Record<string, unknown> } = {}
+        for (const [updater] of client.updateAgentState.mock.calls) {
+            state = (updater as (current: typeof state) => typeof state)(state)
+        }
+        expect(state.requests?.['call_retire']).toBeDefined()
+
+        client.updateAgentState.mockClear()
+        handler.retireUserQuestion('call_retire')
+
+        expect(handler.hasPendingRequests()).toBe(false)
+        expect(waits).toEqual(['start', 'end'])
+        for (const [updater] of client.updateAgentState.mock.calls) {
+            state = (updater as (current: typeof state) => typeof state)(state)
+        }
+        expect(state.requests?.['call_retire']).toBeUndefined()
+        expect(state.completedRequests?.['call_retire']).toBeUndefined()
     })
 })

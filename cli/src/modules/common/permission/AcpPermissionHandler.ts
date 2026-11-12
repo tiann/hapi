@@ -88,13 +88,10 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     private handlePermissionRequest(request: PermissionRequest): void {
         const preDecided = this.options.resolvePreDecided?.(request) ?? null
         if (preDecided) {
-            const effectiveDecision = this.options.autoApproveOnce && preDecided === 'approved_for_session'
-                ? 'approved'
-                : preDecided
             void this.backend.respondToPermission(
                 request.sessionId,
                 request,
-                mapDecisionToOutcome(request, effectiveDecision)
+                mapDecisionToOutcome(request, preDecided)
             )
             return
         }
@@ -229,6 +226,32 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     /** Whether a request with this id is open or was already shown. */
     isUsed(id: string): boolean {
         return this.usedIds.has(id) || this.pendingRequests.has(id)
+    }
+
+    /**
+     * Retires an `askUser` request when the underlying tool completed natively
+     * without requiring user approval, removing `requests[id]` cleanly without
+     * recording a canceled/aborted completion entry.
+     */
+    retireUserQuestion(id: string): void {
+        const hadQuestion = this.userQuestions.delete(id)
+        const pending = this.pendingRequests.get(id)
+        if (pending) {
+            pending.resolve()
+            this.pendingRequests.delete(id)
+        }
+        if (hadQuestion || pending) {
+            this.endUserWait(id)
+        }
+        this.client.updateAgentState((currentState) => {
+            if (!currentState.requests?.[id]) return currentState
+            const nextRequests = { ...currentState.requests }
+            delete nextRequests[id]
+            return {
+                ...currentState,
+                requests: nextRequests
+            }
+        })
     }
 
     hasPendingRequests(): boolean {

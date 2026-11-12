@@ -23,10 +23,12 @@ import {
     addAgyUsage,
     advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
+    areAgyToolArgsCompatible,
     convertAgyParkedWakeupSlice,
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
+    hasAgyParkedCallProgressed,
     inspectAgyReactiveSteps,
     inspectSyntheticBackgroundCommandMatch,
     readAgyTranscriptStepsAfter,
@@ -34,6 +36,7 @@ import {
     resolveAgyBackgroundTaskIds,
     type AgyOpenBackgroundCommand,
     type AgyParkedWakeupCall,
+    type AgyPreEmittedWakeupCall,
     type AgyReactiveTimingConfig,
     type AgyTranscriptStep
 } from './agyReactiveWakeup';
@@ -244,12 +247,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private pendingParkedResolution: {
         parkedCallId: string;
         toolName: string;
+        decodedArgs: Record<string, unknown>;
         aliasedLiveId: string | null;
         decisionConsumed: boolean;
         decision: 'approved' | 'approved_for_session' | 'denied';
         answers?: Record<string, string[]>;
         shownLabels?: string[][];
         preEmittedTexts: Map<string, number>;
+        remainingPrefixCalls: AgyPreEmittedWakeupCall[];
+        suppressedPrefixLiveIds: Set<string>;
     } | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
     // agy's own tool name by call id, to map results of the calls it started.
@@ -272,6 +278,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Latest step_index seen when an unfinished wakeup hit `maxIdleMs`, so
     // tracking resumes as soon as late output appends a newer step.
     private pausedWakeupStepIndex: number | null = null;
+    // Tracks wakeup items already forwarded when a heuristically parked call
+    // later completes on its own without user intervention.
+    private emittedWakeupThrough: AgyParkedWakeupCall | null = null;
     private lastTurnTranscriptState: {
         turnStartStepIndex: number;
         streamedTextCounts: Map<string, number>;
@@ -432,6 +441,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.lastTranscriptStepIndex = latest;
         }
         this.pausedWakeupStepIndex = null;
+        this.emittedWakeupThrough = null;
     }
 
     private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number): void {
@@ -443,6 +453,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
         this.advanceCursorFromLastTurnState();
         this.pausedWakeupStepIndex = null;
+        this.emittedWakeupThrough = null;
     }
 
     private advanceCursorFromLastTurnState(): void {
@@ -675,6 +686,34 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 if (session.queue.size() > 0) {
+                    if (this.emittedWakeupThrough) {
+                        const stepsSoFar = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
+                        const slice = convertAgyParkedWakeupSlice(
+                            acpSessionId,
+                            stepsSoFar,
+                            this.emittedWakeupThrough,
+                            [],
+                            this.emittedWakeupThrough
+                        );
+                        const completedEmitted = {
+                            callId: slice.parkedCallId,
+                            toolName: this.emittedWakeupThrough.toolName,
+                            decodedArgs: this.emittedWakeupThrough.decodedArgs,
+                            backgrounded: this.backgroundCommands.some((entry) => entry.callId === slice.parkedCallId)
+                        };
+                        this.pendingParkedResolution = {
+                            parkedCallId: slice.parkedCallId,
+                            toolName: this.emittedWakeupThrough.toolName,
+                            decodedArgs: this.emittedWakeupThrough.decodedArgs,
+                            aliasedLiveId: null,
+                            decisionConsumed: true,
+                            decision: 'denied',
+                            preEmittedTexts: slice.preEmittedTexts,
+                            remainingPrefixCalls: [...slice.preEmittedCalls, completedEmitted],
+                            suppressedPrefixLiveIds: new Set()
+                        };
+                        this.emittedWakeupThrough = null;
+                    }
                     return;
                 }
 
@@ -690,6 +729,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 );
 
                 if (inspection.state === 'none') {
+                    this.emittedWakeupThrough = null;
                     session.onThinkingChange(false);
                     return;
                 }
@@ -703,6 +743,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 if (inspection.state === 'completed') {
+                    const emittedThrough = this.emittedWakeupThrough;
+                    this.emittedWakeupThrough = null;
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
                     const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
@@ -716,7 +758,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     const converted = convertAgyReactiveSteps(
                         acpSessionId,
                         inspection.steps,
-                        this.backgroundCommands
+                        this.backgroundCommands,
+                        emittedThrough
                     );
                     if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
                         this.retainedAmbiguousCompletions.length = 0;
@@ -750,7 +793,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
                 if (inspection.state === 'parked_on_tool') {
                     this.pausedWakeupStepIndex = null;
-                    await this.handleParkedWakeup(acpSessionId, inspection.steps, inspection.parkedCall, abortController);
+                    const parkedResult = await this.handleParkedWakeup(
+                        acpSessionId,
+                        inspection.steps,
+                        inspection.parkedCall,
+                        this.emittedWakeupThrough,
+                        abortController
+                    );
+                    if (parkedResult === 'progressed') {
+                        this.emittedWakeupThrough = inspection.parkedCall;
+                        watchedStepIndex = inspection.latestStepIndex;
+                        lastProgressAtMs = Date.now();
+                        session.onThinkingChange(true);
+                        continue;
+                    }
+                    this.emittedWakeupThrough = null;
                     return;
                 }
 
@@ -767,13 +824,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         acpSessionId: string,
         steps: AgyTranscriptStep[],
         parkedCall: AgyParkedWakeupCall,
+        emittedThrough: AgyParkedWakeupCall | null,
         abortController: AbortController
-    ): Promise<void> {
+    ): Promise<'resolved' | 'progressed'> {
         const session = this.session;
         const permissionHandler = this.permissionHandler;
         if (!permissionHandler || this.shouldExit) {
             session.onThinkingChange(false);
-            return;
+            return 'resolved';
         }
 
         const replayAfterStepIndex = this.lastTranscriptStepIndex;
@@ -790,7 +848,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             acpSessionId,
             steps,
             parkedCall,
-            this.backgroundCommands
+            this.backgroundCommands,
+            emittedThrough
         );
         for (const msg of slice.messages) {
             this.forwardAgentMessage(this.showQuestionCard(msg));
@@ -822,34 +881,59 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         const waitAnswer = permissionHandler.askUser(slice.parkedCallId, cardToolName, cardToolInput);
         let checkTimer: ReturnType<typeof setInterval> | null = null;
-        const superseded = new Promise<'superseded'>((resolve) => {
+        const watchRef: { current: FSWatcher | null } = { current: null };
+        const interrupted = new Promise<'superseded' | 'progressed'>((resolve) => {
+            let settled = false;
+            const finish = (reason: 'superseded' | 'progressed') => {
+                if (settled) return;
+                settled = true;
+                resolve(reason);
+            };
             const check = () => {
+                if (settled) return;
                 if (this.shouldExit || abortController.signal.aborted || session.queue.isClosed()) {
-                    resolve('superseded');
+                    finish('superseded');
                     return;
                 }
                 if (session.queue.size() > 0) {
-                    resolve('superseded');
+                    finish('superseded');
                     return;
                 }
                 if (
                     this.pendingIdleModeSync
                     && isAgySkipPermissionsMode(session.getPermissionMode() as PermissionMode | undefined) !== this.backendSkipPermissions
                 ) {
-                    resolve('superseded');
+                    finish('superseded');
+                    return;
+                }
+                const latestSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, replayAfterStepIndex);
+                if (hasAgyParkedCallProgressed(latestSteps, parkedCall)) {
+                    finish('progressed');
                 }
             };
             this.idleConfigWake = check;
             abortController.signal.addEventListener('abort', check, { once: true });
+            const paths = agyTranscriptPaths(this.brainDir, acpSessionId);
+            if (paths) {
+                try {
+                    const fsWatcher = watch(paths.logsDir, () => check());
+                    fsWatcher.unref?.();
+                    watchRef.current = fsWatcher;
+                } catch {
+                    watchRef.current = null;
+                }
+            }
             checkTimer = setInterval(check, Math.max(10, Math.min(this.reactivePollMs, 50)));
             checkTimer.unref?.();
+            check();
         });
 
-        let outcome: Awaited<typeof waitAnswer> | 'superseded';
+        let outcome: Awaited<typeof waitAnswer> | 'superseded' | 'progressed';
         try {
-            outcome = await Promise.race([waitAnswer, superseded]);
+            outcome = await Promise.race([waitAnswer, interrupted]);
         } finally {
             if (checkTimer) clearInterval(checkTimer);
+            watchRef.current?.close();
             this.idleConfigWake = null;
         }
 
@@ -860,27 +944,35 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (session.queue.size() === 0 && !this.shouldExit) {
                 session.sendSessionEvent({ type: 'ready' });
             }
-            return;
+            return 'resolved';
+        }
+
+        if (outcome === 'progressed') {
+            permissionHandler.retireUserQuestion(slice.parkedCallId);
+            return 'progressed';
         }
 
         if (outcome === 'superseded' || outcome.decision === 'abort') {
             await this.permissionHandler?.cancelAll('Superseded');
             // Advance past any already-emitted prefix steps if a mode switch or
             // user message took over before answering the card, while keeping
-            // pendingParkedResolution's preEmittedTexts for deduplication.
+            // pendingParkedResolution's preEmittedTexts / remainingPrefixCalls for deduplication.
             if (session.queue.size() > 0) {
                 this.pendingParkedResolution = {
                     parkedCallId: slice.parkedCallId,
                     toolName: parkedCall.toolName,
+                    decodedArgs: parkedCall.decodedArgs,
                     aliasedLiveId: null,
                     decisionConsumed: true,
                     decision: 'denied',
-                    preEmittedTexts: slice.preEmittedTexts
+                    preEmittedTexts: slice.preEmittedTexts,
+                    remainingPrefixCalls: [...slice.preEmittedCalls],
+                    suppressedPrefixLiveIds: new Set()
                 };
             } else {
                 this.pausedWakeupStepIndex = steps[steps.length - 1]?.step_index ?? null;
             }
-            return;
+            return 'resolved';
         }
 
         if (this.reactiveWakeupAbort === abortController) {
@@ -902,6 +994,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.pendingParkedResolution = {
             parkedCallId: slice.parkedCallId,
             toolName: parkedCall.toolName,
+            decodedArgs: parkedCall.decodedArgs,
             aliasedLiveId: null,
             decisionConsumed: false,
             decision: outcome.decision,
@@ -909,7 +1002,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             ...(this.questionLabels.has(slice.parkedCallId)
                 ? { shownLabels: this.questionLabels.get(slice.parkedCallId)! }
                 : {}),
-            preEmittedTexts: slice.preEmittedTexts
+            preEmittedTexts: slice.preEmittedTexts,
+            remainingPrefixCalls: [...slice.preEmittedCalls],
+            suppressedPrefixLiveIds: new Set()
         };
 
         const mode = this.currentWakeupMode();
@@ -918,6 +1013,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             replayAfterStepIndex,
             userMessageAlreadyMirrored: true
         });
+        return 'resolved';
     }
 
     private async startBackend(resumeSessionId: string | null, skipPermissions?: boolean): Promise<void> {
@@ -998,7 +1094,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         if (!pending || pending.decisionConsumed || pending.toolName === 'ask_question') {
                             return null;
                         }
+                        if (request.toolCallId && pending.suppressedPrefixLiveIds.has(request.toolCallId)) {
+                            return null;
+                        }
                         if (pending.aliasedLiveId && request.toolCallId !== pending.aliasedLiveId) {
+                            return null;
+                        }
+                        if (
+                            !pending.aliasedLiveId
+                            && !areAgyToolArgsCompatible(
+                                pending.decodedArgs,
+                                request.rawInput,
+                                request.title,
+                                pending.toolName
+                            )
+                        ) {
                             return null;
                         }
                         if (!pending.aliasedLiveId && request.toolCallId) {
@@ -1633,21 +1743,60 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             };
         }
         const pendingParked = this.pendingParkedResolution;
-        if (
-            pendingParked
-            && !pendingParked.decisionConsumed
-            && pendingParked.aliasedLiveId === null
-            && message.type === 'tool_call'
-            && (message.nativeName === pendingParked.toolName || message.name === pendingParked.toolName)
-        ) {
-            pendingParked.aliasedLiveId = message.id;
-            this.syntheticCallAliases.set(message.id, pendingParked.parkedCallId);
-            this.nativeToolNames.set(pendingParked.parkedCallId, pendingParked.toolName);
-            return {
-                message: { ...message, id: pendingParked.parkedCallId },
-                suppressForward: true,
-                recordCallOrdinal: true
-            };
+        if (pendingParked && (message.type === 'tool_call' || message.type === 'tool_result')) {
+            if (pendingParked.suppressedPrefixLiveIds.has(message.id)) {
+                if (message.type === 'tool_result') {
+                    pendingParked.suppressedPrefixLiveIds.delete(message.id);
+                }
+                return { message, suppressForward: true, skipTracking: true };
+            }
+            if (message.type === 'tool_call') {
+                const candidateArgs = message.nativeArgs ?? message.input;
+                const matchesParked =
+                    !pendingParked.decisionConsumed
+                    && pendingParked.aliasedLiveId === null
+                    && (message.nativeName === pendingParked.toolName || message.name === pendingParked.toolName)
+                    && areAgyToolArgsCompatible(
+                        pendingParked.decodedArgs,
+                        candidateArgs,
+                        message.title,
+                        pendingParked.toolName
+                    );
+
+                if (pendingParked.remainingPrefixCalls.length > 0 && (!matchesParked || message.status !== 'pending')) {
+                    const prefixIdx = pendingParked.remainingPrefixCalls.findIndex(
+                        (entry) =>
+                            (message.nativeName === entry.toolName || message.name === entry.toolName)
+                            && areAgyToolArgsCompatible(entry.decodedArgs, candidateArgs, message.title, entry.toolName)
+                    );
+                    if (prefixIdx >= 0) {
+                        const matchedPrefix = pendingParked.remainingPrefixCalls[prefixIdx]!;
+                        pendingParked.remainingPrefixCalls.splice(0, prefixIdx + 1);
+                        if (matchedPrefix.backgrounded) {
+                            this.syntheticCallAliases.set(message.id, matchedPrefix.callId);
+                            this.nativeToolNames.set(matchedPrefix.callId, matchedPrefix.toolName);
+                            return {
+                                message: { ...message, id: matchedPrefix.callId },
+                                suppressForward: true
+                            };
+                        }
+                        pendingParked.suppressedPrefixLiveIds.add(message.id);
+                        return { message, suppressForward: true, skipTracking: true };
+                    }
+                }
+
+                if (matchesParked && message.status === 'pending') {
+                    pendingParked.remainingPrefixCalls.length = 0;
+                    pendingParked.aliasedLiveId = message.id;
+                    this.syntheticCallAliases.set(message.id, pendingParked.parkedCallId);
+                    this.nativeToolNames.set(pendingParked.parkedCallId, pendingParked.toolName);
+                    return {
+                        message: { ...message, id: pendingParked.parkedCallId },
+                        suppressForward: true,
+                        recordCallOrdinal: true
+                    };
+                }
+            }
         }
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return { message, suppressForward: false };
@@ -1789,7 +1938,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             pendingParked
             && !pendingParked.decisionConsumed
             && pendingParked.toolName === 'ask_question'
+            && (!form.toolCallId || !pendingParked.suppressedPrefixLiveIds.has(form.toolCallId))
             && (!pendingParked.aliasedLiveId || !form.toolCallId || pendingParked.aliasedLiveId === form.toolCallId)
+            && (pendingParked.aliasedLiveId !== null || matchesParkedQuestionForm(pendingParked.decodedArgs, form.questions))
         ) {
             if (!pendingParked.aliasedLiveId && form.toolCallId) {
                 pendingParked.aliasedLiveId = form.toolCallId;
@@ -2049,6 +2200,22 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         await backend?.disconnect();
         logger.debug('[agy-acp] cleanup done');
     }
+}
+
+function matchesParkedQuestionForm(
+    decodedArgs: Record<string, unknown>,
+    liveQuestions: Array<{ question: string }>
+): boolean {
+    const parsed = questionCardInputFromToolCall(decodedArgs);
+    if (!parsed || parsed.questions.length === 0 || liveQuestions.length === 0) {
+        return true;
+    }
+    if (parsed.questions.length !== liveQuestions.length) {
+        return false;
+    }
+    return parsed.questions.every(
+        (expected, idx) => expected.question.trim() === (liveQuestions[idx]?.question ?? '').trim()
+    );
 }
 
 function formatParkedUserActionText(

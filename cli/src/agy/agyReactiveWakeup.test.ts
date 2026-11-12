@@ -3825,4 +3825,311 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         queue.close();
         await runPromise;
     });
+
+    it('retires heuristic parked request and completes wakeup when transcript progresses during approval wait', async () => {
+        const { session, client, queue } = makeHarness('request-review');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Scheduled check armed.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Scheduled check armed.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35,
+            reactiveSlowToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'request-review' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Autonomous wakeup invokes a slow in-workspace `read_file` with no action row yet
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        const slowReadPath = `${session.path}/large-log.txt`;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>',
+                    created_at: '2026-11-12T03:00:00Z'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Reading log...',
+                    input_tokens: 120,
+                    output_tokens: 15,
+                    created_at: '2026-11-12T03:00:01Z',
+                    tool_calls: [
+                        {
+                            name: 'read_file',
+                            args: { Path: JSON.stringify(slowReadPath) }
+                        }
+                    ]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const syntheticReadId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[syntheticReadId]).toBeDefined();
+        });
+        expect(backend.prompts).toHaveLength(1);
+
+        // Now the slow in-workspace read finishes natively in agy and writes its reply — without user input!
+        const resumeBefore = backend.resumeCalls.length;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'READ_FILE',
+                    status: 'DONE',
+                    content: 'LOG_CONTENT_OK',
+                    created_at: '2026-11-12T03:00:03Z'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Finished reading log without needing approval.',
+                    input_tokens: 160,
+                    output_tokens: 20,
+                    created_at: '2026-11-12T03:00:04Z'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // Stale approval request was retired cleanly without a canceled completion or prompt!
+        expect(client.getAgentState().requests?.[syntheticReadId]).toBeUndefined();
+        expect(client.getAgentState().completedRequests?.[syntheticReadId]).toBeUndefined();
+        expect(backend.prompts).toHaveLength(1);
+        expect(backend.resumeCalls.length).toBeGreaterThan(resumeBefore);
+
+        const wakeupMsgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        const readCalls = wakeupMsgs.filter(
+            (msg) => (msg as { type?: string; callId?: string }).type === 'tool-call'
+                && (msg as { callId?: string }).callId === syntheticReadId
+        );
+        expect(readCalls).toHaveLength(1);
+        expect(wakeupMsgs).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: syntheticReadId,
+            is_error: false
+        }));
+        const assistantTexts = wakeupMsgs
+            .filter((msg) => (msg as { type?: string }).type === 'message')
+            .map((msg) => (msg as { message?: string }).message);
+        expect(assistantTexts).toEqual([
+            'Reading log...',
+            'Finished reading log without needing approval.'
+        ]);
+        expect(wakeupMsgs).toContainEqual(expect.objectContaining({
+            type: 'round-summary'
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('matches parked call by identity across earlier same-tool prefix replay and preserves approved_for_session', async () => {
+        const { session, client, queue } = makeHarness('auto');
+        const backend = new WakeupTestBackend();
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Armed in auto mode.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Armed in auto mode.' }
+            ]);
+        });
+
+        // Reattachment replays the completed safe `run_command` BEFORE the parked irreversible `run_command`!
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-prefix-safe-1',
+                name: 'echo SAFE_PREFIX',
+                title: 'echo SAFE_PREFIX',
+                status: 'completed',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'echo SAFE_PREFIX' }
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-prefix-safe-1',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nSAFE_PREFIX', exit_code: 0 }
+            });
+
+            onUpdate({
+                type: 'tool_call',
+                id: 'live-parked-rm-2',
+                name: 'rm -rf ./staging',
+                title: 'rm -rf ./staging',
+                status: 'pending',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'rm -rf ./staging' }
+            });
+            backend.permissionHandler?.({
+                id: 'perm-rm-2',
+                sessionId: backend.sessionIdToCreate,
+                toolCallId: 'live-parked-rm-2',
+                title: 'rm -rf ./staging',
+                rawInput: { CommandLine: 'rm -rf ./staging' },
+                options: [
+                    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+                    { optionId: 'allow_always', name: 'Allow for session', kind: 'allow_always' },
+                    { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
+                ]
+            });
+            await vi.waitFor(() => {
+                expect(backend.permissionResponses).toHaveLength(1);
+            });
+            onUpdate({
+                type: 'tool_result',
+                id: 'live-parked-rm-2',
+                status: 'completed',
+                output: { output: 'Command exited with code 0.\n\nCommand output:\nCLEANED_STAGING', exit_code: 0 }
+            });
+            onUpdate({ type: 'text', text: 'Staging cleaned.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 35
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'auto' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        // Wakeup in auto mode completes safe `echo SAFE_PREFIX` (steps 3-4), then parks on `rm -rf ./staging` (step 5)
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>\nTimer fired\n</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('echo SAFE_PREFIX') } }
+                    ]
+                }),
+                JSON.stringify({
+                    step_index: 4,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'DONE',
+                    content: 'Command exited with code 0.\n\nCommand output:\nSAFE_PREFIX'
+                }),
+                JSON.stringify({
+                    step_index: 5,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [
+                        { name: 'run_command', args: { CommandLine: JSON.stringify('rm -rf ./staging') } }
+                    ]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        const prefixCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        const parkedCallId = `agy-wakeup-${backend.sessionIdToCreate}-5-0`;
+        await vi.waitFor(() => {
+            expect(client.getAgentState().requests?.[parkedCallId]).toBeDefined();
+        });
+
+        // User explicitly clicks "Allow for session" (`approved_for_session`) on the parked card
+        const permHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission);
+        expect(permHandler).toBeDefined();
+        await permHandler!({
+            id: parkedCallId,
+            approved: true,
+            decision: 'approved_for_session'
+        });
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // Pre-decided explicit session grant was preserved (`allow_always`), NOT downgraded to `allow_once`,
+        // and no second approval was requested!
+        expect(backend.permissionResponses).toEqual([
+            { outcome: 'selected', optionId: 'allow_always' }
+        ]);
+        expect(client.getAgentState().requests).toEqual({});
+
+        const allMsgs = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        const toolCalls = allMsgs.filter((msg) => (msg as { type?: string }).type === 'tool-call');
+        expect(toolCalls.map((msg) => (msg as { callId?: string }).callId)).toEqual([
+            prefixCallId,
+            parkedCallId
+        ]);
+
+        const parkedResults = allMsgs.filter(
+            (msg) => (msg as { type?: string; callId?: string }).type === 'tool-call-result'
+                && (msg as { callId?: string }).callId === parkedCallId
+        );
+        expect(parkedResults).toEqual([
+            expect.objectContaining({
+                type: 'tool-call-result',
+                callId: parkedCallId,
+                is_error: false,
+                output: { stdout: 'CLEANED_STAGING', exit_code: 0 }
+            })
+        ]);
+
+        queue.close();
+        await runPromise;
+    });
 });

@@ -20,7 +20,7 @@ agent's integration; their supported syntax varies by agent.
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
-| Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `plan` `always-proceed` | ✓ |
+| Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `auto` `plan` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
@@ -410,13 +410,16 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   commands and edits without asking, so HAPI shows no approval prompts; set
   it to `request-review` in agy to approve each command and edit from HAPI.
   HAPI cannot override this per session. `acceptEdits` is agy's
-  `accept-edits` mode, which also runs edits without asking, and `plan` is
-  agy's `plan` mode, which writes a plan instead of running commands or
-  edits. `always-proceed` approves every request automatically, including
-  one a PreToolUse hook marks `force_ask` (agy does not tell HAPI a request
-  came from a hook). On ACP, mode changes apply to the next message without
-  restarting agy. Conversation titles come from agy; on ACP each response's
-  details show the turn's token usage.
+  `accept-edits` mode, which also runs edits without asking, `auto` is agy's
+  `auto` mode, which approves edits and safe commands automatically while asking
+  for irreversible operations, and `plan` is agy's `plan` mode, which writes a
+  plan instead of running commands or edits. `always-proceed` launches agy with
+  `--dangerously-skip-permissions` and approves every request automatically
+  (including autonomous background wakeups and PreToolUse `force_ask` hooks).
+  Switching between non-`always-proceed` modes applies via `session/set_mode`
+  without restarting agy; switching into or out of `always-proceed` restarts
+  agy once idle and resumes the conversation cleanly. Conversation titles come
+  from agy; on ACP each response's details show the turn's token usage.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or

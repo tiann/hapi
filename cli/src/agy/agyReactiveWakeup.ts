@@ -89,6 +89,13 @@ export interface AgyParkedWakeupCall {
     decodedArgs: Record<string, unknown>;
 }
 
+export interface AgyPreEmittedWakeupCall {
+    callId: string;
+    toolName: string;
+    decodedArgs: Record<string, unknown>;
+    backgrounded: boolean;
+}
+
 export interface InspectAgyReactiveOptions {
     /**
      * True when `agy acp` was launched with `--dangerously-skip-permissions`
@@ -486,6 +493,99 @@ export function inspectAgyReactiveSteps(
     }
 
     return { state: 'running', latestStepIndex: last.step_index };
+}
+
+/**
+ * Checks whether a tool call previously classified as heuristically parked at
+ * `(parkedCall.stepIndex, parkedCall.callIndex)` has since progressed or
+ * completed in `transcript.jsonl` without requiring HAPI approval.
+ */
+export function hasAgyParkedCallProgressed(
+    stepsAfterTurn: AgyTranscriptStep[],
+    parkedCall: AgyParkedWakeupCall
+): boolean {
+    const plannerIdx = stepsAfterTurn.findIndex(
+        (step) =>
+            step.step_index === parkedCall.stepIndex
+            && step.source === 'MODEL'
+            && step.type === 'PLANNER_RESPONSE'
+    );
+    if (plannerIdx < 0) return false;
+
+    const trailingActions: AgyTranscriptStep[] = [];
+    for (let idx = plannerIdx + 1; idx < stepsAfterTurn.length; idx += 1) {
+        const step = stepsAfterTurn[idx]!;
+        if (step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE') {
+            trailingActions.push(step);
+            continue;
+        }
+        return true;
+    }
+
+    const action = trailingActions[parkedCall.callIndex];
+    if (!action || action.status === 'PENDING' || action.status === 'WAITING') {
+        return false;
+    }
+    if (parkedCall.toolName === 'ask_question') {
+        return action.status === 'DONE' || action.status === 'ERROR';
+    }
+    return true;
+}
+
+/**
+ * Compares decoded transcript tool arguments against live ACP tool arguments
+ * (and optional request/call title when live args are omitted) so replayed
+ * prefix calls are not confused with a later parked call sharing the tool name.
+ */
+export function areAgyToolArgsCompatible(
+    expectedDecodedArgs: Record<string, unknown>,
+    actualArgs: unknown,
+    fallbackTitle?: string,
+    toolName?: string
+): boolean {
+    const actualRecord = actualArgs && typeof actualArgs === 'object' && !Array.isArray(actualArgs)
+        ? (actualArgs as Record<string, unknown>)
+        : null;
+    const actualKeys = actualRecord ? Object.keys(actualRecord) : [];
+
+    if (actualRecord && actualKeys.length > 0) {
+        if (
+            typeof expectedDecodedArgs.CommandLine === 'string'
+            && 'CommandLine' in actualRecord
+            && actualRecord.CommandLine !== expectedDecodedArgs.CommandLine
+        ) {
+            return false;
+        }
+        if (
+            typeof expectedDecodedArgs.Path === 'string'
+            && 'Path' in actualRecord
+            && actualRecord.Path !== expectedDecodedArgs.Path
+        ) {
+            return false;
+        }
+        for (const key of actualKeys) {
+            if (!(key in expectedDecodedArgs)) continue;
+            const expectedVal = expectedDecodedArgs[key];
+            const actualVal = actualRecord[key];
+            if (actualVal === undefined) continue;
+            if (JSON.stringify(actualVal) !== JSON.stringify(expectedVal)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const trimmedTitle = typeof fallbackTitle === 'string' ? fallbackTitle.trim() : '';
+    if (trimmedTitle && (!toolName || trimmedTitle !== toolName)) {
+        if (toolName === 'run_command' && typeof expectedDecodedArgs.CommandLine === 'string') {
+            return trimmedTitle === expectedDecodedArgs.CommandLine.trim();
+        }
+        if (typeof expectedDecodedArgs.Path === 'string' && expectedDecodedArgs.Path.trim()) {
+            return trimmedTitle.includes(expectedDecodedArgs.Path.trim());
+        }
+    }
+
+    return true;
 }
 
 function stripAgyStepTimestamps(content: string): string {
@@ -1000,7 +1100,8 @@ function buildGenericToolOutput(
 export function convertAgyReactiveSteps(
     sessionId: string,
     steps: AgyTranscriptStep[],
-    openBackgroundCommands: AgyOpenBackgroundCommand[]
+    openBackgroundCommands: AgyOpenBackgroundCommand[],
+    emittedThrough: AgyParkedWakeupCall | null = null
 ): {
     messages: AgentMessage[];
     usage: UsageMessage | null;
@@ -1024,6 +1125,9 @@ export function convertAgyReactiveSteps(
     for (let i = 0; i < steps.length; i += 1) {
         const step = steps[i]!;
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
+            if (emittedThrough && step.step_index < emittedThrough.stepIndex) {
+                continue;
+            }
             const completedBg = parseCompletedBackgroundTask(step.content, sessionId);
             if (completedBg && openBackgroundCommands.length > 0) {
                 const matchIdx = openBackgroundCommands.findIndex(
@@ -1066,14 +1170,19 @@ export function convertAgyReactiveSteps(
             });
         }
 
-        const thinking = step.thinking?.trim();
-        if (thinking) {
-            messages.push({ type: 'reasoning', text: thinking });
-        }
+        const isBeforeEmitted = emittedThrough !== null && step.step_index < emittedThrough.stepIndex;
+        const isAtEmitted = emittedThrough !== null && step.step_index === emittedThrough.stepIndex;
 
-        const content = step.content?.trim();
-        if (content) {
-            messages.push({ type: 'text', text: step.content! });
+        if (!isBeforeEmitted && !isAtEmitted) {
+            const thinking = step.thinking?.trim();
+            if (thinking) {
+                messages.push({ type: 'reasoning', text: thinking });
+            }
+
+            const content = step.content?.trim();
+            if (content) {
+                messages.push({ type: 'text', text: step.content! });
+            }
         }
 
         const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
@@ -1092,7 +1201,12 @@ export function convertAgyReactiveSteps(
         }
         i = cursor - 1;
 
+        if (isBeforeEmitted) continue;
+
         for (let callIdx = 0; callIdx < toolCalls.length; callIdx += 1) {
+            if (isAtEmitted && callIdx < emittedThrough.callIndex) {
+                continue;
+            }
             const call = toolCalls[callIdx]!;
             const action = actionSteps[callIdx];
             const decodedArgs = decodeAgyTranscriptArgs(call.args);
@@ -1100,16 +1214,18 @@ export function convertAgyReactiveSteps(
             const resultInfo = action
                 ? buildGenericToolOutput(call.name, action)
                 : { output: '', status: 'completed' as const, backgrounded: false };
-            messages.push({
-                type: 'tool_call',
-                id,
-                name: call.name,
-                input: decodedArgs,
-                status: resultInfo.status,
-                title: call.name,
-                nativeName: call.name,
-                nativeArgs: decodedArgs
-            });
+            if (!(isAtEmitted && callIdx === emittedThrough.callIndex)) {
+                messages.push({
+                    type: 'tool_call',
+                    id,
+                    name: call.name,
+                    input: decodedArgs,
+                    status: resultInfo.status,
+                    title: call.name,
+                    nativeName: call.name,
+                    nativeArgs: decodedArgs
+                });
+            }
             if (action) {
                 messages.push({
                     type: 'tool_result',
@@ -1151,17 +1267,23 @@ export function convertAgyParkedWakeupSlice(
     sessionId: string,
     steps: AgyTranscriptStep[],
     parkedCall: AgyParkedWakeupCall,
-    openBackgroundCommands: AgyOpenBackgroundCommand[]
+    openBackgroundCommands: AgyOpenBackgroundCommand[],
+    emittedThrough: AgyParkedWakeupCall | null = null
 ): {
     messages: AgentMessage[];
     parkedCallId: string;
     parkedToolCall: Extract<AgentMessage, { type: 'tool_call' }>;
     preEmittedTexts: Map<string, number>;
+    preEmittedCalls: AgyPreEmittedWakeupCall[];
 } {
     const prefixSteps = steps.filter((step) => step.step_index < parkedCall.stepIndex);
-    const prefixConverted = convertAgyReactiveSteps(sessionId, prefixSteps, openBackgroundCommands);
-    const messages: AgentMessage[] = [...prefixConverted.messages];
+    // Compute replay deduplication metadata over the entire wakeup prefix even
+    // when earlier items were already forwarded under `emittedThrough`.
+    const fullPrefixBgProbe: AgyOpenBackgroundCommand[] = [];
+    const fullPrefix = convertAgyReactiveSteps(sessionId, prefixSteps, fullPrefixBgProbe, null);
+    const fullPrefixBgIds = new Set(fullPrefixBgProbe.map((entry) => entry.callId));
     const preEmittedTexts = new Map<string, number>();
+    const preEmittedCalls: AgyPreEmittedWakeupCall[] = [];
 
     const recordText = (text: string) => {
         const trimmed = text.trim();
@@ -1169,9 +1291,25 @@ export function convertAgyParkedWakeupSlice(
             preEmittedTexts.set(trimmed, (preEmittedTexts.get(trimmed) ?? 0) + 1);
         }
     };
-    for (const msg of messages) {
+    for (const msg of fullPrefix.messages) {
         if (msg.type === 'text') recordText(msg.text);
+        if (msg.type === 'tool_call') {
+            preEmittedCalls.push({
+                callId: msg.id,
+                toolName: msg.nativeName ?? msg.name,
+                decodedArgs: msg.nativeArgs && typeof msg.nativeArgs === 'object' && !Array.isArray(msg.nativeArgs)
+                    ? (msg.nativeArgs as Record<string, unknown>)
+                    : {},
+                backgrounded: fullPrefixBgIds.has(msg.id)
+            });
+        }
     }
+
+    const samePlannerAsEmitted = emittedThrough !== null && emittedThrough.stepIndex === parkedCall.stepIndex;
+    const prefixConverted = samePlannerAsEmitted
+        ? { messages: [] as AgentMessage[] }
+        : convertAgyReactiveSteps(sessionId, prefixSteps, openBackgroundCommands, emittedThrough);
+    const messages: AgentMessage[] = [...prefixConverted.messages];
 
     const plannerIdx = steps.findIndex(
         (step) => step.step_index === parkedCall.stepIndex && step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE'
@@ -1179,13 +1317,15 @@ export function convertAgyParkedWakeupSlice(
     if (plannerIdx >= 0) {
         const planner = steps[plannerIdx]!;
         const thinking = planner.thinking?.trim();
-        if (thinking) {
+        if (thinking && !samePlannerAsEmitted) {
             messages.push({ type: 'reasoning', text: thinking });
         }
         const content = planner.content?.trim();
         if (content) {
-            messages.push({ type: 'text', text: planner.content! });
             recordText(planner.content!);
+            if (!samePlannerAsEmitted) {
+                messages.push({ type: 'text', text: planner.content! });
+            }
         }
 
         const toolCalls = Array.isArray(planner.tool_calls) ? planner.tool_calls : [];
@@ -1208,16 +1348,28 @@ export function convertAgyParkedWakeupSlice(
             const decodedArgs = decodeAgyTranscriptArgs(call.args);
             const id = `agy-wakeup-${sessionId}-${planner.step_index}-${callIdx}`;
             const resultInfo = buildGenericToolOutput(call.name, action);
-            messages.push({
-                type: 'tool_call',
-                id,
-                name: call.name,
-                input: decodedArgs,
-                status: resultInfo.status,
-                title: call.name,
-                nativeName: call.name,
-                nativeArgs: decodedArgs
+            preEmittedCalls.push({
+                callId: id,
+                toolName: call.name,
+                decodedArgs,
+                backgrounded: resultInfo.backgrounded
             });
+
+            if (samePlannerAsEmitted && callIdx < emittedThrough.callIndex) {
+                continue;
+            }
+            if (!(samePlannerAsEmitted && callIdx === emittedThrough.callIndex)) {
+                messages.push({
+                    type: 'tool_call',
+                    id,
+                    name: call.name,
+                    input: decodedArgs,
+                    status: resultInfo.status,
+                    title: call.name,
+                    nativeName: call.name,
+                    nativeArgs: decodedArgs
+                });
+            }
             messages.push({
                 type: 'tool_result',
                 id,
@@ -1254,5 +1406,5 @@ export function convertAgyParkedWakeupSlice(
     };
     messages.push(parkedToolCall);
 
-    return { messages, parkedCallId, parkedToolCall, preEmittedTexts };
+    return { messages, parkedCallId, parkedToolCall, preEmittedTexts, preEmittedCalls };
 }
