@@ -16,6 +16,8 @@ import {
     ListPiSessionsRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
     type AgentAvailabilityResponse,
+    type AgentQuotasRequest,
+    type AgentQuotasResponse,
     type ListCodexSessionsRpcResponse,
     type ListOpencodeSessionsRpcResponse,
     type ListPiSessionsRpcResponse,
@@ -77,6 +79,7 @@ import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
 import { MachinePathPolicy } from './machinePathPolicy'
 import { getAgentAvailabilityResponse } from '@/agent/agentAvailability'
+import { getAgentQuotasResponse } from '@/agent/agentQuotas'
 
 export { normalizeWindowsDriveRoot } from './machinePathPolicy'
 
@@ -201,6 +204,11 @@ export class ApiMachineClient {
         this.rpcHandlerManager.registerHandler<unknown, AgentAvailabilityResponse>(
             RPC_METHODS.AgentAvailability,
             async () => getAgentAvailabilityResponse()
+        )
+
+        this.rpcHandlerManager.registerHandler<AgentQuotasRequest, AgentQuotasResponse>(
+            RPC_METHODS.AgentQuotas,
+            async (params) => await getAgentQuotasResponse({ refresh: params?.refresh === true })
         )
 
         this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>(RPC_METHODS.PathExists, async (params) => {
