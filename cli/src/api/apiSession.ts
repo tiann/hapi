@@ -1271,6 +1271,17 @@ export class ApiSessionClient extends EventEmitter {
         tokensBefore?: number
         tokensAfter?: number
         estimatedTokensAfter?: number
+    } | {
+        type: 'modelError'
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        priorAssistantClaimsDone: boolean
+    } | {
+        type: 'modelErrorBridged'
+        kind: string
+        auto: boolean
+        eventId: string
     }, id?: string, options?: { localId: string }): void {
         const content = {
             role: 'agent',

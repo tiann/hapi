@@ -65,18 +65,40 @@ private fun ColorScheme.withNeutralSurfaces(dark: Boolean): ColorScheme = if (da
     )
 }
 
+// Full accent role sets for the green seed (Material theme builder). Unset
+// roles would fall back to Material's baseline purple: date-range bands
+// (secondaryContainer), tonal buttons and chips all read those containers.
 private val LightColorScheme = lightColorScheme(
     primary = Color(0xFF3D6837),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFBEF0B1),
+    onPrimaryContainer = Color(0xFF002201),
+    inversePrimary = Color(0xFFA3D397),
     secondary = Color(0xFF54634D),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFD7E8CD),
+    onSecondaryContainer = Color(0xFF121F0E),
     tertiary = Color(0xFF386569),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFBCEBEE),
+    onTertiaryContainer = Color(0xFF002022),
 ).withNeutralSurfaces(dark = false)
 
 private val DarkColorScheme = darkColorScheme(
     primary = Color(0xFFA3D397),
-    // Material's baseline onPrimary is purple; ink on the light-green accent.
+    // Ink on the light-green accent.
     onPrimary = Color(0xFF0F1115),
+    primaryContainer = Color(0xFF25501F),
+    onPrimaryContainer = Color(0xFFBEF0B1),
+    inversePrimary = Color(0xFF3D6837),
     secondary = Color(0xFFBCCBB2),
+    onSecondary = Color(0xFF263422),
+    secondaryContainer = Color(0xFF3C4B37),
+    onSecondaryContainer = Color(0xFFD7E8CD),
     tertiary = Color(0xFFA0CFD2),
+    onTertiary = Color(0xFF00373A),
+    tertiaryContainer = Color(0xFF1F4D51),
+    onTertiaryContainer = Color(0xFFBCEBEE),
 ).withNeutralSurfaces(dark = true)
 
 /**

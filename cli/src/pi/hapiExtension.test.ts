@@ -436,10 +436,10 @@ function loadImageTool(fileSystem: unknown = fs) {
 }
 
 describe('hapi_display_image execution', () => {
-    it('honors image delivery preferences while retaining Pi model-image semantics', () => {
+    it('keeps the delivery contract in the tool while retaining Pi model-image semantics', () => {
         const tool = loadExtension().registerTool!.mock.calls.find(([tool]) => tool.name === 'hapi_display_image')![0]
-        expect(tool.description).toContain('explicit user or workspace preference')
-        expect(tool.description).toContain('10 MiB (10,485,760 bytes)')
+        expect(tool.description).toContain('explicit delivery preferences')
+        expect(tool.description).not.toContain('Web/PWA')
         expect(tool.description).toContain('hapi_display_image')
         expect(tool.description).toContain('up to 25 MiB')
         expect(tool.description).toContain('also enters the model context')

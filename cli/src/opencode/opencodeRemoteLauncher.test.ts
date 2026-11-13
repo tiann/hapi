@@ -4004,12 +4004,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         expect(JSON.stringify(harness.promptContents[0])).toContain('$name');
         expect(JSON.stringify(harness.promptContents[0])).toContain('skill_lookup');
-        expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_<tool>');
         expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_change_title');
         expect(JSON.stringify(harness.promptContents[1])).not.toContain('skill_lookup');
     });
 
-    it.each(['v1', 'v2'] as const)('puts the display tools block once in the first prompt only on opencode %s', async (version) => {
+    it.each(['v1', 'v2'] as const)('leaves media delivery to tool discovery on opencode %s', async (version) => {
         harness.detectedVersion = version;
         const { session } = createSessionStub([
             { message: 'first', mode: createMode() },
@@ -4018,11 +4017,12 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         await opencodeRemoteLauncher(session as never);
 
-        const header = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.';
-        expect(JSON.stringify(harness.promptContents[0]).split(header)).toHaveLength(2);
-        expect(JSON.stringify(harness.promptContents[0])).toContain('tools.hapi.<tool>');
-        expect(JSON.stringify(harness.promptContents[0])).toContain('do not display those again unless the user asks');
-        expect(JSON.stringify(harness.promptContents[1])).not.toContain(header);
+        for (const prompt of harness.promptContents) {
+            expect(JSON.stringify(prompt)).not.toContain('display_image');
+            expect(JSON.stringify(prompt)).not.toContain('display_video');
+            expect(JSON.stringify(prompt)).not.toContain('display_media');
+        }
+        expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_change_title');
     });
 
     it('spawns the ACP backend with an explicit --port/--hostname from allocateFreePort', async () => {

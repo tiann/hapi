@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
@@ -7,6 +8,10 @@ import { followSessionTail, markSessionSeen, markSessionUnread } from '@/lib/ses
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
+
+function renderWithI18n(children: ReactNode) {
+    return render(<I18nProvider>{children}</I18nProvider>)
+}
 
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
@@ -79,6 +84,38 @@ describe('SessionRowSummary background status', () => {
         expect(idleBadge).not.toHaveClass('animate-pulse')
         expect(idleBadge).toHaveClass('border-2', 'border-[var(--app-badge-success-text)]')
         expect(idleBadge).not.toHaveClass('bg-[var(--app-badge-success-text)]')
+    })
+
+    it('never puts a tooltip panel inside the faded subtree', () => {
+        // The residency fade must stay on the title text and off any container.
+        // HoverTooltip renders its panel inline as `absolute z-30` rather than
+        // through a portal, and any `opacity < 1` ancestor forms a stacking
+        // context — which would both wash the panel out and trap its z-index, so
+        // a later row could paint over a downward-opening schedule panel. Current
+        // code is correct; this pins the invariant, because the natural refactor
+        // (hoist the fade onto the grid so the whole row dims) reintroduces it
+        // silently and only on inactive rows that also have scheduled messages.
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        active: false,
+                        backgroundTaskCount: 0,
+                        futureScheduledMessageCount: 2,
+                        nextScheduledAt: 1_000_000,
+                    })}
+                    showDetailedStatus={true}
+                />
+            </I18nProvider>
+        )
+
+        const faded = Array.from(container.querySelectorAll('.opacity-50'))
+        expect(faded.length).toBeGreaterThan(0)
+        const tooltip = container.querySelector('[role="tooltip"]')
+        expect(tooltip).not.toBeNull()
+        for (const node of faded) {
+            expect(node.contains(tooltip)).toBe(false)
+        }
     })
 
     it('dims disconnected rows and gives them a stopped badge instead of nothing', () => {
@@ -614,5 +651,102 @@ describe('SessionRowSummary time label', () => {
 
         act(() => { markCodexSessionsImported(['codex-thread']) })
         expect(screen.getByText('just imported from Codex')).toBeInTheDocument()
+    })
+})
+
+describe('SessionRowSummary model-error + attention', () => {
+    it('shows model-error and permission attention together', () => {
+        const summary = makeSummary({
+            id: 's-both',
+            backgroundTaskCount: 0,
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: 0 }],
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-1',
+                    kind: 'model_not_found',
+                    transient: false,
+                    rawSnippet: 'Unknown model',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                },
+            },
+        })
+
+        renderWithI18n(
+            <SessionRowSummary
+                session={summary}
+                showDetailedStatus
+                selected={false}
+                nestedTooltips={false}
+            />
+        )
+
+        expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
+        // Upstream #2402 renamed this label to "Approval required".
+        expect(screen.getByLabelText('Approval required')).toBeTruthy()
+    })
+
+    it('keeps the model-error pulse while thinking (auto-bridge in flight)', () => {
+        const summary = makeSummary({
+            id: 's-bridge',
+            thinking: true,
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-bridge',
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'rate limited',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                },
+            },
+        })
+
+        renderWithI18n(
+            <SessionRowSummary
+                session={summary}
+                showDetailedStatus
+                selected={false}
+                nestedTooltips={false}
+            />
+        )
+
+        expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
+    })
+
+    it('hides the model-error pulse after a successful bridge even if still thinking', () => {
+        const summary = makeSummary({
+            id: 's-recovered',
+            thinking: true,
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-ok',
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'rate limited',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                    bridgedForEventId: 'evt-row-ok',
+                },
+            },
+        })
+
+        renderWithI18n(
+            <SessionRowSummary
+                session={summary}
+                showDetailedStatus
+                selected={false}
+                nestedTooltips={false}
+            />
+        )
+
+        expect(screen.queryByLabelText(/Model error/i)).toBeNull()
     })
 })

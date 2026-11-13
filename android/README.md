@@ -422,11 +422,14 @@ Home centers the Sessions title between a **Hubs and settings** icon and a
 **Sort & filter** icon, keeping the new-session FAB. The hub menu is the only entry
 for switching/adding hubs, app settings and sign-out; the active hub is checked.
 The icon carries a dot for any applied filter or a non-default order and opens
-one Material 3 sheet that mirrors the web sort and filter menu: machines,
-activity dates, **Show** all / active only / archived only and **Unread only**,
-then **Sort by** last message (default) or date created and **Active first**
-(on by default: connected sessions lead the pinned and recent sections, below
-manual pins), both persisted app-wide in `hapi_prefs`. Status and unread
+one compact Material 3 sheet that mirrors the web sort and filter menu without
+scrolling: under **Filter**, single "label · value" rows for **Machines** (two or
+more machines; a menu with per-machine session counts), **Activity dates**
+(opens the range picker) and **Show** all / active only / archived only, plus an
+**Unread only** switch; under **Sort**, **Sort by** last message (default) or
+date created and an **Active first** switch (on by default: connected sessions
+lead the pinned and recent sections, below manual pins), both persisted
+app-wide in `hapi_prefs`. **Reset** and **Done** sit in the sheet header. Status and unread
 filters keep the open session listed; search ranks by relevance with the base
 order as tie-break, as on web. Machine choices come from all sessions, including historical
 machines; names/IDs determine ordering, never counts. Duplicate names include

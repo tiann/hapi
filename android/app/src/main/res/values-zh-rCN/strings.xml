@@ -209,6 +209,8 @@
     <string name="channel_permission_requests_desc">智能体正在等待您允许或拒绝一次工具调用</string>
     <string name="channel_input_requests">待回答的问题</string>
     <string name="channel_input_requests_desc">智能体需要您进入会话回答问题</string>
+    <string name="channel_model_errors">模型错误</string>
+    <string name="channel_model_errors_desc">智能体遇到需要处理的模型侧失败</string>
     <string name="channel_ready">代理就绪</string>
     <string name="channel_ready_desc">智能体已完成并正在等待输入</string>
     <string name="channel_other">其他通知</string>
@@ -712,13 +714,14 @@
     <string name="sessions_filters">排序与筛选</string>
     <string name="sessions_filters_active">已应用筛选</string>
     <string name="sessions_filters_reset">重置</string>
+    <string name="sessions_filter_section">筛选</string>
+    <string name="sessions_sort_section">排序</string>
     <string name="sessions_filters_done">完成</string>
     <string name="sessions_filter_machines">机器</string>
     <string name="sessions_filter_dates">活动日期</string>
     <string name="sessions_filter_any_date">不限日期</string>
     <string name="sessions_filter_clear_dates">清除日期筛选</string>
     <string name="sessions_machine_fallback">机器 · %1$s</string>
-    <string name="sessions_time_filter_label">按最后活动时间筛选会话</string>
     <string name="sessions_time_filter_apply">应用</string>
     <string name="sessions_time_filter_clear">清除</string>
     <string name="sessions_time_filter_summary">%1$s – %2$s</string>

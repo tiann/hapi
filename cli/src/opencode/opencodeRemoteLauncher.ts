@@ -14,7 +14,7 @@ import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLaunc
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
-import type { QueueReservation } from '@/utils/MessageQueue2';
+import type { CollectedQueueItem, QueueReservation } from '@/utils/MessageQueue2';
 import { admitOpencodeV2Steer, cancelOpencodeV2Steer, opencodeV2InputId, readOpencodeV2Input, steerOpencodeV2Inbox, type OpencodeSteerCancelHandler, type OpencodeSteerCancelResult } from './utils/opencodeV2Steer';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { captureOpencodeRoundSnapshot, fetchOpencodeRoundSummary, type OpencodeRoundSnapshot } from './utils/opencodeRoundSummary';
@@ -2925,7 +2925,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      */
     private requeueUndeliveredBatch(
         session: OpencodeSession,
-        batch: { mode: OpencodeMode; isolate: boolean; items: Array<{ message: string; localId?: string; internal?: boolean }> }
+        batch: { mode: OpencodeMode; isolate: boolean; items: CollectedQueueItem[] }
     ): void {
         if (session.queue.isClosed()) return
         session.queue.unshiftBatch(batch)

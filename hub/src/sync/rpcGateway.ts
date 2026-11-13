@@ -1,6 +1,15 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
 import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
+    UsageQueryResultSchema,
+    UsageQuerySettingsResponseSchema,
+    type UsageQueryAgent,
+    type UsageQueryAgentSettings,
+    type UsageQueryResult,
+    type UsageQuerySettingsResponse,
+    type UsageQueryTemplate
+} from '@hapi/protocol/usageQuery'
+import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
     AgentQuotasResponseSchema,
@@ -145,6 +154,8 @@ export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcListDshModelsResponse = DshModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
 export type RpcListClaudeModelsResponse = ClaudeModelsResponse
+export type RpcUsageQuerySettingsResponse = UsageQuerySettingsResponse
+export type RpcUsageQueryResult = UsageQueryResult
 
 export class RpcGateway {
     constructor(
@@ -206,6 +217,7 @@ export class RpcGateway {
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            autoBridgeTransientModelErrors?: boolean
         }
     ): Promise<unknown> {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
@@ -265,6 +277,28 @@ export class RpcGateway {
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
+    }
+
+    async bridgeModelError(
+        sessionId: string,
+        payload: {
+            eventId: string
+            atTs: number
+            kind: string
+            rawSnippet: string
+            lastUserMessage?: string
+            priorAssistantClaimsDone: boolean
+            transient: boolean
+            bridgedForEventId?: string
+            retriedAndFailed?: boolean
+            supersededByUserTurn?: boolean
+            bridgeable?: boolean
+        }
+    ): Promise<{ ok: boolean; reason?: string }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.BridgeModelError, payload) as {
+            ok: boolean
+            reason?: string
+        }
     }
 
     async spawnSession(
@@ -391,6 +425,41 @@ export class RpcGateway {
     async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
         return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<RpcUsageQuerySettingsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQueryGetSettings, { agent })
+        return UsageQuerySettingsResponseSchema.parse(result)
+    }
+
+    async saveUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<RpcUsageQuerySettingsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQuerySaveSettings, {
+            agent,
+            ...settings
+        })
+        return UsageQuerySettingsResponseSchema.parse(result)
+    }
+
+    async testUsageQueryTemplate(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<RpcUsageQueryResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQueryTest, { agent, template })
+        return UsageQueryResultSchema.parse(result)
+    }
+
+    async queryUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<RpcUsageQueryResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQuery, { agent, force })
+        return UsageQueryResultSchema.parse(result)
     }
 
     async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): Promise<AgentQuotasResponse> {
