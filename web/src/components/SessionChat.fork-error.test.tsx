@@ -200,4 +200,26 @@ describe('fork preview error display in the chat', () => {
         await screen.findByTestId('fork-preview-thread')
         expect(screen.getByText(/Copies up to the last completed turn/)).toBeTruthy()
     })
+
+    it('locks the legacy confirm while the fork RPC is in flight', async () => {
+        const fork = vi.fn()
+        let resolveFork!: (value: { sessionId: string }) => void
+        fork.mockImplementation(() => new Promise<{ sessionId: string }>(resolve => { resolveFork = resolve }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+
+        render(shell(forkPreview, fork, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Fork' })).at(-1)!)
+        const legacyDialog = await screen.findByRole('dialog', { name: 'Fork conversation' })
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Fork' }))
+
+        // The legacy confirm runs the fork RPC with no preview round-trip:
+        // the dialog must show the confirming label and lock both buttons
+        // while it is pending, or a double click submits the fork twice.
+        const confirming = await within(legacyDialog).findByRole('button', { name: 'Forking…' })
+        expect(confirming).toBeDisabled()
+        expect(within(legacyDialog).getByRole('button', { name: 'Cancel' })).toBeDisabled()
+
+        resolveFork({ sessionId: 'ses-child' })
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Fork conversation' })).toBeNull())
+    })
 })

@@ -26,6 +26,8 @@ export type ForkFlow = {
     preview: ForkFlowState | null
     /** True while a preview request is in flight. */
     loading: boolean
+    /** True while the legacy confirm's fork/rewind RPC is in flight. */
+    confirming: boolean
     /** Preview failure message; the dialog stays open and shows it. */
     errorMessage: string | null
     /** True when the failure was a connect-level error (no hub answer), so a
@@ -83,6 +85,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
     const { t } = useTranslation()
     const [state, setState] = useState<ForkFlowState | null>(null)
     const [loading, setLoading] = useState(false)
+    const [confirming, setConfirming] = useState(false)
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
     const [errorWasConnectFailure, setErrorWasConnectFailure] = useState(false)
     const [legacyRequest, setLegacyRequest] = useState<ForkFlow['legacyRequest']>(null)
@@ -161,20 +164,27 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         // client-side exactly like the pre-preview confirm dialog did.
         const request = legacyRequest ?? { intent: 'current' as const, messageLocalId: state?.messageLocalId }
         const target = sessionRef.current
-        if (request.intent === 'rewind') {
-            await api.rewindConversation(target.id, request.messageLocalId!)
+        confirmingRef.current = true
+        setConfirming(true)
+        try {
+            if (request.intent === 'rewind') {
+                await api.rewindConversation(target.id, request.messageLocalId!)
+                closePreview()
+                await onRewound?.(request.messageLocalId!)
+                return
+            }
+            const supportsCompletedFork = (target as unknown as {
+                metadata?: { capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } } }
+            })?.metadata?.capabilities?.conversationHistory?.forkLatestCompleted === true
+            const result = !request.messageLocalId && target.thinking && supportsCompletedFork
+                ? await api.forkConversation(target.id, undefined, true)
+                : await api.forkConversation(target.id, request.messageLocalId)
             closePreview()
-            await onRewound?.(request.messageLocalId!)
-            return
+            onForked(result.sessionId)
+        } finally {
+            confirmingRef.current = false
+            setConfirming(false)
         }
-        const supportsCompletedFork = (target as unknown as {
-            metadata?: { capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } } }
-        })?.metadata?.capabilities?.conversationHistory?.forkLatestCompleted === true
-        const result = !request.messageLocalId && target.thinking && supportsCompletedFork
-            ? await api.forkConversation(target.id, undefined, true)
-            : await api.forkConversation(target.id, request.messageLocalId)
-        closePreview()
-        onForked(result.sessionId)
     }, [api, closePreview, legacyRequest, onForked, onRewound, state])
 
     const confirmPreview = useCallback(async () => {
@@ -236,6 +246,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         flowOpen: state !== null || loading || errorMessage !== null || legacyRequest !== null,
         preview: state,
         loading,
+        confirming,
         errorMessage,
         errorWasConnectFailure,
         legacyFallback: legacyRequest !== null,

@@ -2300,7 +2300,7 @@ function SessionChatInner(props: SessionChatProps) {
                         description={t('message.fork.confirmDescription')}
                         confirmLabel={t('message.fork')}
                         confirmingLabel={t('message.fork.confirming')}
-                        isPending={forkFlow.loading}
+                        isPending={forkFlow.confirming}
                         centerTitle
                         onConfirm={forkFlow.confirmLegacy}
                     />
@@ -2313,7 +2313,7 @@ function SessionChatInner(props: SessionChatProps) {
                         description={t('message.rewind.confirmDescription')}
                         confirmLabel={t('message.rewind')}
                         confirmingLabel={t('message.rewind.confirming')}
-                        isPending={forkFlow.loading}
+                        isPending={forkFlow.confirming}
                         destructive
                         centerTitle
                         onConfirm={forkFlow.confirmLegacy}

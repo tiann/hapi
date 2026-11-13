@@ -1371,7 +1371,7 @@ const SessionItem = memo(function SessionItem(props: {
                     description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}
                     confirmingLabel={t('dialog.sessionFork.confirming')}
-                    isPending={forkFlow.loading}
+                    isPending={forkFlow.confirming}
                     destructive
                     centerTitle
                     onConfirm={forkFlow.confirmLegacy}
