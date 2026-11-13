@@ -213,7 +213,10 @@ export function opencodeToTranscriptSummary(session: OpencodeLocalSessionSummary
         lastUserMessage: session.lastUserMessage ?? null,
         cwd: session.cwd ?? null,
         file: session.file,
-        modifiedAt: session.modifiedAt
+        modifiedAt: session.modifiedAt,
+        // v2 sessions carry the model they ran with (D8); only a real value
+        // becomes a launch hint so an absent column stays launchless.
+        ...(session.model ? { launch: { model: session.model } } : {})
     })
 }
 

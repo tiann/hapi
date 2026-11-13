@@ -141,6 +141,14 @@ describe('local transcript mappers', () => {
         expect(LocalTranscriptSchema.parse(transcript)).toBeDefined()
     })
 
+    it('carries the opencode v2 model as a launch hint (D8)', () => {
+        const withModel = opencodeToTranscript({ ...opencodeSession, model: 'gpt-5.6' })
+        expect(withModel.launch).toEqual({ model: 'gpt-5.6' })
+        // A null/absent v2 model must not produce an empty launch envelope.
+        expect(opencodeToTranscript({ ...opencodeSession, model: null }).launch).toBeUndefined()
+        expect(opencodeToTranscript(opencodeSession).launch).toBeUndefined()
+    })
+
     it('maps Codex messages to indexed ids without createdAt', () => {
         const transcript = codexToTranscript(codexSession)
         expect(transcript.flavor).toBe('codex')

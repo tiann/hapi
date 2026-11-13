@@ -357,7 +357,9 @@ export const OpencodeLocalSessionSummarySchema = z.object({
     lastUserMessage: z.string().nullable().optional(),
     cwd: z.string().nullable().optional(),
     file: z.string().min(1),
-    modifiedAt: z.number()
+    modifiedAt: z.number(),
+    /** v2 launch hint (D8): the model the session ran with. */
+    model: z.string().nullable().optional()
 })
 
 export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummarySchema.extend({
