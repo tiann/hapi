@@ -151,6 +151,7 @@ export default {
   'piImport.failed.body': '导入 Pi 历史失败。',
   'piImport.failed.partial': '{failed} 个 session 导入失败：{reason}',
   'piImport.error.diverged': '本机 Pi 分支在上次导入后发生变化，请先检查会话再继续。',
+  'piImport.error.alreadyImported': '该 Pi session 已导入 HAPI，没有可新增的消息。',
   'piImport.error.active': '请先停止正在运行的 Hapi Pi session，再导入新增的原生历史。',
   'piImport.manual.success.title': 'Pi 历史同步完成',
   'piImport.manual.success.body': '已同步 {n} 条新的 Pi 历史记录。',
@@ -179,6 +180,7 @@ export default {
   'opencodeSync.failed.body': '导入 OpenCode 历史失败。',
   'opencodeSync.failed.partial': '{failed} 个 session 导入失败：{reason}',
   'opencodeSync.error.diverged': '本机 OpenCode 分支在上次导入后发生变化，请先检查会话再继续。',
+  'opencodeSync.error.alreadyImported': '该 OpenCode session 已导入 HAPI，没有可新增的消息。',
   'opencodeSync.error.active': '请先停止正在运行的 Hapi OpenCode session，再导入新增的原生历史。',
   // 中文注释：以下文案支撑导入弹窗的多选列表、加载态，以及右上角重启 Codex 客户端按钮提示。
   'codexSync.confirm.selectAll': '全选',

@@ -22,6 +22,11 @@ export type UseLocalSessionImportOptions = {
     directory?: string | null
     /** Machine hosting the session that is being continued (may be null). */
     machineId?: string | null
+    /**
+     * When false, sessions are only fetched through an explicit refresh()
+     * (the New Session form loads its import list when the picker opens).
+     */
+    auto?: boolean
 }
 
 export type UseLocalSessionImportResult = {
@@ -35,7 +40,7 @@ export type UseLocalSessionImportResult = {
 }
 
 export function useLocalSessionImport(options: UseLocalSessionImportOptions): UseLocalSessionImportResult {
-    const { api, flavor, directory, machineId } = options
+    const { api, flavor, directory, machineId, auto = true } = options
     const [sessions, setSessions] = useState<LocalSessionListItem[]>([])
     const [resolvedMachineId, setResolvedMachineId] = useState<string | null>(null)
     const [isLoading, setIsLoading] = useState(false)
@@ -57,7 +62,7 @@ export function useLocalSessionImport(options: UseLocalSessionImportOptions): Us
                 return
             }
             setSessions(result.sessions)
-            setResolvedMachineId(result.machineId ?? null)
+            setResolvedMachineId(result.machineId ?? machineId ?? null)
         } catch (loadError) {
             if (generation !== loadGenerationRef.current) return
             setError(apiErrorMessage(loadError, 'Failed to load local sessions'))
@@ -67,9 +72,19 @@ export function useLocalSessionImport(options: UseLocalSessionImportOptions): Us
         }
     }, [api, flavor, directory, machineId])
 
+    // Invalidate an in-flight scan when its scope (directory/machine) changes:
+    // the stale response is dropped and the loading state clears immediately,
+    // before a new scan is issued (auto mode re-issues below).
     useEffect(() => {
+        loadGenerationRef.current += 1
+        setIsLoading(false)
+        setResolvedMachineId(null)
+    }, [directory, machineId])
+
+    useEffect(() => {
+        if (!auto) return
         void refresh()
-    }, [refresh])
+    }, [auto, refresh])
 
     const importSessions = useCallback(async (sessionIds: string[], payloadOverrides?: Partial<LocalSessionImportPayload>) => {
         if (isImporting || sessionIds.length === 0) return null
@@ -82,7 +97,7 @@ export function useLocalSessionImport(options: UseLocalSessionImportOptions): Us
                 ...payloadOverrides
             })
             if (result.success || result.results.length > 0) return result.results
-            setError(result.error)
+            setError(result.error ?? null)
             return null
         } catch (importError) {
             setError(apiErrorMessage(importError, 'Failed to import local sessions'))

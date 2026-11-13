@@ -184,15 +184,21 @@ describe('generic local session routes', () => {
         expect(calls[0]).toMatchObject({ method: 'listLocalSessions' })
     })
 
-    it('rejects empty and oversized selections', async () => {
+    it('rejects empty selections and enforces the flavor import limit', async () => {
         const { app } = harness()
         const empty = await app.request('/api/pi/import-sessions', { method: 'POST', body: JSON.stringify({ sessionIds: [] }) })
         expect(empty.status).toBe(400)
-        const oversized = await app.request('/api/pi/import-sessions', {
+        // OpenCode carries the pre-registry 200 cap; Pi gains its cap in 4a (B6).
+        const oversized = await app.request('/api/opencode/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: Array.from({ length: 201 }, (_, index) => `ses-${index}`) })
+        })
+        expect(oversized.status).toBe(400)
+        const underLimit = await app.request('/api/pi/import-sessions', {
             method: 'POST',
             body: JSON.stringify({ sessionIds: Array.from({ length: 201 }, (_, index) => `pi-${index}`) })
         })
-        expect(oversized.status).toBe(400)
+        expect(underLimit.status).toBe(200)
     })
 
     it('marks a missing transcript as not_found', async () => {

@@ -24,6 +24,7 @@ import type {
 import type { MachineCapability } from '@hapi/protocol/runnerCapabilities'
 import type { SyncEngine } from '../../../sync/syncEngine'
 import { truncateOversizedMessageContent } from '../../../store/contentCodec'
+import { CODEX_TRANSCRIPT_IMPORT_NAMESPACE_ERROR } from '../codexExtras'
 import { normalizeComparableText, stableSerializeContent } from './compare'
 import type { MachinePickMode } from './machinePick'
 
@@ -57,6 +58,8 @@ export type HubLocalSessionSource = {
     batch: 'continue' | 'stopOnFirstError'
     /** Flavor-only import progress metadata key (Pi). */
     importStateKey?: 'piImportState'
+    /** Per-request import cap enforced by the route (400 above it). */
+    importLimit?: number
     /**
      * Fallback for runners that do not advertise `local-session-import`:
      * fetch via the flavor's legacy RPC and convert raw rows to transcripts.
@@ -143,6 +146,9 @@ export const PI_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     lifecycleOnCreate: 'archived',
     batch: 'continue',
     importStateKey: 'piImportState',
+    // Temporary (commit 2): keeps the pre-registry requested-or-first machine
+    // pick until 4a switches Pi to the cwd-owner rule.
+    machinePick: 'requestedOrFirst',
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport,
     legacy: {
         resultIdKey: 'piSessionId',
@@ -165,6 +171,10 @@ export const OPENCODE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     match: { strategy: 'anchored' },
     lifecycleOnCreate: 'archived',
     batch: 'continue',
+    importLimit: 200,
+    // Temporary (commit 2): keeps the pre-registry requested-or-first machine
+    // pick until 4a switches OpenCode to the cwd-owner rule.
+    machinePick: 'requestedOrFirst',
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport,
     legacy: {
         resultIdKey: 'opencodeSessionId',
@@ -187,6 +197,9 @@ export const CODEX_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     match: { strategy: 'contentPrefix', compareKey: codexCompareKey },
     lifecycleOnCreate: 'imported',
     batch: 'stopOnFirstError',
+    // Temporary (commit 2): the pre-registry default-namespace gate; 4b lifts
+    // it for list and sync while the desktop extras stay gated.
+    namespaceGate: { namespace: 'default', error: CODEX_TRANSCRIPT_IMPORT_NAMESPACE_ERROR },
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport,
     requestMetadata: (body) => (body.yolo === true ? { preferredPermissionMode: 'yolo' } : {}),
     legacy: {

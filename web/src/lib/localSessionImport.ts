@@ -5,6 +5,8 @@
  * list items (the hub flattens the source descriptor's `extra`).
  */
 
+import type { PermissionMode } from '@/types/api'
+
 export type LocalSessionImportFlavor = 'codex' | 'pi' | 'opencode' | 'claude'
 
 export type LocalSessionListItem = {
@@ -25,7 +27,7 @@ export type LocalSessionListResponse =
     | { success: false; error: string; sessions: []; machineId?: string }
 
 export type LocalSessionImportResult = {
-    sessionId: string
+    sessionId?: string
     hapiSessionId?: string
     action?: 'created' | 'updated' | 'unchanged'
     appended?: number
@@ -33,9 +35,12 @@ export type LocalSessionImportResult = {
     [flavorField: string]: unknown
 }
 
-export type LocalSessionImportResponse =
-    | { success: true; results: LocalSessionImportResult[]; machineId?: string }
-    | { success: false; error: string; results: LocalSessionImportResult[]; machineId?: string }
+export type LocalSessionImportResponse = {
+    success: boolean
+    results: LocalSessionImportResult[]
+    machineId?: string
+    error?: string
+}
 
 export type LocalSessionImportPayload = {
     sessionIds: string[]
@@ -43,7 +48,7 @@ export type LocalSessionImportPayload = {
     machineId?: string | null
     model?: string | null
     modelReasoningEffort?: string | null
-    permissionMode?: string | null
+    permissionMode?: PermissionMode
     serviceTier?: string | null
     collaborationMode?: string | null
     [requestField: string]: unknown

@@ -177,8 +177,9 @@ export function createLocalSessionRoutes(options: {
             }
             const body = asRecord(await c.req.json().catch(() => null)) ?? {}
             const rawSessionIds = Array.isArray(body.sessionIds) ? body.sessionIds : []
-            if (rawSessionIds.length > MAX_LOCAL_SESSION_IMPORTS) {
-                return c.json({ success: false, error: `At most ${MAX_LOCAL_SESSION_IMPORTS} ${source.displayName} sessions can be imported at once`, results: [] }, 400)
+            const importLimit = source.importLimit
+            if (importLimit !== undefined && rawSessionIds.length > importLimit) {
+                return c.json({ success: false, error: `At most ${importLimit} ${source.displayName} sessions can be imported at once`, results: [] }, 400)
             }
             const sessionIds = rawSessionIds
                 .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)

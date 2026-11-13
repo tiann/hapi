@@ -133,6 +133,7 @@ export default {
   'piImport.failed.body': 'Не удалось импортировать историю Pi.',
   'piImport.failed.partial': 'Не удалось импортировать сессий: {failed}. Причина: {reason}',
   'piImport.error.diverged': 'Локальная ветка Pi изменилась после предыдущего импорта. Проверьте сессию перед продолжением.',
+  'piImport.error.alreadyImported': 'Эта сессия Pi уже импортирована в HAPI и не содержит новых сообщений.',
   'piImport.error.active': 'Остановите активную сессию Hapi Pi перед импортом более новой нативной истории.',
   'piImport.manual.success.title': 'Синхронизация истории Pi завершена',
   'piImport.manual.success.body': 'Синхронизировано новых элементов истории Pi: {n}.',

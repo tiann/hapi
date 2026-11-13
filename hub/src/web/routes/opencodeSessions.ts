@@ -11,6 +11,7 @@ import { ImportedMessageConflictError } from '../../store/messages'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
+import type { LocalSessionImportDelegate } from './localSessions/createLocalSessionRoutes'
 
 const importLocks = new Map<string, Promise<void>>()
 
@@ -268,6 +269,84 @@ async function importWithLock(key: string, work: () => Promise<OpencodeImportRes
     } finally {
         release()
         if (importLocks.get(key) === current) importLocks.delete(key)
+    }
+}
+
+/**
+ * Temporary (commit 2): import route delegate that keeps the pre-registry
+ * OpenCode import behavior (raw RPC fetch + importOpencodeSession + launch
+ * config application + serial lock). Commit 4a removes it in favor of the
+ * generic importer.
+ */
+export function createOpencodeImportRouteDelegate(options: {
+    store: Store
+    getSyncEngine: () => SyncEngine | null
+}): LocalSessionImportDelegate {
+    return async (ctx) => {
+        const { store, engine, namespace, machine, sessionIds, cwd, body } = ctx
+        const remote = await engine.listOpencodeSessionsForMachine(
+            machine.id,
+            cwd,
+            sessionIds
+        )
+        if (!remote.success) {
+            return Response.json({ success: false, error: remote.error, results: [], machineId: machine.id }, { status: 503 })
+        }
+        const byId = new Map(remote.sessions
+            .filter((session): session is OpencodeLocalSessionWithMessages => 'messages' in session)
+            .map((session) => [session.id, session]))
+        const requestedModel = typeof body.model === 'string' && body.model.trim().length > 0 ? body.model.trim() : null
+        const requestedModelReasoningEffort = typeof body.modelReasoningEffort === 'string' && body.modelReasoningEffort.trim().length > 0
+            ? body.modelReasoningEffort.trim()
+            : null
+        const requestedPermissionMode = typeof body.permissionMode === 'string' && body.permissionMode.trim().length > 0
+            ? body.permissionMode.trim()
+            : null
+        if (requestedPermissionMode && !isPermissionModeAllowedForFlavor(requestedPermissionMode as PermissionMode, 'opencode')) {
+            return Response.json({ success: false, error: 'Invalid permission mode for OpenCode sessions', results: [] }, { status: 400 })
+        }
+        type LaunchConfig = Parameters<SyncEngine['applySessionConfig']>[1]
+        const launchConfig: LaunchConfig = {}
+        const hasLaunchKey = (key: string): boolean => Object.prototype.hasOwnProperty.call(body, key)
+        // Property presence matters: applySessionConfig only resets a persisted
+        // value when the key is present, so explicit nulls / 'default' must be
+        // preserved to clear stale selections on re-import.
+        if (hasLaunchKey('model')) launchConfig.model = requestedModel
+        if (hasLaunchKey('modelReasoningEffort')) launchConfig.modelReasoningEffort = requestedModelReasoningEffort
+        if (hasLaunchKey('permissionMode')) launchConfig.permissionMode = (requestedPermissionMode ?? 'default') as PermissionMode
+        const results: OpencodeImportResult[] = []
+        for (const sessionId of sessionIds) {
+            const transcript = byId.get(sessionId)
+            if (!transcript) {
+                results.push({ opencodeSessionId: sessionId, error: { code: 'not_found', message: 'OpenCode session transcript not found' } })
+                continue
+            }
+            const result = await importWithLock(`${namespace}:${machine.id}:${sessionId}`, async () => {
+                const imported = importOpencodeSession({
+                    store,
+                    engine,
+                    namespace,
+                    machine,
+                    transcript
+                })
+                if (!imported.error && imported.hapiSessionId && Object.keys(launchConfig).length > 0) {
+                    // The transcript is already persisted here; a config failure
+                    // must stay scoped to this session's result instead of turning
+                    // into an unstructured 500 that aborts the rest of a bulk run.
+                    try {
+                        await engine.applySessionConfig(imported.hapiSessionId, launchConfig)
+                    } catch (error) {
+                        imported.error = {
+                            code: 'config_failed',
+                            message: error instanceof Error ? error.message : 'Failed to apply OpenCode launch config'
+                        }
+                    }
+                }
+                return imported
+            })
+            results.push(result)
+        }
+        return Response.json({ success: results.every((result) => !result.error), results, machineId: machine.id })
     }
 }
 

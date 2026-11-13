@@ -43,7 +43,16 @@ vi.mock('@/cursor/cursorChatStoreStatus', () => ({
     inspectCursorChatStore: inspectCursorChatStoreMock
 }))
 
+vi.mock('../modules/common/opencodeSessions', () => ({
+    listLocalOpencodeSessionSummaries: vi.fn().mockResolvedValue([
+        { id: 'opencode-wired', title: 'Wired opencode session', lastUserMessage: null, cwd: '/tmp/wired', file: '/tmp/wired.db', modifiedAt: 1 }
+    ]),
+    listLocalOpencodeSessionsWithMessagesByIds: vi.fn().mockResolvedValue([])
+}))
+
 import { ApiMachineClient, normalizeWindowsDriveRoot } from './apiMachine'
+import { registerLocalSessionSource } from '../modules/common/localSessions/registry'
+import { codexLocalSessionSource } from '../modules/common/localSessions/sources/codex'
 import type { Machine } from './types'
 
 function makeMachine(id: string): Machine {
@@ -61,6 +70,84 @@ function makeMachine(id: string): Machine {
         runnerStateVersion: 0
     }
 }
+
+function callListLocalSessions(client: ApiMachineClient, machineId: string, params: { flavor: string; cwd?: string | null; sessionIds?: string[] }): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    return manager.handleRequest({
+        method: `${machineId}:listLocalSessions`,
+        params: JSON.stringify(params)
+    }).then((raw) => JSON.parse(raw) as unknown)
+}
+
+describe('ApiMachineClient ListLocalSessions wiring', () => {
+    it('routes every flavor through the registry handler', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-lls-codex-'))
+        const piSessions = mkdtempSync(join(tmpdir(), 'hapi-lls-pi-'))
+        const claudeHome = mkdtempSync(join(tmpdir(), 'hapi-lls-claude-'))
+        const original = {
+            CODEX_HOME: process.env.CODEX_HOME,
+            PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR,
+            CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR
+        }
+        process.env.CODEX_HOME = codexHome
+        process.env.PI_CODING_AGENT_SESSION_DIR = piSessions
+        process.env.CLAUDE_CONFIG_DIR = claudeHome
+        writeCodexTranscript(codexHome, 'wired.jsonl', { id: 'codex-wired', cwd: '/tmp/wired' }, 'wired prompt')
+        writePiTranscript(piSessions, 'wired.jsonl', 'pi-wired', '/tmp/wired', 'wired pi')
+        const projectDir = join(claudeHome, 'projects', '-tmp-wired')
+        mkdirSync(projectDir, { recursive: true })
+        writeFileSync(join(projectDir, 'claude-wired.jsonl'), [
+            JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-11-13T00:00:00.000Z', cwd: '/tmp/wired', message: { role: 'user', content: 'wired claude' } })
+        ].join('\n'))
+
+        const machine = makeMachine('wiring-machine')
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            const codex = await callListLocalSessions(client, machine.id, { flavor: 'codex' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(codex.success).toBe(true)
+            expect(codex.sessions[0]).toMatchObject({ id: 'codex-wired', flavor: 'codex' })
+
+            const pi = await callListLocalSessions(client, machine.id, { flavor: 'pi' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(pi.success).toBe(true)
+            expect(pi.sessions[0]).toMatchObject({ id: 'pi-wired', flavor: 'pi' })
+
+            const claude = await callListLocalSessions(client, machine.id, { flavor: 'claude' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(claude.success).toBe(true)
+            expect(claude.sessions[0]).toMatchObject({ id: 'claude-wired', flavor: 'claude' })
+
+            const opencode = await callListLocalSessions(client, machine.id, { flavor: 'opencode' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(opencode.success).toBe(true)
+            expect(opencode.sessions[0]).toMatchObject({ id: 'opencode-wired', flavor: 'opencode' })
+        } finally {
+            client.shutdown()
+            if (original.CODEX_HOME === undefined) delete process.env.CODEX_HOME
+            else process.env.CODEX_HOME = original.CODEX_HOME
+            if (original.PI_CODING_AGENT_SESSION_DIR === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+            else process.env.PI_CODING_AGENT_SESSION_DIR = original.PI_CODING_AGENT_SESSION_DIR
+            if (original.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR
+            else process.env.CLAUDE_CONFIG_DIR = original.CLAUDE_CONFIG_DIR
+            rmSync(codexHome, { recursive: true, force: true })
+            rmSync(piSessions, { recursive: true, force: true })
+            rmSync(claudeHome, { recursive: true, force: true })
+        }
+    })
+
+    it('maps a thrown source error to a failed ListLocalSessions response', async () => {
+        const machine = makeMachine('throwing-machine')
+        const client = new ApiMachineClient('cli-token', machine)
+        registerLocalSessionSource({
+            flavor: 'codex',
+            list: async () => { throw new Error('disk on fire') }
+        } as typeof codexLocalSessionSource)
+        try {
+            const result = await callListLocalSessions(client, machine.id, { flavor: 'codex' }) as { success?: boolean; error?: string }
+            expect(result).toMatchObject({ success: false, error: 'disk on fire' })
+        } finally {
+            registerLocalSessionSource(codexLocalSessionSource)
+            client.shutdown()
+        }
+    })
+})
 
 describe('normalizeWindowsDriveRoot', () => {
     it('restores the trailing separator when Windows realpath returns a bare drive', () => {

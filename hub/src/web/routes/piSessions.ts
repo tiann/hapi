@@ -8,6 +8,7 @@ import { ImportedMessageConflictError } from '../../store/messages'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
+import type { LocalSessionImportDelegate } from './localSessions/createLocalSessionRoutes'
 
 const importLocks = new Map<string, Promise<PiImportResult>>()
 
@@ -344,6 +345,45 @@ async function importWithLock(key: string, work: () => PiImportResult): Promise<
         return await current
     } finally {
         if (importLocks.get(key) === current) importLocks.delete(key)
+    }
+}
+
+/**
+ * Temporary (commit 2): import route delegate that keeps the pre-registry
+ * Pi import behavior (raw RPC fetch + importPiSession + coalescing lock).
+ * Commit 4a removes it in favor of the generic importer.
+ */
+export function createPiImportRouteDelegate(options: {
+    store: Store
+    getSyncEngine: () => SyncEngine | null
+}): LocalSessionImportDelegate {
+    return async (ctx) => {
+        const { engine, namespace, machine, sessionIds, cwd } = ctx
+        const remote = await engine.listPiSessionsForMachine(machine.id, cwd, sessionIds)
+        if (!remote.success) {
+            return Response.json({ success: false, error: remote.error, results: [], machineId: machine.id }, { status: 503 })
+        }
+        const byId = new Map(remote.sessions
+            .filter((session): session is PiLocalSessionWithMessages => 'messages' in session)
+            .map((session) => [session.id, session]))
+        const importedByPiId = importedPiSessionsById(options.store, namespace, machine.id)
+        const results: PiImportResult[] = []
+        for (const sessionId of sessionIds) {
+            const transcript = byId.get(sessionId)
+            if (!transcript) {
+                results.push({ piSessionId: sessionId, error: { code: 'not_found', message: 'Pi session transcript not found' } })
+                continue
+            }
+            results.push(await importWithLock(`${namespace}:${machine.id}:${sessionId}`, () => importPiSession({
+                store: options.store,
+                engine,
+                namespace,
+                machine,
+                transcript,
+                existingSession: importedByPiId.get(sessionId) ?? null
+            })))
+        }
+        return Response.json({ success: results.every((result) => !result.error), results, machineId: machine.id })
     }
 }
 
