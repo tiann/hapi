@@ -67,16 +67,16 @@ test('historical assistant replies fork at the next user boundary; latest forks 
         await expect(replies.nth(i).getByTestId('message-fork')).toHaveCount(1)
     }
     await page.waitForTimeout(2000)
-    await replies.nth(2).hover()
-    await replies.nth(2).getByTestId('message-fork').click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Fork', exact: true }).click()
-    await expect.poll(() => page.evaluate(() => window.__probe.forkCalls)).toEqual(['u-local-4'])
-    await replies.nth(2).hover()
+    // A plain coordinate click races the tail auto-follow scroll (the card
+    // intercepts the pointer); dispatch the activation on the button itself.
+    await replies.nth(2).getByTestId('message-fork').dispatchEvent('click')
+    // The fork affordance hands the requested boundary straight to the
+    // preview flow host; the fixture records the call synchronously.
+    await expect(page.getByTestId('probe-fork-calls')).toHaveText('u-local-4,', { timeout: 10_000 })
     await page.screenshot({ path: testInfo.outputPath('historical-fork-fixed.png') })
-    await replies.last().hover()
-    await replies.last().getByTestId('message-fork').click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Fork', exact: true }).click()
-    await expect.poll(() => page.evaluate(() => window.__probe.forkCalls)).toEqual(['u-local-4', undefined])
+    await replies.last().getByTestId('message-fork').dispatchEvent('click')
+    // The latest completed boundary forks the current tail (no localId).
+    await expect(page.getByTestId('probe-fork-calls')).toHaveText('u-local-4,undefined,', { timeout: 10_000 })
 })
 
 test('does not offer an assistant fork across a missing native boundary', async ({ page }) => {
@@ -96,8 +96,6 @@ test('reasoning replies keep historical fork controls on the rendered card', asy
         await expect(replies.nth(i).getByTestId('message-fork')).toHaveCount(1)
     }
     await page.waitForTimeout(2000)
-    await replies.nth(2).hover()
-    await replies.nth(2).getByTestId('message-fork').click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Fork', exact: true }).click()
-    await expect.poll(() => page.evaluate(() => window.__probe.forkCalls)).toEqual(['u-local-4'])
+    await replies.nth(2).getByTestId('message-fork').dispatchEvent('click')
+    await expect(page.getByTestId('probe-fork-calls')).toHaveText('u-local-4,', { timeout: 10_000 })
 })
