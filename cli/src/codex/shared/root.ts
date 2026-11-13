@@ -18,7 +18,7 @@ import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
 import { SharedCodexAsyncQuestions } from './asyncQuestions';
 import { SharedCodexQueue } from './queue';
-import { SharedCodexProjection, inputText } from './projection';
+import { SharedCodexProjection, inputText, userMessageDisplayText } from './projection';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
@@ -678,10 +678,18 @@ export class SharedCodexRoot {
             }
             const beforeTurnId = this.projection.turnFor(messageLocalId!);
             if (!beforeTurnId) throw new Error('No native history point for this message');
-            await this.assertBoundary(messageLocalId!, beforeTurnId);
-            const index = turns.findIndex(turn => turn.id === beforeTurnId);
+            // Mirror ForkConversation's admission rule on the assertBoundary
+            // snapshot: a historical cut may not run through an unfinished
+            // turn, so the preview refuses exactly what the confirm would.
+            const boundaryThread = await this.assertBoundary(messageLocalId!, beforeTurnId);
+            const boundaryTurns = (Array.isArray(boundaryThread.turns) ? boundaryThread.turns : []).map(record);
+            const index = boundaryTurns.findIndex(turn => turn.id === beforeTurnId);
             if (index < 0) throw new Error('No native history point for this message');
-            const previous = index > 0 ? string(turns[index - 1]?.id) : undefined;
+            if (boundaryTurns.slice(0, index + 1).some(turn =>
+                !['completed', 'interrupted', 'failed'].includes(string(turn.status) ?? ''))) {
+                throw new Error('Historical fork requires a completed turn and history prefix');
+            }
+            const previous = index > 0 ? string(boundaryTurns[index - 1]?.id) : undefined;
             return { ...(previous ? { nativeTurnId: previous } : {}), cutBeforeLocalId: messageLocalId };
         });
     }
@@ -699,7 +707,10 @@ export class SharedCodexRoot {
         for (const turn of turns.slice(Math.max(startIndex, 0))) {
             const items = Array.isArray(turn.items) ? turn.items.map(record) : [];
             const first = items.find(item => item.type === 'userMessage');
-            if (!first) continue;
+            // Empty-text user messages never reach the hub transcript
+            // (projection.ts), so naming one as the cut would make the hub
+            // resolve a boundary row that does not exist.
+            if (!first || !userMessageDisplayText(first)) continue;
             const id = string(first.clientId ?? first.clientUserMessageId) ?? (first.id ? `codex:${this.threadId}:user:${string(first.id)}` : undefined);
             if (id) return { cutBeforeLocalId: id };
         }
