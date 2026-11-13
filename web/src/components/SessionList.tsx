@@ -1552,8 +1552,12 @@ export function SessionList(props: {
     const { features } = useFeatures(api)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
-    void prClockTick
-    const prNowMs = Date.now()
+    // Stable between minute ticks so memoized SessionItem rows do not
+    // remount on unrelated SSE updates when awareness is off (or mid-minute).
+    const prNowMs = useMemo(
+        () => (githubPrAwarenessEnabled ? Date.now() : 0),
+        [prClockTick, githubPrAwarenessEnabled]
+    )
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
