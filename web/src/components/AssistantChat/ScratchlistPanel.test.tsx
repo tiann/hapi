@@ -1238,7 +1238,7 @@ describe('ScratchlistDrawer disabled operations', () => {
             fireEvent.click(screen.getByTitle('Click to zoom'))
             expect(screen.getByRole('dialog', { name: 'photo.png' })).toBeInTheDocument()
 
-            fireEvent.click(screen.getByRole('button', { name: 'Remove attachment photo.png' }))
+            fireEvent.click(screen.getByRole('button', { name: 'Remove attachment photo.png', hidden: true }))
             expect(screen.getByRole('dialog', { name: 'Delete attachment?' })).toBeInTheDocument()
             fireEvent.click(within(screen.getByRole('dialog', { name: 'Delete attachment?' })).getByRole('button', { name: 'Delete' }))
             expect(onDelete).toHaveBeenCalledWith('entry-1')
