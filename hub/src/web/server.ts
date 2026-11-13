@@ -29,8 +29,6 @@ import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createLocalSessionRoutes } from './routes/localSessions/createLocalSessionRoutes'
 import { PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE } from './routes/localSessions/sources'
-import { createPiImportRouteDelegate } from './routes/piSessions'
-import { createOpencodeImportRouteDelegate } from './routes/opencodeSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
@@ -305,22 +303,12 @@ function createWebApp(options: {
         getSyncEngine: options.getSyncEngine
     }))
     // Local-session import registry: one generic route pair for Pi and
-    // OpenCode; imports still run through the per-flavor implementations
-    // until commit 4a switches them to the generic importer.
+    // OpenCode; the generic importer owns target matching, atomic
+    // persistence and launch config.
     app.route('/api', createLocalSessionRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine,
-        sources: [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE],
-        importDelegates: {
-            pi: createPiImportRouteDelegate({
-                store: options.store,
-                getSyncEngine: options.getSyncEngine
-            }),
-            opencode: createOpencodeImportRouteDelegate({
-                store: options.store,
-                getSyncEngine: options.getSyncEngine
-            })
-        }
+        sources: [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE]
     }))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
     app.route('/api', createDevicesRoutes(options.store))

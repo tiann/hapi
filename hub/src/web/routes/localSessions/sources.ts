@@ -26,7 +26,6 @@ import type { SyncEngine } from '../../../sync/syncEngine'
 import { truncateOversizedMessageContent } from '../../../store/contentCodec'
 import { CODEX_TRANSCRIPT_IMPORT_NAMESPACE_ERROR } from '../codexExtras'
 import { normalizeComparableText, stableSerializeContent } from './compare'
-import type { MachinePickMode } from './machinePick'
 
 /**
  * Declarative hub-side source descriptors. Sources only describe
@@ -78,11 +77,6 @@ export type HubLocalSessionSource = {
     requiredMachineCapability?: MachineCapability
     /** Codex request flag yolo -> metadata.preferredPermissionMode. */
     requestMetadata?: (body: Record<string, unknown>) => Record<string, unknown>
-    /**
-     * Temporary (commit 2): machine selection mode until 4a flips Pi/OpenCode
-     * to the cwd-owner rule. Absent -> the final selection rule applies.
-     */
-    machinePick?: MachinePickMode
     /** Temporary (commit 2): namespace restriction until 4b lifts it for list/sync. */
     namespaceGate?: { namespace: string; error: string }
 }
@@ -146,9 +140,7 @@ export const PI_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     lifecycleOnCreate: 'archived',
     batch: 'continue',
     importStateKey: 'piImportState',
-    // Temporary (commit 2): keeps the pre-registry requested-or-first machine
-    // pick until 4a switches Pi to the cwd-owner rule.
-    machinePick: 'requestedOrFirst',
+    importLimit: 200,
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport,
     legacy: {
         resultIdKey: 'piSessionId',
@@ -172,9 +164,6 @@ export const OPENCODE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     lifecycleOnCreate: 'archived',
     batch: 'continue',
     importLimit: 200,
-    // Temporary (commit 2): keeps the pre-registry requested-or-first machine
-    // pick until 4a switches OpenCode to the cwd-owner rule.
-    machinePick: 'requestedOrFirst',
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport,
     legacy: {
         resultIdKey: 'opencodeSessionId',

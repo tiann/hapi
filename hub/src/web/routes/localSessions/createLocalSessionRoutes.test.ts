@@ -188,17 +188,17 @@ describe('generic local session routes', () => {
         const { app } = harness()
         const empty = await app.request('/api/pi/import-sessions', { method: 'POST', body: JSON.stringify({ sessionIds: [] }) })
         expect(empty.status).toBe(400)
-        // OpenCode carries the pre-registry 200 cap; Pi gains its cap in 4a (B6).
         const oversized = await app.request('/api/opencode/import-sessions', {
             method: 'POST',
             body: JSON.stringify({ sessionIds: Array.from({ length: 201 }, (_, index) => `ses-${index}`) })
         })
         expect(oversized.status).toBe(400)
-        const underLimit = await app.request('/api/pi/import-sessions', {
+        // Pi carries the same 200 cap.
+        const piOversized = await app.request('/api/pi/import-sessions', {
             method: 'POST',
             body: JSON.stringify({ sessionIds: Array.from({ length: 201 }, (_, index) => `pi-${index}`) })
         })
-        expect(underLimit.status).toBe(200)
+        expect(piOversized.status).toBe(400)
     })
 
     it('marks a missing transcript as not_found', async () => {

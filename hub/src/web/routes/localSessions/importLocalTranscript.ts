@@ -216,7 +216,7 @@ function buildHistoryLocators(transcript: LocalTranscript, persistedLocalIds: Se
     return { entryIds, points }
 }
 
-export async function importLocalTranscript(options: {
+export function runLocalImportSync(options: {
     store: Store
     engine: SyncEngine
     namespace: string
@@ -225,15 +225,14 @@ export async function importLocalTranscript(options: {
     machine: Machine
     request?: LocalImportRequestContext
     existingSession?: StoredSession | null
-}): Promise<LocalImportOutcome> {
+}): LocalImportOutcome {
     const { store, engine, namespace, source, transcript, machine } = options
     const request = options.request ?? {}
     const importPrefix = `${source.flavor}:${transcript.id}:`
-    const lockKey = `${namespace}:${machine.id}:${source.flavor}:${transcript.id}`
     const startedAt = Date.now()
     const cursorKey = source.match.strategy === 'anchored' ? source.match.cursorKey : undefined
 
-    const run = async (): Promise<LocalImportOutcome> => {
+    const run = (): LocalImportOutcome => {
         let target = options.existingSession === undefined
             ? findImportedLocalSession({ store, namespace, machineId: machine.id, source, nativeId: transcript.id })
             : options.existingSession
@@ -241,16 +240,20 @@ export async function importLocalTranscript(options: {
         let created = false
 
         // Mark an existing session as importing before touching messages so
-        // concurrent list reads observe the in-flight state.
+        // concurrent list reads observe the in-flight state. Best-effort: a
+        // session that vanished between capture and import fails closed with
+        // import_failed in the flow below instead of crashing here.
         if (source.importStateKey && target) {
-            updateMetadataWithRetry(store, target.id, namespace, (metadata) => buildImportMetadata({
-                source,
-                transcript,
-                machine,
-                existing: metadata,
-                requestMetadata: request.requestMetadata,
-                importState: buildImportState(source, transcript, machine.id, 'importing', startedAt)
-            }))
+            try {
+                updateMetadataWithRetry(store, target.id, namespace, (metadata) => buildImportMetadata({
+                    source,
+                    transcript,
+                    machine,
+                    existing: metadata,
+                    requestMetadata: request.requestMetadata,
+                    importState: buildImportState(source, transcript, machine.id, 'importing', startedAt)
+                }))
+            } catch {}
         }
 
         const finishErrorState = (outcome: LocalImportOutcome, state: 'diverged' | 'failed'): LocalImportOutcome => {
@@ -271,6 +274,15 @@ export async function importLocalTranscript(options: {
         }
 
         try {
+            // Refresh the captured target row first: the caller's reference
+            // may be stale (active state flips between capture and import),
+            // and a vanished session fails closed with import_failed.
+            if (target) {
+                const current = store.sessions.getSessionByNamespace(target.id, namespace)
+                if (!current) throw new Error('Imported HAPI session disappeared')
+                target = current
+            }
+
             // --- match ----------------------------------------------------
             let delta: LocalTranscript['messages']
             if (source.match.strategy === 'contentPrefix') {
@@ -341,6 +353,8 @@ export async function importLocalTranscript(options: {
                     const requestModel = request.launch?.model
                     const transcriptModel = transcript.launch?.model
                     const createModel = requestModel !== undefined ? (requestModel ?? undefined) : (transcriptModel ?? undefined)
+                    const requestEffort = request.launch?.modelReasoningEffort
+                    const createEffort = requestEffort !== undefined ? (requestEffort ?? undefined) : (transcript.launch?.effort ?? undefined)
                     const metadata = buildImportMetadata({
                         source,
                         transcript,
@@ -359,7 +373,7 @@ export async function importLocalTranscript(options: {
                         {},
                         namespace,
                         createModel,
-                        transcript.launch?.effort ?? undefined
+                        createEffort
                     )
                     created = true
                     touchedSessionId = stored.id
@@ -409,12 +423,13 @@ export async function importLocalTranscript(options: {
                 }
             })
 
-            // --- post-commit (same lock) ----------------------------------
+            // --- post-commit ----------------------------------------------
             const hapiSessionId = committed.hapiSessionId
             // Transcript launch hints land on the session only when the import
             // created it: getOrCreateSession already applied them at creation,
             // and reapplying them on a re-import would clobber a HAPI-side
-            // model/effort change. Request keys win afterwards below.
+            // model/effort change. Request keys win afterwards through
+            // applySessionConfig in the async envelope.
             if (committed.action === 'created') {
                 if (transcript.launch?.model !== undefined) {
                     store.sessions.setSessionModel(hapiSessionId, transcript.launch.model, namespace, { touchUpdatedAt: false })
@@ -423,40 +438,11 @@ export async function importLocalTranscript(options: {
                     store.sessions.setSessionEffort(hapiSessionId, transcript.launch.effort, namespace, { touchUpdatedAt: false })
                 }
             }
-            const launch = request.launch ?? {}
-            const config: Parameters<SyncEngine['applySessionConfig']>[1] = {}
-            if (Object.prototype.hasOwnProperty.call(launch, 'model')) config.model = launch.model
-            if (Object.prototype.hasOwnProperty.call(launch, 'modelReasoningEffort')) config.modelReasoningEffort = launch.modelReasoningEffort
-            if (Object.prototype.hasOwnProperty.call(launch, 'permissionMode')) {
-                const mode = (launch.permissionMode ?? 'default') as PermissionMode
-                // Unknown modes fail the flavor check and are ignored here; the
-                // route validates user input before reaching the importer.
-                if (isPermissionModeAllowedForFlavor(mode, source.flavor)) {
-                    config.permissionMode = mode
-                }
-            }
-            if (Object.prototype.hasOwnProperty.call(launch, 'serviceTier')) config.serviceTier = launch.serviceTier
-            if (Object.prototype.hasOwnProperty.call(launch, 'collaborationMode') && launch.collaborationMode !== null) {
-                config.collaborationMode = launch.collaborationMode
-            }
-            let outcome: LocalImportOutcome = {
+            const outcome: LocalImportOutcome = {
                 sessionId: transcript.id,
                 hapiSessionId,
                 action: committed.action,
                 appended: committed.appended.length
-            }
-            if (Object.keys(config).length > 0) {
-                try {
-                    await engine.applySessionConfig(hapiSessionId, config)
-                } catch (error) {
-                    outcome = {
-                        ...outcome,
-                        error: {
-                            code: 'config_failed',
-                            message: error instanceof Error ? error.message : 'Failed to apply launch config'
-                        }
-                    }
-                }
             }
 
             const activityAt = committed.appended.at(-1)?.createdAt ?? transcript.modifiedAt
@@ -491,8 +477,64 @@ export async function importLocalTranscript(options: {
         }
     }
 
-    // Serialize imports per namespace:machine:flavor:native id. The second
-    // concurrent caller runs after the first and observes an empty delta.
+    return run()
+}
+
+/** Apply the request launch keys through applySessionConfig after commit. */
+async function applyRequestLaunchConfig(options: {
+    engine: SyncEngine
+    source: HubLocalSessionSource
+    request?: LocalImportRequestContext
+}, outcome: LocalImportOutcome): Promise<LocalImportOutcome> {
+    if (outcome.error || outcome.hapiSessionId === undefined) return outcome
+    const launch = options.request?.launch ?? {}
+    const config: Parameters<SyncEngine['applySessionConfig']>[1] = {}
+    if (Object.prototype.hasOwnProperty.call(launch, 'model')) config.model = launch.model
+    if (Object.prototype.hasOwnProperty.call(launch, 'modelReasoningEffort')) config.modelReasoningEffort = launch.modelReasoningEffort
+    if (Object.prototype.hasOwnProperty.call(launch, 'permissionMode')) {
+        const mode = (launch.permissionMode ?? 'default') as PermissionMode
+        // Unknown modes fail the flavor check and are ignored here; the
+        // route validates user input before reaching the importer.
+        if (isPermissionModeAllowedForFlavor(mode, options.source.flavor)) {
+            config.permissionMode = mode
+        }
+    }
+    if (Object.prototype.hasOwnProperty.call(launch, 'serviceTier')) config.serviceTier = launch.serviceTier
+    if (Object.prototype.hasOwnProperty.call(launch, 'collaborationMode') && launch.collaborationMode !== null) {
+        config.collaborationMode = launch.collaborationMode
+    }
+    if (Object.keys(config).length === 0) return outcome
+    try {
+        await options.engine.applySessionConfig(outcome.hapiSessionId, config)
+    } catch (error) {
+        return {
+            ...outcome,
+            error: {
+                code: 'config_failed',
+                message: error instanceof Error ? error.message : 'Failed to apply launch config'
+            }
+        }
+    }
+    return outcome
+}
+
+/**
+ * Async envelope around the sync import core: serializes imports per
+ * namespace:machine:flavor:native id (the second concurrent caller runs after
+ * the first and observes an empty delta), then applies the request launch
+ * config through applySessionConfig.
+ */
+export async function importLocalTranscript(options: {
+    store: Store
+    engine: SyncEngine
+    namespace: string
+    source: HubLocalSessionSource
+    transcript: LocalTranscript
+    machine: Machine
+    request?: LocalImportRequestContext
+    existingSession?: StoredSession | null
+}): Promise<LocalImportOutcome> {
+    const lockKey = `${options.namespace}:${options.machine.id}:${options.source.flavor}:${options.transcript.id}`
     const prior = importLocks.get(lockKey) ?? Promise.resolve()
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
@@ -500,7 +542,8 @@ export async function importLocalTranscript(options: {
     importLocks.set(lockKey, current)
     await prior.catch(() => {})
     try {
-        return await run()
+        const outcome = runLocalImportSync(options)
+        return await applyRequestLaunchConfig(options, outcome)
     } finally {
         release()
         if (importLocks.get(lockKey) === current) importLocks.delete(lockKey)

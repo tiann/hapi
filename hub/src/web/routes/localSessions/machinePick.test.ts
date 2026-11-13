@@ -45,15 +45,6 @@ describe('import machine selection', () => {
         expect(pickImportMachine({ engine: engine([sharedOwnerA, sharedOwnerB]), namespace: 'default' })?.id).toBe('m-1')
     })
 
-    it('honors the temporary requestedOrFirst mode (no cwd lookup)', () => {
-        expect(pickImportMachine({
-            engine: engine([first, second]),
-            namespace: 'default',
-            cwd: '/workspace/b/sub',
-            mode: 'requestedOrFirst'
-        })?.id).toBe('m-1')
-    })
-
     it('returns null without an engine', () => {
         expect(pickImportMachine({ engine: null, namespace: 'default' })).toBeNull()
     })

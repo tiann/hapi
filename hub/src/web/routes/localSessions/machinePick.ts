@@ -3,11 +3,8 @@ import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 /**
  * Machine selection for local-session imports: requested machine
  * (must be online) -> the unique online machine owning the cwd -> first
- * online machine. The temporary `requestedOrFirst` mode keeps the previous
- * Pi/OpenCode route behavior until commit 4a switches them.
+ * online machine.
  */
-
-export type MachinePickMode = 'requestedOrFirst' | 'requestedOrCwdOwnerOrFirst'
 
 function normalizeComparablePath(pathValue: string, options?: { caseInsensitive?: boolean }): string {
     let normalized = pathValue.trim().replace(/\\/g, '/').replace(/\/+/g, '/')
@@ -41,7 +38,6 @@ export function pickImportMachine(options: {
     namespace: string
     requestedMachineId?: string | null
     cwd?: string | null
-    mode?: MachinePickMode
 }): Machine | null {
     const { engine, namespace } = options
     if (!engine) return null
@@ -51,7 +47,7 @@ export function pickImportMachine(options: {
         if (!requested) return null
         return requested
     }
-    if (options.mode !== 'requestedOrFirst' && options.cwd) {
+    if (options.cwd) {
         const requestedCwd = options.cwd.trim()
         if (requestedCwd) {
             const owners = online.filter((candidate) => machineOwnsCwd(candidate, requestedCwd))

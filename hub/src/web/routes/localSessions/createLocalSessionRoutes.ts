@@ -19,19 +19,6 @@ import type { HubLocalSessionSource } from './sources'
 
 const IMPORT_STATES = ['importing', 'complete', 'failed', 'diverged'] as const
 
-export type LocalSessionImportDelegateContext = {
-    store: Store
-    engine: SyncEngine
-    namespace: string
-    machine: Machine
-    sessionIds: string[]
-    cwd: string | null
-    body: Record<string, unknown>
-}
-
-/** Temporary (commit 2): delegates imports to the legacy per-flavor path. */
-export type LocalSessionImportDelegate = (ctx: LocalSessionImportDelegateContext) => Promise<Response> | Response
-
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
@@ -126,7 +113,6 @@ export function createLocalSessionRoutes(options: {
     store: Store
     getSyncEngine: () => SyncEngine | null
     sources: HubLocalSessionSource[]
-    importDelegates?: Partial<Record<string, LocalSessionImportDelegate>>
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -143,8 +129,7 @@ export function createLocalSessionRoutes(options: {
                 engine: options.getSyncEngine(),
                 namespace,
                 requestedMachineId: c.req.query('machineId')?.trim() || null,
-                cwd: c.req.query('cwd')?.trim() || null,
-                mode: source.machinePick
+                cwd: c.req.query('cwd')?.trim() || null
             })
             if (!machine) {
                 return c.json({ success: false, error: `No online machine available for ${source.displayName} history import`, sessions: [] }, 503)
@@ -194,16 +179,10 @@ export function createLocalSessionRoutes(options: {
                 engine,
                 namespace,
                 requestedMachineId: typeof body.machineId === 'string' ? body.machineId.trim() : null,
-                cwd,
-                mode: source.machinePick
+                cwd
             })
             if (!engine || !machine) {
                 return c.json({ success: false, error: `No online machine available for ${source.displayName} history import`, results: [] }, 503)
-            }
-
-            const delegate = options.importDelegates?.[source.flavor]
-            if (delegate) {
-                return await delegate({ store: options.store, engine, namespace, machine, sessionIds: uniqueSessionIds, cwd, body })
             }
 
             const { launch, validationError } = extractLaunchConfig(body)
