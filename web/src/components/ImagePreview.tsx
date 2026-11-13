@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
+import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { useRouter } from '@tanstack/react-router'
 import { ArrowLeftIcon, ArrowRightIcon, CloseIcon, MinusIcon, PlusIcon } from '@/components/icons'
 import { formatFileSize } from '@/lib/file-metadata'
@@ -27,6 +28,11 @@ type ImageDimensions = {
     height: number
 }
 
+type ImagePreviewThumbnailProps = Omit<
+    ComponentPropsWithoutRef<'img'>,
+    'src' | 'alt' | 'className' | 'style' | 'draggable' | 'loading' | 'referrerPolicy' | 'onLoad' | 'onError'
+>
+
 function getPointDistance(a: ImagePoint, b: ImagePoint): number {
     return Math.hypot(a.x - b.x, a.y - b.y)
 }
@@ -54,6 +60,12 @@ export function ImagePreview(props: {
     caption?: ReactNode
     galleryId?: string
     fileSize?: number
+    disabled?: boolean
+    loading?: ComponentPropsWithoutRef<'img'>['loading']
+    referrerPolicy?: ComponentPropsWithoutRef<'img'>['referrerPolicy']
+    thumbnailProps?: ImagePreviewThumbnailProps
+    onThumbnailLoad?: (event: SyntheticEvent<HTMLImageElement>) => void
+    onThumbnailError?: (event: SyntheticEvent<HTMLImageElement>) => void
     onTriggerPointerDown?: (event: PointerEvent<HTMLButtonElement>) => void
     onTriggerContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void
     onTriggerClick?: (event: MouseEvent<HTMLButtonElement>) => void
@@ -65,6 +77,7 @@ export function ImagePreview(props: {
     const [imageDimensions, setImageDimensions] = useState<ImageDimensions | null>(null)
     const [scale, setScale] = useState(1)
     const [offset, setOffset] = useState({ x: 0, y: 0 })
+    const triggerRef = useRef<HTMLButtonElement | null>(null)
     const scaleRef = useRef(scale)
     const offsetRef = useRef(offset)
     const activePointersRef = useRef(new Map<number, ImagePoint>())
@@ -81,7 +94,7 @@ export function ImagePreview(props: {
         event.stopPropagation()
         const galleryId = props.galleryId ?? ''
         const triggers = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-image-preview-trigger]'))
-            .filter((trigger) => (trigger.dataset.imagePreviewGallery ?? '') === galleryId)
+            .filter((trigger) => !trigger.disabled && (trigger.dataset.imagePreviewGallery ?? '') === galleryId)
         const images = triggers.flatMap((trigger): PreviewImage[] => {
             const image = trigger.querySelector('img')
             if (!image) return []
@@ -104,10 +117,11 @@ export function ImagePreview(props: {
     }, [props.onTriggerPointerDown, stopEvent])
 
     const handleTriggerClick = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+        if (props.disabled) return
         props.onTriggerClick?.(event)
         if (event.defaultPrevented) return
         openViewer(event)
-    }, [openViewer, props.onTriggerClick])
+    }, [openViewer, props.disabled, props.onTriggerClick])
 
     const updateScale = useCallback((next: number | ((current: number) => number)) => {
         setScale((current) => {
@@ -315,12 +329,14 @@ export function ImagePreview(props: {
     return (
         <>
             <button
+                ref={triggerRef}
                 type="button"
                 onPointerDown={handleTriggerPointerDown}
                 onMouseDown={stopEvent}
                 onTouchStart={stopEvent}
                 onContextMenu={props.onTriggerContextMenu}
                 onClick={handleTriggerClick}
+                disabled={props.disabled}
                 data-image-preview-trigger=""
                 data-image-preview-file-name={props.fileName}
                 data-image-preview-label={props.label}
@@ -330,28 +346,47 @@ export function ImagePreview(props: {
                 // Otherwise it can escape the chat viewport and make the app
                 // root scroll when history navigation calls scrollIntoView.
                 className={`relative ${props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}`}
-                title="Click to zoom"
+                title={props.disabled ? 'Loading image' : 'Click to zoom'}
             >
                 <img
+                    {...props.thumbnailProps}
                     src={props.src}
                     alt={props.label}
+                    loading={props.loading}
+                    referrerPolicy={props.referrerPolicy}
                     className={props.imageClassName ?? 'max-h-[calc(100vh-14rem)] max-w-full object-contain transition-transform group-hover:scale-[1.01]'}
                     style={props.imageStyle}
                     draggable={false}
+                    onLoad={props.onThumbnailLoad}
+                    onError={props.onThumbnailError}
                 />
                 {props.caption}
                 <span className="sr-only">{props.fileName}</span>
             </button>
 
-            {viewerOpen ? (
-                <div
-                    className="fixed inset-0 z-50 flex flex-col bg-black/90 text-white"
-                    role="dialog"
-                    aria-modal="true"
+            <DialogPrimitive.Root
+                open={viewerOpen}
+                onOpenChange={(open) => {
+                    if (!open) closeViewer()
+                }}
+            >
+                <DialogPrimitive.Portal>
+                    <DialogPrimitive.Content
+                    className="pointer-events-auto fixed inset-0 z-[60] flex flex-col bg-black/90 text-white"
                     aria-label={activePreview.label}
+                    aria-describedby={undefined}
+                    data-image-preview-viewer=""
+                    onCloseAutoFocus={(event) => {
+                        event.preventDefault()
+                        triggerRef.current?.focus()
+                    }}
                     // Keep preview gestures from starting an ancestor's attachment drag.
                     onPointerDown={stopEvent}
+                    // Portaled DOM events still follow React's logical tree. Stop
+                    // clicks so viewer controls cannot activate an enclosing link.
+                    onClick={stopEvent}
                 >
+                    <DialogPrimitive.Title className="sr-only">{activePreview.label}</DialogPrimitive.Title>
                     <div className="flex shrink-0 items-center gap-2 border-b border-white/10 bg-black/50 px-3 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] max-sm:gap-1">
                         <button
                             type="button"
@@ -444,6 +479,7 @@ export function ImagePreview(props: {
                             src={activePreview.src}
                             alt={activePreview.label}
                             draggable={false}
+                            referrerPolicy={props.referrerPolicy}
                             onLoad={(event) => {
                                 const { naturalWidth, naturalHeight } = event.currentTarget
                                 if (naturalWidth > 0 && naturalHeight > 0) {
@@ -472,8 +508,9 @@ export function ImagePreview(props: {
                             </span>
                         ) : null}
                     </div>
-                </div>
-            ) : null}
+                    </DialogPrimitive.Content>
+                </DialogPrimitive.Portal>
+            </DialogPrimitive.Root>
         </>
     )
 }
