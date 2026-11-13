@@ -219,6 +219,8 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         if (!current) return
         const { intent, messageLocalId, response } = current
         const boundary: ForkBoundary = response.boundary
+        confirmingRef.current = true
+        setConfirming(true)
         try {
             if (intent === 'rewind') {
                 await api.rewindConversation(sessionRef.current.id, messageLocalId!, boundary)
@@ -236,6 +238,11 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
                 // The source moved since the preview: refresh in place and ask
                 // for a fresh confirmation instead of closing the dialog.
                 setStale(true)
+                // Release the confirm lock before the re-preview: the refresh
+                // must behave like any other in-flight preview, whose thinking
+                // edges re-issue it.
+                confirmingRef.current = false
+                setConfirming(false)
                 await fetchPreview(intent, messageLocalId)
                 return
             }
@@ -246,6 +253,9 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
                 return
             }
             throw error
+        } finally {
+            confirmingRef.current = false
+            setConfirming(false)
         }
     }, [api, closePreview, fetchPreview, onForked, onRewindForkSafeFallback, onRewound])
 

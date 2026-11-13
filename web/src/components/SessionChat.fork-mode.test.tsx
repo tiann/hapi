@@ -153,6 +153,28 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
         await waitFor(() => expect(fork).toHaveBeenCalledWith('ses-1', undefined, true, latestResponse.boundary))
     })
 
+    it('leaves a confirm in flight alone when the source starts running mid-confirm', async () => {
+        let resolveFork: (value: { sessionId: string }) => void = () => {}
+        const fork = vi.fn(() => new Promise<{ sessionId: string }>((resolve) => { resolveFork = resolve }))
+        const forkPreview = vi.fn(async () => currentResponse)
+
+        const view = render(shell(forkPreview, fork, makeSession(false), baseRows))
+        await waitFor(() => expect(screen.getAllByRole('button', { name: 'Fork' }).length).toBeGreaterThan(0))
+        fireEvent.click(screen.getAllByRole('button', { name: 'Fork' }).at(-1)!)
+        await screen.findByTestId('fork-preview-thread')
+        expect(forkPreview).toHaveBeenCalledTimes(1)
+
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
+        await waitFor(() => expect(fork).toHaveBeenCalled())
+
+        // A turn starts while the confirm RPC is in flight: the confirm is
+        // left alone, and no background re-preview fires behind it.
+        view.rerender(shell(forkPreview, fork, makeSession(true), baseRows))
+        resolveFork({ sessionId: 'ses-child' })
+        await waitFor(() => expect(screen.queryByTestId('fork-preview-thread')).toBeNull())
+        expect(forkPreview).toHaveBeenCalledTimes(1)
+    })
+
     it('refreshes the preview in place and asks for re-confirmation on boundary_moved', async () => {
         const fork = vi.fn(async () => { throw new ApiError('HTTP 409 Conflict: {"error":"New conversation rows appeared since the preview","code":"boundary_moved"}', 409, 'boundary_moved', '{"error":"New conversation rows appeared since the preview","code":"boundary_moved"}') })
         const forkPreview = vi.fn(async () => currentResponse)
