@@ -183,6 +183,7 @@ describe('parseJobArgs', () => {
         expect(parsed.untilMs).toBeGreaterThanOrEqual(before + 300_000)
         expect(parsed.untilMs).toBeLessThanOrEqual(Date.now() + 300_000)
         expect(parsed.total).toBe(300)
+        expect(parsed.durationMs).toBeUndefined()
     })
 
     it.each([
@@ -221,7 +222,8 @@ describe('parseJobArgs', () => {
         expect(parsed.remaining).toBe(60)
         expect(parsed.total).toBe(60)
         expect(parsed.unit).toBe('s')
-        expect(parsed.untilMs).toBeDefined()
+        expect(parsed.durationMs).toBe(60_000)
+        expect(parsed.untilMs).toBeUndefined()
 
         // Multi-argument sleep: sleep 5 60 -> 65s
         const multiParsed = parseJobArgs([

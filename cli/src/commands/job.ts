@@ -34,6 +34,8 @@ export type ParsedJobArgs = {
     status?: 'running' | 'completed' | 'failed'
     progress?: JobProgressMode
     untilMs?: number
+    /** Inferred sleep duration; the supervisor anchors it after preflight. */
+    durationMs?: number
     done?: number | null
     total?: number | null
     remaining?: number | null
@@ -432,20 +434,23 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             const sleepSec = computeNumericSleepSeconds(result.command)
             if (sleepSec !== null && sleepSec > 0) {
                 result.progress = 'until'
-                result.untilMs = parseUntilTimestamp(`${sleepSec}s`)
+                result.durationMs = sleepSec * 1000
             }
         }
 
+        const untilMs = result.untilMs ?? (result.durationMs !== undefined
+            ? parseUntilTimestamp(`${result.durationMs / 1000}s`)
+            : undefined)
         assertCreateProgressMode(result.action, {
             progress: result.progress,
-            untilMs: result.untilMs,
+            untilMs,
             done: result.done,
             total: result.total,
             remaining: result.remaining
         })
-        if (result.progress === 'until' && result.untilMs !== undefined) {
+        if (result.progress === 'until' && untilMs !== undefined) {
             const startedAt = result.startedAt ?? Date.now()
-            const stamped = stampUntilProgress(result.untilMs, Date.now(), startedAt)
+            const stamped = stampUntilProgress(untilMs, Date.now(), startedAt)
             result.remaining = stamped.remaining
             result.total = stamped.total
             result.unit = result.unit ?? stamped.unit
@@ -575,6 +580,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
             ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
             ...(parsed.untilMs !== undefined ? { untilMs: parsed.untilMs } : {}),
+            ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
             ...(parsed.startedAt !== undefined ? { startedAtMs: parsed.startedAt } : {}),
             ...(parsed.wakeOnTerminal !== undefined ? { wakeOnTerminal: parsed.wakeOnTerminal } : {}),
             ...(parsed.wakePrompt !== undefined ? { wakePrompt: parsed.wakePrompt } : {})
