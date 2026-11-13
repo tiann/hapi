@@ -2404,6 +2404,17 @@ export class SyncEngine {
         if ((expectedMode === 'message' || expectedMode === 'rewind') && boundary.messageLocalId !== messageLocalId) {
             return 'Boundary token does not match the requested message'
         }
+        // The preview chose its admission path (live guards vs archived-fork
+        // rules) from the source's active state; a transition between preview
+        // and confirm routes the confirm onto a path the token was not minted
+        // for: an inactive source fails the archived-fork admission (or forks
+        // archived state that ignores a live cut), a reopened one runs the
+        // live path with an archived cut.
+        if (boundary.sourceActive !== undefined && boundary.sourceActive !== source.active) {
+            return boundary.sourceActive
+                ? 'The source session stopped running since the preview'
+                : 'The source session was reopened since the preview'
+        }
         if (boundary.epoch !== this.store.messages.getMessageEpoch(sessionId)) {
             return 'Conversation history changed since the preview'
         }
@@ -2422,6 +2433,12 @@ export class SyncEngine {
                 if (!boundaryRow || boundaryRow.invokedAt == null) {
                     return 'The boundary message is no longer part of the invoked history'
                 }
+                // A live non-Codex message fork must still be idle at confirm
+                // (Codex message forks legitimately run); without this the
+                // busy rejection surfaces as an uncoded dead end.
+                if (source.thinking && this.resolveFlavor(source) !== 'codex') {
+                    return 'The source session started running since the preview'
+                }
                 break
             }
             case 'latestCompleted':
@@ -2438,6 +2455,11 @@ export class SyncEngine {
             case 'rewind':
                 if (invokedTailSeq(rows) > boundary.tailSeq) {
                     return 'New conversation rows appeared since the preview'
+                }
+                // The rewind confirm demands an idle source; a thinking edge
+                // would otherwise fail as an uncoded 'Session is busy'.
+                if (source.thinking) {
+                    return 'The source session started running since the preview'
                 }
                 break
         }
@@ -2593,6 +2615,7 @@ export class SyncEngine {
                 mode,
                 ...(messageLocalId && (mode === 'message' || mode === 'rewind') ? { messageLocalId } : {}),
                 ...(nativeCut.nativeTurnId ? { nativeTurnId: nativeCut.nativeTurnId } : {}),
+                sourceActive: source.active,
                 epoch: this.store.messages.getMessageEpoch(sessionId),
                 tailSeq: resolved.tailSeq
             },

@@ -275,6 +275,51 @@ describe('fork preview boundary tokens on confirm', () => {
         expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
     })
 
+    it('rejects a current token once the source stops running, with boundary_moved', async () => {
+        const { engine, source, rpc, preview } = tokenFixture()
+        const response = expectPreview(await preview('current'))
+        engine.handleSessionEnd({ sid: source.id, time: Date.now() })
+        rpc.forkConversation = async () => ({ nativeSessionId: 'child-native' })
+        const result = await engine.forkConversation(source.id, 'default', undefined, false, response.boundary)
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
+    })
+
+    it('rejects a message token once the source stops running, with boundary_moved', async () => {
+        const { engine, source, rpc, preview } = tokenFixture()
+        const response = expectPreview(await preview('message', 'u2'))
+        engine.handleSessionEnd({ sid: source.id, time: Date.now() })
+        rpc.forkConversation = async () => ({ nativeSessionId: 'child-native' })
+        const result = await engine.forkConversation(source.id, 'default', 'u2', false, response.boundary)
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
+    })
+
+    it('rejects a rewind token once the source stops running, with boundary_moved', async () => {
+        const { engine, source, rpc, preview } = tokenFixture()
+        const response = expectPreview(await preview('rewind', 'u2'))
+        engine.handleSessionEnd({ sid: source.id, time: Date.now() })
+        rpc.rewindConversation = async () => ({ success: true, truncateFromLocalId: 'u2' })
+        const result = await engine.rewindConversation(source.id, 'default', 'u2', response.boundary)
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
+    })
+
+    it('rejects a rewind token once the source starts running, with boundary_moved', async () => {
+        const { engine, source, rpc, preview } = tokenFixture()
+        const response = expectPreview(await preview('rewind', 'u2'))
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: true, mode: 'remote' })
+        rpc.rewindConversation = async () => ({ success: true, truncateFromLocalId: 'u2' })
+        const result = await engine.rewindConversation(source.id, 'default', 'u2', response.boundary)
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
+    })
+
+    it('rejects a live message token once a non-Codex source starts running, with boundary_moved', async () => {
+        const { engine, source, rpc, preview } = fixture({ flavor: 'claude' })
+        const response = expectPreview(await preview('message', 'u2'))
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: true, mode: 'remote' })
+        rpc.forkConversation = async () => ({ nativeSessionId: 'child-native' })
+        const result = await engine.forkConversation(source.id, 'default', 'u2', false, response.boundary)
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
+    })
+
     it('keeps the legacy behavior when no boundary is sent', async () => {
         const { engine, source, rpc } = tokenFixture()
         rpc.forkConversation = async () => ({ nativeSessionId: 'child-native' })
@@ -417,6 +462,56 @@ describe('preview-capable shared runtime', () => {
         expect(response.mode).toBe('latestCompleted')
         expect(response.boundary.nativeTurnId).toBe('turn-2')
         void source
+    })
+
+    it('mints archived tokens with sourceActive false and confirms them while still inactive', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        engine.getOrCreateMachine('machine', { host: 'test', platform: 'win32', happyCliVersion: '1',
+            capabilities: [MACHINE_CAPABILITIES.ForkArchivedCodex] }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine', time: Date.now() })
+        const source = engine.getOrCreateSession('source', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
+            lifecycleState: 'archived', codexSessionId: 'native-source',
+            capabilities: { conversationHistory: { forkCurrent: true } }
+        }, { controlledByUser: false }, 'default')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
+        store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
+        const preview = async (intent: 'current' | 'message' | 'rewind', messageLocalId?: string) =>
+            await engine.forkPreview(source.id, 'default', intent, messageLocalId)
+        const response = expectPreview(await preview('current'))
+        // The token records the inactive mint path: a blanket inactive-source
+        // rejection at confirm would refresh-loop every archived preview.
+        expect(response.boundary.sourceActive).toBe(false)
+        // Nothing is mocked: the confirm passes the boundary check and fails
+        // later inside the archived-fork flow with an uncoded engine error.
+        const result = await engine.forkConversation(source.id, 'default', undefined, false, response.boundary)
+        expect(result.type).toBe('error')
+        expect(result).not.toMatchObject({ code: 'boundary_moved' })
+    })
+
+    it('rejects an archived-minted token once the source was reopened, with boundary_moved', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        engine.getOrCreateMachine('machine', { host: 'test', platform: 'win32', happyCliVersion: '1',
+            capabilities: [MACHINE_CAPABILITIES.ForkArchivedCodex] }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine', time: Date.now() })
+        const source = engine.getOrCreateSession('source', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
+            lifecycleState: 'archived', codexSessionId: 'native-source',
+            capabilities: { conversationHistory: { forkCurrent: true } }
+        }, { controlledByUser: false }, 'default')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
+        store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
+        const preview = async (intent: 'current' | 'message' | 'rewind', messageLocalId?: string) =>
+            await engine.forkPreview(source.id, 'default', intent, messageLocalId)
+        const response = expectPreview(await preview('current'))
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: false, mode: 'remote' })
+        const result = await engine.forkConversation(source.id, 'default', undefined, false, response.boundary)
+        // The token was minted on the archived path; confirming against the
+        // reopened live session must come back as boundary_moved for a fresh
+        // live preview instead of running the live fork with an archived cut.
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
     })
 })
 

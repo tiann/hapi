@@ -17,7 +17,11 @@ export const ForkBoundarySchema = z.object({
     /** Max seq among invoked rows when the preview was taken. */
     tailSeq: z.number().int().nonnegative(),
     /** CLI-decided modes only: the pinned inclusive native cutoff turn. */
-    nativeTurnId: z.string().min(1).optional()
+    nativeTurnId: z.string().min(1).optional(),
+    /** The source's active state when the preview was taken. The hub always
+     *  sets it; the confirm rejects a token whose admission path (live guards
+     *  vs archived-fork rules) no longer matches the source. */
+    sourceActive: z.boolean().optional()
 })
 
 export type ForkBoundary = z.infer<typeof ForkBoundarySchema>
