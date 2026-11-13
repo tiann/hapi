@@ -3,6 +3,8 @@ import {
     CodexImportedMessageSchema,
     CodexLocalSessionSummarySchema,
     CodexLocalSessionWithMessagesSchema,
+    type ClaudeLocalSessionSummary,
+    type ClaudeLocalSessionWithMessages,
     type OpencodeLocalSessionSummary,
     type OpencodeLocalSessionWithMessages,
     type PiLocalSessionSummary,
@@ -28,11 +30,10 @@ export const MAX_LOCAL_SESSION_IMPORTS = 200
 export const LocalImportedMessageContentSchema = z.union([
     CodexImportedMessageSchema,
     // Claude agent turns arrive as their own payload envelope; the web chat
-    // normalizer renders them like other agent payloads (commit 6b fills the
-    // data shape from the Claude reader).
+    // normalizer renders the 'output' flavor like the live Claude replay does.
     z.object({
         role: z.literal('agent'),
-        content: z.object({ type: z.literal('claude'), data: z.unknown() }),
+        content: z.object({ type: z.literal('output'), data: z.unknown() }),
         meta: z.object({ sentFrom: z.literal('cli') })
     })
 ])
@@ -163,6 +164,38 @@ export function codexToTranscript(session: CodexLocalSessionWithMessages): Local
         messages: session.messages.map((content, index) => ({
             id: `codex-desktop:${session.id}:${index}`,
             content
+        }))
+    }
+}
+
+// -- Claude -------------------------------------------------------------------
+
+export function claudeToTranscriptSummary(session: ClaudeLocalSessionSummary): LocalTranscriptSummary {
+    return transcriptSummaryBase({
+        flavor: 'claude',
+        id: session.id,
+        title: session.title,
+        lastUserMessage: session.lastUserMessage ?? null,
+        cwd: session.cwd ?? null,
+        file: session.file,
+        modifiedAt: session.modifiedAt,
+        messageCount: session.messageCount
+    })
+}
+
+/**
+ * Claude transcript entries keep their native uuid as the local id suffix; the
+ * session id is deliberately excluded so a resumed (rotated) session id still
+ * lines up with the previously imported rows.
+ */
+export function claudeToTranscript(session: ClaudeLocalSessionWithMessages): LocalTranscript {
+    return {
+        ...claudeToTranscriptSummary(session),
+        messages: session.messages.map((message) => ({
+            id: `claude:${message.uuid}`,
+            ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
+            content: message.content,
+            anchor: message.uuid
         }))
     }
 }

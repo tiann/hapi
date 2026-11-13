@@ -78,6 +78,7 @@ import { registerLocalSessionSource } from '../modules/common/localSessions/regi
 import { codexLocalSessionSource } from '../modules/common/localSessions/sources/codex'
 import { piLocalSessionSource } from '../modules/common/localSessions/sources/pi'
 import { opencodeLocalSessionSource } from '../modules/common/localSessions/sources/opencode'
+import { claudeLocalSessionSource } from '../modules/common/localSessions/sources/claude'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -550,7 +551,7 @@ export class ApiMachineClient {
             }
         )
 
-        for (const source of [codexLocalSessionSource, piLocalSessionSource, opencodeLocalSessionSource]) {
+        for (const source of [codexLocalSessionSource, piLocalSessionSource, opencodeLocalSessionSource, claudeLocalSessionSource]) {
             registerLocalSessionSource(source)
         }
         registerLocalSessionHandlers({

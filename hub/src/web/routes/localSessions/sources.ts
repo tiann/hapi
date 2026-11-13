@@ -56,6 +56,12 @@ export type HubLocalSessionSource = {
     batch: 'continue' | 'stopOnFirstError'
     /** Flavor-only import progress metadata key (Pi). */
     importStateKey?: 'piImportState'
+    /**
+     * Stored localId prefix identifying this flavor's imported rows. Defaults
+     * to `${flavor}:${nativeId}:`; Claude omits the native id because resumed
+     * sessions rotate it while message uuids stay stable.
+     */
+    localIdPrefix?: string
     /** Per-request import cap enforced by the route (400 above it). */
     importLimit?: number
     /**
@@ -173,6 +179,19 @@ export const OPENCODE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
             ? opencodeToTranscript(raw as OpencodeLocalSessionWithMessages)
             : opencodeToTranscriptSummary(raw as OpencodeLocalSessionSummary)
     }
+}
+
+export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
+    flavor: 'claude',
+    displayName: 'Claude',
+    routeBase: 'claude',
+    nativeIdKeys: ['claudeSessionId', 'claudeSessionIdHistory'],
+    match: { strategy: 'anchored' },
+    lifecycleOnCreate: 'archived',
+    batch: 'continue',
+    importLimit: 200,
+    localIdPrefix: 'claude:',
+    requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
 }
 
 export const CODEX_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {

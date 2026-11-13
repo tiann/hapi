@@ -366,6 +366,46 @@ export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummar
     messages: z.array(OpencodeImportedMessageSchema)
 })
 
+/**
+ * One importable Claude transcript entry: the native uuid (stable across
+ * session-id rotation), the entry timestamp and the HAPI message content the
+ * live replay path would have sent (user text, or the raw entry as the
+ * 'output' agent payload).
+ */
+export const ClaudeImportedMessageSchema = z.object({
+    uuid: z.string().min(1),
+    createdAt: z.number().optional(),
+    content: z.union([
+        z.object({
+            role: z.literal('user'),
+            content: z.object({ type: z.literal('text'), text: z.string() }),
+            meta: z.object({ sentFrom: z.literal('cli') })
+        }),
+        z.object({
+            role: z.literal('agent'),
+            content: z.object({ type: z.literal('output'), data: z.unknown() }),
+            meta: z.object({ sentFrom: z.literal('cli') })
+        })
+    ])
+})
+
+export const ClaudeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    messageCount: z.number().optional()
+})
+
+export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySchema.extend({
+    messages: z.array(ClaudeImportedMessageSchema)
+})
+
+export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
+export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
+
 export const MAX_OPENCODE_SESSION_IMPORTS = 200
 
 export const ListOpencodeSessionsRpcRequestSchema = z.object({

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type {
+    ClaudeLocalSessionWithMessages,
     CodexLocalSessionWithMessages,
     OpencodeLocalSessionWithMessages,
     PiLocalSessionWithMessages
@@ -7,6 +8,7 @@ import type {
 import {
     ListLocalSessionsRpcResponseSchema,
     LocalTranscriptSchema,
+    claudeToTranscript,
     codexToTranscript,
     opencodeToTranscript,
     piToTranscript
@@ -164,6 +166,45 @@ describe('local transcript mappers', () => {
             threadSource: 'local',
             forkedFromId: null
         })
+        expect(LocalTranscriptSchema.parse(transcript)).toBeDefined()
+    })
+
+    it('maps Claude sessions to uuid-keyed ids without cursor or launch hints', () => {
+        const claudeSession: ClaudeLocalSessionWithMessages = {
+            id: '06992c9a-1111-2222-3333-444455556666',
+            title: 'Claude session',
+            lastUserMessage: 'run the e2e',
+            cwd: '/tmp/project',
+            file: '/tmp/.claude/projects/p/06992c9a.jsonl',
+            modifiedAt: 4_000,
+            messageCount: 2,
+            messages: [
+                {
+                    uuid: 'uuid-1',
+                    createdAt: Date.parse('2026-11-13T00:00:00.000Z'),
+                    content: { role: 'user', content: { type: 'text', text: 'run the e2e' }, meta: { sentFrom: 'cli' } }
+                },
+                {
+                    uuid: 'uuid-2',
+                    createdAt: Date.parse('2026-11-13T00:00:05.000Z'),
+                    content: { role: 'agent', content: { type: 'output', data: { type: 'assistant', uuid: 'uuid-2' } }, meta: { sentFrom: 'cli' } }
+                }
+            ]
+        }
+        const transcript = claudeToTranscript(claudeSession)
+        expect(transcript.flavor).toBe('claude')
+        expect(transcript.messages.map((message) => message.id)).toEqual(['claude:uuid-1', 'claude:uuid-2'])
+        expect(transcript.messages.map((message) => message.anchor)).toEqual(['uuid-1', 'uuid-2'])
+        expect(transcript.messages.map((message) => message.createdAt)).toEqual([
+            Date.parse('2026-11-13T00:00:00.000Z'),
+            Date.parse('2026-11-13T00:00:05.000Z')
+        ])
+        // Rotated session ids must not leak into the row ids: the session id
+        // is deliberately excluded so a resumed session still lines up.
+        expect(transcript.messages.every((message) => !message.id.includes(claudeSession.id))).toBe(true)
+        expect(transcript.anchorOrder).toBeUndefined()
+        expect(transcript.cursor).toBeUndefined()
+        expect(transcript.launch).toBeUndefined()
         expect(LocalTranscriptSchema.parse(transcript)).toBeDefined()
     })
 

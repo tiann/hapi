@@ -4,7 +4,7 @@ import { RpcRegistry } from '../../../socket/rpcRegistry'
 import { Store } from '../../../store'
 import { SyncEngine, type Machine } from '../../../sync/syncEngine'
 import { importLocalTranscript } from './importLocalTranscript'
-import { CODEX_LOCAL_SESSION_SOURCE } from './sources'
+import { CLAUDE_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE } from './sources'
 
 /**
  * An explicit import only reuses a HAPI session recorded on the machine it
@@ -54,6 +54,24 @@ function codexTranscript(id: string, contents: unknown[]): LocalTranscript {
         messages: contents.map((content, index) => ({
             id: `codex-desktop:${id}:${index}`,
             content: content as LocalTranscript['messages'][number]['content']
+        }))
+    }
+}
+
+function claudeTranscript(id: string, texts: string[]): LocalTranscript {
+    return {
+        flavor: 'claude',
+        id,
+        title: `Claude ${id}`,
+        lastUserMessage: texts[0] ?? null,
+        cwd: '/tmp/project',
+        file: `/tmp/.claude/projects/p/${id}.jsonl`,
+        modifiedAt: 1_000,
+        messages: texts.map((text, index) => ({
+            id: `claude:u${index}`,
+            createdAt: 1_100 + index,
+            content: userContent(text),
+            anchor: `u${index}`
         }))
     }
 }
@@ -186,5 +204,31 @@ describe('explicit import vs agent-id dedup', () => {
         expect(kept).not.toBeNull()
         expect((kept!.metadata as Record<string, unknown>).lifecycleState).toBe('archived')
         expect(store.messages.getAllMessages(archived)).toHaveLength(1)
+    })
+
+    it("keeps another machine's Claude session with the same native id untouched", async () => {
+        const { store, engine } = setup()
+        const otherMachineSession = seedSession(store, engine, 'claude-other-machine', {
+            flavor: 'claude',
+            machineId: 'machine-b',
+            claudeSessionId: 'claude-1'
+        }, ['claude on machine b'])
+        engine.handleSessionAlive({ sid: otherMachineSession, time: Date.now() })
+
+        const outcome = await importLocalTranscript({
+            store,
+            engine,
+            namespace: 'default',
+            source: CLAUDE_LOCAL_SESSION_SOURCE,
+            transcript: claudeTranscript('claude-1', ['hello', 'again']),
+            machine: machine('machine-a')
+        })
+        expect(outcome).toMatchObject({ action: 'created', appended: 2 })
+        engine.handleSessionAlive({ sid: otherMachineSession, time: Date.now() })
+        await settle()
+
+        expect(store.sessions.getSessionByNamespace(outcome.hapiSessionId!, 'default')).not.toBeNull()
+        expect(store.messages.getAllMessages(outcome.hapiSessionId!)).toHaveLength(2)
+        expect(store.messages.getAllMessages(otherMachineSession)).toHaveLength(1)
     })
 })

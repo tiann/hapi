@@ -4,7 +4,7 @@ import type { LocalTranscript, LocalTranscriptSummary } from '@hapi/protocol/loc
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import type { WebAppEnv } from '../../middleware/auth'
 import { Store } from '../../../store'
-import { CODEX_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE } from './sources'
+import { CLAUDE_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE } from './sources'
 import { createLocalSessionRoutes } from './createLocalSessionRoutes'
 import { fetchLocalTranscriptSummaries, fetchLocalTranscriptsByIds } from './fetchLocalTranscripts'
 
@@ -217,6 +217,19 @@ describe('generic local session routes', () => {
         const body = await response.json() as { results: Array<Record<string, unknown>> }
         expect(body.results).toHaveLength(1)
         expect(body.results[0]).toMatchObject({ error: { code: 'not_found' } })
+    })
+
+    it('enforces the claude import limit with a 400 before any RPC', async () => {
+        const { app, calls } = harness({ sources: [CLAUDE_LOCAL_SESSION_SOURCE] })
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: Array.from({ length: 201 }, (_, index) => `claude-${index}`) })
+        })
+        expect(response.status).toBe(400)
+        const body = await response.json() as { success: boolean; error?: string }
+        expect(body.success).toBe(false)
+        expect(body.error).toContain('200')
+        expect(calls).toHaveLength(0)
     })
 
 })

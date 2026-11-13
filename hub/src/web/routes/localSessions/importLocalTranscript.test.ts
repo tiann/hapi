@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import type { LocalTranscript } from '@hapi/protocol/localTranscript'
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import { Store } from '../../../store'
-import { OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE } from './sources'
+import { OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE } from './sources'
 import { importLocalTranscript } from './importLocalTranscript'
 
 function machine(id = 'm-1'): Machine {
@@ -426,5 +426,85 @@ describe('generic local import', () => {
             hapiSessionId: created.id,
             error: { code: 'already_in_hapi' }
         })
+    })
+
+    it('re-imports a rotated Claude transcript into the original session', async () => {
+        const { store, engine } = harness()
+        stores.push(store)
+        const claudeTranscript = (id: string, entries: Array<{ uuid: string; role: 'user' | 'agent'; text: string }>): LocalTranscript => ({
+            flavor: 'claude',
+            id,
+            title: `Claude ${id}`,
+            lastUserMessage: entries.filter((entry) => entry.role === 'user').at(-1)?.text ?? null,
+            cwd: '/tmp/project',
+            file: `/tmp/.claude/projects/p/${id}.jsonl`,
+            modifiedAt: 1_000,
+            messages: entries.map((entry) => ({
+                id: `claude:${entry.uuid}`,
+                createdAt: 1_100,
+                content: entry.role === 'user'
+                    ? userContent(entry.text)
+                    : {
+                        role: 'agent',
+                        content: { type: 'output', data: { type: 'assistant', uuid: entry.uuid } },
+                        meta: { sentFrom: 'cli' }
+                    },
+                anchor: entry.uuid
+            }))
+        })
+        const first = await importLocalTranscript({
+            store, engine, namespace: 'default', source: CLAUDE_LOCAL_SESSION_SOURCE,
+            transcript: claudeTranscript('session-a', [
+                { uuid: 'u1', role: 'user', text: 'hello' },
+                { uuid: 'u2', role: 'agent', text: 'hi there' }
+            ]),
+            machine: machine()
+        })
+        expect(first).toMatchObject({ action: 'created', appended: 2 })
+        const session = store.sessions.getSessionsByNamespace('default')[0]!
+        const metadata = session.metadata as Record<string, unknown>
+        expect(metadata.claudeSessionId).toBe('session-a')
+        // The import never writes the current id into the history array; the
+        // live rotation machinery owns it ("history never contains the
+        // current id").
+        expect(metadata.claudeSessionIdHistory).toBeUndefined()
+        // Row ids carry the uuid only, so a rotated transcript still lines up.
+        expect(store.messages.getAllMessages(session.id).map((message) => message.localId)).toEqual(['claude:u1', 'claude:u2'])
+
+        // The live machinery rotates the primary id and moves the old one
+        // into the history ("history never contains the current id").
+        store.sessions.updateSessionMetadata(
+            session.id,
+            { ...metadata, claudeSessionId: 'session-b', claudeSessionIdHistory: ['session-a'] },
+            session.metadataVersion,
+            'default'
+        )
+
+        // Re-importing the pre-rotation file matches through the history
+        // alias and reports unchanged instead of creating a duplicate.
+        const again = await importLocalTranscript({
+            store, engine, namespace: 'default', source: CLAUDE_LOCAL_SESSION_SOURCE,
+            transcript: claudeTranscript('session-a', [
+                { uuid: 'u1', role: 'user', text: 'hello' },
+                { uuid: 'u2', role: 'agent', text: 'hi there' }
+            ]),
+            machine: machine()
+        })
+        expect(again).toMatchObject({ hapiSessionId: session.id, action: 'unchanged', appended: 0 })
+
+        // Resumed transcript: new session id, copied uuids, one new turn.
+        const resumed = await importLocalTranscript({
+            store, engine, namespace: 'default', source: CLAUDE_LOCAL_SESSION_SOURCE,
+            transcript: claudeTranscript('session-b', [
+                { uuid: 'u1', role: 'user', text: 'hello' },
+                { uuid: 'u2', role: 'agent', text: 'hi there' },
+                { uuid: 'u3', role: 'user', text: 'and one more' }
+            ]),
+            machine: machine()
+        })
+        expect(resumed).toMatchObject({ hapiSessionId: session.id, action: 'updated', appended: 1 })
+        expect(store.sessions.getSessionsByNamespace('default')
+            .filter((candidate) => (candidate.metadata as Record<string, unknown>).flavor === 'claude'))
+            .toHaveLength(1)
     })
 })

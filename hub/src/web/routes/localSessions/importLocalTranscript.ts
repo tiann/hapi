@@ -59,13 +59,17 @@ export function findImportedLocalSession(options: {
     nativeId: string
 }): StoredSession | null {
     const { store, namespace, machineId, source, nativeId } = options
-    const primaryKey = source.nativeIdKeys[0]
     for (const session of store.sessions.getSessionsByNamespace(namespace)) {
         const metadata = storedMetadata(session)
-        if (metadata.flavor !== source.flavor
-            || metadata.machineId !== machineId
-            || metadata[primaryKey] !== nativeId) continue
-        return session
+        if (metadata.flavor !== source.flavor || metadata.machineId !== machineId) continue
+        // Any native id key matches: Claude's rotated session ids
+        // are found through the claudeSessionIdHistory array.
+        const matched = source.nativeIdKeys.some((key) => {
+            const value = metadata[key]
+            if (value === nativeId) return true
+            return Array.isArray(value) && value.includes(nativeId)
+        })
+        if (matched) return session
     }
     return null
 }
@@ -96,8 +100,12 @@ function buildImportMetadata(options: {
     }
     // The primary native id follows the transcript only when the session does
     // not carry one yet: Codex fork provenance renames the primary id while
-    // keeping the alias, and a re-sync must preserve it.
-    source.nativeIdKeys.forEach((key, index) => {
+    // keeping the alias, and a re-sync must preserve it. A rotated Claude id
+    // stays with the live machinery for the same reason. The history array is
+    // owned by the live rotation machinery ("history never contains the
+    // current id"), so the import never writes into it.
+    source.nativeIdKeys.forEach((key) => {
+        if (key === 'claudeSessionIdHistory') return
         if (typeof existing[key] !== 'string' && !Array.isArray(existing[key])) {
             metadata[key] = transcript.id
         }
@@ -200,7 +208,7 @@ export function runLocalImportSync(options: {
 }): LocalImportOutcome {
     const { store, engine, namespace, source, transcript, machine } = options
     const request = options.request ?? {}
-    const importPrefix = `${source.flavor}:${transcript.id}:`
+    const importPrefix = source.localIdPrefix ?? `${source.flavor}:${transcript.id}:`
     const startedAt = Date.now()
     const cursorKey = source.match.strategy === 'anchored' ? source.match.cursorKey : undefined
 
