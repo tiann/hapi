@@ -18,6 +18,7 @@ import {
     formatAttachedJobProgress,
     isAttachedJobStale
 } from '@/lib/attachedJob'
+import { hasUrgentModelError } from '@/components/ModelErrorBanner'
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -153,6 +154,8 @@ export function SessionRowSummary(props: {
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
     const urgentAttention = attention !== null
         && (attention.kind === 'permission' || attention.kind === 'input')
+    const modelErrorActive = hasUrgentModelError(s.metadata)
+    const modelErrorLabel = t('session.modelError.listIndicator')
     const scheduledLabel = s.futureScheduledMessageCount > 1
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
@@ -215,9 +218,14 @@ export function SessionRowSummary(props: {
     const hasRunningWork = Boolean(attachedJob)
         || (s.active && (s.backgroundTaskCount ?? 0) > 0)
         || isRunning
+    // While work runs, the spinner colour alone carries unread. A bold title and
+    // accented time are the at-rest unread look, so using them mid-run makes a
+    // working session read as finished.
+    const emphasizeUnread = isUnread && !hasRunningWork
     const activityLabel = isBackgroundOnly
         ? t('session.item.background')
         : t('session.item.running')
+    const pendingRequestId = s.pendingRequests?.[0]?.id
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
             <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
@@ -248,11 +256,24 @@ export function SessionRowSummary(props: {
                 <div className="grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                         <div
-                            className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${isUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}
+                            className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${emphasizeUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}
                             title={sessionName}
                         >
                             {sessionName}
                         </div>
+                        {/* Model error outranks activity/unread: the turn looked
+                            finished but failed, so this must not be collapsed
+                            into the combined indicator below. */}
+                        {modelErrorActive ? (
+                            <span
+                                className="relative inline-flex h-2 w-2 shrink-0"
+                                title={modelErrorLabel}
+                                aria-label={modelErrorLabel}
+                            >
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+                                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                            </span>
+                        ) : null}
                         {hasRunningWork ? (
                             <span data-testid="session-activity" role="img" aria-label={activityLabel} title={activityLabel} className="inline-flex shrink-0">
                                 <LoaderIcon className={`h-3.5 w-3.5 animate-spin-slow ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />
@@ -271,12 +292,14 @@ export function SessionRowSummary(props: {
                                 summary={s}
                                 label={attentionLabel ?? ''}
                                 tooltipId={attentionId}
+                                pendingRequestId={pendingRequestId}
                             />
                         ) : requestKind ? (
                             <span className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-warning-text)]">
                                 <SessionRequestIcon
                                     kind={requestKind}
                                     label={attentionLabel ?? t('session.item.pending')}
+                                    requestId={pendingRequestId}
                                 />
                                 {!urgentAttention && !inRunningSection ? (
                                     <span className="text-[11px] font-medium leading-none">{t('session.item.pending')}</span>
@@ -318,8 +341,8 @@ export function SessionRowSummary(props: {
                             </span>
                         ) : null}
                         {timeLabel ? (
-                            <span className={`min-w-0 truncate whitespace-nowrap tabular-nums ${
-                                isUnread ? 'font-semibold text-[var(--app-link)]' : 'text-[var(--app-hint)]'
+                            <span className={`min-w-0 translate-y-[0.5px] truncate whitespace-nowrap tabular-nums ${
+                                emphasizeUnread ? 'font-semibold text-[var(--app-link)]' : 'text-[var(--app-hint)]'
                             }`}>{timeLabel}</span>
                         ) : null}
                     </div>
