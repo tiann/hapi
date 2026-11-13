@@ -2360,6 +2360,7 @@ function SessionChatInner(props: SessionChatProps) {
                         view={forkFlow.preview.view}
                         prefixMayHaveMore={props.hasMoreMessages || forkFlow.preview.view.prefixTruncated}
                         stale={forkFlow.stale}
+                        loading={forkFlow.loading}
                         onCancel={forkFlow.closePreview}
                         onConfirm={forkFlow.confirmPreview}
                     />

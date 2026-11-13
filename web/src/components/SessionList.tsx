@@ -1442,6 +1442,7 @@ const SessionItem = memo(function SessionItem(props: {
                     view={forkFlow.preview.view}
                     prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
                     stale={forkFlow.stale}
+                    loading={forkFlow.loading}
                     onCancel={forkFlow.closePreview}
                     onConfirm={forkFlow.confirmPreview}
                 />

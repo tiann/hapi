@@ -192,6 +192,37 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
         expect(fork).toHaveBeenCalledTimes(1)
     })
 
+    it('disables Confirm while a second re-preview runs behind a finished refresh', async () => {
+        const deferreds: Array<(value: ForkPreviewResponse) => void> = []
+        const fork = vi.fn(async () => { throw new ApiError('HTTP 409 Conflict: {"error":"New conversation rows appeared since the preview","code":"boundary_moved"}', 409, 'boundary_moved', '{"error":"New conversation rows appeared since the preview","code":"boundary_moved"}') })
+        const forkPreview = vi.fn()
+            .mockResolvedValueOnce(currentResponse)
+            .mockImplementationOnce(() => new Promise<ForkPreviewResponse>((resolve) => { deferreds.push(resolve) }))
+            .mockImplementationOnce(() => new Promise<ForkPreviewResponse>((resolve) => { deferreds.push(resolve) }))
+
+        const view = render(shell(forkPreview, fork, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Fork' })).at(-1)!)
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
+
+        // boundary_moved: the first refresh starts (still inside the confirm's
+        // pending window), and a thinking edge fires a second re-preview.
+        await waitFor(() => expect(forkPreview).toHaveBeenCalledTimes(2))
+        view.rerender(shell(forkPreview, fork, makeSession(true), baseRows))
+        await waitFor(() => expect(forkPreview).toHaveBeenCalledTimes(3))
+
+        // The confirm's await ends with the first refresh: pending resets even
+        // though the second re-preview is still replacing the mounted stale
+        // view. Confirm must wait for the fresh boundary instead of re-sending
+        // the stale token.
+        deferreds[0]!(currentResponse)
+        await waitFor(() => expect(screen.getByTestId('fork-preview-stale')).toBeTruthy())
+        expect((screen.getByTestId('fork-preview-confirm') as HTMLButtonElement).disabled).toBeTruthy()
+
+        deferreds[1]!(currentResponse)
+        await waitFor(() => expect((screen.getByTestId('fork-preview-confirm') as HTMLButtonElement).disabled).toBeFalsy())
+    })
+
     it('requests a message intent when forking at a historical boundary', async () => {
         const fork = vi.fn(async () => ({ sessionId: 'ses-child' }))
         const messageResponse: ForkPreviewResponse = {

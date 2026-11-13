@@ -12,6 +12,9 @@ type ForkPreviewDialogProps = {
     prefixMayHaveMore?: boolean
     /** The source moved since the preview was taken; the hub refreshed it. */
     stale?: boolean
+    /** True while the hub re-answers the preview: the still-mounted view
+     *  carries the stale boundary, so Confirm waits for the fresh one. */
+    loading?: boolean
     onCancel: () => void
     onConfirm: () => Promise<void>
 }
@@ -21,7 +24,7 @@ type ForkPreviewDialogProps = {
  * fork point, the excluded boundary message below it, and — for rewind — the
  * deleted region with destructive emphasis.
  */
-export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, stale = false, onCancel, onConfirm }: ForkPreviewDialogProps) {
+export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, stale = false, loading = false, onCancel, onConfirm }: ForkPreviewDialogProps) {
     const { t } = useTranslation()
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -137,7 +140,7 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
                         {error}
                     </div>
                 ) : null}
-                <div className={`flex gap-2 ${pending ? 'opacity-60' : ''}`}>
+                <div className={`flex gap-2 ${pending || loading ? 'opacity-60' : ''}`}>
                     <button
                         type="button"
                         onClick={onCancel}
@@ -149,7 +152,7 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
                     <button
                         type="button"
                         onClick={() => { void handleConfirm() }}
-                        disabled={pending}
+                        disabled={pending || loading}
                         data-testid="fork-preview-confirm"
                         className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium hover:opacity-90 ${rewind ? 'bg-red-600 text-white' : 'bg-[var(--app-link)] text-[var(--app-bg)]'}`}
                     >
