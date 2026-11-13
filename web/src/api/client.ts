@@ -38,6 +38,7 @@ import type {
 import type {
     AgyModelsResponse,
     AgentAvailabilityResponse,
+    AgentQuotasResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -51,6 +52,8 @@ import type {
     KimiModelsResponse,
     CopilotModelsResponse,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     ListDirectoryResponse,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
@@ -64,10 +67,12 @@ import type {
     SqliteStorageUsageResponse,
     HubSettingsResponse,
     UpdateHubSettingsRequest,
+    UsageQuotasResponse,
     UsageSummaryResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
+import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
@@ -255,6 +260,8 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
+        // The session route rebinds to a survivor's id (getMergedSessionRedirectId).
+        headers.set(FOLLOW_SESSION_REDIRECTS_HEADER, '1')
         if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
@@ -756,12 +763,12 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
             }
         )
     }
@@ -780,6 +787,86 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
             method: 'POST',
             body: JSON.stringify({})
+        })
+    }
+
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/acknowledge`, {
+            method: 'POST',
+            body: JSON.stringify({ eventId })
+        })
+    }
+
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
+        const tryOnce = async (overrideToken: string | null): Promise<Response> => {
+            const headers = new Headers({ 'content-type': 'application/json' })
+            const liveToken = this.getToken ? this.getToken() : null
+            const authToken = overrideToken ?? liveToken ?? this.token
+            if (authToken) {
+                headers.set('authorization', `Bearer ${authToken}`)
+            }
+            return fetchThroughAuthProxy(this.buildUrl(path), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ eventId })
+            })
+        }
+
+        let res = await tryOnce(null)
+        if (res.status === 401 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                res = await tryOnce(refreshed)
+            }
+        }
+        if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again.')
+        }
+
+        const text = await res.text()
+        let body: { ok?: boolean; reason?: string; error?: string } | null = null
+        try {
+            body = text ? JSON.parse(text) as { ok?: boolean; reason?: string; error?: string } : null
+        } catch {
+            body = null
+        }
+
+        if (res.status === 409 && body && typeof body.ok === 'boolean') {
+            return { ok: body.ok, reason: body.reason }
+        }
+
+        if (!res.ok) {
+            const detail = body?.error ?? text
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${detail}`,
+                res.status,
+                undefined,
+                detail || undefined
+            )
+        }
+
+        // A 2xx that is not the hub's `{ ok }` envelope never reached the hub:
+        // an auth gateway can answer with an HTML sign-in page at status 200.
+        // Reporting ok:true there makes SessionChat latch the event as pending,
+        // leaving "Bridging…" disabled forever while no CLI request was made.
+        if (!body || typeof body.ok !== 'boolean') {
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: unexpected bridge response`,
+                res.status,
+                undefined,
+                text || undefined
+            )
+        }
+
+        return { ok: body.ok, reason: body.reason }
+    }
+
+    async setModelErrorAutoBridge(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/auto-bridge-setting`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled })
         })
     }
 
@@ -959,6 +1046,16 @@ export class ApiClient {
             timeZone
         })
         return await this.request<UsageSummaryResponse>(`/api/usage/summary?${params.toString()}`)
+    }
+
+    async getUsageQuotas(refresh?: boolean): Promise<UsageQuotasResponse> {
+        return await this.request<UsageQuotasResponse>(`/api/usage/quotas${refresh ? '?refresh=1' : ''}`)
+    }
+
+    async getMachineAgentQuotas(machineId: string, refresh?: boolean): Promise<AgentQuotasResponse> {
+        return await this.request<AgentQuotasResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-quotas${refresh ? '?refresh=1' : ''}`
+        )
     }
 
     async restartMachineRunner(machineId: string): Promise<{ message: string }> {
@@ -1169,6 +1266,18 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ mode })
         })
+    }
+
+    async getSessionCopilotReasoningEffortOptions(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.request<CopilotReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/copilot-reasoning-effort-options`
+        )
+    }
+
+    async getSessionKimiReasoningEffortOptions(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.request<KimiReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/kimi-reasoning-effort-options`
+        )
     }
 
     async getSessionGrokReasoningEffortOptions(sessionId: string): Promise<GrokReasoningEffortResponse> {

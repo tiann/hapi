@@ -16,6 +16,16 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--yolo')
     })
 
+    it('passes the Antigravity permission mode chosen at create time', () => {
+        const args = buildCliArgs('agy', {
+            directory: '/tmp',
+            permissionMode: 'plan',
+        })
+        expect(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 2))
+            .toEqual(['--permission-mode', 'plan'])
+        expect(args).not.toContain('--yolo')
+    })
+
     it('ignores invalid permission mode and falls back to --yolo', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
@@ -163,13 +173,15 @@ describe('buildCliArgs', () => {
     })
 
     it('passes --existing-session-id for cursor resume when existingSessionId is set (#991)', () => {
+        // Child `hapi cursor --existing-session-id <hub-row>` must bootstrap that
+        // same id into HAPI_SESSION_ID (sessionFactory) so job run can target it.
         const args = buildCliArgs('cursor', {
             directory: '/tmp',
             resumeSessionId: 'cursor-csid-1',
             existingSessionId: 'hapi-session-991',
         })
         expect(args).toContain('--existing-session-id')
-        expect(args).toContain('hapi-session-991')
+        expect(args[args.indexOf('--existing-session-id') + 1]).toBe('hapi-session-991')
         expect(args).toContain('--resume')
         expect(args).toContain('cursor-csid-1')
         expect(args).not.toContain('--hapi-session-id')
@@ -315,6 +327,14 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --effort for copilot agent so resume keeps the selection', () => {
+        const args = buildCliArgs('copilot', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args.slice(args.indexOf('--effort'))).toEqual(expect.arrayContaining(['--effort', 'high']))
+    })
+
     it('passes --effort for claude agent', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
@@ -354,7 +374,9 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--hapi-session-id')
     })
 
-    it('builds a remote DSH ACP runner command without unsupported policy flags', () => {
+    it('builds a remote DSH ACP runner command with the spawn-time policy flag', () => {
+        // dsh accepts the standard permission flags since the DSH_PERMISSION_MODE
+        // spawn mapping: read-only/yolo pin the server's sandbox preset.
         const args = buildCliArgs('dsh', {
             directory: '/tmp',
             existingSessionId: 'existing-hub-id',
@@ -365,7 +387,8 @@ describe('buildCliArgs', () => {
             'dsh',
             '--hapi-starting-mode', 'remote',
             '--started-by', 'runner',
-            '--existing-session-id', 'existing-hub-id'
+            '--existing-session-id', 'existing-hub-id',
+            '--permission-mode', 'read-only'
         ])
     })
 

@@ -209,10 +209,12 @@
     <string name="channel_permission_requests_desc">智能体正在等待您允许或拒绝一次工具调用</string>
     <string name="channel_input_requests">待回答的问题</string>
     <string name="channel_input_requests_desc">智能体需要您进入会话回答问题</string>
+    <string name="channel_model_errors">模型错误</string>
+    <string name="channel_model_errors_desc">智能体遇到需要处理的模型侧失败</string>
     <string name="channel_ready">代理就绪</string>
     <string name="channel_ready_desc">智能体已完成并正在等待输入</string>
-    <string name="channel_task_notifications">任务通知</string>
-    <string name="channel_task_notifications_desc">任务完成或失败等更新</string>
+    <string name="channel_other">其他通知</string>
+    <string name="channel_other_desc">来自 HAPI 的其他更新</string>
     <string name="notif_action_allow">允许</string>
     <string name="notif_action_deny">拒绝</string>
     <string name="notif_action_reply">回复</string>
@@ -246,6 +248,21 @@
     <string name="sessions_unread">未读</string>
     <string name="sessions_presence_connected">已连接</string>
     <string name="sessions_presence_running">运行中</string>
+    <string name="sessions_presence_background">后台任务运行中</string>
+    <string name="sessions_presence_stopped">已停止</string>
+    <string name="sessions_view_sort">排序方式</string>
+    <string name="sessions_view_sort_last_message">最后消息时间</string>
+    <string name="sessions_view_sort_created">创建时间</string>
+    <string name="sessions_view_active_first">活跃会话优先</string>
+    <string name="sessions_view_status">显示</string>
+    <string name="sessions_view_status_all">全部会话</string>
+    <string name="sessions_view_status_active">仅活跃</string>
+    <string name="sessions_view_status_archived">仅已归档</string>
+    <string name="sessions_view_unread_only">仅未读</string>
+    <string name="sessions_filter_empty_title">没有匹配的会话</string>
+    <string name="sessions_filter_empty_hint">调整或重置筛选以查看更多会话。</string>
+    <string name="sessions_job_left">剩余 %1$s</string>
+    <string name="sessions_job_no_heartbeat">无心跳 %1$s</string>
     <string name="sessions_error_mark_read">标记已读失败</string>
     <string name="sessions_search_hint">搜索会话</string>
     <string name="sessions_search_open">搜索会话</string>
@@ -291,7 +308,6 @@
     <string name="chat_open_settings">会话设置</string>
     <string name="chat_session_actions">会话操作</string>
     <string name="chat_scratchlist_badge">草稿夹</string>
-    <string name="chat_inactive_bar">会话已停止 — 发送消息即可恢复，或</string>
     <string name="chat_retry">重试</string>
     <string name="chat_loading_messages">加载消息…</string>
     <string name="chat_loading_older">正在加载更早的消息…</string>
@@ -342,6 +358,9 @@
     <string name="chat_mention_suggestions">提及建议</string>
     <string name="chat_send_steer">发送并插入当前回合</string>
     <string name="chat_schedule_send">定时发送</string>
+    <string name="chat_schedule_capsule">定时发送 · %1$s</string>
+    <string name="chat_schedule_clear">取消定时</string>
+    <string name="chat_attachment_remove">移除 %1$s</string>
     <string name="chat_schedule_relative_tab">相对时间</string>
     <string name="chat_schedule_specific_tab">指定时间</string>
     <string name="chat_schedule_specific_hint">最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。</string>
@@ -367,6 +386,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">会话已离线 — 更改将在恢复后生效，也可能被拒绝。</string>
+    <string name="chat_config_context">上下文</string>
     <string name="chat_config_terminal_note">会话由终端控制 — 配置更改会被拒绝。</string>
     <string name="chat_config_permission_mode">权限模式</string>
     <string name="chat_config_model">模型</string>
@@ -376,16 +396,39 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">等待审批</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ 等待审批</string>
-    <string name="chat_tool_approved">✓ 已批准</string>
-    <string name="chat_tool_approved_for_session">✓ 本会话已批准</string>
-    <string name="chat_tool_approved_allow_all_edits">✓ 已批准：允许所有编辑</string>
-    <string name="chat_tool_denied">✕ 已拒绝</string>
-    <string name="chat_tool_aborted">✕ 已中止</string>
+    <string name="chat_tool_awaiting_approval_badge">等待审批</string>
+    <string name="chat_tool_approved">已批准</string>
+    <string name="chat_tool_approved_for_session">本会话已批准</string>
+    <string name="chat_tool_approved_allow_all_edits">已批准：允许所有编辑</string>
+    <string name="chat_tool_denied">已拒绝</string>
+    <string name="chat_tool_aborted">已中止</string>
     <string name="chat_tool_resolved">已处理</string>
-    <string name="chat_tool_canceled">— 已取消</string>
+    <string name="chat_tool_canceled">已取消</string>
     <string name="chat_tool_status_pending">等待中</string>
     <string name="chat_tool_status_error">错误</string>
+    <string name="chat_tool_status_done">完成</string>
+    <string name="chat_tool_status_running">运行中</string>
+    <plurals name="chat_group_reads">
+        <item quantity="other">%1$d 次读取</item>
+    </plurals>
+    <plurals name="chat_group_searches">
+        <item quantity="other">%1$d 次搜索</item>
+    </plurals>
+    <plurals name="chat_group_commands">
+        <item quantity="other">%1$d 条命令</item>
+    </plurals>
+    <plurals name="chat_group_edits">
+        <item quantity="other">%1$d 次修改</item>
+    </plurals>
+    <plurals name="chat_group_web_requests">
+        <item quantity="other">%1$d 次网络请求</item>
+    </plurals>
+    <plurals name="chat_group_other_tools">
+        <item quantity="other">%1$d 个其他工具</item>
+    </plurals>
+    <plurals name="chat_group_failed">
+        <item quantity="other">%1$d 个工具失败</item>
+    </plurals>
     <string name="chat_agent_steps_one">1 个智能体步骤</string>
     <string name="chat_agent_steps_many">%1$d 个智能体步骤</string>
     <string name="chat_group_tools_one">1 个工具</string>
@@ -395,9 +438,13 @@
     <string name="chat_edit_n_of_m">编辑 %1$d/%2$d</string>
     <string name="chat_empty_snippet">（空）</string>
     <string name="chat_result">结果</string>
+    <string name="chat_result_waiting">等待输出…</string>
+    <string name="chat_result_none">无输出</string>
     <string name="chat_result_error">结果 · 错误</string>
-    <string name="chat_reasoning_expanded">💭 思考 ▾</string>
-    <string name="chat_reasoning_collapsed">💭 思考 ▸</string>
+    <string name="chat_reasoning_expanded">思考</string>
+    <string name="chat_reasoning_collapsed">思考…</string>
+    <string name="chat_reasoning_state_expanded">已展开</string>
+    <string name="chat_reasoning_state_collapsed">已收起</string>
     <string name="chat_not_delivered_retry">未送达 — 点按重试</string>
     <string name="chat_not_delivered">未送达</string>
     <string name="chat_review_title">Code review</string>
@@ -410,6 +457,7 @@
     <string name="chat_perm_abort">中止</string>
     <string name="chat_perm_allow_for_session">本会话允许</string>
     <string name="chat_perm_allow_all_edits">允许所有编辑</string>
+    <string name="chat_perm_more_options">更多选项</string>
     <string name="chat_perm_already_handled">已在其他设备处理</string>
     <string name="chat_perm_type_answer">输入您的答案…</string>
     <string name="chat_perm_add_note">添加备注…</string>
@@ -663,16 +711,17 @@
     <string name="media_play">播放</string>
     <string name="media_pause">暂停</string>
     <string name="chat_reconnecting_retry">正在重新连接… 点按重试</string>
-    <string name="sessions_filters">筛选</string>
+    <string name="sessions_filters">排序与筛选</string>
     <string name="sessions_filters_active">已应用筛选</string>
     <string name="sessions_filters_reset">重置</string>
+    <string name="sessions_filter_section">筛选</string>
+    <string name="sessions_sort_section">排序</string>
     <string name="sessions_filters_done">完成</string>
     <string name="sessions_filter_machines">机器</string>
     <string name="sessions_filter_dates">活动日期</string>
     <string name="sessions_filter_any_date">不限日期</string>
     <string name="sessions_filter_clear_dates">清除日期筛选</string>
     <string name="sessions_machine_fallback">机器 · %1$s</string>
-    <string name="sessions_time_filter_label">按最后活动时间筛选会话</string>
     <string name="sessions_time_filter_apply">应用</string>
     <string name="sessions_time_filter_clear">清除</string>
     <string name="sessions_time_filter_summary">%1$s – %2$s</string>

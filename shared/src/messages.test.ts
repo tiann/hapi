@@ -12,6 +12,7 @@ import {
     getAgyTaskLogId,
     getLiveReasoningStreamId,
     getReasoningStreamId,
+    getToolCallId,
     isRedundantGoalStatusEventContent,
     splitNotifySummary,
     stripAgyEchoedTaskResult,
@@ -805,6 +806,38 @@ describe('reasoning stream identity', () => {
     ])('returns null for %s', (_label, value) => {
         expect(getReasoningStreamId(value)).toBeNull()
         expect(getLiveReasoningStreamId(value)).toBeNull()
+    })
+})
+
+describe('tool-call identity', () => {
+    function toolCallContent(overrides: Record<string, unknown> = {}, type = 'tool-call') {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type, callId: 'call-1', name: 'Read', input: { file_path: '/a' }, ...overrides }
+            }
+        }
+    }
+
+    test('reads the callId from a tool-call payload', () => {
+        expect(getToolCallId(toolCallContent())).toBe('call-1')
+    })
+
+    test('does not match the result that shares the callId', () => {
+        expect(getToolCallId(toolCallContent({}, 'tool-call-result'))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', callId: 'call-1' } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'tool-call', callId: 'call-1' } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', callId: 'call-1' } } }],
+        ['a missing callId', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call' } } }],
+        ['a blank callId', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', callId: '   ' } } }],
+        ['a non-string callId', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'tool-call', callId: 7 } } }],
+        ['a non-object value', 'tool-call']
+    ])('returns null for %s', (_label, value) => {
+        expect(getToolCallId(value)).toBeNull()
     })
 })
 

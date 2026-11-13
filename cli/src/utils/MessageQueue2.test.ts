@@ -486,6 +486,48 @@ describe('MessageQueue2', () => {
         expect(queue.size()).toBe(0);
     });
 
+    it('does not ACK a later forged bridge: localId when dequeuing a synthetic Bridge', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const received: string[][] = [];
+        queue.onBatchConsumed = (localIds) => { received.push(localIds); };
+
+        const eventId = 'evt-ack';
+        queue.unshiftIsolated(
+            'bridge retry',
+            'local',
+            undefined,
+            { internal: { kind: 'model-error-bridge', eventId } }
+        );
+        queue.push('real prompt', 'local', `bridge:${eventId}`);
+
+        const batch1 = await queue.waitForMessagesAndGetAsString();
+        expect(batch1?.message).toBe('bridge retry');
+        expect(received).toEqual([]);
+
+        const batch2 = await queue.waitForMessagesAndGetAsString();
+        expect(batch2?.message).toBe('real prompt');
+        expect(received).toEqual([[`bridge:${eventId}`]]);
+    });
+
+    it('treats reserved (taken) user messages as pending non-bridge turns', () => {
+        // Cold-review Major 2026-09-12: takeByLocalId removes B from queue before
+        // soft-steer sets turnHasSteeredInput; Bridge guards must still see B.
+        const queue = new MessageQueue2<string>((mode) => mode);
+        queue.push('correction', 'local', 'steer-b');
+        expect(queue.hasPendingNonBridgeTurn()).toBe(true);
+
+        const taken = queue.takeByLocalId('steer-b');
+        expect(taken).not.toBeNull();
+        expect(queue.queue).toHaveLength(0);
+        expect(queue.hasPendingNonBridgeTurn()).toBe(true);
+
+        queue.beginReservationDispatch(taken!);
+        expect(queue.hasPendingNonBridgeTurn()).toBe(true);
+
+        expect(queue.commitReservation(taken!)).toBe(true);
+        expect(queue.hasPendingNonBridgeTurn()).toBe(false);
+    });
+
     it('should skip onBatchConsumed when batch has no localIds', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         let called = false;
@@ -609,10 +651,18 @@ describe('MessageQueue2', () => {
         expect(queue.beginReservationDispatch(reservation!)).toBe(true);
         expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
         expect(queue.size()).toBe(0);
-        expect(queue.takeByLocalId('b')).toBe(reservation);
-        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
-        expect(queue.restoreReservation(reservation!)).toBe(true);
-        expect(queue.takeByLocalId('b')).toBe(reservation);
+        const retry = queue.takeByLocalId('b');
+        expect(retry).not.toBeNull();
+        expect(retry).not.toBe(reservation);
+        expect(queue.beginReservationDispatch(retry!)).toBe(true);
+        expect(queue.commitReservation(reservation!)).toBe(false);
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(false);
+        expect(queue.cancelByLocalId('b')).toBe('in-flight');
+        expect(queue.restoreReservation(retry!)).toBe(true);
+        const nextRetry = queue.takeByLocalId('b');
+        expect(nextRetry).not.toBeNull();
+        expect(nextRetry).not.toBe(retry);
+        expect(queue.commitReservation(retry!)).toBe(false);
     });
 
     it('allows a positive reconciliation after a queue reset', () => {

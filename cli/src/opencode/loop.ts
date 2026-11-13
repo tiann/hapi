@@ -1,3 +1,4 @@
+import type { OpencodeSteerCancelHandler } from './utils/opencodeV2Steer';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { runLocalRemoteSession } from '@/agent/loopBase';
@@ -7,8 +8,10 @@ import { opencodeRemoteLauncher } from './opencodeRemoteLauncher';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { OpencodeMode, PermissionMode } from './types';
 import type { OpencodeHookServer } from './utils/startOpencodeHookServer';
+import type { OpenCodeRuntimeGate } from './rewind';
 
 interface OpencodeLoopOptions {
+    runtimeGate?: OpenCodeRuntimeGate;
     path: string;
     startingMode?: 'local' | 'remote';
     startedBy?: 'runner' | 'terminal';
@@ -25,6 +28,7 @@ interface OpencodeLoopOptions {
     onSessionReady?: (session: OpencodeSession) => void;
     onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
+    onSteerCancelHandlerChange?: (handler: OpencodeSteerCancelHandler | null) => void;
     onCompactAvailabilityChange?: (available: boolean) => void;
     onClearRequested?: () => Promise<void>;
     onClearCleanupComplete?: () => Promise<void>;
@@ -54,10 +58,11 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
         startedBy,
         startingMode,
         permissionMode: opts.permissionMode ?? 'default',
-        modelReasoningEffort: opts.modelReasoningEffort
+        modelReasoningEffort: opts.modelReasoningEffort,
+        runtimeGate: opts.runtimeGate
     });
 
-    if (opts.resumeSessionId) {
+    if (opts.resumeSessionId && startingMode === 'local') {
         session.onSessionFound(opts.resumeSessionId);
     }
 
@@ -85,6 +90,7 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
             onModelRollback: opts.onModelRollback,
             onReasoningEffortRollback: opts.onReasoningEffortRollback,
             onCompactAvailabilityChange: opts.onCompactAvailabilityChange,
+            onSteerCancelHandlerChange: opts.onSteerCancelHandlerChange,
             isLocalIdCancelled: opts.isLocalIdCancelled,
             onClearRequested: opts.onClearRequested,
             onClearCleanupComplete: opts.onClearCleanupComplete,

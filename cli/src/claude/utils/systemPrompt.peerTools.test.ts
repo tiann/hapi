@@ -50,6 +50,22 @@ describe('peer-tools citation steer across flavors', () => {
         }
     })
 
+    it('leaves media delivery to tool contracts across flavors', async () => {
+        const { claude, codex, opencode, restore } = await importFlavorPrompts(false)
+        try {
+            for (const prompt of [claude.getSystemPrompt(), codex.getCodexSystemPrompt({}), opencode.getTitleInstruction({}), opencode.getOpencodeNativeToolInstruction({})]) {
+                expect(prompt).not.toContain('display_image')
+                expect(prompt).not.toContain('display_video')
+                expect(prompt).not.toContain('display_media')
+                expect(prompt).not.toContain('Web/PWA')
+                expect(prompt).toContain('change_title')
+                expect(prompt).toContain('hapi job run')
+            }
+        } finally {
+            restore()
+        }
+    })
+
     it('keeps the citation tool steer by default', async () => {
         const { claude, codex, opencode, restore } = await importFlavorPrompts(false)
         try {

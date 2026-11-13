@@ -33,17 +33,21 @@ function ttsDiffersFromDefault(tts: ElevenLabsVoiceSettings): boolean {
         || tts.use_speaker_boost !== d.use_speaker_boost
 }
 
+/**
+ * Shape must match `@elevenlabs/client` SessionConfig.overrides.tts (camelCase).
+ * constructOverrides maps voiceId → voice_id / similarityBoost → similarity_boost for the wire;
+ * snake_case keys here are silently dropped and the agent default voice wins.
+ * style / use_speaker_boost are not forwarded by client 0.13 — omit them.
+ */
 function buildElevenLabsTtsOverride(
     tts: ElevenLabsVoiceSettings,
     voiceId?: string
 ): Record<string, unknown> {
     return {
         stability: tts.stability,
-        similarity_boost: tts.similarity_boost,
-        style: tts.style,
+        similarityBoost: tts.similarity_boost,
         speed: tts.speed,
-        use_speaker_boost: tts.use_speaker_boost,
-        ...(voiceId ? { voice_id: voiceId } : {})
+        ...(voiceId ? { voiceId } : {})
     }
 }
 
@@ -93,7 +97,7 @@ export function buildElevenLabsSessionOverridesFromPrefs(
     if (customTts) {
         overrides.tts = buildElevenLabsTtsOverride(tts, config.voiceId)
     } else if (config.voiceId) {
-        overrides.tts = { voice_id: config.voiceId }
+        overrides.tts = { voiceId: config.voiceId }
     }
 
     const agent: NonNullable<ElevenLabsSessionOverrides['agent']> = {}

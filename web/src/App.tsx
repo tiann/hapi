@@ -13,13 +13,13 @@ import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
 import { useSyncingState } from '@/hooks/useSyncingState'
-import { usePushNotifications } from '@/hooks/usePushNotifications'
+import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
@@ -41,6 +41,7 @@ import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
 import { ToastProvider, useToast } from '@/lib/toast-context'
+import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -108,6 +109,27 @@ function AppInner() {
         initializeThemeColors()
         initializeChatSurfaceColors()
     }, [])
+
+    useEffect(() => {
+        if (!('serviceWorker' in navigator)) {
+            return
+        }
+
+        const handleServiceWorkerMessage = (event: MessageEvent<unknown>) => {
+            const href = getNotificationClickHref(event.data, window.location.origin)
+            if (!href) return
+            const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`
+            if (currentHref !== href) {
+                router.history.push(href)
+            }
+            event.ports[0]?.postMessage({ type: NOTIFICATION_CLICK_ACK_TYPE })
+        }
+
+        navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage)
+        return () => {
+            navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage)
+        }
+    }, [router])
 
     // Track visual viewport height for mobile keyboard avoidance (see useViewportHeight.ts)
     useViewportHeight()
@@ -194,7 +216,7 @@ function AppInner() {
         isLoading: appBadgeSessionsLoading,
         hasError: Boolean(appBadgeSessionsError),
     })
-    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
+    const { isSupported: isPushSupported, permission: pushPermission, subscribe } = usePushNotifications(api)
 
     useEffect(() => {
         if (baseUrlRef.current === baseUrl) {
@@ -236,20 +258,13 @@ function AppInner() {
         pushPromptedRef.current = true
 
         const run = async () => {
-            if (pushPermission === 'granted') {
+            if (pushPermission === 'granted' && !pushNotificationsDisabled()) {
                 await subscribe()
-                return
-            }
-            if (pushPermission === 'default') {
-                const granted = await requestPermission()
-                if (granted) {
-                    await subscribe()
-                }
             }
         }
 
         void run()
-    }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
+    }, [api, isPushSupported, pushPermission, subscribe, token])
 
     const handleSseConnect = useCallback((info: { resumed: boolean }) => {
         // Clear disconnected state on successful connection
@@ -286,7 +301,7 @@ function AppInner() {
             refreshAllAgyCatalogs(queryClient)
         ]
         const refreshMessages = (selectedSessionId && api)
-            ? syncTailMessages(api, selectedSessionId)
+            ? recoverWindowAfterGapResume(api, selectedSessionId)
             : Promise.resolve()
         Promise.all([...invalidations, refreshMessages])
             .catch((error) => {
@@ -331,6 +346,13 @@ function AppInner() {
         if (info.resumed) {
             return
         }
+        // First connects and gaps cannot prove continuity: reconcile the window
+        // from an authoritative latest page (applied by id, keeping loaded
+        // history) so in-place row updates (merged tool-call ticks) the replay
+        // cannot deliver are recovered too.
+        recoverWindowAfterGapResume(api, selectedSessionId).catch((error) => {
+            console.error('Failed to recover the message window after an SSE gap:', error)
+        })
         void reconcileQueuedStateAfterConnect(api, selectedSessionId).catch((error) => {
             console.error('Failed to reconcile queued state after SSE connect:', error)
         })

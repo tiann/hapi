@@ -7,6 +7,8 @@ export type Toast = {
     body: string
     sessionId: string
     url: string
+    /** Optional inline action, e.g. reopening a just-archived session. */
+    action?: { label: string; onClick: () => void }
 }
 
 export type ToastContextValue = {

@@ -132,7 +132,8 @@ describe('pingPeer', () => {
             sessionId,
             name: 'Orchestrator',
             resumed: false,
-            delivery: 'accepted'
+            delivery: 'accepted',
+            flavor: 'cursor'
         })
         expect(result.localId).toMatch(/^ping-peer-/)
         expect(http.post.mock.calls[1]?.[1]).toEqual({ text: 'hello peer', localId: result.localId })
@@ -195,6 +196,7 @@ describe('pingPeer', () => {
             sessionIdPrefix: 'aaaaaaaa',
             message: 'wake up',
             deliveryMode,
+            wake: true,
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
             waitActiveSecs: 10,
@@ -265,6 +267,7 @@ describe('pingPeer', () => {
         const result = await pingPeer({
             sessionIdPrefix: 'bbbbbbbb',
             message: 'still here?',
+            wake: true,
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
             waitActiveSecs: 10,
@@ -392,6 +395,8 @@ describe('pingPeer', () => {
             name: 'Spawned',
             resumed: false,
             delivery: 'accepted',
+            flavor: 'cursor',
+            steerNote: expect.stringMatching(/^steer not attempted: /),
             localId: expect.stringMatching(/^ping-peer-/),
         })
     })
@@ -505,15 +510,72 @@ describe('pingPeer', () => {
         await expect(pingPeer({
             sessionIdPrefix: 'deadbeef',
             message: 'nudge',
+            wake: true,
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
             http: http as never
         })).rejects.toMatchObject({ code: 'resume_failed' })
     })
 
+    it.each([
+        ['resume', '/resume', 'resume_failed', /resume request failed.*timeout of 30000ms exceeded.*no message sent/],
+        ['send', '/messages', 'send_failed', /Send not confirmed.*timeout of 30000ms exceeded.*may have been accepted/]
+    ] as const)('names the %s phase when the request times out', async (_phase, suffix, code, pattern) => {
+        const sessionId = 'deadbeef-1111-1111-1111-111111111111'
+        const session = { id: sessionId, active: _phase === 'send', metadata: { name: 'Dead' } }
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) return { status: 200, data: { token: 'jwt' } }
+                if (url.endsWith(`/api/sessions/${sessionId}${suffix}`)) throw new Error('timeout of 30000ms exceeded')
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => url.endsWith('/api/sessions')
+                ? { status: 200, data: { sessions: [session] } }
+                : { status: 200, data: { session } }
+        })
+
+        await expect(pingPeer({
+            sessionIdPrefix: 'deadbeef',
+            message: 'nudge',
+            deliveryMode: 'queue',
+            wake: true,
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })).rejects.toMatchObject({ code, message: expect.stringMatching(pattern) })
+    })
+
+    it.each([
+        ['list snapshot inactive', false],
+        ['stale active list snapshot', true]
+    ] as const)('refuses an inactive target without wake (%s) and never resumes or sends', async (_label, listedActive) => {
+        const sessionId = 'cafecafe-1111-1111-1111-111111111111'
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => url.endsWith('/api/sessions')
+                ? { status: 200, data: { sessions: [{ id: sessionId, active: listedActive, metadata: { name: 'Old peer' } }] } }
+                : { status: 200, data: { session: { id: sessionId, active: false, metadata: { name: 'Old peer' } } } }
+        })
+
+        await expect(pingPeer({
+            sessionIdPrefix: 'cafecafe',
+            message: 'fyi: done',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })).rejects.toMatchObject({ code: 'inactive', message: expect.stringContaining('no message sent') })
+        expect(http.post.mock.calls.map(([url]) => url)).toEqual(['http://hub.test/api/auth'])
+    })
+
     it('maps exit codes', () => {
         expect(exitCodeForPingPeerError(new PingPeerError('bad_args', 'x'))).toBe(2)
         expect(exitCodeForPingPeerError(new PingPeerError('resume_failed', 'x'))).toBe(3)
+        expect(exitCodeForPingPeerError(new PingPeerError('inactive', 'x'))).toBe(5)
         expect(exitCodeForPingPeerError(new PingPeerError('timeout', 'x'))).toBe(4)
         expect(exitCodeForPingPeerError(new PingPeerError('send_failed', 'x'))).toBe(4)
     })
@@ -588,10 +650,8 @@ describe('pingPeer delivery modes', () => {
         { name: 'Codex without steering state', session: { ...active, agentState: null } },
         { name: 'local Codex without concurrent control', session: { ...active, agentState: { steeringActive: true, controlledByUser: true } } },
         { name: 'unknown flavor', session: { ...active, metadata: null } },
-        { name: 'Pi', session: { ...active, metadata: { flavor: 'pi', piSessionId: 'pi-thread' } } },
-        { name: 'Cursor ACP', session: { ...active, metadata: { flavor: 'cursor', cursorSessionProtocol: 'acp' as const } } },
         { name: 'legacy Cursor', session: { ...active, metadata: { flavor: 'cursor', cursorSessionProtocol: 'stream-json' as const } } },
-        { name: 'Claude', session: { ...active, metadata: { flavor: 'claude' } } }
+        { name: 'idle Claude', session: { ...active, agentState: { steeringActive: false }, metadata: { flavor: 'claude' } } }
     ])('auto queues for $name', async ({ session }) => {
         const { http, options } = setup(session)
         expect((await pingPeer({ ...options, deliveryMode: 'auto' })).delivery).toBe('accepted')
@@ -619,7 +679,7 @@ describe('pingPeer delivery modes', () => {
         expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(steeringActive ? 1 : 0)
     })
 
-    it.each([true, false])('auto re-evaluates Codex steeringActive=%s after resume', async (steeringActive) => {
+    it.each([true, false])('auto queues after resume even with Codex steeringActive=%s', async (steeringActive) => {
         let resumed = false
         const http = createHttpMock({
             get: (url) => url.endsWith('/api/sessions')
@@ -637,20 +697,22 @@ describe('pingPeer delivery modes', () => {
             }
         })
         const result = await pingPeer({
-            sessionIdPrefix: sessionId, message: 'update', deliveryMode: 'auto',
+            sessionIdPrefix: sessionId, message: 'update', deliveryMode: 'auto', wake: true,
             apiUrl: 'http://hub.test', accessToken: 'tok', http: http as never
         })
         expect(result.resumed).toBe(true)
-        expect(result.delivery).toBe(steeringActive ? 'steered' : 'accepted')
+        expect(result.delivery).toBe('accepted')
         expect(http.post.mock.calls.filter(([url]) => url.endsWith('/resume'))).toHaveLength(1)
         expect(http.post.mock.calls.filter(([url]) => url.endsWith('/messages'))).toHaveLength(1)
-        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(steeringActive ? 1 : 0)
+        expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(0)
     })
 
     it.each([
         { flavor: 'codex' },
         { flavor: 'pi', piSessionId: 'pi-thread' },
-        { flavor: 'cursor', cursorSessionProtocol: 'acp' as const }
+        { flavor: 'cursor', cursorSessionProtocol: 'acp' as const },
+        { flavor: 'claude' },
+        { flavor: 'opencode' }
     ])('steers an ackable message in $flavor using its localId', async (metadata) => {
         const { http, options } = setup({ ...active, metadata })
         const result = await pingPeer({ ...options, deliveryMode: 'steer' })
@@ -673,7 +735,7 @@ describe('pingPeer delivery modes', () => {
     it.each([
         { ...active, active: false },
         { ...active, thinking: false, agentState: { steeringActive: false } },
-        { ...active, metadata: { flavor: 'opencode' } },
+        { ...active, metadata: { flavor: 'gemini' } },
         { ...active, metadata: { flavor: 'cursor', cursorSessionProtocol: 'stream-json' as const } },
         { ...active, metadata: { flavor: 'cursor', cursorSessionId: 'legacy' } },
         { ...active, agentState: { controlledByUser: true } }
@@ -695,7 +757,9 @@ describe('pingPeer delivery modes', () => {
         { flavor: 'codex', steeringActive: false },
         { flavor: 'codex', steeringActive: undefined },
         { flavor: 'cursor', steeringActive: false },
-        { flavor: 'cursor', steeringActive: undefined }
+        { flavor: 'cursor', steeringActive: undefined },
+        { flavor: 'opencode', steeringActive: false },
+        { flavor: 'opencode', steeringActive: undefined }
     ])('does not send to a thinking $flavor peer with steeringActive=$steeringActive', async ({ flavor, steeringActive }) => {
         const { http, options } = setup({
             ...active, metadata: { flavor }, agentState: { steeringActive }
@@ -735,11 +799,15 @@ describe('pingPeer delivery modes', () => {
             { status: 200, data: { status: 'failed', error: 'Message not in queue' } },
             { status: 409, data: { error: 'Session inactive' } },
             new Error('Request timed out')
-        ])('reports accepted but unconfirmed steer without fallback or resending: %j', async (failure) => {
+        ])('preserves the single submission when steer is unconfirmed: %j', async (failure) => {
             const { http, options } = setup(active, failure)
-            await expect(pingPeer({ ...options, deliveryMode })).rejects.toThrow(
-                /Message accepted \(localId=ping-peer-.+\), but steer was not confirmed: .*Do not resend automatically/
-            )
+            if (deliveryMode === 'steer') {
+                await expect(pingPeer({ ...options, deliveryMode })).rejects.toThrow(
+                    /Message accepted \(localId=ping-peer-.+\), but steer was not confirmed: .*Do not resend automatically/
+                )
+            } else {
+                expect((await pingPeer({ ...options, deliveryMode })).delivery).toBe('accepted')
+            }
             expect(http.post.mock.calls.filter(([url]) => url.endsWith('/messages'))).toHaveLength(1)
             expect(http.post.mock.calls.filter(([url]) => url.endsWith('/steer'))).toHaveLength(1)
         })
@@ -792,16 +860,36 @@ describe('formatPeerSessionsList', () => {
             {
                 id: 'bbbbbbbb-2222-2222-2222-222222222222',
                 active: true,
+                thinking: true,
                 updatedAt: 200,
-                metadata: { name: 'Fresh', flavor: 'cursor' }
+                machineLabel: 'studio',
+                metadata: { name: 'Fresh', flavor: 'cursor', path: '/repo/app', machineId: 'm-1' }
             }
-        ])
+        ], { includeInactive: true })
         const lines = text.split('\n')
         expect(lines[0]).toContain('bbbbbbbb-2222-2222-2222-222222222222')
-        expect(lines[0]).toContain('active=true')
+        expect(lines[0]).toContain('busy')
         expect(lines[0]).toContain('flavor=cursor')
+        expect(lines[0]).toContain('machine=studio')
+        expect(lines[0]).toContain('cwd=/repo/app')
         expect(lines[0]).toContain('Fresh')
         expect(lines[1]).toContain('aaaaaaaa-1111-1111-1111-111111111111')
+        expect(lines[1]).toContain('inactive')
+        expect(lines.at(-1)).toMatch(/not a recipient list/)
+    })
+
+    it('marks peers sharing the caller machine and cwd', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const selfId = 'cccccccc-3333-3333-3333-333333333333'
+        const text = formatPeerSessionsList([
+            { id: selfId, active: true, updatedAt: 3, metadata: { machineId: 'm-1', path: '/repo' } },
+            { id: 'aaaaaaaa-1111-1111-1111-111111111111', active: true, updatedAt: 2, metadata: { name: 'Same', machineId: 'm-1', path: '/repo' } },
+            { id: 'bbbbbbbb-2222-2222-2222-222222222222', active: true, updatedAt: 1, metadata: { name: 'Elsewhere', machineId: 'm-2', path: '/repo' } }
+        ], { excludeSessionId: selfId })
+        const lines = text.split('\n')
+        expect(lines[0]).toContain('[same-machine, same-cwd]')
+        expect(lines[1]).not.toContain('same-')
+        expect(text).not.toContain(selfId)
     })
 
     it('emits full session ids so colliding 8-char prefixes stay resolvable', async () => {
@@ -822,7 +910,7 @@ describe('formatPeerSessionsList', () => {
         ])
         expect(text).toContain('aaaaaaaa-1111-1111-1111-111111111111')
         expect(text).toContain('aaaaaaaa-2222-2222-2222-222222222222')
-        expect(text.split('\n')).toHaveLength(2)
+        expect(text.split('\n')).toHaveLength(3)
     })
 
     it('uses summary.text when name is unset and collapses multiline titles', async () => {
@@ -840,7 +928,7 @@ describe('formatPeerSessionsList', () => {
         expect(resolvePeerSessionLabel(session)).toBe('Peer with tabs')
         const text = formatPeerSessionsList([session])
         expect(text).toContain('Peer with tabs')
-        expect(text.split('\n')).toHaveLength(1)
+        expect(text.split('\n')).toHaveLength(2)
         expect(text).not.toContain('(unnamed)')
     })
 
@@ -865,7 +953,8 @@ describe('formatPeerSessionsList', () => {
 
     it('respects maxRows and empty list', async () => {
         const { formatPeerSessionsList } = await import('./pingPeer')
-        expect(formatPeerSessionsList([])).toContain('No peer sessions')
+        expect(formatPeerSessionsList([])).toContain('No active peer sessions')
+        expect(formatPeerSessionsList([], { includeInactive: true })).toContain('No peer sessions')
         const many = Array.from({ length: 5 }, (_, i) => ({
             id: `${String(i).padStart(8, '0')}-0000-0000-0000-000000000000`,
             active: true,
@@ -873,7 +962,7 @@ describe('formatPeerSessionsList', () => {
             metadata: { name: `S${i}`, flavor: 'pi' as string | null }
         }))
         const text = formatPeerSessionsList(many, { maxRows: 2 })
-        expect(text.split('\n').filter((l) => l.includes('active='))).toHaveLength(2)
+        expect(text.split('\n').filter((l) => l.includes('flavor='))).toHaveLength(2)
     })
 
     it('omits the calling session even when it is newest', async () => {
@@ -993,19 +1082,32 @@ describe('listSessions query params', () => {
                     listParams.push(config?.params)
                     return {
                         status: 200,
-                        data: { sessions: [{ id: sessionId, active: true, updatedAt: 1, metadata: { name: 'Z' } }] }
+                        data: { sessions: [{ id: sessionId, active: true, updatedAt: 1, metadata: { name: 'Z', machineId: 'machine-1234' } }] }
                     }
+                }
+                if (url.endsWith('/api/machines')) {
+                    return { status: 200, data: { machines: [{ id: 'machine-1234', metadata: { host: 'studio.local' } }] } }
                 }
                 throw new Error(`unexpected GET ${url}`)
             }
         })
-        await listPeerSessions({
+        const listed = await listPeerSessions({
             apiUrl: 'http://hub.test',
             accessToken: 'tok',
             http: listHttp as never,
             limit: 40
         })
-        expect(listParams[0]).toEqual({ limit: 40, order: 'updatedAt' })
+        expect(listParams[0]).toEqual({ limit: 40, order: 'updatedAt', active: 'true' })
+        expect(listed[0]?.machineLabel).toBe('studio.local')
+
+        await listPeerSessions({
+            apiUrl: 'http://hub.test',
+            accessToken: 'tok',
+            http: listHttp as never,
+            limit: 40,
+            includeInactive: true
+        })
+        expect(listParams[1]).toEqual({ limit: 40, order: 'updatedAt' })
 
         const pingHttp = createHttpMock({
             post: (url, body) => {
