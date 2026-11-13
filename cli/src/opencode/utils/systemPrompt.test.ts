@@ -5,20 +5,6 @@ import { join } from 'node:path'
 import { ensureOpencodeConfig } from './opencodeConfig'
 import { getOpencodeNativeToolInstruction, getTitleInstruction, TITLE_INSTRUCTION } from './systemPrompt'
 
-const SCOPE_BULLET = "- Use them for files you created, or found on the user's behalf, that the user has not been shown. Files the user attached, pasted, or pointed you to are already visible to them, so do not display those again unless the user asks."
-
-const BLOCK_HEADER = 'HAPI display tools (display_image, display_video, display_media) show a local file to the user in the HAPI chat.'
-
-function expectDisplayToolsBlockOnce(text: string): void {
-    expect(text.split(BLOCK_HEADER)).toHaveLength(2)
-    for (const tool of ['display_image', 'display_video', 'display_media']) {
-        expect(text).toContain(tool)
-    }
-    expect(text).toContain('`await tools.hapi.<tool>({ path })`')
-    expect(text.split(SCOPE_BULLET)).toHaveLength(2)
-    expect(text).toContain('`execute`')
-}
-
 describe('OpenCode local HAPI instructions', () => {
     let configDirectory: string | null = null
 
@@ -58,7 +44,6 @@ describe('OpenCode ACP title and peer instructions', () => {
 
         for (const prompt of [TITLE_INSTRUCTION, OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
             expect(prompt).toContain('hapi_change_title')
-            expect(prompt).toContain('hapi_<tool>')
             expect(prompt).toContain('skill_lookup')
             for (const tool of ['hapi_list_peers', 'hapi_inspect_peer', 'hapi_ping_peer']) {
                 if (disabled) {
@@ -71,25 +56,20 @@ describe('OpenCode ACP title and peer instructions', () => {
     })
 })
 
-describe('OpenCode display tools block', () => {
-    it('appears once in the local hapi-instructions.md', async () => {
+describe('OpenCode media tool discovery', () => {
+    it('keeps media delivery out of the local and ACP prompt injections', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'hapi-opencode-display-'))
         try {
             const { instructionsPath } = ensureOpencodeConfig(dir, { command: 'hapi', args: ['mcp'] }, getTitleInstruction({}))
-            expectDisplayToolsBlockOnce(await readFile(instructionsPath, 'utf8'))
+            for (const prompt of [await readFile(instructionsPath, 'utf8'), getOpencodeNativeToolInstruction({})]) {
+                expect(prompt).not.toContain('display_image')
+                expect(prompt).not.toContain('display_video')
+                expect(prompt).not.toContain('display_media')
+                expect(prompt).toContain('hapi_change_title')
+                expect(prompt).toContain('skill_lookup')
+            }
         } finally {
             await rm(dir, { recursive: true, force: true })
-        }
-    })
-
-    it('appears once in the ACP first-prompt instruction', () => {
-        expectDisplayToolsBlockOnce(getOpencodeNativeToolInstruction({}))
-    })
-
-    it('keeps the title and skill lookup instructions next to it', () => {
-        for (const prompt of [getTitleInstruction({}), getOpencodeNativeToolInstruction({})]) {
-            expect(prompt).toContain('hapi_change_title')
-            expect(prompt).toContain('skill_lookup')
         }
     })
 })
