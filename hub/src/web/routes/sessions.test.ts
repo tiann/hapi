@@ -1998,6 +1998,32 @@ describe('sessions routes', () => {
         expect(calls[0]?.[4]).toEqual(boundary)
     })
 
+    it('passes the rewind boundary to the engine and returns boundary_moved as a coded 409', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { rewindToMessage: true } } }
+        })
+        const boundary = { v: 1, mode: 'rewind', messageLocalId: 'u2', epoch: 3, tailSeq: 7, sourceActive: true }
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'New conversation rows appeared since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2', boundary })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'New conversation rows appeared since the preview',
+            code: 'boundary_moved',
+            hydrateFailed: false
+        })
+        expect(calls[0]?.[3]).toEqual(boundary)
+    })
+
     it('rewinds via POST /sessions/:id/rewind', async () => {
         const calls: Array<{ sessionId: string; messageLocalId: string }> = []
         const session = createSession({
