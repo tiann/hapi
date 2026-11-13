@@ -712,13 +712,14 @@
     <string name="sessions_filters">Sort &amp; filter</string>
     <string name="sessions_filters_active">Filters applied</string>
     <string name="sessions_filters_reset">Reset</string>
+    <string name="sessions_filter_section">Filter</string>
+    <string name="sessions_sort_section">Sort</string>
     <string name="sessions_filters_done">Done</string>
     <string name="sessions_filter_machines">Machines</string>
     <string name="sessions_filter_dates">Activity dates</string>
     <string name="sessions_filter_any_date">Any date</string>
     <string name="sessions_filter_clear_dates">Clear date filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_time_filter_label">Filter sessions by last activity</string>
     <string name="sessions_time_filter_apply">Apply</string>
     <string name="sessions_time_filter_clear">Clear</string>
     <string name="sessions_time_filter_summary">%1$s – %2$s</string>
