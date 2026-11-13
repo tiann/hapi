@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -50,6 +50,7 @@ import { startRunner } from './run'
 
 describe('runner stop confirmation after shared Codex tracking loss', () => {
     let stopSession: Parameters<typeof startRunnerControlServer>[0]['stopSession']
+    let reportSession: Parameters<typeof startRunnerControlServer>[0]['onHappySessionWebhook']
     let record: CodexRuntimeRecord
     let home: string
 
@@ -59,6 +60,7 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         const captured = new Error('control handlers captured before runner networking')
         mocks.controlServer.mockImplementation(async handlers => {
             stopSession = handlers.stopSession
+            reportSession = handlers.onHappySessionWebhook
             throw captured
         })
         // Stop startup at control-server registration. Exercise its real closure
@@ -67,6 +69,7 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         vi.spyOn(process, 'exit').mockImplementation(() => { throw captured })
         vi.stubEnv('HAPI_RUNNER_HANDOFF_FROM_PID', '')
         Object.defineProperty(configuration, 'runnerStateFile', { value: join(home, 'runner.json'), configurable: true })
+        writeFileSync(join(home, 'runner.json.verified-exits.json'), JSON.stringify(['exited']))
         try {
             await expect(startRunner()).rejects.toBe(captured)
             expect(stopSession!).toBeTypeOf('function')
@@ -112,6 +115,13 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
 
     it('does not infer success from an absent binding', async () => {
         record.sessions = {}
+        await expect(stopSession('target')).resolves.toBe('unknown')
+    })
+
+    it('lets verified exit confirm stop despite an unrelated protected wrapper', async () => {
+        record.sessions = {}
+        reportSession('other', { hostPid: 4242, startedBy: 'terminal', capabilities: { concurrentClients: true } } as Parameters<typeof reportSession>[1])
+        await expect(stopSession('exited')).resolves.toBe('already_gone')
         await expect(stopSession('target')).resolves.toBe('unknown')
     })
 

@@ -10,6 +10,7 @@ import SettingsAboutPage from './about'
 import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
+import SettingsUsagePage from './usage'
 
 const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled } = vi.hoisted(() => ({
     context: { token: '' },
@@ -27,6 +28,7 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
 const hubSettingsFixture = {
     sessionSummaryContract: false,
     sessionSummaryInChat: false,
+    autoBridgeTransientModelErrors: false,
     peerSpawnDefaults: {
         agent: 'claude' as const,
         permissionMode: 'bypassPermissions' as const,
@@ -37,6 +39,66 @@ const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
 const updateHubSettings = vi.fn().mockResolvedValue({
     ...hubSettingsFixture,
     sessionSummaryContract: true
+})
+const getUsageSummary = vi.fn().mockResolvedValue({
+    range: { from: null, to: null },
+    totals: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 800,
+        cacheCreationTokens: 0,
+        totalTokens: 1200,
+        uncachedTokens: 400,
+        requests: 3,
+        sessions: 1
+    },
+    daily: [],
+    byAgent: [],
+    byModel: [],
+    updatedAt: 1700000000000
+})
+const getUsageQuotas = vi.fn().mockResolvedValue({
+    machines: [
+        {
+            machineId: 'machine-1',
+            machineName: 'Dev Box',
+            supported: true,
+            fetchedAt: 1700000000000,
+            accounts: [
+                {
+                    agent: 'codex',
+                    available: true,
+                    status: 'ok',
+                    accountLabel: 'dev@example.com',
+                    planLabel: 'Pro',
+                    creditsLabel: '500 credits · 1 free reset',
+                    buckets: [
+                        {
+                            id: 'codex-primary',
+                            label: 'Weekly (7d)',
+                            group: null,
+                            window: 'weekly',
+                            usedPercent: 18,
+                            remainingPercent: 82,
+                            resetsAt: 1700600000000
+                        }
+                    ],
+                    updatedAt: 1700000000000
+                },
+                {
+                    agent: 'claude',
+                    available: true,
+                    status: 'custom_provider',
+                    accountLabel: 'https://any.s6o.org',
+                    planLabel: 'apiKeyHelper',
+                    buckets: [],
+                    note: 'Endpoint: https://any.s6o.org · Auth: apiKeyHelper',
+                    updatedAt: 1700000000000
+                }
+            ]
+        }
+    ],
+    updatedAt: 1700000000000
 })
 
 vi.mock('@/hooks/useColorTheme', () => ({
@@ -183,7 +245,13 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
-        api: { getHubSettings, updateHubSettings },
+        api: {
+            getHubSettings,
+            updateHubSettings,
+            getUsageSummary,
+            getUsageQuotas,
+            getSessions: vi.fn().mockResolvedValue({ sessions: [] })
+        },
         baseUrl: 'http://127.0.0.1:3006',
         token: context.token,
     }),
@@ -339,6 +407,21 @@ describe('responsive settings pages', () => {
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
+    it('keeps chat enum choices inline', async () => {
+        renderPage(<SettingsChatPage />)
+        fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
+        expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
+        expect(screen.getByText('Combined Tool Use Background')).toBeInTheDocument()
+        expect(await screen.findByRole('checkbox', { name: 'Automatically bridge transient model errors' })).toBeInTheDocument()
+    })
+
+    it('hides the auto-bridge setting from tenant namespaces', () => {
+        context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
+        renderPage(<SettingsChatPage />)
+        expect(screen.queryByRole('checkbox', { name: 'Automatically bridge transient model errors' })).not.toBeInTheDocument()
+        expect(getHubSettings).not.toHaveBeenCalled()
+    })
+
     it('shows one three-level tool card control with a persistent live preview', () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
@@ -419,5 +502,39 @@ describe('responsive settings pages', () => {
         expect(screen.getByText('Persona controls')).toBeInTheDocument()
         expect(screen.getByText('Sound controls')).toBeInTheDocument()
         expect(screen.getByText('Diagnostics controls')).toBeInTheDocument()
+    })
+
+    it('renders CLI account quotas and supports manual quota refresh on the usage page', async () => {
+        renderPage(<SettingsUsagePage />)
+
+        expect(await screen.findByText('CLI account quotas')).toBeInTheDocument()
+        expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+        expect(screen.getByText('Pro')).toBeInTheDocument()
+        expect(screen.getByText('500 credits · 1 free reset')).toBeInTheDocument()
+        expect(screen.getByText('82% remaining (18% used)')).toBeInTheDocument()
+        expect(screen.getByText('Endpoint: https://any.s6o.org · Auth: apiKeyHelper')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh quotas' }))
+        await waitFor(() => {
+            expect(getUsageQuotas).toHaveBeenCalledWith(true)
+        })
+    })
+
+    it('renders quota errors instead of the empty state and preserves existing quota cards when refresh fails', async () => {
+        getUsageQuotas.mockRejectedValueOnce(new Error('Quota endpoint unreachable'))
+        const firstRender = renderPage(<SettingsUsagePage />)
+
+        expect(await screen.findByText('Quota endpoint unreachable')).toBeInTheDocument()
+        expect(screen.queryByText('No online machines with installed CLI accounts')).not.toBeInTheDocument()
+        firstRender.unmount()
+
+        renderPage(<SettingsUsagePage />)
+        expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+
+        getUsageQuotas.mockRejectedValueOnce(new Error('Refresh quota timeout'))
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh quotas' }))
+
+        expect(await screen.findByText('Refresh quota timeout')).toBeInTheDocument()
+        expect(screen.getByText('dev@example.com')).toBeInTheDocument()
     })
 })

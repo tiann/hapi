@@ -1,7 +1,8 @@
-import { beforeAll, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { createConfiguration } from '../../configuration'
+import { createConfiguration, getConfiguration } from '../../configuration'
+import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
 
@@ -20,6 +21,42 @@ function authHeaders() {
 beforeAll(async () => {
     const config = await createConfiguration()
     config._setCliApiToken('test-token', 'env', false)
+})
+
+describe('cli shutdown preparation', () => {
+    function fixture(machineId = 'machine-1') {
+        let calls = 0
+        let fail = false
+        const app = createApp({
+            resolveSessionAccess: (_id: string, namespace: string) => namespace === 'default'
+                ? { ok: true, sessionId: 'session-1', session: { metadata: { machineId } } }
+                : { ok: false, reason: 'access-denied' },
+            prepareOpenCodeSessionStop: async () => { calls++; if (fail) throw new Error('offline'); return 'ready' }
+        } as never)
+        const request = (runner: string, token = 'test-token') => app.request('/cli/sessions/session-1/prepare-stop', {
+            method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ machineId: runner, pid: 123, processStartMarker: 'gen-a',
+                preparationLease: { id: 'fixture', expiresAt: 123456 } })
+        })
+        return { request, calls: () => calls, offline: () => { fail = true } }
+    }
+
+    it('requires the same namespace and runner machine before requesting shutdown', async () => {
+        const f = fixture()
+        expect((await f.request('machine-1', 'test-token:other')).status).toBe(403)
+        expect((await f.request('machine-2')).status).toBe(403)
+        expect(f.calls()).toBe(0)
+        const response = await f.request('machine-1')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ status: 'ready', preparationLease: { id: 'fixture', expiresAt: 123456 } })
+        expect(f.calls()).toBe(1)
+    })
+
+    it('returns an unconfirmed failure when the OpenCode drain cannot be acknowledged', async () => {
+        const f = fixture()
+        f.offline()
+        expect((await f.request('machine-1')).status).toBe(503)
+    })
 })
 
 describe('cli resume routes', () => {
@@ -92,6 +129,86 @@ describe('cli resume routes', () => {
                 agentSessionId: '11111111-1111-4111-8111-111111111111'
             }
         })
+    })
+
+    it('looks up the HAPI session that owns a Claude session id', async () => {
+        const calls: unknown[] = []
+        const app = createApp({
+            resolveLocalResumeTargetByAgentSessionId: (agentSessionId: string, namespace: string, opts?: { machineId?: string }) => {
+                calls.push({ agentSessionId, namespace, opts })
+                return {
+                    type: 'success',
+                    historical: true,
+                    target: {
+                        sessionId: 'session-1',
+                        flavor: 'claude',
+                        directory: '/tmp/project',
+                        machineId: 'machine-1',
+                        active: false,
+                        thinking: false,
+                        controlledByUser: false,
+                        agentSessionId: 'claude-current'
+                    }
+                }
+            }
+        } as never)
+
+        const response = await app.request(
+            '/cli/sessions/resume-target-by-agent?flavor=claude&agentSessionId=claude-old&machineId=machine-1',
+            { headers: authHeaders() }
+        )
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({
+            historical: true,
+            target: { sessionId: 'session-1', agentSessionId: 'claude-current' }
+        })
+        expect(calls).toEqual([{ agentSessionId: 'claude-old', namespace: 'default', opts: { machineId: 'machine-1' } }])
+    })
+
+    it('rejects by-agent lookups for unsupported flavors or a missing id', async () => {
+        const app = createApp({} as never)
+        for (const query of ['flavor=codex&agentSessionId=x', 'flavor=claude', 'agentSessionId=x']) {
+            const response = await app.request(`/cli/sessions/resume-target-by-agent?${query}`, {
+                headers: authHeaders()
+            })
+            expect(response.status).toBe(400)
+        }
+    })
+
+    it('prepares a session for local resume and maps errors to status codes', async () => {
+        const results: Record<string, unknown> = {
+            revive: { type: 'success', revived: true },
+            active: { type: 'error', message: 'Session is active', code: 'session_active' },
+            missing: { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        }
+        const app = createApp({
+            prepareLocalResume: async (sessionId: string) => results[sessionId]
+        } as never)
+
+        const ok = await app.request('/cli/sessions/revive/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(ok.status).toBe(200)
+        expect(await ok.json()).toEqual({ ok: true, revived: true })
+
+        const active = await app.request('/cli/sessions/active/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(active.status).toBe(409)
+        const missing = await app.request('/cli/sessions/missing/prepare-local-resume', { method: 'POST', headers: authHeaders() })
+        expect(missing.status).toBe(404)
+    })
+
+    it('follows merged-away session redirects for CLI lookups', async () => {
+        const calls: unknown[] = []
+        const app = createApp({
+            resolveSessionAccess: (sessionId: string, namespace: string, opts?: { followRedirects?: boolean }) => {
+                calls.push({ sessionId, namespace, opts })
+                return { ok: false, reason: 'not-found' }
+            }
+        } as never)
+
+        const response = await app.request('/cli/sessions/merged-away', { headers: authHeaders() })
+
+        expect(response.status).toBe(404)
+        expect(calls).toEqual([{ sessionId: 'merged-away', namespace: 'default', opts: { followRedirects: true } }])
     })
 
     it('returns handoff errors with status codes', async () => {
@@ -287,5 +404,63 @@ describe('cli lazy session creation', () => {
         })
 
         expect(response.status).toBe(409)
+    })
+})
+
+describe('cli autoBridgeTransientModelErrors namespace gate', () => {
+    afterEach(async () => {
+        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
+    })
+
+    it('returns hub auto-bridge only for the default namespace', async () => {
+        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)
+        const sessionId = '22222222-2222-4222-8222-222222222222'
+        const app = createApp({
+            getOrCreateSession: () => ({ id: sessionId }),
+            resolveSessionAccess: () => ({
+                ok: true,
+                session: { id: sessionId },
+                sessionId
+            })
+        } as never)
+
+        const defaultCreate = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'auto-bridge-default',
+                metadata: {}
+            })
+        })
+        expect(defaultCreate.status).toBe(200)
+        const defaultBody = await defaultCreate.json() as { autoBridgeTransientModelErrors?: boolean }
+        expect(defaultBody.autoBridgeTransientModelErrors).toBe(true)
+
+        const tenantCreate = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-token:tenant-a',
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'auto-bridge-tenant',
+                metadata: {}
+            })
+        })
+        expect(tenantCreate.status).toBe(200)
+        const tenantCreateBody = await tenantCreate.json() as { autoBridgeTransientModelErrors?: boolean }
+        expect(tenantCreateBody.autoBridgeTransientModelErrors).toBe(false)
+
+        const tenantGet = await app.request(`/cli/sessions/${sessionId}`, {
+            headers: { authorization: 'Bearer test-token:tenant-a' }
+        })
+        expect(tenantGet.status).toBe(200)
+        const tenantGetBody = await tenantGet.json() as { autoBridgeTransientModelErrors?: boolean }
+        expect(tenantGetBody.autoBridgeTransientModelErrors).toBe(false)
     })
 })

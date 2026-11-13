@@ -131,6 +131,7 @@ export function prependMissingUserSnapshot(
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
 const SEARCH_TARGET_HIGHLIGHT_CLASS = 'hapi-message-search-target'
+const PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS = 'hapi-message-pending-target'
 const SEARCH_TARGET_MATCH_ATTRIBUTE = 'data-hapi-source-search-match'
 const SEARCH_TARGET_QUERY_RETRY_DELAY_MS = 75
 const MAX_SEARCH_TARGET_QUERY_RETRIES = 80
@@ -403,7 +404,7 @@ function scrollSearchTargetIntoView(target: HTMLElement, preferredViewport?: HTM
         maxScrollTop,
         Math.max(0, viewport.scrollTop + targetCenter - viewportCenter)
     )
-    viewport.scrollTo({ top: nextScrollTop, behavior: 'auto' })
+    viewport.scrollTo({ top: nextScrollTop, behavior: 'smooth' })
 }
 
 function removeSearchMatchMarker(marker: HTMLElement, target: HTMLElement): void {
@@ -696,6 +697,7 @@ export function HappyThread(props: {
     onForkConversation?: (messageLocalId?: string) => Promise<void>
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
+    assistantForkPoints?: ReadonlyMap<string, string>
     onViewModeChange: (mode: 'tail' | 'history') => void
     onJumpToTail?: () => void
     readThroughRevision?: number
@@ -721,6 +723,7 @@ export function HappyThread(props: {
     onOutlineItemClick?: (item: ConversationOutlineItem) => void
     initialTargetMessageId?: string
     initialTargetMessageQuery?: string
+    targetHighlightKind?: 'search' | 'pending-request'
     searchRequestId?: number
     onLoadMessageContext?: (messageId: string) => Promise<boolean>
     onInitialTargetConsumed?: () => void
@@ -922,12 +925,30 @@ export function HappyThread(props: {
     const searchTargetContextRetryCountRef = useRef(0)
     const searchTargetRenderRetryCountRef = useRef(0)
     const searchTargetScrollTimersRef = useRef<number[]>([])
+    const searchTargetScrollCleanupTimerRef = useRef<number | null>(null)
+    const preserveSearchTargetScrollOnReleaseRef = useRef(false)
+    const pendingRequestTargetCleanupTimerRef = useRef<number | null>(null)
 
     // Smart scroll state: enabled only while the user is intentionally at the bottom.
     const autoScrollEnabledRef = useRef(true)
+    useLayoutEffect(() => {
+        if (!props.initialTargetMessageId) return
+        // A target jump owns the viewport immediately. A passive effect is too
+        // late: ResizeObserver can fire after the smooth scroll starts and pin
+        // the viewport back to the tail before the target effect disables it.
+        searchTargetHistoryLockRef.current = true
+        autoScrollEnabledRef.current = false
+        atBottomRef.current = false
+        tailScrollInProgressRef.current = false
+    }, [props.initialTargetMessageId, props.searchRequestId, props.targetHighlightKind])
     useEffect(() => {
         onViewModeChangeRef.current = props.onViewModeChange
     }, [props.onViewModeChange])
+    useEffect(() => () => {
+        if (pendingRequestTargetCleanupTimerRef.current !== null) {
+            window.clearTimeout(pendingRequestTargetCleanupTimerRef.current)
+        }
+    }, [])
     useEffect(() => {
         hasMoreMessagesRef.current = props.hasMoreMessages
     }, [props.hasMoreMessages])
@@ -1086,16 +1107,31 @@ export function HappyThread(props: {
         for (const fallback of Array.from(document.querySelectorAll<HTMLElement>(
             `.${SEARCH_TARGET_HIGHLIGHT_CLASS}`
         ))) {
-            if (fallback.getAttribute(SEARCH_TARGET_MATCH_ATTRIBUTE) !== 'true') {
-                fallback.classList.remove(SEARCH_TARGET_HIGHLIGHT_CLASS)
-            }
+            fallback.classList.remove(SEARCH_TARGET_HIGHLIGHT_CLASS)
         }
     }, [])
-    const releaseSearchTargetHistoryLock = useCallback(() => {
-        searchTargetHistoryLockRef.current = false
-        clearSearchTargetScrollTimers()
+    const releaseSearchTargetHistoryLock = useCallback((options?: { preserveScrollTimers?: boolean }) => {
         clearSearchTargetRetryTimer()
         clearSearchTargetMarker()
+        if (options?.preserveScrollTimers) {
+            // Native smooth scrolling is cancelled when loading the target context
+            // reflows the virtual message window. Keep both the viewport lock and
+            // correction schedule briefly so late layout cannot reclaim the viewport.
+            searchTargetHistoryLockRef.current = true
+            if (searchTargetScrollCleanupTimerRef.current !== null) return
+            searchTargetScrollCleanupTimerRef.current = window.setTimeout(() => {
+                searchTargetHistoryLockRef.current = false
+                clearSearchTargetScrollTimers()
+                searchTargetScrollCleanupTimerRef.current = null
+            }, 1_600)
+            return
+        }
+        searchTargetHistoryLockRef.current = false
+        if (searchTargetScrollCleanupTimerRef.current !== null) {
+            window.clearTimeout(searchTargetScrollCleanupTimerRef.current)
+            searchTargetScrollCleanupTimerRef.current = null
+        }
+        clearSearchTargetScrollTimers()
     }, [clearSearchTargetMarker, clearSearchTargetRetryTimer, clearSearchTargetScrollTimers])
     const dismissSearchTarget = useCallback(() => {
         releaseSearchTargetHistoryLock()
@@ -1338,6 +1374,7 @@ export function HappyThread(props: {
             // message instead of silently dropping out of tail mode.
             if (
                 autoScrollEnabledRef.current
+                && !searchTargetHistoryLockRef.current
                 && !intent.isScrollingUp
                 && !tailScrollInProgressRef.current
                 && !pendingScrollRef.current
@@ -1613,6 +1650,7 @@ export function HappyThread(props: {
     }, []) // Stable: no dependencies, reads from refs
 
     const scrollToBottomInstant = useCallback(() => {
+        if (searchTargetHistoryLockRef.current) return
         const viewport = viewportRef.current
         setShowScrollToBottom(false)
         if (viewport) {
@@ -1767,7 +1805,10 @@ export function HappyThread(props: {
     useLayoutEffect(() => {
         const targetMessageId = activeSearchTargetId
         if (!targetMessageId) {
-            releaseSearchTargetHistoryLock()
+            const preserveScrollTimers = preserveSearchTargetScrollOnReleaseRef.current
+                || searchTargetScrollCleanupTimerRef.current !== null
+            preserveSearchTargetScrollOnReleaseRef.current = false
+            releaseSearchTargetHistoryLock({ preserveScrollTimers })
             setIsLocatingSearchTarget(false)
             // The route target is cleared after a successful jump. Reset the
             // per-target phase so selecting the same search result later can
@@ -1826,6 +1867,7 @@ export function HappyThread(props: {
             clearSearchTargetRetryTimer()
             clearSearchTargetMarker()
             clearSearchTargetScrollTimers()
+            preserveSearchTargetScrollOnReleaseRef.current = false
             searchTargetQueryRetryCountRef.current = 0
             searchTargetContextRetryCountRef.current = 0
             searchTargetRenderRetryCountRef.current = 0
@@ -1878,7 +1920,13 @@ export function HappyThread(props: {
         // rewinds update epoch, snapshot head, and forward pagination cursors.
         const hasValidatedServerContext = !props.onLoadMessageContext
             || searchTargetValidatedRequestKeyRef.current === searchRequestKey
-        const target = hasValidatedServerContext
+        // Pending requests can be synthesized from live agent state without a
+        // stored transcript row. SessionChat has already validated that request,
+        // so a rendered anchor is authoritative; only missing anchors need the
+        // bounded server-context load for unloaded history.
+        const canUseRenderedTarget = hasValidatedServerContext
+            || props.targetHighlightKind === 'pending-request'
+        const target = canUseRenderedTarget
             ? findConversationMessageAnchor(targetMessageId, targetSearchQuery)
             : null
         if (target instanceof HTMLElement) {
@@ -1909,11 +1957,36 @@ export function HappyThread(props: {
                     targetMessageId
                 )
                 : null
+            if (target instanceof HTMLElement && props.targetHighlightKind === 'pending-request') {
+                let collapsed = target.closest<HTMLDetailsElement>('details')
+                while (collapsed) {
+                    collapsed.open = true
+                    collapsed = collapsed.parentElement?.closest<HTMLDetailsElement>('details') ?? null
+                }
+            }
             scrollSearchTargetIntoView(matchMarker ?? target, viewportRef.current)
             scheduleSearchTargetScroll(targetMessageId, targetSearchQuery, target)
             if (!matchMarker) {
-                target.classList.add(SEARCH_TARGET_HIGHLIGHT_CLASS)
+                if (props.targetHighlightKind === 'pending-request') {
+                    for (const previous of Array.from(document.querySelectorAll<HTMLElement>(
+                        `.${PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS}`
+                    ))) {
+                        previous.classList.remove(PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS)
+                    }
+                    void target.offsetWidth
+                    target.classList.add(PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS)
+                    if (pendingRequestTargetCleanupTimerRef.current !== null) {
+                        window.clearTimeout(pendingRequestTargetCleanupTimerRef.current)
+                    }
+                    pendingRequestTargetCleanupTimerRef.current = window.setTimeout(() => {
+                        target.classList.remove(PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS)
+                        pendingRequestTargetCleanupTimerRef.current = null
+                    }, 1_800)
+                } else {
+                    target.classList.add(SEARCH_TARGET_HIGHLIGHT_CLASS)
+                }
             }
+            preserveSearchTargetScrollOnReleaseRef.current = props.targetHighlightKind === 'pending-request'
             props.onInitialTargetConsumed?.()
             return
         }
@@ -2522,6 +2595,7 @@ export function HappyThread(props: {
             onForkConversation: props.onForkConversation,
             onRewindConversation: props.onRewindConversation,
             isLatestCompletedBoundary: props.isLatestCompletedBoundary,
+            assistantForkPoints: props.assistantForkPoints,
             onShareTurn: handleShareTurn,
             hasMoreMessages: props.hasMoreMessages,
             isSyncingTail: props.isSyncingTail,

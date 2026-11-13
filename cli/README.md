@@ -43,7 +43,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Message another session. Inactive targets are refused (exit 5) unless `--wake` resumes them first. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list [--all]` (active sessions with machine and cwd; `--all` includes inactive).
-- `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Optional `--machine ID|hostname` targets another runner (resolved via GET /api/machines); `--dir` must exist on the target. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`.
+- `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Optional `--machine ID|hostname` targets another runner (resolved via GET /api/machines); `--dir` must exist on the target, and `--session-type worktree` requires it to be a git repository. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`.
 - `hapi usage [--since 24h|7d|<ISO>|<ms>] [--until …] [--json]` - When agents were working across every machine on the hub, from `GET /api/activity`. `--json` prints one `hapi.activity.v1` report for other tools (time trackers); errors go to stderr with exit codes 2 (arguments), 3 (no token or refused), 4 (hub too old), 1 (other).
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
@@ -354,6 +354,8 @@ bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional
 
 When changing agent bootstrap, handoff, or shared-session plumbing:
 
+- One conversation keeps one HAPI session id. `HAPI_SESSION_ID` is exported into the agent process at bootstrap and cannot change afterwards, so a resume must pick the HAPI session *before* the agent starts. Terminal `hapi claude --resume <id>` / `--continue` look up the owning session (`GET /cli/sessions/resume-target-by-agent`, which also matches rotated-away ids in `claudeSessionIdHistory`) and reopen it with `--existing-session-id`, handing an active remote session over first, asking the hub to clear a hub-authored archive on an inactive one (`POST /cli/sessions/:id/prepare-local-resume`; bootstrap still refuses hub-archived rows), and refusing one already controlled by another terminal; bare `--resume` uses the `hapi resume` picker filtered to Claude. `--fork-session` and conversations unknown to HAPI start a new session. Implementation: `src/claude/resumeIdentity.ts`, `src/commands/resume.ts` (`prepareLocalResume`).
+- Hub agent-id dedup remains the safety net for older CLIs and races. Every merge that deletes a row writes a `session_redirects` entry, so a merged-away id keeps resolving to the survivor for callers that rebind to the returned id: CLI REST always, web `/api` requests via the `x-hapi-follow-session-redirects: 1` opt-in (native clients omit it and get the plain 404). Sockets and job ownership use the strict lookup.
 - Handoff-capable integrations use `local` (terminal) and `remote` (web-controlled) ownership modes. Codex instead supports concurrent clients without ownership switching; see [Codex shared sessions](../docs/guide/codex-shared-sessions.md).
 - Ordinary wrappers export `HAPI_SESSION_ID` after bootstrap. Shared Codex uses a per-root MCP bridge and `shell_environment_policy.set.HAPI_SESSION_ID`; never put one root's ID into the shared app-server environment. Implementation: `src/codex/shared/root.ts`, `src/codex/shared/runtime.ts`.
 - Gemini remains a historical wire flavor, not a launchable integration. Use the [supported-agent guide](../docs/guide/agents.md) for the launchable set.
@@ -434,8 +436,8 @@ From the repository root, `bun run release-all <version>` updates the CLI packag
 shared app version, iOS `MARKETING_VERSION` (app and notification extension, all
 configurations), and Android's default `versionName`, then commits, tags `v<version>`,
 and pushes. It requires a clean working tree on `main`. Use `--dry-run` to preview
-without changing files. Native build numbers (`CURRENT_PROJECT_VERSION` / `versionCode`)
-remain managed separately; Android's `-PhapiVersionName` override is preserved.
+without changing files. iOS `CURRENT_PROJECT_VERSION` remains managed separately; Android's
+`versionCode` is the git commit count, and its `-PhapiVersionName` override is preserved.
 
 The pushed tag triggers `.github/workflows/release.yml`, which builds all binaries,
 runs `bun run --cwd cli publish-npm`, and creates the GitHub Release. npm publishing

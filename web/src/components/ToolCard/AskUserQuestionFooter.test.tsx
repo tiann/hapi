@@ -22,6 +22,15 @@ function makeTool(id: string, allowFreeText?: boolean): ChatToolCall {
     } as unknown as ChatToolCall
 }
 
+function makeHeaderTool(questions: Array<{ header?: string; question: string }>): ChatToolCall {
+    return {
+        id: 'tool-header', name: 'AskUserQuestion', state: 'pending',
+        input: { questions: questions.map(question => ({ question: question.question, header: question.header, multiSelect: false, options: [{ label: 'Alpha', description: null }, { label: 'Beta', description: null }] })) },
+        createdAt: 1, startedAt: null, completedAt: null, execStartedAt: null, execCompletedAt: null, description: null,
+        permission: { id: 'permission-1', status: 'pending' }
+    } as unknown as ChatToolCall
+}
+
 function renderFooter(
     sessionId: string,
     tool: ChatToolCall,
@@ -188,5 +197,26 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         renderFooter('session-A', resolved)
 
         expect(screen.queryByRole('button', { name: 'tool.skip' })).toBeNull()
+    })
+})
+
+describe('AskUserQuestionFooter header chip dedupe', () => {
+    it('drops the header chip for a single question because the card title already shows it', () => {
+        renderFooter('session-A', makeHeaderTool([{ header: 'Database', question: 'Which database?' }]))
+        expect(screen.queryByText('Database')).toBeNull()
+        expect(screen.getByText('Which database?')).toBeVisible()
+    })
+
+    it('keeps the header chip for multi-question steps where it adds information', () => {
+        renderFooter('session-A', makeHeaderTool([
+            { header: 'Database', question: 'Which database?' },
+            { header: 'Region', question: 'Which region?' }
+        ]))
+        expect(screen.getByText('Database')).toBeVisible()
+    })
+
+    it('keeps the question text visible when the single question has no header', () => {
+        renderFooter('session-A', makeHeaderTool([{ question: 'Which database?' }]))
+        expect(screen.getByText('Which database?')).toBeVisible()
     })
 })
