@@ -187,7 +187,8 @@ The [Android Official Build workflow](../.github/workflows/android-release.yml)
 is manually dispatched on `main`.
 It tests and uploads signed APK/AAB workflow artifacts. It does not publish to
 Google Play itself; the maintainer uploads the AAB to the Play Console.
-Provide a new positive `version_code` and the desired `version_name`.
+Provide the desired `version_name`; `versionCode` is the git commit count of the
+dispatched commit (artifact `hapi-android-<versionCode>`).
 
 Repository configuration, set once by the maintainer:
 
@@ -203,8 +204,11 @@ Repository configuration, set once by the maintainer:
 `-PhapiOfficialBuild=true -PhapiFirebaseProjectId=<project>` requires a
 matching Firebase project/package and release signing configuration.
 Missing or mismatched settings fail the build instead of shipping a package
-without working push. `hapiVersionCode` and `hapiVersionName` override the
-normal version defaults. The Firebase service-account private key belongs
+without working push. `versionCode` is derived automatically from the git
+commit count (`git rev-list --count HEAD`), so official builds need full
+history (the workflow checks out with `fetch-depth: 0`; shallow clones are
+rejected) and must come from `main`. Builds without git fall back to `1`.
+`hapiVersionName` overrides the default `versionName`. The Firebase service-account private key belongs
 only on the relay and must never enter Android build artifacts.
 
 Roll out relay support/credentials first, then the hub, then the app. Verify
