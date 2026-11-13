@@ -46,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -112,6 +113,10 @@ fun NewSessionScreen(
             onReasoningEffortSelected = viewModel::setModelReasoningEffort,
             onPermissionModeSelected = viewModel::setPermissionMode,
             onYoloToggle = viewModel::setYolo,
+            onRetryAgyModels = viewModel::retryAgyModels,
+            onRetryOpencodeModels = viewModel::retryOpencodeModels,
+            onCursorBaseSelected = viewModel::setCursorBase,
+            onCursorVariantSelected = viewModel::setCursorVariant,
             onCollaborationModeSelected = viewModel::setCollaborationMode,
             onCopilotAgentModeSelected = viewModel::setCopilotAgentMode,
             onServiceTierSelected = viewModel::setServiceTier,
@@ -151,6 +156,10 @@ internal fun NewSessionContent(
     onReasoningEffortSelected: (String) -> Unit,
     onPermissionModeSelected: (String) -> Unit,
     onYoloToggle: (Boolean) -> Unit,
+    onRetryAgyModels: () -> Unit = {},
+    onRetryOpencodeModels: () -> Unit = {},
+    onCursorBaseSelected: (String) -> Unit = {},
+    onCursorVariantSelected: (String) -> Unit = {},
     onCollaborationModeSelected: (String) -> Unit,
     onCopilotAgentModeSelected: (String) -> Unit,
     onServiceTierSelected: (String) -> Unit,
@@ -175,16 +184,38 @@ internal fun NewSessionContent(
         SessionTypeSection(state, onSessionTypeChange, onWorktreeNameChange)
         AgentSection(state, onAgentSelected, onRetryAgentAvailability)
 
-        state.modelOptions?.let { options ->
-            OptionDropdown(
-                label = stringResource(R.string.new_session_model),
-                options = options,
-                selected = form.model,
-                enabled = !state.isSpawning && !state.modelsLoading && state.modelsError == null,
-                loading = state.modelsLoading,
-                supportingError = state.modelsError,
-                onSelect = onModelSelected,
+        when (form.agent) {
+            "agy" -> AgySection(
+                agy = state.agy,
+                isSpawning = state.isSpawning,
+                onModelSelected = onModelSelected,
+                onRetry = onRetryAgyModels,
             )
+            "opencode" -> OpencodeSection(
+                opencode = state.opencode,
+                isSpawning = state.isSpawning,
+                onModelSelected = onModelSelected,
+                onRetry = onRetryOpencodeModels,
+            )
+            "cursor" -> CursorSection(
+                cursor = state.cursor,
+                form = form,
+                isSpawning = state.isSpawning,
+                onModelSelected = onModelSelected,
+                onBaseSelected = onCursorBaseSelected,
+                onVariantSelected = onCursorVariantSelected,
+            )
+            else -> state.modelOptions?.let { options ->
+                OptionDropdown(
+                    label = stringResource(R.string.new_session_model),
+                    options = options,
+                    selected = form.model,
+                    enabled = !state.isSpawning && !state.modelsLoading && state.modelsError == null,
+                    loading = state.modelsLoading,
+                    supportingError = state.modelsError,
+                    onSelect = onModelSelected,
+                )
+            }
         }
         state.effortOptions?.let { options ->
             OptionDropdown(
@@ -512,6 +543,169 @@ private fun AgentSection(
     }
 }
 
+// ------------------------------------------------------------- agy picker --
+
+/**
+ * Agy model section (web `AgyModelSelector`): auth-required wall, stale
+ * sign-in warning over a usable list, or the catalog dropdown. Retry spends
+ * the machine's catalog cache (`?refresh=true`) and says so while probing.
+ */
+@Composable
+private fun AgySection(
+    agy: AgyUi,
+    isSpawning: Boolean,
+    onModelSelected: (String) -> Unit,
+    onRetry: () -> Unit,
+) {
+    when (agy) {
+        AgyUi.Hidden -> Unit
+        AgyUi.Loading -> LabeledHint(
+            labelRes = R.string.new_session_model,
+            hintRes = R.string.new_session_agy_fetching_models,
+        )
+        is AgyUi.Error -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SectionLabel(stringResource(R.string.new_session_model))
+            Text(
+                // Web composes `{authRequired}: {error}` from two translated parts.
+                text = stringResource(R.string.new_session_agy_auth_required) + ": " + agy.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            HintText(stringResource(R.string.new_session_agy_auth_hint))
+            RetryButton(onRetry = onRetry, fetching = agy.fetching)
+        }
+        AgyUi.NoModels -> LabeledHint(
+            labelRes = R.string.new_session_model,
+            hintRes = R.string.new_session_agy_no_models,
+        )
+        is AgyUi.Ready -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Catalog usable, but the machine's last sign-in check failed —
+            // amber banner with the same sign-in hint + Retry.
+            agy.warning?.let { warning ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = stringResource(R.string.new_session_agy_auth_required) + ": " + warning,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Amber600,
+                    )
+                    HintText(stringResource(R.string.new_session_agy_auth_hint))
+                    RetryButton(onRetry = onRetry, fetching = agy.fetching)
+                }
+            }
+            OptionDropdown(
+                label = stringResource(R.string.new_session_model),
+                options = agy.options,
+                selected = agy.selected,
+                enabled = !isSpawning,
+                onSelect = onModelSelected,
+            )
+        }
+    }
+}
+
+// --------------------------------------------------------- opencode picker --
+
+/** OpenCode model section (web `OpencodeModelSelector`, cwd-scoped). */
+@Composable
+private fun OpencodeSection(
+    opencode: OpencodeUi,
+    isSpawning: Boolean,
+    onModelSelected: (String) -> Unit,
+    onRetry: () -> Unit,
+) {
+    when (opencode) {
+        OpencodeUi.Hidden -> Unit
+        OpencodeUi.Loading -> LabeledHint(
+            labelRes = R.string.new_session_model,
+            hintRes = R.string.new_session_opencode_loading,
+        )
+        is OpencodeUi.Error -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SectionLabel(stringResource(R.string.new_session_model))
+            Text(
+                text = opencode.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            TextButton(onClick = onRetry) {
+                Text(stringResource(R.string.new_session_retry))
+            }
+        }
+        OpencodeUi.Empty -> LabeledHint(
+            labelRes = R.string.new_session_model,
+            hintRes = R.string.new_session_opencode_empty,
+        )
+        is OpencodeUi.Ready -> OptionDropdown(
+            label = stringResource(R.string.new_session_model),
+            options = opencode.options,
+            selected = opencode.selected,
+            enabled = !isSpawning,
+            onSelect = onModelSelected,
+        )
+    }
+}
+
+// ----------------------------------------------------------- cursor picker --
+
+/**
+ * Cursor model section: dual base/variant pickers (multi-variant catalogs)
+ * or one flat wire dropdown; the unavailable hint asks for one Cursor
+ * session first (web `cursorModelsUnavailable`).
+ */
+@Composable
+private fun CursorSection(
+    cursor: CursorUi,
+    form: NewSessionForm,
+    isSpawning: Boolean,
+    onModelSelected: (String) -> Unit,
+    onBaseSelected: (String) -> Unit,
+    onVariantSelected: (String) -> Unit,
+) {
+    when (cursor) {
+        CursorUi.Hidden -> Unit
+        CursorUi.Loading -> OptionDropdown(
+            label = stringResource(R.string.new_session_model),
+            options = emptyList(),
+            selected = form.model,
+            enabled = false,
+            loading = true,
+            onSelect = onModelSelected,
+        )
+        is CursorUi.Error -> OptionDropdown(
+            label = stringResource(R.string.new_session_model),
+            options = emptyList(),
+            selected = form.model,
+            enabled = false,
+            supportingError = cursor.message,
+            onSelect = onModelSelected,
+        )
+        is CursorUi.Ready -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            OptionDropdown(
+                label = stringResource(R.string.new_session_model),
+                options = cursor.modelOptions,
+                selected = cursor.selectedModel,
+                enabled = !isSpawning,
+                onSelect = if (cursor.mode == CursorModels.PickerMode.DUAL) {
+                    onBaseSelected
+                } else {
+                    onModelSelected
+                },
+            )
+            if (cursor.showVariantPicker) {
+                OptionDropdown(
+                    label = stringResource(R.string.new_session_variant),
+                    options = cursor.variantOptions,
+                    selected = cursor.selectedVariant,
+                    enabled = !isSpawning,
+                    onSelect = onVariantSelected,
+                )
+            }
+            if (cursor.unavailable) {
+                HintText(stringResource(R.string.new_session_cursor_unavailable))
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------- permission --
 
 @Composable
@@ -529,9 +723,10 @@ private fun PermissionSection(
                 enabled = !state.isSpawning,
                 onSelect = onPermissionModeSelected,
             )
-            if (state.grokAutoUnavailable) {
+            // Grok Auto unavailable: the explanatory hint under the select.
+            permission.hint?.let { hint ->
                 Text(
-                    text = stringResource(R.string.new_session_grok_auto_unavailable_desc),
+                    text = hint,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -596,6 +791,50 @@ private fun SectionLabel(text: String) {
     )
 }
 
+/** Amber for "usable but sign-in lapsed" warnings (web `text-amber-600`). */
+private val Amber600 = Color(0xFFB45309)
+
+/** Secondary hint line under a section label (web `text-xs text-zinc-500`). */
+@Composable
+private fun HintText(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** Label + one-line hint, for states that replace the dropdown entirely. */
+@Composable
+private fun LabeledHint(labelRes: Int, hintRes: Int) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SectionLabel(stringResource(labelRes))
+        HintText(stringResource(hintRes))
+    }
+}
+
+/**
+ * Retry that spends the catalog cache; the label flips to "fetching" and
+ * disables while a probe is in flight (web agy Retry button).
+ */
+@Composable
+private fun RetryButton(onRetry: () -> Unit, fetching: Boolean) {
+    TextButton(
+        enabled = !fetching,
+        onClick = onRetry,
+    ) {
+        Text(
+            text = stringResource(
+                if (fetching) {
+                    R.string.new_session_agy_fetching_models
+                } else {
+                    R.string.new_session_retry
+                },
+            ),
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun OptionDropdown(
@@ -636,7 +875,7 @@ private fun OptionDropdown(
                         text = { Text(option.label) },
                         onClick = {
                             expanded = false
-                            onSelect(option.value)
+                            if (option.enabled) onSelect(option.value)
                         },
                         enabled = option.enabled,
                     )
@@ -682,7 +921,6 @@ private fun previewState(form: NewSessionForm): NewSessionUiState = NewSessionUi
     effortOptions = NewSessionCatalogs.CLAUDE_EFFORTS,
     reasoningEffortOptions = null,
     permission = PermissionUi.YoloToggle("Yolo"),
-    grokAutoUnavailable = false,
     showCollaborationMode = false,
     collaborationModeOptions = emptyList(),
     showFastMode = false,
