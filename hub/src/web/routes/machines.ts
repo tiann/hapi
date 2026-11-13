@@ -6,6 +6,7 @@ import {
     RenameMachineRequestSchema,
     SpawnSessionRequestSchema
 } from '@hapi/protocol'
+import { Hono, type Context } from 'hono'
 import {
     resolvePeerSpawnConfig,
     STOCK_PEER_SPAWN_DEFAULTS,
@@ -13,13 +14,18 @@ import {
     type ResolvedPeerSpawnDefaults
 } from '@hapi/protocol/peerSpawnDefaults'
 import { getPermissionModesForFlavor } from '@hapi/protocol/modes'
-import { Hono } from 'hono'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
-import type { SyncEngine } from '../../sync/syncEngine'
+import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
+import {
+    QueryUsageRequestSchema,
+    SaveUsageQuerySettingsRequestSchema,
+    TestUsageQueryRequestSchema,
+    UsageQueryAgentSchema
+} from '@hapi/protocol/usageQuery'
 
 const SPAWN_REMIT_FIELDS = ['message', 'prompt', 'text'] as const
 
@@ -60,6 +66,16 @@ export function createMachinesRoutes(
     options?: MachinesRoutesOptions
 ): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const requireUsageQueryCapability = (c: Context<WebAppEnv>, machine: Machine | Response): Response | null => {
+        if (machine instanceof Response) return machine
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.UsageQuery)) {
+            return c.json({
+                error: 'This runner must be upgraded before querying agent quota',
+                code: 'runner_upgrade_required'
+            }, 409)
+        }
+        return null
+    }
     app.get('/machines', (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -69,6 +85,101 @@ export function createMachinesRoutes(
         const namespace = c.get('namespace')
         const machines = engine.getOnlineMachinesByNamespace(namespace)
         return c.json({ machines })
+    })
+
+    app.get('/machines/:id/usage-query/settings', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const parsed = UsageQueryAgentSchema.safeParse(c.req.query('agent'))
+        if (!parsed.success) return c.json({ error: 'agent must be claude, codex, or kimi' }, 400)
+
+        try {
+            return c.json(await engine.getUsageQuerySettings(machineId, parsed.data))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to read usage query settings' }, 500)
+        }
+    })
+
+    app.put('/machines/:id/usage-query/settings', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SaveUsageQuerySettingsRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid usage query settings' }, 400)
+
+        try {
+            return c.json(await engine.saveUsageQuerySettings(machineId, parsed.data.agent, {
+                enabled: parsed.data.enabled,
+                templateId: parsed.data.templateId,
+                template: parsed.data.template
+            }))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to save usage query settings' }, 500)
+        }
+    })
+
+    app.post('/machines/:id/usage-query/test', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = TestUsageQueryRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid usage query test request' }, 400)
+
+        try {
+            return c.json(await engine.testUsageQueryTemplate(machineId, parsed.data.agent, parsed.data.template))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to test usage query' }, 500)
+        }
+    })
+
+    app.post('/machines/:id/usage-query/query', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const body = await c.req.json().catch(() => ({}))
+        const parsed = QueryUsageRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid usage query request' }, 400)
+
+        try {
+            return c.json(await engine.queryUsage(machineId, parsed.data.agent, parsed.data.force === true))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to query usage' }, 500)
+        }
     })
 
     app.patch('/machines/:id', async (c) => {

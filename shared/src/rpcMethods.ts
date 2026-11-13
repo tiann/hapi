@@ -71,6 +71,10 @@ export const RPC_METHODS = {
     ForkConversation: 'fork-conversation',
     ForkArchivedCodex: 'fork-archived-codex',
     RewindConversation: 'rewind-conversation',
+    UsageQueryGetSettings: 'usage-query-get-settings',
+    UsageQuerySaveSettings: 'usage-query-save-settings',
+    UsageQueryTest: 'usage-query-test',
+    UsageQuery: 'usage-query',
     ClearConversation: 'clear-conversation',
     ImplementCodexPlan: 'implement-codex-plan',
     BridgeModelError: 'bridge-model-error'
