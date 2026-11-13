@@ -346,16 +346,15 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
-                    // Context-remaining readout; rides the same strip as the
-                    // mode chip and hides until the thread reports usage.
-                    ContextUsageChip(indicator = state.contextUsage)
-                    // Web StatusBar parity: the current permission mode rides
-                    // directly above the composer; tapping opens the config
-                    // sheet that hosts the switcher (the web span itself is
-                    // not clickable).
-                    PermissionModeChip(
+                    // Web StatusBar parity, one compact strip: the context
+                    // readout (hidden until the thread reports usage) and the
+                    // current permission mode; tapping the mode opens the
+                    // config sheet that hosts the switcher (the web span
+                    // itself is not clickable).
+                    ComposerStatusRow(
+                        contextUsage = state.contextUsage,
                         config = configState,
-                        onClick = { configSheetOpen = true },
+                        onModeClick = { configSheetOpen = true },
                     )
                     ChatComposer(
                         state = composerState,

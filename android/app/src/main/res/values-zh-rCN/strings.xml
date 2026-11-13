@@ -357,6 +357,9 @@
     <string name="chat_mention_suggestions">提及建议</string>
     <string name="chat_send_steer">发送并插入当前回合</string>
     <string name="chat_schedule_send">定时发送</string>
+    <string name="chat_schedule_capsule">定时发送 · %1$s</string>
+    <string name="chat_schedule_clear">取消定时</string>
+    <string name="chat_attachment_remove">移除 %1$s</string>
     <string name="chat_schedule_relative_tab">相对时间</string>
     <string name="chat_schedule_specific_tab">指定时间</string>
     <string name="chat_schedule_specific_hint">最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。</string>

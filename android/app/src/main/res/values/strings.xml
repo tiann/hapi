@@ -350,6 +350,9 @@
     <string name="chat_mention_suggestions">Mention suggestions</string>
     <string name="chat_send_steer">Send &amp; steer into current turn</string>
     <string name="chat_schedule_send">Schedule send</string>
+    <string name="chat_schedule_capsule">Scheduled · %1$s</string>
+    <string name="chat_schedule_clear">Clear schedule</string>
+    <string name="chat_attachment_remove">Remove %1$s</string>
     <string name="chat_schedule_relative_tab">Relative</string>
     <string name="chat_schedule_specific_tab">Specific</string>
     <string name="chat_schedule_specific_hint">Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.</string>

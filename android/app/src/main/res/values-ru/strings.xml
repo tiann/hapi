@@ -350,6 +350,9 @@
     <string name="chat_mention_suggestions">Предложения упоминаний</string>
     <string name="chat_send_steer">Отправить и вклиниться в текущий ход</string>
     <string name="chat_schedule_send">Отложенная отправка</string>
+    <string name="chat_schedule_capsule">Запланировано · %1$s</string>
+    <string name="chat_schedule_clear">Отменить расписание</string>
+    <string name="chat_attachment_remove">Удалить %1$s</string>
     <string name="chat_schedule_relative_tab">Относительно</string>
     <string name="chat_schedule_specific_tab">Точное время</string>
     <string name="chat_schedule_specific_hint">Максимум 7 дней. Требуется работающий хаб; CLI наверстает отправку при следующем подключении после этого времени.</string>
