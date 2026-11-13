@@ -2726,9 +2726,8 @@ function SessionChatInner(props: SessionChatProps) {
             </AssistantRuntimeProvider>
                 </div>
                 </div>
-            </div>
 
-            {/* Voice session component - renders nothing but initializes voice backend */}
+                {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
                 <VoiceBackendSession
                     api={props.api}
